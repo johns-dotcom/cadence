@@ -1,26 +1,25 @@
 /**
- * Optional demo seed. Creates ONE label (tenant) with a single Superadmin so
- * you can log in and click around. It is NOT required for the app to run —
- * the real onboarding path is the public /signup flow, which provisions a new
- * label + owner per workspace.
+ * Bootstrap seed. Creates the FIRST label (tenant) and its owner, who is both
+ * the label's Superadmin AND the platform admin (is_platform_admin = true).
+ *
+ * This is how the platform gets its first account, since there's no public
+ * signup — thereafter the platform admin provisions new label workspaces via
+ * the Workspaces screen (POST /api/platform/workspaces).
  *
  * Configure via env (see .env.example):
  *   SEED_LABEL_NAME, SEED_ADMIN_NAME, SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD
  *
  * Refuses to run without SEED_ADMIN_PASSWORD so we never ship a default
- * credential. Re-running is a no-op if the label slug already exists.
+ * credential. Re-running is a no-op if the label slug already exists. Also run
+ * automatically on first boot by index.js when SEED_ADMIN_PASSWORD is present.
  *
  *   npm run seed   (from server/)
  */
 
 const pool = require('./db');
 const bcrypt = require('bcryptjs');
+const { slugify } = require('./lib/slug');
 require('dotenv').config();
-
-function slugify(name) {
-  return String(name).toLowerCase().trim()
-    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'label';
-}
 
 const seed = async () => {
   const labelName = process.env.SEED_LABEL_NAME || 'Demo Label';
@@ -55,16 +54,16 @@ const seed = async () => {
 
     const hash = await bcrypt.hash(adminPassword, 10);
     await client.query(
-      `INSERT INTO users (label_id, name, email, password_hash, role, department, hierarchy_level, created_at)
-       VALUES ($1, $2, $3, $4, 'Superadmin', 'Executive', 1, NOW())
-       ON CONFLICT (label_id, email) DO NOTHING`,
+      `INSERT INTO users (label_id, name, email, password_hash, role, department, hierarchy_level, is_platform_admin, created_at)
+       VALUES ($1, $2, $3, $4, 'Superadmin', 'Executive', 1, TRUE, NOW())
+       ON CONFLICT (label_id, email) DO UPDATE SET is_platform_admin = TRUE`,
       [labelId, adminName, adminEmail, hash]
     );
 
     await client.query('COMMIT');
     console.log('Done.');
     console.log(`  Workspace : ${labelName} (slug: ${slug})`);
-    console.log(`  Login     : ${adminEmail}`);
+    console.log(`  Login     : ${adminEmail}  (platform admin)`);
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('Seeding error:', error.message);

@@ -41,17 +41,6 @@ export const AuthProvider = ({ children }) => {
     if (labelData) setLabel(labelData)
   }
 
-  const signup = async ({ labelName, name, email, password }) => {
-    try {
-      const { data } = await api.post('/auth/signup', { labelName, name, email, password })
-      const { token: newToken, user: userData, label: labelData } = data.data
-      applySession(newToken, userData, labelData)
-      return { success: true }
-    } catch (error) {
-      return { success: false, error: error.response?.data?.error || 'Signup failed' }
-    }
-  }
-
   const login = async (email, password, workspace) => {
     try {
       const { data } = await api.post('/auth/login', { email, password, workspace })
@@ -134,7 +123,7 @@ export const AuthProvider = ({ children }) => {
   return (
     <AuthContext.Provider value={{
       user, label, token, loading,
-      signup, login, googleLogin, logout,
+      login, googleLogin, logout,
       impersonate, exitImpersonation, impersonating, adminUser,
       pagePermissions, canView,
     }}>

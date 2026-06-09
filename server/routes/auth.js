@@ -22,6 +22,7 @@ function signToken(user, expiresIn = '8h') {
       role: user.role,
       department: user.department,
       hierarchy_level: user.hierarchy_level,
+      is_platform_admin: !!user.is_platform_admin,
       tv: user.token_version || 0,
     },
     process.env.JWT_SECRET,
@@ -38,30 +39,8 @@ function publicUser(u) {
     role: u.role,
     department: u.department,
     hierarchy_level: u.hierarchy_level,
+    is_platform_admin: !!u.is_platform_admin,
   };
-}
-
-function slugify(name) {
-  return String(name)
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 60) || 'label';
-}
-
-// Generate a unique label slug, appending -2, -3, … on collision.
-async function uniqueSlug(base) {
-  const root = slugify(base);
-  let slug = root;
-  let n = 1;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const { rows } = await pool.query('SELECT 1 FROM labels WHERE slug = $1', [slug]);
-    if (!rows.length) return slug;
-    n += 1;
-    slug = `${root}-${n}`;
-  }
 }
 
 function recordLogin(user, req, method) {
@@ -77,62 +56,9 @@ function recordLogin(user, req, method) {
   ).catch(() => {});
 }
 
-// ── POST /api/auth/signup ───────────────────────────────────────────────
-// Public self-serve onboarding: creates a brand-new label (tenant) and its
-// first user as Superadmin. This is what replaces the old hardcoded company.
-router.post('/signup', async (req, res) => {
-  if (String(process.env.ALLOW_SIGNUP).toLowerCase() === 'false') {
-    return res.status(403).json({ success: false, error: 'Signups are currently disabled' });
-  }
-
-  const client = await pool.connect();
-  try {
-    const { labelName, name, email, password } = req.body;
-    if (!labelName || !name || !email || !password) {
-      return res.status(400).json({ success: false, error: 'Label name, your name, email, and password are required' });
-    }
-    if (password.length < 8) {
-      return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' });
-    }
-
-    await client.query('BEGIN');
-
-    const slug = await uniqueSlug(labelName);
-    const labelRes = await client.query(
-      'INSERT INTO labels (name, slug, created_at) VALUES ($1, $2, NOW()) RETURNING id, name, slug',
-      [labelName.trim(), slug]
-    );
-    const label = labelRes.rows[0];
-
-    const passwordHash = await bcrypt.hash(password, 10);
-    const userRes = await client.query(
-      `INSERT INTO users (label_id, name, email, password_hash, role, department, hierarchy_level, created_at)
-       VALUES ($1, $2, $3, $4, 'Superadmin', 'Executive', 1, NOW())
-       RETURNING id, label_id, name, email, role, department, hierarchy_level, token_version`,
-      [label.id, name.trim(), email.trim().toLowerCase(), passwordHash]
-    );
-    const user = userRes.rows[0];
-
-    await client.query('COMMIT');
-
-    const token = signToken(user);
-    recordLogin(user, req, 'Email/password signup');
-
-    res.status(201).json({
-      success: true,
-      data: { token, user: publicUser(user), label },
-    });
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    if (error.code === '23505') {
-      return res.status(400).json({ success: false, error: 'An account with that email already exists in this workspace' });
-    }
-    console.error('Signup error:', error);
-    res.status(500).json({ success: false, error: 'Internal server error' });
-  } finally {
-    client.release();
-  }
-});
+// NOTE: There is intentionally NO public signup endpoint. Workspaces (labels)
+// are provisioned only by a platform admin via POST /api/platform/workspaces
+// (see routes/platform.js). Normal users can't create a workspace.
 
 // ── POST /api/auth/login ────────────────────────────────────────────────
 // Email + password. Because email is unique only within a label, the same
@@ -278,7 +204,8 @@ router.post('/register', authMiddleware, async (req, res) => {
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT u.id, u.label_id, u.name, u.email, u.role, u.department, u.hierarchy_level, u.created_at,
+      `SELECT u.id, u.label_id, u.name, u.email, u.role, u.department, u.hierarchy_level,
+              u.is_platform_admin, u.created_at,
               l.name AS label_name, l.slug AS label_slug
        FROM users u JOIN labels l ON l.id = u.label_id
        WHERE u.id = $1 AND u.label_id = $2`,

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { GoogleLogin } from '@react-oauth/google'
 import { Disc3 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
@@ -94,9 +94,8 @@ export default function Login() {
           )}
         </div>
 
-        <p className="text-center text-sm text-gray-500 mt-6">
-          New label?{' '}
-          <Link to="/signup" className="font-semibold text-brand-600 hover:text-brand-700">Create a workspace</Link>
+        <p className="text-center text-xs text-gray-400 mt-6">
+          Need a workspace? Contact your administrator.
         </p>
       </div>
     </div>

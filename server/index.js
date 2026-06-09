@@ -9,6 +9,7 @@ const pool = require('./db');
 const sanitize = require('./middleware/sanitize');
 
 const authRoutes = require('./routes/auth');
+const platformRoutes = require('./routes/platform');
 const labelsRoutes = require('./routes/labels');
 const teamRoutes = require('./routes/team');
 const artistsRoutes = require('./routes/artists');
@@ -41,15 +42,6 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   skipSuccessfulRequests: true,
   message: { success: false, error: 'Too many attempts. Please try again in 15 minutes.' },
-});
-
-// Signup: 5 new workspaces per hour per IP keeps abuse down.
-const signupLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, error: 'Too many signups from this address. Please try again later.' },
 });
 
 const generalLimiter = rateLimit({
@@ -107,8 +99,8 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 
 // ── API routes ──────────────────────────────────────────────────────────
 app.use('/api/auth/login', authLimiter);
-app.use('/api/auth/signup', signupLimiter);
 app.use('/api/auth', authRoutes);
+app.use('/api/platform', platformRoutes);
 app.use('/api/label', labelsRoutes);
 app.use('/api/team', teamRoutes);
 app.use('/api/artists', artistsRoutes);
@@ -158,11 +150,14 @@ const runMigrations = async () => {
       department VARCHAR(100),
       hierarchy_level INT DEFAULT 99,
       theme VARCHAR(10) DEFAULT 'light',
+      is_platform_admin BOOLEAN DEFAULT FALSE,
       token_version INT DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       UNIQUE (label_id, email)
     );
   `);
+  // For databases created before is_platform_admin existed.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_platform_admin BOOLEAN DEFAULT FALSE`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS artists (
@@ -274,8 +269,26 @@ const runMigrations = async () => {
   console.log('Schema ready.');
 };
 
+// Bootstrap the first platform admin + their label. Because there's no public
+// signup, the platform needs a way to create its very first account. If
+// SEED_ADMIN_PASSWORD is set and no labels exist yet, run the seed (idempotent)
+// so a fresh deploy can come up with a usable platform-admin login.
+const autoBootstrap = async () => {
+  if (!process.env.SEED_ADMIN_PASSWORD) return;
+  try {
+    const { rows } = await pool.query('SELECT COUNT(*)::int AS n FROM labels');
+    if (rows[0].n > 0) return; // already bootstrapped
+    console.log('No labels found — bootstrapping the first platform admin from SEED_* env…');
+    await require('./seed')();
+  } catch (err) {
+    console.error('Bootstrap error:', err.message);
+  }
+};
+
 // ── Boot ────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`Cadence API listening on :${PORT} (${process.env.NODE_ENV || 'development'})`);
-  runMigrations().catch(err => console.error('Migration error:', err.message));
+  runMigrations()
+    .then(autoBootstrap)
+    .catch(err => console.error('Migration error:', err.message));
 });

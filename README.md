@@ -24,12 +24,20 @@ Cadence is multi-tenant from the ground up. The tenant root is the **label**
 - **Every query is scoped** by `label_id` — no request can read or write
   across tenants, and client-supplied foreign keys (e.g. `artist_id`) are
   re-validated against the caller's label.
-- **Self-serve onboarding** — `POST /api/auth/signup` provisions a new label
-  and its first **Superadmin**, replacing the old hardcoded company/team.
+- **No public signup.** Workspaces are provisioned only by a **platform admin**
+  (the SaaS operator) via `POST /api/platform/workspaces` — the in-app
+  *Workspaces* screen. Normal users can't create a workspace.
 - **Login resolves the tenant** by email; if an email exists in multiple
   workspaces, the caller passes a `workspace` slug to disambiguate.
 
-### Roles (scoped within a label)
+### Identities & roles
+
+There are two levels of authority:
+
+- **Platform admin** (`users.is_platform_admin`) — the SaaS *operator*. The
+  only identity allowed to act across tenants; provisions new label accounts.
+  Bootstrapped via the seed (see below).
+- **Label roles** (scoped within one workspace):
 
 | Role | Capability |
 |------|------------|
@@ -53,15 +61,23 @@ npm run dev:server     # Express on :3001 — runs migrations on boot
 npm run dev:client     # Vite on :5173 — proxies /api → :3001
 ```
 
-Open http://localhost:5173 and **create a workspace** at `/signup`.
+### Bootstrap the first platform admin
 
-### Optional demo seed
+There's no public signup, so create the first account with the seed (sets
+`is_platform_admin = true`):
 
 ```bash
-SEED_ADMIN_PASSWORD=changeme123 npm run seed
+cd server
+SEED_LABEL_NAME="Your Label" SEED_ADMIN_NAME="Your Name" \
+SEED_ADMIN_EMAIL="you@example.com" SEED_ADMIN_PASSWORD="changeme123" \
+npm run seed
 ```
 
-Creates one demo label + Superadmin (see `SEED_*` vars in `server/.env.example`).
+On a hosted deploy (e.g. Railway), set those `SEED_*` env vars instead — the
+server auto-bootstraps on first boot when no labels exist.
+
+Then open http://localhost:5173, sign in, and use **Workspaces** (visible to
+platform admins) to provision label accounts for your clients.
 
 ## Schema & migrations
 
@@ -85,10 +101,10 @@ cadence/
 │   └── src/
 │       ├── context/        # Auth (tenant-aware), Theme, Toast
 │       ├── components/     # Layout (nav, impersonation), PageHeader
-│       └── pages/          # Login, Signup, Dashboard, Releases, Artists, Team, Settings, Activity
+│       └── pages/          # Login, Dashboard, Releases, Artists, Team, Settings, Activity, Workspaces
 └── server/                 # Express API
-    ├── lib/                # r2.js (object storage), constants.js
-    ├── middleware/         # auth (JWT + tenant binding), tenant, sanitize, activityLogger
+    ├── lib/                # r2.js (object storage), constants.js, slug.js
+    ├── middleware/         # auth (JWT + tenant binding), tenant (incl. platform-admin gate), sanitize, activityLogger
     ├── migrations/         # standalone migration scripts
-    └── routes/             # auth, labels, team, artists, releases, dashboard, activity, settings
+    └── routes/             # auth, platform (workspace provisioning), labels, team, artists, releases, dashboard, activity, settings
 ```

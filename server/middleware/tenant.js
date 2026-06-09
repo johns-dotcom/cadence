@@ -40,4 +40,15 @@ function requireRole(...allowed) {
 const requireAdmin = requireRole('Superadmin', 'Admin');
 const requireApprover = requireRole('Superadmin', 'Admin', 'Approver');
 
-module.exports = { withTenant, requireRole, requireAdmin, requireApprover };
+// Platform-admin gate. This is the SaaS *operator* (you) — a level above any
+// label's Superadmin. Platform admins provision new label workspaces and are
+// the ONLY identity allowed to act across tenants. Everyone else is confined
+// to their own label_id.
+function requirePlatformAdmin(req, res, next) {
+  if (!req.user?.is_platform_admin) {
+    return res.status(403).json({ success: false, error: 'Platform administrator only' });
+  }
+  next();
+}
+
+module.exports = { withTenant, requireRole, requireAdmin, requireApprover, requirePlatformAdmin };

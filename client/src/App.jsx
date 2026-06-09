@@ -2,13 +2,13 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import Layout from './components/Layout'
 import Login from './pages/Login'
-import Signup from './pages/Signup'
 import Dashboard from './pages/Dashboard'
 import Releases from './pages/Releases'
 import Artists from './pages/Artists'
 import Team from './pages/Team'
 import Settings from './pages/Settings'
 import Activity from './pages/Activity'
+import Workspaces from './pages/Workspaces'
 import Privacy from './pages/Privacy'
 import EULA from './pages/EULA'
 
@@ -40,6 +40,14 @@ function AdminRoute({ children }) {
   return children
 }
 
+// Gate: platform admin only (the SaaS operator). For workspace provisioning.
+function PlatformRoute({ children }) {
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (!user?.is_platform_admin) return <Navigate to="/" replace />
+  return children
+}
+
 function AppContent() {
   const { token, loading } = useAuth()
 
@@ -47,18 +55,18 @@ function AppContent() {
     <Routes>
       {/* Public */}
       <Route path="/login"   element={token ? <Navigate to="/" replace /> : <Login />} />
-      <Route path="/signup"  element={token ? <Navigate to="/" replace /> : <Signup />} />
       <Route path="/privacy" element={<Privacy />} />
       <Route path="/eula"    element={<EULA />} />
 
       {/* Authenticated app shell */}
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-        <Route path="/"          element={<Dashboard />} />
-        <Route path="/releases"  element={<Releases />} />
-        <Route path="/artists"   element={<Artists />} />
-        <Route path="/team"      element={<AdminRoute><Team /></AdminRoute>} />
-        <Route path="/activity"  element={<AdminRoute><Activity /></AdminRoute>} />
-        <Route path="/settings"  element={<Settings />} />
+        <Route path="/"           element={<Dashboard />} />
+        <Route path="/releases"   element={<Releases />} />
+        <Route path="/artists"    element={<Artists />} />
+        <Route path="/team"       element={<AdminRoute><Team /></AdminRoute>} />
+        <Route path="/activity"   element={<AdminRoute><Activity /></AdminRoute>} />
+        <Route path="/settings"   element={<Settings />} />
+        <Route path="/workspaces" element={<PlatformRoute><Workspaces /></PlatformRoute>} />
       </Route>
 
       <Route path="*" element={<Navigate to={token ? '/' : '/login'} replace />} />

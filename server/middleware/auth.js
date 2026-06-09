@@ -28,7 +28,7 @@ const authMiddleware = async (req, res, next) => {
     // Scoped by label_id so a token can never resolve a user in another tenant.
     if (decoded.id) {
       const { rows } = await pool.query(
-        'SELECT token_version, role FROM users WHERE id = $1 AND label_id = $2',
+        'SELECT token_version, role, is_platform_admin FROM users WHERE id = $1 AND label_id = $2',
         [decoded.id, decoded.label_id]
       );
       if (!rows.length) {
@@ -37,8 +37,10 @@ const authMiddleware = async (req, res, next) => {
       if (decoded.tv !== undefined && rows[0].token_version !== decoded.tv) {
         return res.status(401).json({ success: false, error: 'Session expired. Please log in again.' });
       }
-      // Overlay the fresh role so permission gates see the current value.
+      // Overlay the fresh role + platform-admin flag so permission gates see
+      // the current values, not whatever was baked into the token at login.
       if (rows[0].role) req.user.role = rows[0].role;
+      req.user.is_platform_admin = !!rows[0].is_platform_admin;
     }
 
     return next();

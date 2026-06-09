@@ -2,19 +2,20 @@ import { useState, useEffect, useRef } from 'react'
 import { Outlet, Link, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Music, Users, UserCheck, Settings, ScrollText,
-  LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3,
+  LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
 import api from '../api'
 
 const PAGE_LABELS = {
-  '/':         'Dashboard',
-  '/releases': 'Releases',
-  '/artists':  'Artists',
-  '/team':     'Team',
-  '/activity': 'Activity',
-  '/settings': 'Settings',
+  '/':           'Dashboard',
+  '/releases':   'Releases',
+  '/artists':    'Artists',
+  '/team':       'Team',
+  '/activity':   'Activity',
+  '/settings':   'Settings',
+  '/workspaces': 'Workspaces',
 }
 
 // "View as" dropdown — Superadmin-only impersonation within the workspace.
@@ -145,6 +146,12 @@ export default function Layout() {
         { path: '/settings', label: 'Settings', icon: Settings },
       ],
     },
+    // Platform-admin only — provisioning new label accounts. A level above the
+    // current workspace, so it lives in its own section.
+    ...(user?.is_platform_admin ? [{
+      label: 'Platform',
+      items: [{ path: '/workspaces', label: 'Workspaces', icon: Building2 }],
+    }] : []),
   ]
     .map(g => ({ ...g, items: g.items.filter(i => canView(i.path)) }))
     .filter(g => g.items.length > 0)
