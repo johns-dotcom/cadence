@@ -3,7 +3,7 @@ import { Outlet, Link, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Music, Users, UserCheck, Settings, ScrollText,
   LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
-  Briefcase, TrendingUp, FileText, RefreshCw,
+  Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
@@ -17,6 +17,8 @@ const PAGE_LABELS = {
   '/deals':      'Deal Pipeline',
   '/contracts':  'Contracts',
   '/renewals':   'Renewals',
+  '/ledger':     'Ledger',
+  '/invoices':   'Invoices',
   '/team':       'Team',
   '/activity':   'Activity',
   '/settings':   'Settings',
@@ -128,6 +130,13 @@ export default function Layout() {
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
 
+  // Pending ledger approvals → nav badge (approvers only). Refreshes on nav.
+  const [pendingApprovals, setPendingApprovals] = useState(0)
+  useEffect(() => {
+    if (!isApprover) return
+    api.get('/ledger/pending-count').then(r => setPendingApprovals(r.data?.data?.count || 0)).catch(() => {})
+  }, [isApprover, location.pathname])
+
   // Sidebar information architecture — grouped the way a label team works.
   // Items are filtered by canView (role + per-user page permissions).
   const navGroups = [
@@ -156,6 +165,13 @@ export default function Layout() {
       items: [
         ...(isApprover ? [{ path: '/contracts', label: 'Contracts', icon: FileText }] : []),
         ...(isApprover ? [{ path: '/renewals', label: 'Renewals', icon: RefreshCw }] : []),
+      ],
+    },
+    {
+      label: 'Bookkeeping',
+      items: [
+        ...(isApprover ? [{ path: '/ledger', label: 'Ledger', icon: BookOpen, badge: pendingApprovals }] : []),
+        ...(isApprover ? [{ path: '/invoices', label: 'Invoices', icon: Receipt }] : []),
       ],
     },
     {
@@ -219,7 +235,7 @@ export default function Layout() {
                 <p className="px-3 mb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">{group.label}</p>
               )}
               <div className="space-y-0.5">
-                {group.items.map(({ path, label, icon: Icon }) => {
+                {group.items.map(({ path, label, icon: Icon, badge }) => {
                   const isActive = path === '/' ? location.pathname === '/' : location.pathname.startsWith(path)
                   return (
                     <Link
@@ -232,6 +248,9 @@ export default function Layout() {
                       <Icon size={17} strokeWidth={isActive ? 2 : 1.5}
                         className={isActive ? 'text-brand-600' : 'text-gray-400 group-hover:text-gray-600'} />
                       <span>{label}</span>
+                      {badge > 0 && (
+                        <span className="ml-auto bg-brand-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">{badge}</span>
+                      )}
                     </Link>
                   )
                 })}

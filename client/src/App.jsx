@@ -10,6 +10,9 @@ import Deals from './pages/Deals'
 import Contracts from './pages/Contracts'
 import Renewals from './pages/Renewals'
 import MyWork from './pages/MyWork'
+import Ledger from './pages/Ledger'
+import Invoices from './pages/Invoices'
+import VendorSubmit from './pages/VendorSubmit'
 import Team from './pages/Team'
 import Settings from './pages/Settings'
 import Activity from './pages/Activity'
@@ -59,9 +62,10 @@ function AppContent() {
   return (
     <Routes>
       {/* Public */}
-      <Route path="/login"   element={token ? <Navigate to="/" replace /> : <Login />} />
-      <Route path="/privacy" element={<Privacy />} />
-      <Route path="/eula"    element={<EULA />} />
+      <Route path="/login"        element={token ? <Navigate to="/" replace /> : <Login />} />
+      <Route path="/submit/:slug" element={<VendorSubmit />} />
+      <Route path="/privacy"      element={<Privacy />} />
+      <Route path="/eula"         element={<EULA />} />
 
       {/* Authenticated app shell */}
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
@@ -73,6 +77,8 @@ function AppContent() {
         <Route path="/deals"        element={<Deals />} />
         <Route path="/contracts"    element={<AdminRoute><Contracts /></AdminRoute>} />
         <Route path="/renewals"     element={<AdminRoute><Renewals /></AdminRoute>} />
+        <Route path="/ledger"       element={<AdminRoute><Ledger /></AdminRoute>} />
+        <Route path="/invoices"     element={<AdminRoute><Invoices /></AdminRoute>} />
         <Route path="/team"         element={<AdminRoute><Team /></AdminRoute>} />
         <Route path="/activity"     element={<AdminRoute><Activity /></AdminRoute>} />
         <Route path="/settings"     element={<Settings />} />

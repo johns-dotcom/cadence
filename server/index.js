@@ -17,6 +17,9 @@ const releasesRoutes = require('./routes/releases');
 const dealsRoutes = require('./routes/deals');
 const contractsRoutes = require('./routes/contracts');
 const tasksRoutes = require('./routes/tasks');
+const ledgerRoutes = require('./routes/ledger');
+const invoicesRoutes = require('./routes/invoices');
+const vendorRoutes = require('./routes/vendor');
 const dashboardRoutes = require('./routes/dashboard');
 const activityRoutes = require('./routes/activity');
 const settingsRoutes = require('./routes/settings');
@@ -111,6 +114,9 @@ app.use('/api/releases', releasesRoutes);
 app.use('/api/deals', dealsRoutes);
 app.use('/api/contracts', contractsRoutes);
 app.use('/api/tasks', tasksRoutes);
+app.use('/api/ledger', ledgerRoutes);
+app.use('/api/invoices', invoicesRoutes);
+app.use('/api/vendor', vendorRoutes); // public (no auth) — label resolved by slug
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/settings', settingsRoutes);
@@ -258,6 +264,71 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_contracts_label ON contracts (label_id)`);
+
+  // Ledger (money out) — expense entries with an approval workflow. Vendor
+  // submissions land here as status='pending' via the public vendor form.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS expenses (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      invoice_date DATE,
+      payee TEXT,
+      description TEXT,
+      category TEXT,
+      artist TEXT,
+      song TEXT,
+      invoice_number TEXT,
+      amount NUMERIC(12,2),
+      currency TEXT DEFAULT 'USD',
+      payment_method TEXT,
+      payment_date DATE,
+      status TEXT DEFAULT 'approved',
+      payment_status TEXT DEFAULT 'Unpaid',
+      is_reimbursement BOOLEAN DEFAULT FALSE,
+      recoupable BOOLEAN DEFAULT TRUE,
+      vendor_submitted BOOLEAN DEFAULT FALSE,
+      vendor_name TEXT,
+      vendor_email TEXT,
+      vendor_address TEXT,
+      vendor_bank TEXT,
+      rep TEXT,
+      notes TEXT,
+      invoice_filename TEXT,
+      invoice_r2_key TEXT,
+      w9_filename TEXT,
+      w9_r2_key TEXT,
+      receipt_filename TEXT,
+      receipt_r2_key TEXT,
+      approved_by TEXT,
+      approved_at TIMESTAMP,
+      rejected_reason TEXT,
+      paid_by TEXT,
+      deleted BOOLEAN DEFAULT FALSE,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_expenses_label ON expenses (label_id, status)`);
+
+  // Invoices (money in) — invoices the label issues. Numbered per-label.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS invoices (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      invoice_number INT NOT NULL,
+      bill_to TEXT,
+      bill_to_address TEXT,
+      description TEXT,
+      amount NUMERIC(12,2),
+      purchase_order TEXT DEFAULT 'N/A',
+      due_by TEXT DEFAULT 'UPON RECEIPT',
+      line_items JSONB,
+      payment_status TEXT DEFAULT 'Unpaid',
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE (label_id, invoice_number)
+    );
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS tasks (

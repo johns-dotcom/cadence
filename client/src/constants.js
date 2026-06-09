@@ -43,3 +43,17 @@ export const CONTRACT_TYPES = ['Recording', 'Distribution', 'Publishing', 'Manag
 export const CONTRACT_STATUSES = ['Active', 'Pending', 'Expired', 'Terminated']
 
 export const TASK_STATUSES = ['To Do', 'In Progress', 'Done']
+
+// ── Bookkeeping ──────────────────────────────────────────────────────────
+export const EXPENSE_CATEGORIES = [
+  'Recording', 'Mixing & Mastering', 'Music Video', 'Marketing', 'PR',
+  'Sync/Licensing', 'Distribution', 'Design', 'Production', 'Legal',
+  'Services', 'Merch', 'Tour/Live', 'Advance', 'Other',
+]
+
+export const PAYMENT_METHODS = ['ACH', 'Check', 'Wire', 'Credit Card', 'PayPal', 'Cash']
+
+// Ledger entry workflow status.
+export const LEDGER_STATUSES = ['pending', 'approved', 'rejected']
+
+export const PAYMENT_STATUSES = ['Unpaid', 'Paid']
