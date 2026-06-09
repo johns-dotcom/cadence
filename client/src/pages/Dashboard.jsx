@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Users, Music, CalendarClock, UserCheck } from 'lucide-react'
+import { Users, Music, CalendarClock, TrendingUp, Briefcase } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 
 const STAT_CARDS = [
-  { key: 'artists',  label: 'Artists',          icon: Users },
-  { key: 'releases', label: 'Releases',         icon: Music },
-  { key: 'upcoming', label: 'Upcoming',         icon: CalendarClock },
-  { key: 'members',  label: 'Team members',     icon: UserCheck },
+  { key: 'artists',   label: 'Artists',   icon: Users },
+  { key: 'releases',  label: 'Releases',  icon: Music },
+  { key: 'upcoming',  label: 'Upcoming',  icon: CalendarClock },
+  { key: 'openDeals', label: 'Open deals', icon: TrendingUp },
+  { key: 'myTasks',   label: 'My open tasks', icon: Briefcase },
 ]
 
 export default function Dashboard() {
@@ -30,7 +31,7 @@ export default function Dashboard() {
         subtitle={label?.name ? `${label.name} · label operations` : 'Label operations'}
       />
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
         {STAT_CARDS.map(({ key, label, icon: Icon }) => (
           <div key={key} className="card p-5">
             <div className="flex items-center justify-between">

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Plus, Music } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
@@ -14,6 +15,7 @@ const STATUS_STYLES = {
 
 export default function Releases() {
   const { toast } = useToast()
+  const navigate = useNavigate()
   const [releases, setReleases] = useState([])
   const [artists, setArtists] = useState([])
   const [loading, setLoading] = useState(true)
@@ -121,7 +123,7 @@ export default function Releases() {
             </thead>
             <tbody className="divide-y divide-divider">
               {releases.map(r => (
-                <tr key={r.id} className="hover:bg-gray-50">
+                <tr key={r.id} onClick={() => navigate(`/releases/${r.id}`)} className="hover:bg-gray-50 cursor-pointer">
                   <td className="px-4 py-3 font-medium text-ink">{r.project_name}</td>
                   <td className="px-4 py-3 text-gray-600">{r.artist_name || '—'}</td>
                   <td className="px-4 py-3 text-gray-600">{r.release_type || '—'}</td>

@@ -17,3 +17,29 @@ export const RELEASE_TYPES = ['Single', 'EP', 'Album', 'Compilation', 'Mixtape']
 export const RELEASE_STATUSES = ['Draft', 'Scheduled', 'Released', 'Archived']
 
 export const DEPARTMENTS = ['Executive', 'A&R', 'Marketing', 'Operations', 'Finance', 'Legal']
+
+export const PRIORITIES = ['High', 'Medium', 'Low']
+
+// Release prep checklist — boolean columns on the releases table, surfaced on
+// the release detail page so ops can track delivery readiness.
+export const RELEASE_CHECKLIST = [
+  { key: 'cover_art_received', label: 'Cover art received' },
+  { key: 'audio_uploaded',    label: 'Audio uploaded to distributor' },
+  { key: 'pitched_spotify',   label: 'Pitched to Spotify' },
+  { key: 'pitched_apple',     label: 'Pitched to Apple Music' },
+  { key: 'marketing_plan',    label: 'Marketing plan done' },
+  { key: 'content_ready',     label: 'Content ready' },
+  { key: 'dsp_email_sent',    label: 'DSP email sent' },
+  { key: 'lyrics_submitted',  label: 'Lyrics submitted' },
+]
+
+// A&R deal pipeline stages, in funnel order.
+export const DEAL_STAGES = ['Scouting', 'Meeting', 'Offer', 'Negotiation', 'Signed', 'Passed']
+
+export const DEAL_TYPES = ['Single', 'EP', 'Album', 'Multi-release', 'Distribution', 'Licensing']
+
+export const CONTRACT_TYPES = ['Recording', 'Distribution', 'Publishing', 'Management', 'Licensing', 'Producer']
+
+export const CONTRACT_STATUSES = ['Active', 'Pending', 'Expired', 'Terminated']
+
+export const TASK_STATUSES = ['To Do', 'In Progress', 'Done']

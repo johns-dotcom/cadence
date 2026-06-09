@@ -77,20 +77,32 @@ router.post('/', async (req, res) => {
   }
 });
 
-// PATCH /api/releases/:id
+// Columns the client is allowed to patch. Anything else in the body is
+// ignored — keeps an updatable allowlist instead of trusting arbitrary keys.
+const UPDATABLE = [
+  'project_name', 'release_date', 'release_type', 'genre', 'status',
+  'upc', 'isrc', 'spotify_uri', 'cover_art_url', 'priority', 'notes',
+  'producer', 'featured_artists',
+  'cover_art_received', 'audio_uploaded', 'pitched_spotify', 'pitched_apple',
+  'marketing_plan', 'content_ready', 'dsp_email_sent', 'lyrics_submitted',
+];
+
+// PATCH /api/releases/:id — partial update of any allowed field(s).
 router.patch('/:id', async (req, res) => {
   try {
-    const { project_name, release_date, release_type, genre, status } = req.body;
+    const keys = Object.keys(req.body).filter(k => UPDATABLE.includes(k));
+    if (keys.length === 0) {
+      return res.status(400).json({ success: false, error: 'No updatable fields provided' });
+    }
+
+    const setClauses = keys.map((k, i) => `${k} = $${i + 1}`);
+    const values = keys.map(k => req.body[k]);
+    values.push(parseInt(req.params.id, 10), req.labelId);
+
     const { rows } = await pool.query(
-      `UPDATE releases SET
-         project_name = COALESCE($1, project_name),
-         release_date = COALESCE($2, release_date),
-         release_type = COALESCE($3, release_type),
-         genre = COALESCE($4, genre),
-         status = COALESCE($5, status),
-         updated_at = NOW()
-       WHERE id = $6 AND label_id = $7 RETURNING *`,
-      [project_name, release_date, release_type, genre, status, parseInt(req.params.id, 10), req.labelId]
+      `UPDATE releases SET ${setClauses.join(', ')}, updated_at = NOW()
+       WHERE id = $${values.length - 1} AND label_id = $${values.length} RETURNING *`,
+      values
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Release not found' });
     res.json({ success: true, data: rows[0] });

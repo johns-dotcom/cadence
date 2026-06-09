@@ -4,7 +4,12 @@ import Layout from './components/Layout'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Releases from './pages/Releases'
+import ReleaseDetail from './pages/ReleaseDetail'
 import Artists from './pages/Artists'
+import Deals from './pages/Deals'
+import Contracts from './pages/Contracts'
+import Renewals from './pages/Renewals'
+import MyWork from './pages/MyWork'
 import Team from './pages/Team'
 import Settings from './pages/Settings'
 import Activity from './pages/Activity'
@@ -60,13 +65,18 @@ function AppContent() {
 
       {/* Authenticated app shell */}
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-        <Route path="/"           element={<Dashboard />} />
-        <Route path="/releases"   element={<Releases />} />
-        <Route path="/artists"    element={<Artists />} />
-        <Route path="/team"       element={<AdminRoute><Team /></AdminRoute>} />
-        <Route path="/activity"   element={<AdminRoute><Activity /></AdminRoute>} />
-        <Route path="/settings"   element={<Settings />} />
-        <Route path="/workspaces" element={<PlatformRoute><Workspaces /></PlatformRoute>} />
+        <Route path="/"             element={<Dashboard />} />
+        <Route path="/my-work"      element={<MyWork />} />
+        <Route path="/releases"     element={<Releases />} />
+        <Route path="/releases/:id" element={<ReleaseDetail />} />
+        <Route path="/artists"      element={<Artists />} />
+        <Route path="/deals"        element={<Deals />} />
+        <Route path="/contracts"    element={<AdminRoute><Contracts /></AdminRoute>} />
+        <Route path="/renewals"     element={<AdminRoute><Renewals /></AdminRoute>} />
+        <Route path="/team"         element={<AdminRoute><Team /></AdminRoute>} />
+        <Route path="/activity"     element={<AdminRoute><Activity /></AdminRoute>} />
+        <Route path="/settings"     element={<Settings />} />
+        <Route path="/workspaces"   element={<PlatformRoute><Workspaces /></PlatformRoute>} />
       </Route>
 
       <Route path="*" element={<Navigate to={token ? '/' : '/login'} replace />} />

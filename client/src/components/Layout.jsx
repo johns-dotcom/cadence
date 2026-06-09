@@ -3,6 +3,7 @@ import { Outlet, Link, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Music, Users, UserCheck, Settings, ScrollText,
   LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
+  Briefcase, TrendingUp, FileText, RefreshCw,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
@@ -10,8 +11,12 @@ import api from '../api'
 
 const PAGE_LABELS = {
   '/':           'Dashboard',
+  '/my-work':    'My Work',
   '/releases':   'Releases',
   '/artists':    'Artists',
+  '/deals':      'Deal Pipeline',
+  '/contracts':  'Contracts',
+  '/renewals':   'Renewals',
   '/team':       'Team',
   '/activity':   'Activity',
   '/settings':   'Settings',
@@ -121,6 +126,7 @@ export default function Layout() {
   useEffect(() => { if (isMobile) setSidebarOpen(false) }, [location.pathname, isMobile])
 
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
+  const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
 
   // Sidebar information architecture — grouped the way a label team works.
   // Items are filtered by canView (role + per-user page permissions).
@@ -128,7 +134,8 @@ export default function Layout() {
     {
       label: null,
       items: [
-        { path: '/',         label: 'Dashboard', icon: LayoutDashboard },
+        { path: '/',        label: 'Dashboard', icon: LayoutDashboard },
+        { path: '/my-work', label: 'My Work',   icon: Briefcase },
       ],
     },
     {
@@ -136,6 +143,19 @@ export default function Layout() {
       items: [
         { path: '/releases', label: 'Releases', icon: Music },
         { path: '/artists',  label: 'Artists',  icon: Disc3 },
+      ],
+    },
+    {
+      label: 'A&R',
+      items: [
+        { path: '/deals', label: 'Deal Pipeline', icon: TrendingUp },
+      ],
+    },
+    {
+      label: 'Contracts',
+      items: [
+        ...(isApprover ? [{ path: '/contracts', label: 'Contracts', icon: FileText }] : []),
+        ...(isApprover ? [{ path: '/renewals', label: 'Renewals', icon: RefreshCw }] : []),
       ],
     },
     {

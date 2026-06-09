@@ -14,6 +14,9 @@ const labelsRoutes = require('./routes/labels');
 const teamRoutes = require('./routes/team');
 const artistsRoutes = require('./routes/artists');
 const releasesRoutes = require('./routes/releases');
+const dealsRoutes = require('./routes/deals');
+const contractsRoutes = require('./routes/contracts');
+const tasksRoutes = require('./routes/tasks');
 const dashboardRoutes = require('./routes/dashboard');
 const activityRoutes = require('./routes/activity');
 const settingsRoutes = require('./routes/settings');
@@ -105,6 +108,9 @@ app.use('/api/label', labelsRoutes);
 app.use('/api/team', teamRoutes);
 app.use('/api/artists', artistsRoutes);
 app.use('/api/releases', releasesRoutes);
+app.use('/api/deals', dealsRoutes);
+app.use('/api/contracts', contractsRoutes);
+app.use('/api/tasks', tasksRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/settings', settingsRoutes);
@@ -192,6 +198,61 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS cover_art_url VARCHAR(500)`);
   await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS priority VARCHAR(20) DEFAULT 'Standard'`);
   await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS notes TEXT`);
+  await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS producer VARCHAR(255)`);
+  await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS featured_artists VARCHAR(500)`);
+  // Release prep checklist (mirrors RELEASE_CHECKLIST in client/src/constants.js).
+  for (const col of [
+    'cover_art_received', 'audio_uploaded', 'pitched_spotify', 'pitched_apple',
+    'marketing_plan', 'content_ready', 'dsp_email_sent', 'lyrics_submitted',
+  ]) {
+    await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS ${col} BOOLEAN DEFAULT FALSE`);
+  }
+
+  // A&R deal pipeline.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS deals (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      artist_name VARCHAR(255) NOT NULL,
+      genre VARCHAR(100),
+      stage VARCHAR(50) DEFAULT 'Scouting',
+      ar_rep VARCHAR(255),
+      source VARCHAR(100),
+      deal_type VARCHAR(50),
+      offer_amount NUMERIC(12,2),
+      spotify_monthly_listeners INTEGER,
+      last_contact_date DATE,
+      next_followup_date DATE,
+      priority VARCHAR(10) DEFAULT 'Medium',
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_deals_label ON deals (label_id)`);
+
+  // Contracts (per-artist agreements; files stored in R2 via entity_files).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS contracts (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      artist_id INT REFERENCES artists(id) ON DELETE SET NULL,
+      type VARCHAR(100) NOT NULL,
+      status VARCHAR(50) DEFAULT 'Active',
+      date_signed DATE,
+      expiration_date DATE,
+      royalty_split VARCHAR(100),
+      advance VARCHAR(100),
+      territory VARCHAR(100),
+      num_releases VARCHAR(100),
+      notes TEXT,
+      file_name VARCHAR(255),
+      r2_key TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_contracts_label ON contracts (label_id)`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS tasks (
