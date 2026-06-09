@@ -4,6 +4,7 @@ const { OAuth2Client } = require('google-auth-library');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { signToken, publicUser } = require('../lib/token');
+const { getSignedFileUrl } = require('../lib/r2');
 
 const router = express.Router();
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -173,7 +174,8 @@ router.get('/me', authMiddleware, async (req, res) => {
     const result = await pool.query(
       `SELECT u.id, u.label_id, u.name, u.email, u.role, u.department, u.hierarchy_level,
               u.is_platform_admin, u.created_at,
-              l.name AS label_name, l.slug AS label_slug
+              l.name AS label_name, l.slug AS label_slug,
+              l.accent_color AS label_accent_color, l.logo_r2_key
        FROM users u JOIN labels l ON l.id = u.label_id
        WHERE u.id = $1 AND u.label_id = $2`,
       [req.user.id, req.user.label_id]
@@ -182,13 +184,22 @@ router.get('/me', authMiddleware, async (req, res) => {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
+    // Resolve a signed URL for the workspace logo, then drop the raw key.
+    const me = result.rows[0];
+    if (me.logo_r2_key) {
+      try { me.label_logo_url = await getSignedFileUrl(me.logo_r2_key, 6 * 3600); } catch { me.label_logo_url = null; }
+    } else {
+      me.label_logo_url = null;
+    }
+    delete me.logo_r2_key;
+
     const permsResult = await pool.query(
       'SELECT page FROM user_page_permissions WHERE user_id = $1 AND label_id = $2 ORDER BY page',
       [req.user.id, req.user.label_id]
     );
     const pagePermissions = permsResult.rows.length > 0 ? permsResult.rows.map(r => r.page) : null;
 
-    res.json({ success: true, data: { ...result.rows[0], pagePermissions } });
+    res.json({ success: true, data: { ...me, pagePermissions } });
   } catch (error) {
     console.error('Get user error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });

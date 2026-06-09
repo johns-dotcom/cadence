@@ -192,12 +192,16 @@ export default function Layout() {
         {/* Logo + workspace */}
         <div className="h-16 flex items-center justify-between px-5 border-b border-divider">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center flex-shrink-0">
-              <Disc3 size={18} className="text-white" />
-            </div>
+            {label?.logo_url ? (
+              <img src={label.logo_url} alt="" className="w-8 h-8 rounded-lg object-cover flex-shrink-0 bg-gray-100" />
+            ) : (
+              <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center flex-shrink-0">
+                <span className="text-white font-bold text-sm">{label?.name?.charAt(0)?.toUpperCase() || 'C'}</span>
+              </div>
+            )}
             <div className="min-w-0">
-              <p className="text-sm font-bold text-ink tracking-tight leading-none">Cadence</p>
-              <p className="text-[11px] text-gray-400 truncate mt-0.5">{label?.name || 'Workspace'}</p>
+              <p className="text-sm font-bold text-ink tracking-tight leading-none truncate">{label?.name || 'Workspace'}</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">Label Operations</p>
             </div>
           </div>
           {isMobile && (
@@ -255,6 +259,11 @@ export default function Layout() {
           >
             <LogOut size={16} strokeWidth={1.5} /> <span>Sign out</span>
           </button>
+          {/* Subtle co-branding — the label's identity leads, Cadence powers it. */}
+          <div className="flex items-center justify-center gap-1.5 pt-2 mt-1 text-[10px] text-gray-400">
+            <Disc3 size={11} className="text-gray-400" />
+            <span>Powered by Cadence</span>
+          </div>
         </div>
       </div>
 

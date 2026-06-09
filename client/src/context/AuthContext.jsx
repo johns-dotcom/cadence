@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
 import api from '../api'
+import { applyAccent, resetAccent } from '../utils/branding'
 
 const AuthContext = createContext()
 
@@ -19,12 +20,18 @@ export const AuthProvider = ({ children }) => {
     else setLoading(false)
   }, [token])
 
+  // Apply the active workspace's brand accent (or reset to Cadence default).
+  useEffect(() => {
+    if (label?.accent_color) applyAccent(label.accent_color)
+    else resetAccent()
+  }, [label?.accent_color])
+
   const fetchUser = async () => {
     try {
       const { data } = await api.get('/auth/me')
       const u = data.data
       setUser(u)
-      setLabel({ id: u.label_id, name: u.label_name, slug: u.label_slug })
+      setLabel({ id: u.label_id, name: u.label_name, slug: u.label_slug, accent_color: u.label_accent_color, logo_url: u.label_logo_url })
       setPagePermissions(u.pagePermissions ?? null)
     } catch (error) {
       console.error('Failed to fetch user:', error)
@@ -132,9 +139,13 @@ export const AuthProvider = ({ children }) => {
     api.get('/auth/me').then(res => {
       const u = res.data.data
       setUser(u)
-      setLabel({ id: u.label_id, name: u.label_name, slug: u.label_slug })
+      setLabel({ id: u.label_id, name: u.label_name, slug: u.label_slug, accent_color: u.label_accent_color, logo_url: u.label_logo_url })
     }).catch(() => logout())
   }
+
+  // Merge updates into the current workspace (used by Settings after a
+  // branding change so the UI re-themes without a full reload).
+  const updateLabel = (partial) => setLabel(l => ({ ...(l || {}), ...partial }))
 
   // canView: true if the current user may see a page path. Admins/Approvers
   // are unrestricted; a null permission set means unrestricted for everyone.
@@ -148,7 +159,7 @@ export const AuthProvider = ({ children }) => {
   return (
     <AuthContext.Provider value={{
       user, label, token, loading,
-      login, googleLogin, logout,
+      login, googleLogin, logout, updateLabel,
       impersonate, enterWorkspace, exitImpersonation, impersonating, adminUser,
       pagePermissions, canView,
     }}>

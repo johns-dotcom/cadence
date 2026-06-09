@@ -27,6 +27,23 @@
 
   --color-overlay: rgba(24, 24, 27, 0.5);
 
+  /* Brand accent scale (default: Cadence indigo) as RGB triplets, consumed by
+   * the `brand` color in tailwind.config.js. A workspace with a custom accent
+   * overrides these at runtime via utils/branding.js; clearing it falls back
+   * to these defaults. Kept identical across light/dark so brand identity is
+   * stable in both themes. */
+  --color-brand-50:  238 242 255;
+  --color-brand-100: 224 231 255;
+  --color-brand-200: 199 210 254;
+  --color-brand-300: 165 180 252;
+  --color-brand-400: 129 140 248;
+  --color-brand-500:  99 102 241;
+  --color-brand-600:  79  70 229;
+  --color-brand-700:  67  56 202;
+  --color-brand-800:  55  48 163;
+  --color-brand-900:  49  46 129;
+  --color-brand-950:  30  27  75;
+
   /* Tailwind gray palette as RGB triplets (space-separated), consumed via
    * rgb(var(--…) / <alpha-value>) in tailwind.config.js. Light = Tailwind v3
    * defaults; dark values mirror them below. */

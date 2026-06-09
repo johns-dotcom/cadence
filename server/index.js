@@ -141,9 +141,14 @@ const runMigrations = async () => {
       id SERIAL PRIMARY KEY,
       name VARCHAR(255) NOT NULL,
       slug VARCHAR(100) UNIQUE NOT NULL,
+      accent_color VARCHAR(20),
+      logo_r2_key TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  // Per-workspace branding (for labels created before these columns existed).
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS accent_color VARCHAR(20)`);
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS logo_r2_key TEXT`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (

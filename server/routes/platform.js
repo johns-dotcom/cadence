@@ -5,6 +5,7 @@ const authMiddleware = require('../middleware/auth');
 const { requirePlatformAdmin } = require('../middleware/tenant');
 const { uniqueSlug } = require('../lib/slug');
 const { signToken, publicUser } = require('../lib/token');
+const { getSignedFileUrl } = require('../lib/r2');
 
 const router = express.Router();
 
@@ -90,9 +91,11 @@ router.post('/workspaces/:labelId/enter', async (req, res) => {
     const labelId = parseInt(req.params.labelId, 10);
     if (isNaN(labelId)) return res.status(400).json({ success: false, error: 'Invalid workspace' });
 
-    const labelRes = await pool.query('SELECT id, name, slug FROM labels WHERE id = $1', [labelId]);
+    const labelRes = await pool.query('SELECT id, name, slug, accent_color, logo_r2_key FROM labels WHERE id = $1', [labelId]);
     if (!labelRes.rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
     const label = labelRes.rows[0];
+    label.logo_url = label.logo_r2_key ? await getSignedFileUrl(label.logo_r2_key, 6 * 3600).catch(() => null) : null;
+    delete label.logo_r2_key;
 
     // Pick the label's owner: prefer a Superadmin, then most senior, then oldest.
     const userRes = await pool.query(

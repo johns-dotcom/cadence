@@ -1,20 +1,29 @@
 import { useEffect, useState } from 'react'
+import { Upload, Trash2, Check } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
+import { applyAccent, resetAccent, isValidHex, ACCENT_PRESETS } from '../utils/branding'
 
 export default function Settings() {
-  const { user, label } = useAuth()
+  const { user, label, updateLabel } = useAuth()
   const { toast } = useToast()
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
 
   const [name, setName] = useState(user?.name || '')
   const [labelName, setLabelName] = useState('')
+  const [accent, setAccent] = useState(label?.accent_color || '')
+  const [logoUrl, setLogoUrl] = useState(label?.logo_url || null)
   const [pw, setPw] = useState({ current_password: '', new_password: '' })
 
   useEffect(() => {
-    if (isAdmin) api.get('/label').then(res => setLabelName(res.data.data?.name || '')).catch(() => {})
+    if (isAdmin) api.get('/label').then(res => {
+      const d = res.data.data || {}
+      setLabelName(d.name || '')
+      setAccent(d.accent_color || '')
+      setLogoUrl(d.logo_url || null)
+    }).catch(() => {})
   }, [isAdmin])
 
   const saveProfile = async (e) => {
@@ -25,8 +34,35 @@ export default function Settings() {
 
   const saveLabel = async (e) => {
     e.preventDefault()
-    try { await api.patch('/label', { name: labelName }); toast('Workspace renamed') }
-    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+    if (accent && !isValidHex(accent)) { toast('Accent must be a hex value like #4F46E5', 'error'); return }
+    try {
+      const { data } = await api.patch('/label', { name: labelName, accent_color: accent || '' })
+      // Re-theme immediately + keep the rest of the app in sync.
+      if (accent) applyAccent(accent); else resetAccent()
+      updateLabel({ name: data.data.name, accent_color: data.data.accent_color })
+      toast('Workspace branding saved')
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+
+  // Live preview while picking — persist=false so it won't survive a reload
+  // unless the admin clicks Save.
+  const previewAccent = (hex) => { setAccent(hex); if (!hex) resetAccent(false); else if (isValidHex(hex)) applyAccent(hex, false) }
+
+  const uploadLogo = async (file) => {
+    if (!file) return
+    const fd = new FormData()
+    fd.append('file', file)
+    try {
+      const { data } = await api.post('/label/logo', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+      setLogoUrl(data.data.logo_url)
+      updateLabel({ logo_url: data.data.logo_url })
+      toast('Logo updated')
+    } catch (err) { toast(err.response?.data?.error || 'Upload failed', 'error') }
+  }
+
+  const removeLogo = async () => {
+    try { await api.delete('/label/logo'); setLogoUrl(null); updateLabel({ logo_url: null }); toast('Logo removed') }
+    catch { toast('Failed', 'error') }
   }
 
   const changePassword = async (e) => {
@@ -64,14 +100,81 @@ export default function Settings() {
           </div>
         </form>
 
-        {/* Workspace (admins only) */}
+        {/* Workspace branding (admins only) */}
         {isAdmin && (
           <form onSubmit={saveLabel} className="card p-5">
-            <h2 className="text-sm font-bold text-ink mb-4">Workspace</h2>
-            <div className="space-y-3">
-              <div><label className="label">Label name</label><input className="input" value={labelName} onChange={e => setLabelName(e.target.value)} /></div>
-              <p className="text-xs text-gray-400">The workspace URL slug (<code className="text-gray-500">{label?.slug}</code>) is fixed so existing sign-in links keep working.</p>
-              <button className="btn-primary">Save workspace</button>
+            <h2 className="text-sm font-bold text-ink mb-1">Workspace branding</h2>
+            <p className="text-xs text-gray-400 mb-4">Customize how this workspace looks for your team.</p>
+
+            <div className="space-y-5">
+              <div>
+                <label className="label">Label name</label>
+                <input className="input" value={labelName} onChange={e => setLabelName(e.target.value)} />
+                <p className="text-xs text-gray-400 mt-1">URL slug (<code className="text-gray-500">{label?.slug}</code>) is fixed so sign-in links keep working.</p>
+              </div>
+
+              {/* Logo */}
+              <div>
+                <label className="label">Logo</label>
+                <div className="flex items-center gap-3">
+                  {logoUrl ? (
+                    <img src={logoUrl} alt="Logo" className="w-12 h-12 rounded-lg object-cover bg-gray-100 border border-rule" />
+                  ) : (
+                    <div className="w-12 h-12 rounded-lg bg-brand-600 flex items-center justify-center">
+                      <span className="text-white font-bold">{labelName?.charAt(0)?.toUpperCase() || 'C'}</span>
+                    </div>
+                  )}
+                  <label className="btn-secondary cursor-pointer">
+                    <Upload size={15} /> {logoUrl ? 'Replace' : 'Upload'}
+                    <input type="file" accept="image/*" className="hidden" onChange={e => uploadLogo(e.target.files[0])} />
+                  </label>
+                  {logoUrl && (
+                    <button type="button" onClick={removeLogo} className="text-gray-400 hover:text-danger" title="Remove logo"><Trash2 size={16} /></button>
+                  )}
+                </div>
+                <p className="text-xs text-gray-400 mt-1">Square image works best. Requires object storage (R2) to be configured.</p>
+              </div>
+
+              {/* Accent color */}
+              <div>
+                <label className="label">Accent color</label>
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {ACCENT_PRESETS.map(p => {
+                    const active = accent?.toLowerCase() === p.hex.toLowerCase()
+                    return (
+                      <button
+                        key={p.hex}
+                        type="button"
+                        onClick={() => previewAccent(p.hex)}
+                        title={p.name}
+                        className={`w-8 h-8 rounded-full flex items-center justify-center ring-2 ring-offset-2 ring-offset-card transition ${active ? 'ring-gray-400' : 'ring-transparent hover:ring-gray-200'}`}
+                        style={{ backgroundColor: p.hex }}
+                      >
+                        {active && <Check size={14} className="text-white" />}
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={isValidHex(accent) ? accent : '#4F46E5'}
+                    onChange={e => previewAccent(e.target.value)}
+                    className="w-10 h-10 rounded border border-rule cursor-pointer bg-card"
+                    title="Custom color"
+                  />
+                  <input
+                    className="input w-36 font-mono"
+                    value={accent}
+                    onChange={e => previewAccent(e.target.value)}
+                    placeholder="#4F46E5"
+                  />
+                  <button type="button" onClick={() => previewAccent('')} className="text-xs text-gray-500 hover:text-gray-700">Reset to default</button>
+                </div>
+                <p className="text-xs text-gray-400 mt-1">Changes preview live. Click Save to apply for everyone in the workspace.</p>
+              </div>
+
+              <button className="btn-primary">Save branding</button>
             </div>
           </form>
         )}

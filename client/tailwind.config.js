@@ -10,21 +10,22 @@ export default {
         sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
       },
       colors: {
-        // Brand palette (indigo). Used throughout the UI — change here to
-        // re-skin the whole app.
+        // Brand palette — backed by CSS variables (defaults in styles/tokens.css)
+        // so a workspace's accent color can be applied per-tenant at runtime.
+        // utils/branding.js generates the full scale from a single hex.
         brand: {
-          DEFAULT: '#4F46E5',
-          50:  '#EEF2FF',
-          100: '#E0E7FF',
-          200: '#C7D2FE',
-          300: '#A5B4FC',
-          400: '#818CF8',
-          500: '#6366F1',
-          600: '#4F46E5',
-          700: '#4338CA',
-          800: '#3730A3',
-          900: '#312E81',
-          950: '#1E1B4B',
+          DEFAULT: 'rgb(var(--color-brand-600) / <alpha-value>)',
+          50:  'rgb(var(--color-brand-50)  / <alpha-value>)',
+          100: 'rgb(var(--color-brand-100) / <alpha-value>)',
+          200: 'rgb(var(--color-brand-200) / <alpha-value>)',
+          300: 'rgb(var(--color-brand-300) / <alpha-value>)',
+          400: 'rgb(var(--color-brand-400) / <alpha-value>)',
+          500: 'rgb(var(--color-brand-500) / <alpha-value>)',
+          600: 'rgb(var(--color-brand-600) / <alpha-value>)',
+          700: 'rgb(var(--color-brand-700) / <alpha-value>)',
+          800: 'rgb(var(--color-brand-800) / <alpha-value>)',
+          900: 'rgb(var(--color-brand-900) / <alpha-value>)',
+          950: 'rgb(var(--color-brand-950) / <alpha-value>)',
         },
         surface: {
           0: '#FFFFFF',

@@ -5,12 +5,16 @@ import { GoogleOAuthProvider } from '@react-oauth/google'
 import App from './App'
 import { ThemeProvider } from './context/ThemeContext'
 import { ToastProvider } from './context/ToastContext'
+import { applyAccent } from './utils/branding'
 import './index.css'
 
-// Apply saved theme before React renders to avoid a flash of the wrong theme.
+// Apply saved theme + brand accent before React renders to avoid a flash of
+// the wrong theme / default accent on reload.
 if (localStorage.getItem('theme') === 'dark') {
   document.documentElement.classList.add('dark')
 }
+const savedAccent = localStorage.getItem('brand_accent')
+if (savedAccent) applyAccent(savedAccent)
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

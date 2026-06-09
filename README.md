@@ -30,6 +30,21 @@ Cadence is multi-tenant from the ground up. The tenant root is the **label**
 - **Login resolves the tenant** by email; if an email exists in multiple
   workspaces, the caller passes a `workspace` slug to disambiguate.
 
+### Per-workspace branding
+
+Each label co-brands its workspace: its **name + logo + accent color** lead the
+UI, with a subtle "Powered by Cadence" mark retained. Admins set this under
+**Settings → Workspace branding**:
+
+- **Accent color** — curated presets or any custom hex. The full 50–950 Tailwind
+  `brand` scale is generated from the one hex at runtime (`utils/branding.js`)
+  and written to `--color-brand-*` CSS variables, so the whole UI re-themes
+  live. Clearing it falls back to the Cadence indigo default.
+- **Logo** — uploaded to R2 (tenant-namespaced key), shown in the sidebar.
+
+Branding travels with the workspace: it's returned by `/auth/me`, applied on
+load (no flash), and re-applied when a platform admin enters another workspace.
+
 ### Identities & roles
 
 There are two levels of authority:
