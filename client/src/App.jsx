@@ -11,6 +11,8 @@ import Contracts from './pages/Contracts'
 import Renewals from './pages/Renewals'
 import MyWork from './pages/MyWork'
 import Ledger from './pages/Ledger'
+import Payments from './pages/Payments'
+import Vendors from './pages/Vendors'
 import Invoices from './pages/Invoices'
 import VendorSubmit from './pages/VendorSubmit'
 import Team from './pages/Team'
@@ -78,6 +80,8 @@ function AppContent() {
         <Route path="/contracts"    element={<AdminRoute><Contracts /></AdminRoute>} />
         <Route path="/renewals"     element={<AdminRoute><Renewals /></AdminRoute>} />
         <Route path="/ledger"       element={<AdminRoute><Ledger /></AdminRoute>} />
+        <Route path="/payments"     element={<AdminRoute><Payments /></AdminRoute>} />
+        <Route path="/vendors"      element={<AdminRoute><Vendors /></AdminRoute>} />
         <Route path="/invoices"     element={<AdminRoute><Invoices /></AdminRoute>} />
         <Route path="/team"         element={<AdminRoute><Team /></AdminRoute>} />
         <Route path="/activity"     element={<AdminRoute><Activity /></AdminRoute>} />

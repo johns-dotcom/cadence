@@ -3,7 +3,7 @@ import { Outlet, Link, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Music, Users, UserCheck, Settings, ScrollText,
   LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
-  Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt,
+  Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
@@ -18,6 +18,8 @@ const PAGE_LABELS = {
   '/contracts':  'Contracts',
   '/renewals':   'Renewals',
   '/ledger':     'Ledger',
+  '/payments':   'Payments',
+  '/vendors':    'Vendors',
   '/invoices':   'Invoices',
   '/team':       'Team',
   '/activity':   'Activity',
@@ -171,6 +173,8 @@ export default function Layout() {
       label: 'Bookkeeping',
       items: [
         ...(isApprover ? [{ path: '/ledger', label: 'Ledger', icon: BookOpen, badge: pendingApprovals }] : []),
+        ...(isApprover ? [{ path: '/payments', label: 'Payments', icon: CreditCard }] : []),
+        ...(isApprover ? [{ path: '/vendors', label: 'Vendors', icon: Building2 }] : []),
         ...(isApprover ? [{ path: '/invoices', label: 'Invoices', icon: Receipt }] : []),
       ],
     },

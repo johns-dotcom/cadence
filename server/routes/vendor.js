@@ -3,6 +3,7 @@ const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 const pool = require('../db');
 const { uploadFile, getSignedFileUrl } = require('../lib/r2');
+const { upsertVendor } = require('../lib/vendors');
 
 const router = express.Router();
 
@@ -87,9 +88,12 @@ router.post('/:slug/submit', submitLimiter, fileFields, async (req, res) => {
     if (!invoiceFile) return res.status(400).json({ success: false, error: 'Please upload your invoice file.' });
     if (isReimb && !receiptFile) return res.status(400).json({ success: false, error: 'Please attach your supporting receipt.' });
     if (!isReimb && !w9File) {
-      // Accept a previously-submitted W9 for this vendor in this label.
+      // Accept a W9 already on file — either on the vendor record or any prior
+      // approved invoice for this vendor in this label.
       const { rows } = await pool.query(
-        `SELECT 1 FROM expenses WHERE label_id = $1 AND LOWER(vendor_name) = LOWER($2)
+        `SELECT 1 FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2) AND w9_r2_key IS NOT NULL
+         UNION ALL
+         SELECT 1 FROM expenses WHERE label_id = $1 AND LOWER(vendor_name) = LOWER($2)
            AND w9_r2_key IS NOT NULL AND (deleted = false OR deleted IS NULL) LIMIT 1`,
         [labelId, vendorName]
       );
@@ -138,6 +142,12 @@ router.post('/:slug/submit', submitLimiter, fileFields, async (req, res) => {
         (b.notes || '').trim() || null, invName, invKey, w9Name, w9Key, rcName, rcKey,
       ]
     );
+
+    // Keep the vendor record current (contact + W9 for next time).
+    upsertVendor(pool, labelId, {
+      name: vendorName, email: vendorEmail, address: vendorAddress, bank: vendorBank,
+      w9_r2_key: w9Key, w9_filename: w9Name,
+    }).catch(() => {});
 
     // Audit it in the label's activity feed.
     pool.query(

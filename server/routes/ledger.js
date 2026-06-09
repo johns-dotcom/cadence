@@ -5,6 +5,8 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { uploadFile, getSignedFileUrl, deleteFile } = require('../lib/r2');
+const { computeDueDate } = require('../lib/payments');
+const { upsertVendor } = require('../lib/vendors');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -31,6 +33,7 @@ const EDITABLE = [
   'invoice_date', 'payee', 'description', 'category', 'artist', 'song',
   'invoice_number', 'amount', 'currency', 'payment_method', 'payment_date',
   'is_reimbursement', 'recoupable', 'rep', 'notes', 'payment_status',
+  'payment_terms', 'scheduled_payment_date',
 ];
 
 // GET /api/ledger/entries — list with optional filters (?status=, ?q=)
@@ -107,6 +110,13 @@ router.post('/entries', fileFields, async (req, res) => {
         req.user.name,
       ]
     );
+    // Keep the vendor record current (contact + W9 if one was attached).
+    await upsertVendor(pool, req.labelId, {
+      name: b.vendor_name || b.payee,
+      email: b.vendor_email, address: b.vendor_address, bank: b.vendor_bank,
+      w9_r2_key: files.w9?.key || null, w9_filename: files.w9?.filename || null,
+    }).catch(() => {});
+
     await logActivity(req, 'Added ledger entry', `${b.payee} — ${b.amount}`);
     res.status(201).json({ success: true, data: rows[0] });
   } catch (error) {
@@ -173,16 +183,187 @@ router.post('/entries/:id/reject', async (req, res) => {
 router.post('/entries/:id/mark-paid', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `UPDATE expenses SET payment_status = 'Paid', payment_date = COALESCE($1, CURRENT_DATE), paid_by = $2
-       WHERE id = $3 AND label_id = $4 RETURNING *`,
-      [req.body.payment_date || null, req.user.name, parseInt(req.params.id, 10), req.labelId]
+      `UPDATE expenses SET payment_status = 'Paid', payment_date = COALESCE($1, CURRENT_DATE),
+         payment_method = COALESCE($2, payment_method), payment_ref = COALESCE($3, payment_ref),
+         paid_by = $4, paid_marked_at = NOW()
+       WHERE id = $5 AND label_id = $6 AND status = 'approved' RETURNING *`,
+      [req.body.payment_date || null, req.body.payment_method || null, req.body.payment_ref || null,
+       req.user.name, parseInt(req.params.id, 10), req.labelId]
     );
-    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found or not approved' });
     await logActivity(req, 'Marked paid', `${rows[0].payee} — ${rows[0].amount}`);
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Mark paid error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Payments / scheduling ───────────────────────────────────────────────
+
+// GET /api/ledger/payables — approved & unpaid (the payment queue). Sorted by
+// scheduled (due) date so the most urgent rises to the top.
+router.get('/payables', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM expenses
+       WHERE label_id = $1 AND status = 'approved' AND payment_status = 'Unpaid'
+         AND (deleted = false OR deleted IS NULL)
+       ORDER BY scheduled_payment_date ASC NULLS LAST, invoice_date ASC NULLS LAST, id ASC`,
+      [req.labelId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Payables error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/entries/:id/schedule — set terms and/or a due date. If only
+// terms are given, the due date is derived from the invoice date.
+router.post('/entries/:id/schedule', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { payment_terms } = req.body;
+    let scheduled = req.body.scheduled_payment_date || null;
+
+    if (!scheduled && payment_terms) {
+      const { rows: e } = await pool.query('SELECT invoice_date FROM expenses WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+      if (e.length) scheduled = computeDueDate(e[0].invoice_date, payment_terms);
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE expenses SET
+         payment_terms = COALESCE($1, payment_terms),
+         scheduled_payment_date = COALESCE($2, scheduled_payment_date)
+       WHERE id = $3 AND label_id = $4 RETURNING *`,
+      [payment_terms || null, scheduled, id, req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Schedule error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/batch-pay — mark many approved entries paid in one go.
+router.post('/batch-pay', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
+
+    const { rows } = await pool.query(
+      `UPDATE expenses SET payment_status = 'Paid',
+         payment_date = COALESCE($1, CURRENT_DATE),
+         payment_method = COALESCE($2, payment_method),
+         paid_by = $3, paid_marked_at = NOW()
+       WHERE label_id = $4 AND status = 'approved' AND payment_status = 'Unpaid' AND id = ANY($5::int[])
+       RETURNING id`,
+      [req.body.payment_date || null, req.body.payment_method || null, req.user.name, req.labelId, ids]
+    );
+    await logActivity(req, 'Batch paid', `${rows.length} entries`);
+    res.json({ success: true, data: { paid: rows.length } });
+  } catch (error) {
+    console.error('Batch pay error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Vendors ─────────────────────────────────────────────────────────────
+
+// GET /api/ledger/vendors — spend aggregated by payee, joined to the vendors
+// table for W9-on-file + contact. W9 is "on file" if any approved invoice
+// carries one OR the vendor record has one.
+router.get('/vendors', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         agg.payee AS name,
+         agg.invoice_count,
+         agg.total_spent,
+         agg.paid_amount,
+         agg.last_invoice,
+         (agg.entry_has_w9 OR v.w9_r2_key IS NOT NULL) AS w9_on_file,
+         COALESCE(v.email, agg.vendor_email) AS email,
+         v.address, v.bank
+       FROM (
+         SELECT
+           payee,
+           COUNT(*) FILTER (WHERE status = 'approved')::int AS invoice_count,
+           COALESCE(SUM(amount) FILTER (WHERE status = 'approved'), 0) AS total_spent,
+           COALESCE(SUM(amount) FILTER (WHERE status = 'approved' AND payment_status = 'Paid'), 0) AS paid_amount,
+           MAX(invoice_date) FILTER (WHERE status = 'approved') AS last_invoice,
+           BOOL_OR(w9_r2_key IS NOT NULL) AS entry_has_w9,
+           MAX(vendor_email) AS vendor_email
+         FROM expenses
+         WHERE label_id = $1 AND (deleted = false OR deleted IS NULL)
+           AND payee IS NOT NULL AND payee != '' AND status = 'approved'
+         GROUP BY payee
+       ) agg
+       LEFT JOIN vendors v ON v.label_id = $1 AND LOWER(v.name) = LOWER(agg.payee)
+       ORDER BY agg.total_spent DESC`,
+      [req.labelId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Vendors error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/ledger/vendors/:name — vendor record + their ledger entries
+router.get('/vendors/:name', async (req, res) => {
+  try {
+    const name = req.params.name;
+    const { rows: vrows } = await pool.query(
+      'SELECT id, name, email, address, bank, w9_filename, w9_r2_key, notes FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)',
+      [req.labelId, name]
+    );
+    const vendor = vrows[0] || { name };
+    if (vendor.w9_r2_key) { vendor.w9_url = await getSignedFileUrl(vendor.w9_r2_key, 3600).catch(() => null); }
+    delete vendor.w9_r2_key;
+
+    const { rows: entries } = await pool.query(
+      `SELECT id, invoice_date, invoice_number, amount, currency, category, status, payment_status, scheduled_payment_date, w9_r2_key
+       FROM expenses WHERE label_id = $1 AND LOWER(payee) = LOWER($2) AND (deleted = false OR deleted IS NULL)
+       ORDER BY COALESCE(invoice_date, created_at::date) DESC`,
+      [req.labelId, name]
+    );
+    res.json({ success: true, data: { vendor, entries: entries.map(e => ({ ...e, has_w9: !!e.w9_r2_key, w9_r2_key: undefined })) } });
+  } catch (error) {
+    console.error('Vendor detail error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PATCH /api/ledger/vendors/:name — edit contact details / notes
+router.patch('/vendors/:name', async (req, res) => {
+  try {
+    const id = await upsertVendor(pool, req.labelId, {
+      name: req.params.name, email: req.body.email, address: req.body.address, bank: req.body.bank,
+    });
+    if (req.body.notes !== undefined) {
+      await pool.query('UPDATE vendors SET notes = $1, updated_at = NOW() WHERE id = $2', [req.body.notes, id]);
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Vendor update error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/vendors/:name/w9 — upload/replace the vendor's W9 on file
+router.post('/vendors/:name/w9', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
+    const { filename, key } = await storeFile(req.labelId, req.file, 'w9');
+    await upsertVendor(pool, req.labelId, { name: req.params.name, w9_r2_key: key, w9_filename: filename });
+    await logActivity(req, 'Uploaded vendor W9', req.params.name);
+    res.json({ success: true, data: { w9_filename: filename } });
+  } catch (error) {
+    console.error('Vendor W9 upload error:', error);
+    res.status(500).json({ success: false, error: 'Upload failed' });
   }
 });
 

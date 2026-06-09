@@ -309,6 +309,30 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_expenses_label ON expenses (label_id, status)`);
+  // Payments / scheduling columns.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_terms TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS scheduled_payment_date DATE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS paid_marked_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_ref TEXT`);
+
+  // Vendors — contact + W9 on file, keyed by name within a label. Spend is
+  // derived from the ledger; this just holds what shouldn't be re-keyed.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS vendors (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      email TEXT,
+      address TEXT,
+      bank TEXT,
+      w9_r2_key TEXT,
+      w9_filename TEXT,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vendors_label_name ON vendors (label_id, LOWER(name))`);
 
   // Invoices (money in) — invoices the label issues. Numbered per-label.
   await pool.query(`

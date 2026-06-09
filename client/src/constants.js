@@ -57,3 +57,5 @@ export const PAYMENT_METHODS = ['ACH', 'Check', 'Wire', 'Credit Card', 'PayPal',
 export const LEDGER_STATUSES = ['pending', 'approved', 'rejected']
 
 export const PAYMENT_STATUSES = ['Unpaid', 'Paid']
+
+export const PAYMENT_TERMS = ['Due on receipt', 'Net 7', 'Net 14', 'Net 30', 'Net 45', 'Net 60', 'Net 90']
