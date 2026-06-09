@@ -24,7 +24,7 @@ require('dotenv').config();
 const seed = async () => {
   const labelName = process.env.SEED_LABEL_NAME || 'Demo Label';
   const adminName = process.env.SEED_ADMIN_NAME || 'Demo Admin';
-  const adminEmail = (process.env.SEED_ADMIN_EMAIL || 'admin@example.com').toLowerCase();
+  const adminEmail = (process.env.SEED_ADMIN_EMAIL || 'john@deanst.co').toLowerCase();
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;
 
   if (!adminPassword) {
