@@ -1,0 +1,14 @@
+{
+  "name": "cadence",
+  "version": "0.1.0",
+  "description": "Cadence — multi-tenant label operations platform",
+  "private": true,
+  "scripts": {
+    "postinstall": "cd server && npm install && cd ../client && npm install",
+    "build": "cd client && npm run build",
+    "start": "cd server && NODE_ENV=production node index.js",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "seed": "cd server && node seed.js"
+  }
+}

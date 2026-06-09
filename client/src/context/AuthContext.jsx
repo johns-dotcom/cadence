@@ -1,0 +1,150 @@
+import React, { createContext, useContext, useState, useEffect } from 'react'
+import api from '../api'
+
+const AuthContext = createContext()
+
+export const AuthProvider = ({ children }) => {
+  const [user, setUser]   = useState(null)
+  const [label, setLabel] = useState(null) // the current workspace (tenant)
+  const [token, setToken] = useState(localStorage.getItem('token'))
+  const [loading, setLoading] = useState(true)
+  const [pagePermissions, setPagePermissions] = useState(null) // null = unrestricted
+
+  // Impersonation — stash real admin token in a separate key while viewing as someone else
+  const [impersonating, setImpersonating] = useState(!!localStorage.getItem('admin_token'))
+  const [adminUser, setAdminUser]         = useState(null)
+
+  useEffect(() => {
+    if (token) fetchUser()
+    else setLoading(false)
+  }, [token])
+
+  const fetchUser = async () => {
+    try {
+      const { data } = await api.get('/auth/me')
+      const u = data.data
+      setUser(u)
+      setLabel({ id: u.label_id, name: u.label_name, slug: u.label_slug })
+      setPagePermissions(u.pagePermissions ?? null)
+    } catch (error) {
+      console.error('Failed to fetch user:', error)
+      logout()
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const applySession = (newToken, userData, labelData) => {
+    localStorage.setItem('token', newToken)
+    setToken(newToken)
+    setUser(userData)
+    if (labelData) setLabel(labelData)
+  }
+
+  const signup = async ({ labelName, name, email, password }) => {
+    try {
+      const { data } = await api.post('/auth/signup', { labelName, name, email, password })
+      const { token: newToken, user: userData, label: labelData } = data.data
+      applySession(newToken, userData, labelData)
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error.response?.data?.error || 'Signup failed' }
+    }
+  }
+
+  const login = async (email, password, workspace) => {
+    try {
+      const { data } = await api.post('/auth/login', { email, password, workspace })
+      const { token: newToken, user: userData } = data.data
+      applySession(newToken, userData)
+      return { success: true }
+    } catch (error) {
+      // 409 = email maps to multiple workspaces; surface the list so the UI
+      // can ask which one.
+      if (error.response?.status === 409) {
+        return { success: false, error: error.response.data.error, workspaces: error.response.data.workspaces }
+      }
+      const serverMsg = error.response?.data?.error
+      return { success: false, error: serverMsg || error.message || 'Login failed' }
+    }
+  }
+
+  const googleLogin = async (credential, workspace) => {
+    try {
+      const { data } = await api.post('/auth/google', { credential, workspace })
+      const { token: newToken, user: userData } = data.data
+      applySession(newToken, userData)
+      return { success: true }
+    } catch (error) {
+      if (error.response?.status === 409) {
+        return { success: false, error: error.response.data.error, workspaces: error.response.data.workspaces }
+      }
+      return { success: false, error: error.response?.data?.error || 'Google sign-in failed' }
+    }
+  }
+
+  const logout = () => {
+    localStorage.removeItem('token')
+    localStorage.removeItem('admin_token')
+    setToken(null)
+    setUser(null)
+    setLabel(null)
+    setPagePermissions(null)
+    setImpersonating(false)
+    setAdminUser(null)
+  }
+
+  // Swap into another user's session (same workspace) — stores the real token.
+  const impersonate = async (targetUserId) => {
+    try {
+      const { data } = await api.post(`/auth/impersonate/${targetUserId}`)
+      const { token: impToken, user: impUser } = data.data
+      localStorage.setItem('admin_token', localStorage.getItem('token'))
+      setAdminUser(user)
+      localStorage.setItem('token', impToken)
+      setToken(impToken)
+      setUser(impUser)
+      setImpersonating(true)
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: err.response?.data?.error || 'Failed to impersonate' }
+    }
+  }
+
+  const exitImpersonation = () => {
+    const adminToken = localStorage.getItem('admin_token')
+    if (!adminToken) { logout(); return }
+    localStorage.setItem('token', adminToken)
+    localStorage.removeItem('admin_token')
+    setToken(adminToken)
+    setImpersonating(false)
+    setAdminUser(null)
+    api.get('/auth/me').then(res => setUser(res.data.data)).catch(() => logout())
+  }
+
+  // canView: true if the current user may see a page path. Admins/Approvers
+  // are unrestricted; a null permission set means unrestricted for everyone.
+  const canView = (path) => {
+    if (!user) return false
+    if (['Superadmin', 'Admin', 'Approver'].includes(user.role)) return true
+    if (pagePermissions === null) return true
+    return pagePermissions.includes(path)
+  }
+
+  return (
+    <AuthContext.Provider value={{
+      user, label, token, loading,
+      signup, login, googleLogin, logout,
+      impersonate, exitImpersonation, impersonating, adminUser,
+      pagePermissions, canView,
+    }}>
+      {children}
+    </AuthContext.Provider>
+  )
+}
+
+export const useAuth = () => {
+  const context = useContext(AuthContext)
+  if (!context) throw new Error('useAuth must be used within AuthProvider')
+  return context
+}

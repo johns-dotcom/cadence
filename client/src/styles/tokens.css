@@ -1,0 +1,77 @@
+/*
+ * Design-system CSS variables. These back the semantic Tailwind aliases in
+ * tailwind.config.js (bg-card, text-ink, border-rule, …) and the theme-aware
+ * gray palette, so className-styled and inline-styled UI share one source of
+ * truth across light and dark themes.
+ */
+
+:root {
+  --color-bg-page:    #f4f4f5;
+  --color-bg-card:    #ffffff;
+  --color-bg-elev:    #fafafa;
+  --color-bg-sidebar: #ffffff;
+  --color-bg-header:  #ffffff;
+
+  --color-border:       #e4e4e7;
+  --color-border-light: #f3f4f6;
+  --color-divider:      #f3f4f6;
+
+  --color-text:       #18181b;
+  --color-text-muted: #71717a;
+  --color-text-faint: #a1a1aa;
+
+  --color-success: #059669;
+  --color-warning: #d97706;
+  --color-danger:  #dc2626;
+  --color-info:    #2563eb;
+
+  --color-overlay: rgba(24, 24, 27, 0.5);
+
+  /* Tailwind gray palette as RGB triplets (space-separated), consumed via
+   * rgb(var(--…) / <alpha-value>) in tailwind.config.js. Light = Tailwind v3
+   * defaults; dark values mirror them below. */
+  --color-gray-50:  249 250 251;
+  --color-gray-100: 243 244 246;
+  --color-gray-200: 229 231 235;
+  --color-gray-300: 209 213 219;
+  --color-gray-400: 156 163 175;
+  --color-gray-500: 107 114 128;
+  --color-gray-600:  75  85  99;
+  --color-gray-700:  55  65  81;
+  --color-gray-800:  31  41  55;
+  --color-gray-900:  17  24  39;
+}
+
+.dark {
+  --color-bg-page:    #131520;
+  --color-bg-card:    #1c1f2b;
+  --color-bg-elev:    #232734;
+  --color-bg-sidebar: #161824;
+  --color-bg-header:  #131520;
+
+  --color-border:       #2e3340;
+  --color-border-light: #1f222c;
+  --color-divider:      #1f222c;
+
+  --color-text:       #e0e2e8;
+  --color-text-muted: #8a8f9f;
+  --color-text-faint: #555b6e;
+
+  --color-success: #34d399;
+  --color-warning: #fbbf24;
+  --color-danger:  #fca5a5;
+  --color-info:    #60a5fa;
+
+  --color-overlay: rgba(0, 0, 0, 0.6);
+
+  --color-gray-50:   31  34  44;
+  --color-gray-100:  31  34  44;
+  --color-gray-200:  46  51  64;
+  --color-gray-300:  58  63  80;
+  --color-gray-400:  85  91 110;
+  --color-gray-500: 107 112 133;
+  --color-gray-600: 138 143 159;
+  --color-gray-700: 191 194 204;
+  --color-gray-800: 213 215 222;
+  --color-gray-900: 236 237 241;
+}
