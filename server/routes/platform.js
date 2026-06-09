@@ -4,6 +4,7 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { requirePlatformAdmin } = require('../middleware/tenant');
 const { uniqueSlug } = require('../lib/slug');
+const { signToken, publicUser } = require('../lib/token');
 
 const router = express.Router();
 
@@ -74,6 +75,52 @@ router.post('/workspaces', async (req, res) => {
     res.status(500).json({ success: false, error: 'Internal server error' });
   } finally {
     client.release();
+  }
+});
+
+// POST /api/platform/workspaces/:labelId/enter — issue a short-lived session
+// INTO a target workspace so the platform admin can view it exactly as that
+// label sees it. We become the label's owner (its primary Superadmin), so all
+// the normal tenant scoping applies while "inside" — there's no cross-tenant
+// leakage; the platform admin simply holds a scoped session for that label.
+// The client stashes the real platform-admin token and restores it on exit
+// (same flow as same-label impersonation).
+router.post('/workspaces/:labelId/enter', async (req, res) => {
+  try {
+    const labelId = parseInt(req.params.labelId, 10);
+    if (isNaN(labelId)) return res.status(400).json({ success: false, error: 'Invalid workspace' });
+
+    const labelRes = await pool.query('SELECT id, name, slug FROM labels WHERE id = $1', [labelId]);
+    if (!labelRes.rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
+    const label = labelRes.rows[0];
+
+    // Pick the label's owner: prefer a Superadmin, then most senior, then oldest.
+    const userRes = await pool.query(
+      `SELECT id, label_id, name, email, role, department, hierarchy_level, is_platform_admin, token_version
+       FROM users WHERE label_id = $1
+       ORDER BY (role = 'Superadmin') DESC, hierarchy_level ASC, id ASC
+       LIMIT 1`,
+      [labelId]
+    );
+    if (!userRes.rows.length) {
+      return res.status(409).json({ success: false, error: 'Workspace has no users to view as' });
+    }
+    const target = userRes.rows[0];
+
+    // Audit the cross-tenant entry in BOTH the target label's log (so they can
+    // see a platform admin viewed their workspace) and is attributable to the
+    // platform admin by email.
+    pool.query(
+      `INSERT INTO activity_log (label_id, user_id, action, detail, method, endpoint, created_at)
+       VALUES ($1, $2, $3, $4, 'POST', $5, NOW())`,
+      [labelId, target.id, 'Workspace viewed by platform admin', req.user.email, req.originalUrl?.split('?')[0] || null]
+    ).catch(() => {});
+
+    const token = signToken(target, '2h');
+    res.json({ success: true, data: { token, user: publicUser(target), label } });
+  } catch (error) {
+    console.error('Enter workspace error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 

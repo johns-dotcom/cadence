@@ -100,6 +100,25 @@ export const AuthProvider = ({ children }) => {
     }
   }
 
+  // Platform admin: drop into another label's workspace. Same stash/swap as
+  // impersonate(), but also switches the label context to the target.
+  const enterWorkspace = async (labelId) => {
+    try {
+      const { data } = await api.post(`/platform/workspaces/${labelId}/enter`)
+      const { token: wsToken, user: wsUser, label: wsLabel } = data.data
+      localStorage.setItem('admin_token', localStorage.getItem('token'))
+      setAdminUser(user)
+      localStorage.setItem('token', wsToken)
+      setToken(wsToken)
+      setUser(wsUser)
+      setLabel(wsLabel)
+      setImpersonating(true)
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: err.response?.data?.error || 'Failed to enter workspace' }
+    }
+  }
+
   const exitImpersonation = () => {
     const adminToken = localStorage.getItem('admin_token')
     if (!adminToken) { logout(); return }
@@ -108,7 +127,13 @@ export const AuthProvider = ({ children }) => {
     setToken(adminToken)
     setImpersonating(false)
     setAdminUser(null)
-    api.get('/auth/me').then(res => setUser(res.data.data)).catch(() => logout())
+    // Restore the real identity AND label context (we may have been viewing a
+    // different workspace, so the label must be reset too).
+    api.get('/auth/me').then(res => {
+      const u = res.data.data
+      setUser(u)
+      setLabel({ id: u.label_id, name: u.label_name, slug: u.label_slug })
+    }).catch(() => logout())
   }
 
   // canView: true if the current user may see a page path. Admins/Approvers
@@ -124,7 +149,7 @@ export const AuthProvider = ({ children }) => {
     <AuthContext.Provider value={{
       user, label, token, loading,
       login, googleLogin, logout,
-      impersonate, exitImpersonation, impersonating, adminUser,
+      impersonate, enterWorkspace, exitImpersonation, impersonating, adminUser,
       pagePermissions, canView,
     }}>
       {children}

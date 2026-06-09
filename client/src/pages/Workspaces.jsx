@@ -1,13 +1,17 @@
 import { useEffect, useState } from 'react'
-import { Plus, Building2, Copy, Check } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Plus, Building2, Copy, Check, LogIn } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
+import { useAuth } from '../context/AuthContext'
 
 // Platform-admin only: provision and list label workspaces (tenants). This is
 // the operator's onboarding surface — it replaces public self-serve signup.
 export default function Workspaces() {
   const { toast } = useToast()
+  const { enterWorkspace } = useAuth()
+  const navigate = useNavigate()
   const [workspaces, setWorkspaces] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -42,6 +46,12 @@ export default function Workspaces() {
     } finally {
       setSaving(false)
     }
+  }
+
+  const enter = async (w) => {
+    const result = await enterWorkspace(w.id)
+    if (result.success) navigate('/')
+    else toast(result.error || 'Could not enter workspace', 'error')
   }
 
   const copyHandoff = () => {
@@ -109,6 +119,7 @@ export default function Workspaces() {
                 <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Workspace ID</th>
                 <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Members</th>
                 <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Created</th>
+                <th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-divider">
@@ -118,6 +129,11 @@ export default function Workspaces() {
                   <td className="px-4 py-3 text-gray-500 font-mono">{w.slug}</td>
                   <td className="px-4 py-3 text-gray-600">{w.member_count}</td>
                   <td className="px-4 py-3 text-gray-500">{new Date(w.created_at).toLocaleDateString()}</td>
+                  <td className="px-4 py-3 text-right">
+                    <button onClick={() => enter(w)} className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700">
+                      <LogIn size={13} /> Enter
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

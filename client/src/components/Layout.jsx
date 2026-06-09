@@ -109,7 +109,7 @@ function ViewAsDropdown() {
 }
 
 export default function Layout() {
-  const { user, label, logout, impersonating, exitImpersonation, canView } = useAuth()
+  const { user, label, adminUser, logout, impersonating, exitImpersonation, canView } = useAuth()
   const { theme, toggleTheme } = useTheme()
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -264,7 +264,11 @@ export default function Layout() {
           <div className="flex items-center justify-between px-6 py-2 bg-amber-400 text-amber-900 text-xs font-semibold flex-shrink-0">
             <div className="flex items-center gap-2">
               <Eye size={13} />
-              <span>Viewing as <span className="font-bold">{user?.name}</span> ({user?.role}) — their exact view</span>
+              <span>
+                Viewing <span className="font-bold">{label?.name || 'workspace'}</span> as{' '}
+                <span className="font-bold">{user?.name}</span> ({user?.role})
+                {adminUser?.is_platform_admin ? ' — platform admin view' : ''}
+              </span>
             </div>
             <button onClick={exitImpersonation} className="flex items-center gap-1 font-bold hover:underline">
               <X size={12} /> Exit
