@@ -30,6 +30,25 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/salary/history — recent paid/marked actions across the roster.
+router.get('/history', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT p.month, p.year, p.paid, p.amount, p.paid_at, e.name AS employee, u.name AS marked_by
+       FROM salary_payments p
+       JOIN salary_employees e ON e.id = p.employee_id AND e.label_id = p.label_id
+       LEFT JOIN users u ON u.id = p.marked_by AND u.label_id = p.label_id
+       WHERE p.label_id = $1 AND p.paid_at IS NOT NULL
+       ORDER BY p.paid_at DESC LIMIT 100`,
+      [req.labelId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Salary history error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // POST /api/salary/employees — add to the payroll roster.
 router.post('/employees', async (req, res) => {
   try {

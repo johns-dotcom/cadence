@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef } from 'react'
-import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload } from 'lucide-react'
+import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
+import LedgerEntryDrawer from '../components/LedgerEntryDrawer'
 import { EXPENSE_CATEGORIES, PAYMENT_METHODS, CURRENCIES } from '../constants'
 
 const STATUS_STYLES = {
@@ -80,6 +81,13 @@ export default function Ledger() {
   // ── CSV export / import ──────────────────────────────────────────────
   const importRef = useRef(null)
   const [importing, setImporting] = useState(false)
+  const [drawerEntry, setDrawerEntry] = useState(null)
+  const [report1099, setReport1099] = useState(null)
+
+  const open1099 = async () => {
+    try { const { data } = await api.get('/ledger/1099-report'); setReport1099(data.data) }
+    catch { toast('Failed to load 1099 report', 'error') }
+  }
 
   const exportCsv = async () => {
     try {
@@ -135,6 +143,7 @@ export default function Ledger() {
         subtitle="Expenses and vendor payments"
         action={
           <div className="flex items-center gap-2">
+            <button onClick={open1099} className="btn-secondary"><FileBarChart size={15} /> 1099</button>
             <button onClick={exportCsv} className="btn-secondary"><Download size={15} /> Export</button>
             <button onClick={() => importRef.current?.click()} disabled={importing} className="btn-secondary">
               <Upload size={15} /> {importing ? 'Importing…' : 'Import'}
@@ -187,11 +196,14 @@ export default function Ledger() {
             </thead>
             <tbody className="divide-y divide-divider">
               {entries.map(en => (
-                <tr key={en.id} className="hover:bg-gray-50 align-top">
+                <tr key={en.id} className={`hover:bg-gray-50 align-top ${en.voided ? 'opacity-50' : ''}`}>
                   <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{en.invoice_date ? new Date(en.invoice_date).toLocaleDateString() : '—'}</td>
                   <td className="px-3 py-3">
-                    <p className="font-medium text-ink">{en.payee}</p>
+                    <p className={`font-medium text-ink ${en.voided ? 'line-through' : ''}`}>{en.payee}</p>
                     {en.vendor_submitted && <span className="text-[10px] text-brand-600 font-semibold uppercase">Vendor submission</span>}
+                    {en.voided && <span className="text-[10px] text-red-500 font-semibold uppercase ml-1">Voided</span>}
+                    {en.split_count > 0 && <span className="text-[10px] text-gray-400 font-semibold uppercase ml-1">{en.split_count} splits</span>}
+                    {en.is_bulk_deal && <span className="text-[10px] text-violet-500 font-semibold uppercase ml-1">Bulk deal</span>}
                     {en.artist && <p className="text-xs text-gray-400">{en.artist}</p>}
                   </td>
                   <td className="px-3 py-3 text-gray-600 whitespace-nowrap">{en.category || '—'}</td>
@@ -220,6 +232,7 @@ export default function Ledger() {
                       {en.status === 'approved' && en.payment_status !== 'Paid' && (
                         <button onClick={() => act(en.id, 'mark-paid')} title="Mark paid" className="text-gray-500 hover:text-emerald-600 p-1 rounded"><DollarSign size={15} /></button>
                       )}
+                      <button onClick={() => setDrawerEntry(en)} title="Details" className="text-gray-400 hover:text-brand-600 p-1 rounded"><SlidersHorizontal size={14} /></button>
                       <button onClick={() => remove(en.id)} title="Delete" className="text-gray-300 hover:text-danger p-1 rounded"><Trash2 size={14} /></button>
                     </div>
                   </td>
@@ -227,6 +240,41 @@ export default function Ledger() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {drawerEntry && (
+        <LedgerEntryDrawer entry={drawerEntry} onClose={() => setDrawerEntry(null)} onChanged={load} />
+      )}
+
+      {report1099 && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center px-4 py-8 bg-overlay overflow-y-auto" onClick={() => setReport1099(null)}>
+          <div className="w-full max-w-2xl bg-card rounded-2xl border border-rule shadow-modal my-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-divider">
+              <h2 className="text-base font-semibold text-ink">1099 report · {report1099.year} <span className="text-xs font-normal text-gray-400">(paid ≥ $600)</span></h2>
+              <button onClick={() => setReport1099(null)} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto">
+              {report1099.vendors.length === 0 ? (
+                <p className="px-5 py-8 text-center text-sm text-gray-400">No vendors crossed the $600 threshold this year.</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead><tr className="text-left text-[10px] text-gray-400 uppercase tracking-wide border-b border-divider bg-page/50">
+                    <th className="px-4 py-2 font-semibold">Vendor</th><th className="px-4 py-2 font-semibold text-right">Paid</th><th className="px-4 py-2 font-semibold text-center">W9</th>
+                  </tr></thead>
+                  <tbody>
+                    {report1099.vendors.map((v, i) => (
+                      <tr key={i} className="border-b border-divider last:border-0">
+                        <td className="px-4 py-2 text-ink">{v.vendor}<span className="block text-[11px] text-gray-400">{v.email || ''}</span></td>
+                        <td className="px-4 py-2 text-right font-medium">${Number(v.total_paid).toLocaleString()}</td>
+                        <td className="px-4 py-2 text-center">{v.has_w9 ? <Check size={14} className="text-emerald-600 inline" /> : <span className="text-[10px] text-red-500 font-semibold">MISSING</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

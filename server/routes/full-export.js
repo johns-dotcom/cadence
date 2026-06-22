@@ -1,0 +1,58 @@
+const express = require('express');
+const pool = require('../db');
+const authMiddleware = require('../middleware/auth');
+const { withTenant, requireAdmin } = require('../middleware/tenant');
+const { logActivity } = require('../middleware/activityLogger');
+const { buildZip, toCsv } = require('../lib/zip');
+
+const router = express.Router();
+// Whole-workspace export — admin only, scoped entirely to req.labelId.
+router.use(authMiddleware, withTenant, requireAdmin);
+
+// Each table → the columns we export (and the SQL to pull them). Every query is
+// anchored to label_id so one workspace can never export another's data.
+const TABLES = [
+  { file: 'artists.csv', sql: 'SELECT id,name,genre,archived,created_at FROM artists WHERE label_id=$1 ORDER BY name', cols: ['id', 'name', 'genre', 'archived', 'created_at'] },
+  { file: 'releases.csv', sql: 'SELECT id,project_name,artist_id,release_date,release_type,genre,status,upc,isrc,priority FROM releases WHERE label_id=$1 ORDER BY release_date DESC NULLS LAST', cols: ['id', 'project_name', 'artist_id', 'release_date', 'release_type', 'genre', 'status', 'upc', 'isrc', 'priority'] },
+  { file: 'deals.csv', sql: 'SELECT id,artist_name,genre,stage,ar_rep,deal_type,offer_amount,priority FROM deals WHERE label_id=$1', cols: ['id', 'artist_name', 'genre', 'stage', 'ar_rep', 'deal_type', 'offer_amount', 'priority'] },
+  { file: 'contracts.csv', sql: 'SELECT id,artist_id,type,status,date_signed,expiration_date,royalty_split,advance,territory FROM contracts WHERE label_id=$1', cols: ['id', 'artist_id', 'type', 'status', 'date_signed', 'expiration_date', 'royalty_split', 'advance', 'territory'] },
+  { file: 'ledger.csv', sql: "SELECT id,invoice_date,payee,category,artist,invoice_number,amount,currency,status,payment_status,payment_date,rep FROM expenses WHERE label_id=$1 AND (deleted=false OR deleted IS NULL) AND parent_id IS NULL ORDER BY invoice_date DESC NULLS LAST", cols: ['id', 'invoice_date', 'payee', 'category', 'artist', 'invoice_number', 'amount', 'currency', 'status', 'payment_status', 'payment_date', 'rep'] },
+  { file: 'vendors.csv', sql: 'SELECT id,name,email,address,bank,w9_filename FROM vendors WHERE label_id=$1 ORDER BY name', cols: ['id', 'name', 'email', 'address', 'bank', 'w9_filename'] },
+  { file: 'invoices.csv', sql: 'SELECT id,invoice_number,bill_to,description,amount,payment_status,due_by FROM invoices WHERE label_id=$1 ORDER BY invoice_number DESC', cols: ['id', 'invoice_number', 'bill_to', 'description', 'amount', 'payment_status', 'due_by'] },
+  { file: 'artist_income.csv', sql: 'SELECT id,artist_id,source,amount,currency,income_date FROM artist_income WHERE label_id=$1', cols: ['id', 'artist_id', 'source', 'amount', 'currency', 'income_date'] },
+  { file: 'campaigns.csv', sql: 'SELECT id,artist_id,name,platform,status,planned_budget,actual_spend,currency FROM campaigns WHERE label_id=$1', cols: ['id', 'artist_id', 'name', 'platform', 'status', 'planned_budget', 'actual_spend', 'currency'] },
+  { file: 'dsp_submissions.csv', sql: 'SELECT release_id,platform,status,submitted_date,live_date FROM dsp_submissions WHERE label_id=$1', cols: ['release_id', 'platform', 'status', 'submitted_date', 'live_date'] },
+  { file: 'salary.csv', sql: 'SELECT e.name,e.department,e.monthly_amount,p.month,p.year,p.paid FROM salary_employees e LEFT JOIN salary_payments p ON p.employee_id=e.id AND p.label_id=e.label_id WHERE e.label_id=$1', cols: ['name', 'department', 'monthly_amount', 'month', 'year', 'paid'] },
+  { file: 'tasks.csv', sql: 'SELECT id,description,priority,status,due_date FROM tasks WHERE label_id=$1', cols: ['id', 'description', 'priority', 'status', 'due_date'] },
+];
+
+// GET /api/full-export — streams a .zip of every table as CSV + a manifest.
+router.get('/', async (req, res) => {
+  try {
+    const entries = [];
+    const manifest = [];
+    for (const t of TABLES) {
+      const { rows } = await pool.query(t.sql, [req.labelId]);
+      entries.push({ name: t.file, content: toCsv(t.cols, rows) });
+      manifest.push(`${t.file}: ${rows.length} rows`);
+    }
+    // Label metadata header.
+    const label = await pool.query('SELECT name, slug FROM labels WHERE id = $1', [req.labelId]);
+    const ts = Math.floor(Date.now() / 1000);
+    entries.unshift({
+      name: 'README.txt',
+      content: `Cadence workspace export\nWorkspace: ${label.rows[0]?.name || ''} (${label.rows[0]?.slug || ''})\nGenerated: ${new Date(ts * 1000).toISOString()}\n\nContents:\n${manifest.map(m => '  - ' + m).join('\n')}\n`,
+    });
+
+    const zip = buildZip(entries, ts);
+    await logActivity(req, 'Full workspace export', `${entries.length} files`);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${label.rows[0]?.slug || 'workspace'}-export.zip"`);
+    res.send(zip);
+  } catch (error) {
+    console.error('Full export error:', error);
+    res.status(500).json({ success: false, error: 'Export failed' });
+  }
+});
+
+module.exports = router;

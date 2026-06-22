@@ -101,4 +101,46 @@ router.put('/permissions/:userId', requireAdmin, async (req, res) => {
   }
 });
 
+// ── Per-user rep visibility (admin-managed) ─────────────────────────────
+// Controls which reps' ledger entries an Approver can see. Empty = all.
+
+// GET /api/settings/visible-reps/:userId
+router.get('/visible-reps/:userId', requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT rep_name FROM user_visible_reps WHERE user_id = $1 AND label_id = $2 ORDER BY rep_name',
+      [parseInt(req.params.userId, 10), req.labelId]
+    );
+    res.json({ success: true, data: rows.map(r => r.rep_name) });
+  } catch (error) {
+    console.error('Get visible reps error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PUT /api/settings/visible-reps/:userId — replace the user's visible-rep set.
+router.put('/visible-reps/:userId', requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    const reps = Array.isArray(req.body.reps) ? req.body.reps : [];
+    const { rows: u } = await client.query('SELECT 1 FROM users WHERE id = $1 AND label_id = $2', [userId, req.labelId]);
+    if (!u.length) return res.status(404).json({ success: false, error: 'User not found' });
+    await client.query('BEGIN');
+    await client.query('DELETE FROM user_visible_reps WHERE user_id = $1 AND label_id = $2', [userId, req.labelId]);
+    for (const rep of reps) {
+      if (!rep || !String(rep).trim()) continue;
+      await client.query('INSERT INTO user_visible_reps (label_id, user_id, rep_name) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING', [req.labelId, userId, String(rep).trim()]);
+    }
+    await client.query('COMMIT');
+    res.json({ success: true });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Set visible reps error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;

@@ -5,7 +5,7 @@ import {
   LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
-  FileClock, Shield, Lock, Sparkles,
+  FileClock, Shield, Lock, Sparkles, FileSignature,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
@@ -25,6 +25,7 @@ const PAGE_LABELS = {
   '/marketing':  'Marketing',
   '/pending-contracts': 'Pending Contracts',
   '/legal':      'NDAs',
+  '/label-waivers': 'Label Waivers',
   '/admin-docs': 'Admin Docs',
   '/data-quality': 'Data quality',
   '/releases':   'Releases',
@@ -221,6 +222,7 @@ export default function Layout() {
         ...(isApprover ? [{ path: '/pending-contracts', label: 'Pending', icon: FileClock }] : []),
         ...(isApprover ? [{ path: '/renewals', label: 'Renewals', icon: RefreshCw }] : []),
         ...(isApprover ? [{ path: '/legal', label: 'NDAs', icon: Shield }] : []),
+        ...(isApprover ? [{ path: '/label-waivers', label: 'Label Waivers', icon: FileSignature }] : []),
         ...(isAdmin ? [{ path: '/admin-docs', label: 'Admin Docs', icon: Lock }] : []),
       ],
     },

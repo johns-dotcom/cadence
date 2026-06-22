@@ -84,6 +84,65 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
+// GET /api/campaigns/:id/expenses — ledger rows linked to this campaign +
+// candidate unlinked rows for the same artist (for reconciliation).
+router.get('/:id/expenses', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const camp = await pool.query('SELECT artist_id FROM campaigns WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    if (!camp.rows.length) return res.status(404).json({ success: false, error: 'Campaign not found' });
+    const linked = await pool.query(
+      `SELECT id, payee, amount, currency, category, invoice_date FROM expenses
+       WHERE label_id = $1 AND campaign_id = $2 AND (deleted = false OR deleted IS NULL) ORDER BY invoice_date DESC NULLS LAST`,
+      [req.labelId, id]
+    );
+    res.json({ success: true, data: { linked: linked.rows } });
+  } catch (error) {
+    console.error('Campaign expenses error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/campaigns/:id/link { expense_id } — attach a ledger row and refresh
+// the campaign's actual_spend from the sum of its linked rows.
+router.post('/:id/link', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const expenseId = parseInt(req.body.expense_id, 10);
+    const camp = await pool.query('SELECT 1 FROM campaigns WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    if (!camp.rows.length) return res.status(404).json({ success: false, error: 'Campaign not found' });
+    const upd = await pool.query('UPDATE expenses SET campaign_id = $1 WHERE id = $2 AND label_id = $3 RETURNING id', [id, expenseId, req.labelId]);
+    if (!upd.rows.length) return res.status(404).json({ success: false, error: 'Expense not found' });
+    await recomputeSpend(id, req.labelId);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Campaign link error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/campaigns/:id/unlink { expense_id }
+router.post('/:id/unlink', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    await pool.query('UPDATE expenses SET campaign_id = NULL WHERE id = $1 AND campaign_id = $2 AND label_id = $3', [parseInt(req.body.expense_id, 10), id, req.labelId]);
+    await recomputeSpend(id, req.labelId);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Campaign unlink error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+async function recomputeSpend(campaignId, labelId) {
+  await pool.query(
+    `UPDATE campaigns SET actual_spend = COALESCE((
+       SELECT SUM(amount) FROM expenses WHERE label_id = $2 AND campaign_id = $1 AND (deleted = false OR deleted IS NULL)
+     ), 0), updated_at = NOW() WHERE id = $1 AND label_id = $2`,
+    [campaignId, labelId]
+  );
+}
+
 // DELETE /api/campaigns/:id
 router.delete('/:id', async (req, res) => {
   try {

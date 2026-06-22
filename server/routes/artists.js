@@ -1,28 +1,34 @@
 const express = require('express');
+const multer = require('multer');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
+const { uploadFile, getSignedFileUrl, deleteFile } = require('../lib/r2');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 // Profile fields editable via PATCH (beyond name/genre).
 const PROFILE_FIELDS = [
   'image_url', 'bio', 'website', 'spotify_url', 'apple_music_url',
   'instagram', 'tiktok', 'youtube', 'soundcloud',
   'spotify_monthly_listeners', 'spotify_followers', 'spotify_popularity',
+  'archived',
 ];
 
 // GET /api/artists — roster for the current label
 router.get('/', async (req, res) => {
   try {
+    const includeArchived = req.query.include_archived === '1';
     const { rows } = await pool.query(
-      `SELECT a.id, a.name, a.genre, a.image_url, a.created_at,
+      `SELECT a.id, a.name, a.genre, a.image_url, a.archived, a.created_at,
               COUNT(r.id)::int AS total_releases
        FROM artists a
        LEFT JOIN releases r ON r.artist_id = a.id AND r.label_id = a.label_id
-       WHERE a.label_id = $1
+       WHERE a.label_id = $1 ${includeArchived ? '' : 'AND (a.archived = false OR a.archived IS NULL)'}
        GROUP BY a.id
        ORDER BY a.name`,
       [req.labelId]
@@ -170,6 +176,78 @@ router.delete('/:id', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Delete artist error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Artist file attachments (via entity_files) ───────────────────────────
+
+// GET /api/artists/:id/files — metadata only.
+router.get('/:id/files', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, original_name, mime_type, created_at FROM entity_files
+       WHERE label_id = $1 AND entity_type = 'artist' AND entity_id = $2 ORDER BY created_at DESC`,
+      [req.labelId, parseInt(req.params.id, 10)]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('List artist files error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/artists/:id/files — upload an attachment to R2.
+router.post('/:id/files', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
+    const id = parseInt(req.params.id, 10);
+    const owner = await pool.query('SELECT 1 FROM artists WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    if (!owner.rows.length) return res.status(404).json({ success: false, error: 'Artist not found' });
+    const safe = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const key = `label-${req.labelId}/artist/${id}-${Date.now()}-${safe}`;
+    await uploadFile(key, req.file.buffer, req.file.mimetype);
+    const { rows } = await pool.query(
+      `INSERT INTO entity_files (label_id, entity_type, entity_id, filename, original_name, mime_type, r2_key)
+       VALUES ($1, 'artist', $2, $3, $4, $5, $6) RETURNING id, original_name, mime_type, created_at`,
+      [req.labelId, id, key, req.file.originalname, req.file.mimetype, key]
+    );
+    res.status(201).json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Artist file upload error:', error);
+    res.status(500).json({ success: false, error: 'File upload failed' });
+  }
+});
+
+// GET /api/artists/:id/files/:fileId — signed URL.
+router.get('/:id/files/:fileId', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT r2_key FROM entity_files WHERE id = $1 AND label_id = $2 AND entity_type = 'artist' AND entity_id = $3`,
+      [parseInt(req.params.fileId, 10), req.labelId, parseInt(req.params.id, 10)]
+    );
+    if (!rows.length || !rows[0].r2_key) return res.status(404).json({ success: false, error: 'File not found' });
+    const url = await getSignedFileUrl(rows[0].r2_key, 3600);
+    res.json({ success: true, data: { url } });
+  } catch (error) {
+    console.error('Artist file url error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/artists/:id/files/:fileId
+router.delete('/:id/files/:fileId', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT r2_key FROM entity_files WHERE id = $1 AND label_id = $2 AND entity_type = 'artist' AND entity_id = $3`,
+      [parseInt(req.params.fileId, 10), req.labelId, parseInt(req.params.id, 10)]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'File not found' });
+    await pool.query('DELETE FROM entity_files WHERE id = $1 AND label_id = $2', [parseInt(req.params.fileId, 10), req.labelId]);
+    if (rows[0].r2_key) deleteFile(rows[0].r2_key).catch(() => {});
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete artist file error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

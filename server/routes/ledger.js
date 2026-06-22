@@ -36,6 +36,16 @@ const EDITABLE = [
   'payment_terms', 'scheduled_payment_date',
 ];
 
+// Rep visibility: Admins/Superadmins see all. An Approver with a configured
+// visible-rep set sees only those reps (plus unattributed rows); an Approver
+// with no set configured is unrestricted. Returns a list of rep names or null
+// (null = no restriction).
+async function visibleReps(req) {
+  if (['Superadmin', 'Admin'].includes(req.user.role)) return null;
+  const { rows } = await pool.query('SELECT rep_name FROM user_visible_reps WHERE user_id = $1 AND label_id = $2', [req.user.id, req.labelId]);
+  return rows.length ? rows.map(r => r.rep_name) : null;
+}
+
 // GET /api/ledger/entries — list with optional filters (?status=, ?q=)
 router.get('/entries', async (req, res) => {
   try {
@@ -50,6 +60,9 @@ router.get('/entries', async (req, res) => {
     if (req.query.category) { params.push(req.query.category); where += ` AND category = $${params.length}`; }
     if (req.query.artist) { params.push(`%${req.query.artist}%`); where += ` AND artist ILIKE $${params.length}`; }
     if (req.query.q) { params.push(`%${req.query.q}%`); where += ` AND (payee ILIKE $${params.length} OR description ILIKE $${params.length} OR artist ILIKE $${params.length} OR invoice_number ILIKE $${params.length})`; }
+
+    const reps = await visibleReps(req);
+    if (reps) { params.push(reps); where += ` AND (rep = ANY($${params.length}) OR rep IS NULL)`; }
 
     const { rows } = await pool.query(
       `SELECT e.*, (SELECT COUNT(*)::int FROM expenses c WHERE c.parent_id = e.id) AS split_count
@@ -132,22 +145,55 @@ router.post('/entries', fileFields, async (req, res) => {
   }
 });
 
-// PATCH /api/ledger/entries/:id
+// PATCH /api/ledger/entries/:id — update + record field-level history.
 router.patch('/entries/:id', async (req, res) => {
   try {
+    const id = parseInt(req.params.id, 10);
     const keys = Object.keys(req.body).filter(k => EDITABLE.includes(k));
     if (keys.length === 0) return res.status(400).json({ success: false, error: 'No updatable fields provided' });
+
+    // Snapshot current values so we can diff for the audit trail.
+    const before = await pool.query('SELECT * FROM expenses WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    if (!before.rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    const prev = before.rows[0];
+
     const setClauses = keys.map((k, i) => `${k} = $${i + 1}`);
     const values = keys.map(k => req.body[k]);
-    values.push(parseInt(req.params.id, 10), req.labelId);
+    values.push(id, req.labelId);
     const { rows } = await pool.query(
       `UPDATE expenses SET ${setClauses.join(', ')} WHERE id = $${values.length - 1} AND label_id = $${values.length} RETURNING *`,
       values
     );
-    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+
+    // Log each changed field (best-effort; never blocks the response).
+    const norm = (v) => (v === null || v === undefined ? '' : String(v));
+    for (const k of keys) {
+      if (norm(prev[k]) !== norm(rows[0][k])) {
+        pool.query(
+          `INSERT INTO ledger_history (label_id, expense_id, field, old_value, new_value, changed_by, changed_at)
+           VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+          [req.labelId, id, k, norm(prev[k]) || null, norm(rows[0][k]) || null, req.user.name]
+        ).catch(() => {});
+      }
+    }
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Update ledger entry error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/ledger/entries/:id/history — field-level change log for one entry.
+router.get('/entries/:id/history', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT field, old_value, new_value, changed_by, changed_at FROM ledger_history
+       WHERE label_id = $1 AND expense_id = $2 ORDER BY changed_at DESC, id DESC`,
+      [req.labelId, parseInt(req.params.id, 10)]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Ledger history error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
@@ -212,12 +258,15 @@ router.post('/entries/:id/mark-paid', async (req, res) => {
 // scheduled (due) date so the most urgent rises to the top.
 router.get('/payables', async (req, res) => {
   try {
+    const params = [req.labelId];
+    let where = `label_id = $1 AND status = 'approved' AND payment_status IN ('Unpaid', 'Partial')
+       AND (deleted = false OR deleted IS NULL) AND (voided = false OR voided IS NULL)`;
+    const reps = await visibleReps(req);
+    if (reps) { params.push(reps); where += ` AND (rep = ANY($${params.length}) OR rep IS NULL)`; }
     const { rows } = await pool.query(
-      `SELECT * FROM expenses
-       WHERE label_id = $1 AND status = 'approved' AND payment_status = 'Unpaid'
-         AND (deleted = false OR deleted IS NULL)
+      `SELECT * FROM expenses WHERE ${where}
        ORDER BY scheduled_payment_date ASC NULLS LAST, invoice_date ASC NULLS LAST, id ASC`,
-      [req.labelId]
+      params
     );
     res.json({ success: true, data: rows });
   } catch (error) {
@@ -533,6 +582,219 @@ router.get('/export', async (req, res) => {
     res.send(csv);
   } catch (error) {
     console.error('Export error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/entries/:id/void — reverse an approved/paid entry without
+// deleting it (keeps the audit trail; excluded from payable/spend totals).
+router.post('/entries/:id/void', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE expenses SET voided = TRUE, voided_at = NOW(), voided_by = $1, payment_status = 'Unpaid'
+       WHERE id = $2 AND label_id = $3 RETURNING *`,
+      [req.user.name, parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    await logActivity(req, 'Voided ledger entry', `${rows[0].payee} — ${rows[0].amount}`);
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Void error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/entries/:id/unvoid — restore a voided entry.
+router.post('/entries/:id/unvoid', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE expenses SET voided = FALSE, voided_at = NULL, voided_by = NULL
+       WHERE id = $1 AND label_id = $2 RETURNING *`,
+      [parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Unvoid error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/bulk-reject — reject many pending entries at once.
+router.post('/bulk-reject', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
+    const { rows } = await pool.query(
+      `UPDATE expenses SET status = 'rejected', rejected_reason = $1, approved_by = $2, approved_at = NOW()
+       WHERE label_id = $3 AND status = 'pending' AND id = ANY($4::int[]) RETURNING id`,
+      [req.body.reason || null, req.user.name, req.labelId, ids]
+    );
+    await logActivity(req, 'Bulk rejected', `${rows.length} entries`);
+    res.json({ success: true, data: { rejected: rows.length } });
+  } catch (error) {
+    console.error('Bulk reject error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Bulk-deal items ──────────────────────────────────────────────────────
+async function expenseInLabel(id, labelId) {
+  const { rows } = await pool.query('SELECT 1 FROM expenses WHERE id = $1 AND label_id = $2', [id, labelId]);
+  return rows.length > 0;
+}
+
+// GET /api/ledger/entries/:id/bulk-items
+router.get('/entries/:id/bulk-items', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM bulk_deal_items WHERE label_id = $1 AND expense_id = $2 ORDER BY position, id',
+      [req.labelId, parseInt(req.params.id, 10)]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('List bulk items error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/entries/:id/bulk-items — add a deliverable (also flags the
+// parent expense as a bulk deal).
+router.post('/entries/:id/bulk-items', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!(await expenseInLabel(id, req.labelId))) return res.status(404).json({ success: false, error: 'Entry not found' });
+    const title = (req.body.title || '').trim();
+    if (!title) return res.status(400).json({ success: false, error: 'Title is required' });
+    await pool.query('UPDATE expenses SET is_bulk_deal = TRUE WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    const { rows } = await pool.query(
+      `INSERT INTO bulk_deal_items (label_id, expense_id, title, url, position)
+       VALUES ($1,$2,$3,$4,COALESCE($5,0)) RETURNING *`,
+      [req.labelId, id, title, req.body.url || null, req.body.position]
+    );
+    res.status(201).json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Create bulk item error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PATCH /api/ledger/bulk-items/:itemId — toggle completion / edit.
+router.patch('/bulk-items/:itemId', async (req, res) => {
+  try {
+    const fields = [];
+    const values = [];
+    if (typeof req.body.completed === 'boolean') { fields.push(`completed = $${fields.length + 1}`); values.push(req.body.completed); fields.push(`completed_at = ${req.body.completed ? 'NOW()' : 'NULL'}`); }
+    if (typeof req.body.title === 'string' && req.body.title.trim()) { fields.push(`title = $${fields.length + 1}`); values.push(req.body.title.trim()); }
+    if (req.body.url !== undefined) { fields.push(`url = $${fields.length + 1}`); values.push(req.body.url || null); }
+    if (!fields.length) return res.status(400).json({ success: false, error: 'No updatable fields provided' });
+    values.push(parseInt(req.params.itemId, 10), req.labelId);
+    const { rows } = await pool.query(
+      `UPDATE bulk_deal_items SET ${fields.join(', ')} WHERE id = $${values.length - 1} AND label_id = $${values.length} RETURNING *`,
+      values
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Item not found' });
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Update bulk item error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/ledger/bulk-items/:itemId
+router.delete('/bulk-items/:itemId', async (req, res) => {
+  try {
+    const { rowCount } = await pool.query('DELETE FROM bulk_deal_items WHERE id = $1 AND label_id = $2', [parseInt(req.params.itemId, 10), req.labelId]);
+    if (!rowCount) return res.status(404).json({ success: false, error: 'Item not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete bulk item error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Payment installments ─────────────────────────────────────────────────
+
+// GET /api/ledger/entries/:id/installments
+router.get('/entries/:id/installments', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM payment_installments WHERE label_id = $1 AND expense_id = $2 ORDER BY paid_date, id',
+      [req.labelId, parseInt(req.params.id, 10)]
+    );
+    const total = rows.reduce((s, r) => s + Number(r.amount || 0), 0);
+    res.json({ success: true, data: { installments: rows, total } });
+  } catch (error) {
+    console.error('List installments error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/entries/:id/installments — record a partial payment. If the
+// installments now cover the full amount, the entry is marked Paid.
+router.post('/entries/:id/installments', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const amount = parseFloat(req.body.amount);
+    if (!amount || amount <= 0) return res.status(400).json({ success: false, error: 'A valid amount is required' });
+    const exp = await pool.query('SELECT amount FROM expenses WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    if (!exp.rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    const { rows } = await pool.query(
+      `INSERT INTO payment_installments (label_id, expense_id, amount, paid_date, method, reference, created_by)
+       VALUES ($1,$2,$3,COALESCE($4,CURRENT_DATE),$5,$6,$7) RETURNING *`,
+      [req.labelId, id, amount, req.body.paid_date || null, req.body.method || null, req.body.reference || null, req.user.name]
+    );
+    // Settle / mark partial based on cumulative installments.
+    const sum = await pool.query('SELECT COALESCE(SUM(amount),0) AS paid FROM payment_installments WHERE label_id = $1 AND expense_id = $2', [req.labelId, id]);
+    const paid = Number(sum.rows[0].paid);
+    const full = Number(exp.rows[0].amount || 0);
+    const status = paid >= full && full > 0 ? 'Paid' : 'Partial';
+    await pool.query('UPDATE expenses SET payment_status = $1 WHERE id = $2 AND label_id = $3', [status, id, req.labelId]);
+    res.status(201).json({ success: true, data: { installment: rows[0], paid, payment_status: status } });
+  } catch (error) {
+    console.error('Create installment error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/ledger/installments/:installmentId
+router.delete('/installments/:installmentId', async (req, res) => {
+  try {
+    const { rowCount } = await pool.query('DELETE FROM payment_installments WHERE id = $1 AND label_id = $2', [parseInt(req.params.installmentId, 10), req.labelId]);
+    if (!rowCount) return res.status(404).json({ success: false, error: 'Installment not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete installment error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/ledger/1099-report — vendors with a W9 on file and their approved
+// spend for the given year (default current), for 1099 preparation.
+router.get('/1099-report', async (req, res) => {
+  try {
+    const year = parseInt(req.query.year, 10) || new Date().getFullYear();
+    const { rows } = await pool.query(
+      `SELECT e.payee AS vendor,
+              COALESCE(MAX(v.email), MAX(e.vendor_email)) AS email,
+              MAX(v.address) AS address,
+              SUM(e.amount)::numeric AS total_paid,
+              COUNT(*)::int AS invoice_count,
+              BOOL_OR(e.w9_r2_key IS NOT NULL) OR BOOL_OR(v.w9_r2_key IS NOT NULL) AS has_w9
+       FROM expenses e
+       LEFT JOIN vendors v ON v.label_id = e.label_id AND LOWER(v.name) = LOWER(e.payee)
+       WHERE e.label_id = $1 AND e.status = 'approved' AND e.payment_status = 'Paid'
+         AND (e.deleted = false OR e.deleted IS NULL) AND (e.voided = false OR e.voided IS NULL)
+         AND e.parent_id IS NULL AND e.payee IS NOT NULL AND e.payee != ''
+         AND EXTRACT(YEAR FROM COALESCE(e.payment_date, e.invoice_date, e.created_at::date)) = $2
+       GROUP BY e.payee
+       HAVING SUM(e.amount) >= 600
+       ORDER BY total_paid DESC`,
+      [req.labelId, year]
+    );
+    res.json({ success: true, data: { year, vendors: rows.map(r => ({ ...r, total_paid: Number(r.total_paid) })) } });
+  } catch (error) {
+    console.error('1099 report error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

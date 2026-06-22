@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Check, ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { Plus, Check, ChevronLeft, ChevronRight, X, History } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
@@ -17,6 +17,13 @@ export default function Salary() {
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ name: '', department: '', monthly_amount: '', currency: 'USD' })
+  const [history, setHistory] = useState(null)
+
+  const toggleHistory = async () => {
+    if (history) { setHistory(null); return }
+    try { const { data } = await api.get('/salary/history'); setHistory(data.data || []) }
+    catch { toast('Failed to load history', 'error') }
+  }
 
   const load = () => {
     setLoading(true)
@@ -48,7 +55,12 @@ export default function Salary() {
       <PageHeader
         title="Salary"
         subtitle="Monthly payroll for this workspace"
-        action={<button onClick={() => setShowForm(v => !v)} className="btn-primary"><Plus size={16} /> Add employee</button>}
+        action={
+          <div className="flex items-center gap-2">
+            <button onClick={toggleHistory} className="btn-secondary"><History size={15} /> {history ? 'Hide history' : 'History'}</button>
+            <button onClick={() => setShowForm(v => !v)} className="btn-primary"><Plus size={16} /> Add employee</button>
+          </div>
+        }
       />
 
       <div className="flex items-center justify-between mb-5">
@@ -68,6 +80,22 @@ export default function Salary() {
           <div><label className="label">Currency</label><select className="input" value={form.currency} onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
           <div className="col-span-2 sm:col-span-4"><button className="btn-primary">Save employee</button></div>
         </form>
+      )}
+
+      {history && (
+        <div className="card p-4 mb-6">
+          <h2 className="text-sm font-bold text-ink mb-3">Payment history</h2>
+          {history.length === 0 ? <p className="text-sm text-gray-400">No payments recorded yet.</p> : (
+            <div className="space-y-1.5 max-h-64 overflow-y-auto">
+              {history.map((h, i) => (
+                <div key={i} className="flex items-center justify-between text-sm py-1 border-b border-divider last:border-0">
+                  <span className="text-ink">{h.employee} <span className="text-gray-400">· {MONTHS[h.month - 1]} {h.year}</span></span>
+                  <span className="text-[11px] text-gray-400">{h.marked_by || '—'} · {h.paid_at ? new Date(h.paid_at).toLocaleDateString() : ''}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {loading ? (

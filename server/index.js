@@ -35,6 +35,9 @@ const pendingContractsRoutes = require('./routes/pending-contracts');
 const ndasRoutes = require('./routes/ndas');
 const adminDocsRoutes = require('./routes/admin-docs');
 const flagsRoutes = require('./routes/flags');
+const labelWaiversRoutes = require('./routes/label-waivers');
+const fullExportRoutes = require('./routes/full-export');
+const importRoutes = require('./routes/import');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -144,6 +147,9 @@ app.use('/api/pending-contracts', pendingContractsRoutes);
 app.use('/api/ndas', ndasRoutes);
 app.use('/api/admin-docs', adminDocsRoutes);
 app.use('/api/flags', flagsRoutes);
+app.use('/api/label-waivers', labelWaiversRoutes);
+app.use('/api/full-export', fullExportRoutes);
+app.use('/api/import', importRoutes);
 
 // Unknown API route → JSON 404 (don't fall through to the SPA).
 app.use('/api', (req, res) => res.status(404).json({ success: false, error: 'Not found' }));
@@ -239,9 +245,16 @@ const runMigrations = async () => {
   for (const col of [
     'cover_art_received', 'audio_uploaded', 'pitched_spotify', 'pitched_apple',
     'marketing_plan', 'content_ready', 'dsp_email_sent', 'lyrics_submitted',
+    // Expanded set (parity with Boom's 14-item checklist).
+    'pitched_amazon', 'pitched_pandora', 'youtube_video', 'official_thread',
+    'musixmatch', 'recoup_setup',
   ]) {
     await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS ${col} BOOLEAN DEFAULT FALSE`);
   }
+  // Release budget cap (line items live in their own table below).
+  await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS budget_cap NUMERIC(12,2)`);
+  // Soft-archive an artist without deleting (keeps historical references).
+  await pool.query(`ALTER TABLE artists ADD COLUMN IF NOT EXISTS archived BOOLEAN DEFAULT FALSE`);
 
   // A&R deal pipeline.
   await pool.query(`
@@ -342,6 +355,61 @@ const runMigrations = async () => {
   // list showing the combined total; children are hidden unless expanded.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS parent_id INT REFERENCES expenses(id) ON DELETE CASCADE`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_expenses_parent ON expenses (parent_id)`);
+  // Void (reverse a paid/approved entry without deleting it).
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS voided BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS voided_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS voided_by TEXT`);
+  // Bulk-deal flag + campaign link (artist-campaign reconciliation).
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS is_bulk_deal BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS campaign_id INT REFERENCES campaigns(id) ON DELETE SET NULL`);
+
+  // Per-entry field-level change history (audit trail for the ledger).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ledger_history (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      expense_id INT NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+      field VARCHAR(60) NOT NULL,
+      old_value TEXT,
+      new_value TEXT,
+      changed_by TEXT,
+      changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ledger_history ON ledger_history (label_id, expense_id, changed_at DESC)`);
+
+  // Bulk-deal line items (deliverables tracked under a parent expense).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bulk_deal_items (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      expense_id INT NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+      title VARCHAR(255) NOT NULL,
+      url TEXT,
+      position INT DEFAULT 0,
+      completed BOOLEAN DEFAULT FALSE,
+      completed_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_bulk_deal_items ON bulk_deal_items (label_id, expense_id)`);
+
+  // Payment installments — partial payments against one expense, each with its
+  // own proof-of-payment reference.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS payment_installments (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      expense_id INT NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+      amount NUMERIC(12,2) NOT NULL,
+      paid_date DATE,
+      method TEXT,
+      reference TEXT,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_payment_installments ON payment_installments (label_id, expense_id)`);
 
   // Vendors — contact + W9 on file, keyed by name within a label. Spend is
   // derived from the ledger; this just holds what shouldn't be re-keyed.
@@ -637,6 +705,72 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_docs_label ON admin_docs (label_id)`);
+
+  // Release comments — team discussion thread per release.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS release_comments (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      release_id INT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+      user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      body TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_release_comments ON release_comments (label_id, release_id)`);
+
+  // Release budget line items (planned spend by category).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS release_budget_items (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      release_id INT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+      category VARCHAR(100),
+      description TEXT,
+      amount NUMERIC(12,2) DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_release_budget_items ON release_budget_items (label_id, release_id)`);
+
+  // Label waivers — side-letters waiving the label's exclusivity so a signed
+  // artist can appear as co-primary on another label's release. Structured
+  // fields + an editable body; the PDF is rendered client-side.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS label_waivers (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      effective_date DATE,
+      artist_name VARCHAR(255) NOT NULL,
+      releasing_label VARCHAR(255) NOT NULL,
+      other_label_artist VARCHAR(255),
+      song_title VARCHAR(255) NOT NULL,
+      release_date DATE,
+      release_format VARCHAR(50),
+      royalty_percent NUMERIC(5,2),
+      contact_email VARCHAR(255),
+      signatory_name VARCHAR(255),
+      signatory_title VARCHAR(255),
+      custom_body TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_label_waivers_label ON label_waivers (label_id)`);
+
+  // Per-user rep visibility — which reps' ledger entries an Approver may see.
+  // Empty for a user = unrestricted (sees all). Admins always see everything.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_visible_reps (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      rep_name VARCHAR(255) NOT NULL,
+      UNIQUE (user_id, rep_name)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_visible_reps ON user_visible_reps (label_id, user_id)`);
 
   // Manual calendar events. The calendar view also aggregates release dates,
   // task due dates and contract dates live; this table holds ad-hoc entries.

@@ -12,6 +12,7 @@ const KINDS = {
   task:             { label: 'Tasks',     dot: 'bg-amber-500',   text: 'text-amber-700',   bg: 'bg-amber-50' },
   contract_expiry:  { label: 'Expiring',  dot: 'bg-red-500',     text: 'text-red-700',     bg: 'bg-red-50' },
   contract_signed:  { label: 'Signed',    dot: 'bg-emerald-500', text: 'text-emerald-700', bg: 'bg-emerald-50' },
+  dsp:              { label: 'DSP live',   dot: 'bg-blue-500',    text: 'text-blue-700',    bg: 'bg-blue-50' },
   event:            { label: 'Events',    dot: 'bg-violet-500',  text: 'text-violet-700',  bg: 'bg-violet-50' },
 }
 const KIND_KEYS = Object.keys(KINDS)

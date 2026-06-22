@@ -6,6 +6,7 @@ import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import { applyAccent, resetAccent, isValidHex, ACCENT_PRESETS } from '../utils/branding'
 import RepsManager from '../components/RepsManager'
+import DataTools from '../components/DataTools'
 
 export default function Settings() {
   const { user, label, updateLabel } = useAuth()
@@ -182,6 +183,9 @@ export default function Settings() {
 
         {/* Reps — admin only */}
         {isAdmin && <RepsManager />}
+
+        {/* Data export / import — admin only */}
+        {isAdmin && <DataTools />}
 
         {/* Password */}
         <form onSubmit={changePassword} className="card p-5">

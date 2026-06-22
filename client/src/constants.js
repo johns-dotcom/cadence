@@ -27,10 +27,16 @@ export const RELEASE_CHECKLIST = [
   { key: 'audio_uploaded',    label: 'Audio uploaded to distributor' },
   { key: 'pitched_spotify',   label: 'Pitched to Spotify' },
   { key: 'pitched_apple',     label: 'Pitched to Apple Music' },
+  { key: 'pitched_amazon',    label: 'Pitched to Amazon Music' },
+  { key: 'pitched_pandora',   label: 'Pitched to Pandora' },
   { key: 'marketing_plan',    label: 'Marketing plan done' },
   { key: 'content_ready',     label: 'Content ready' },
+  { key: 'youtube_video',     label: 'YouTube video ready' },
+  { key: 'official_thread',   label: 'Official thread created' },
   { key: 'dsp_email_sent',    label: 'DSP email sent' },
   { key: 'lyrics_submitted',  label: 'Lyrics submitted' },
+  { key: 'musixmatch',        label: 'Musixmatch synced' },
+  { key: 'recoup_setup',      label: 'Recoupment set up' },
 ]
 
 // A&R deal pipeline stages, in funnel order.
@@ -63,7 +69,7 @@ export const PAYMENT_TERMS = ['Due on receipt', 'Net 7', 'Net 14', 'Net 30', 'Ne
 // DSP platforms tracked per release, and the submission lifecycle states.
 export const DSP_PLATFORMS = [
   'Spotify', 'Apple Music', 'Amazon Music', 'YouTube Music',
-  'TIDAL', 'Deezer', 'Pandora', 'Audiomack',
+  'TIDAL', 'Deezer', 'Pandora', 'iHeartRadio', 'Audiomack',
 ]
 export const DSP_STATUSES = ['Not Submitted', 'Submitted', 'Approved', 'Live', 'Rejected']
 

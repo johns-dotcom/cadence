@@ -15,7 +15,7 @@ const RELEASE_STATUSES = ['Draft', 'Scheduled', 'Released', 'Archived'];
 
 const DSP_PLATFORMS = [
   'Spotify', 'Apple Music', 'Amazon Music', 'YouTube Music',
-  'TIDAL', 'Deezer', 'Pandora', 'Audiomack',
+  'TIDAL', 'Deezer', 'Pandora', 'iHeartRadio', 'Audiomack',
 ];
 
 const DSP_STATUSES = ['Not Submitted', 'Submitted', 'Approved', 'Live', 'Rejected'];

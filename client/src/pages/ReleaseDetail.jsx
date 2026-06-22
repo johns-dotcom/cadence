@@ -5,6 +5,7 @@ import api from '../api'
 import { useToast } from '../context/ToastContext'
 import { RELEASE_TYPES, RELEASE_STATUSES, RELEASE_CHECKLIST } from '../constants'
 import DspTracker from '../components/DspTracker'
+import ReleaseExtras from '../components/ReleaseExtras'
 
 export default function ReleaseDetail() {
   const { id } = useParams()
@@ -132,6 +133,7 @@ export default function ReleaseDetail() {
       </div>
 
       <DspTracker releaseId={id} />
+      <ReleaseExtras releaseId={id} budgetCap={release.budget_cap} onCapChange={(v) => patch({ budget_cap: v === '' ? null : v })} />
     </div>
   )
 }

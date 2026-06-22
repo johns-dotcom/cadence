@@ -13,7 +13,7 @@ router.use(authMiddleware, withTenant);
 router.get('/', async (req, res) => {
   try {
     const isAdmin = ['Superadmin', 'Admin'].includes(req.user.role);
-    const [releases, tasks, events, signed, expiring] = await Promise.all([
+    const [releases, tasks, events, signed, expiring, dspLive] = await Promise.all([
       pool.query(
         `SELECT r.id, r.project_name, r.release_date, a.name AS artist_name
          FROM releases r
@@ -46,6 +46,13 @@ router.get('/', async (req, res) => {
             [req.labelId]
           )
         : Promise.resolve({ rows: [] }),
+      // DSP go-live dates.
+      pool.query(
+        `SELECT d.id, d.platform, d.live_date, r.project_name, r.id AS release_id
+         FROM dsp_submissions d JOIN releases r ON r.id = d.release_id AND r.label_id = d.label_id
+         WHERE d.label_id = $1 AND d.live_date IS NOT NULL`,
+        [req.labelId]
+      ),
     ]);
 
     const evs = [];
@@ -60,6 +67,9 @@ router.get('/', async (req, res) => {
     }
     for (const c of expiring.rows) {
       evs.push({ kind: 'contract_expiry', id: `cexp-${c.id}`, title: `Expires: ${[c.artist_name, c.type].filter(Boolean).join(' ')}`, date: c.expiration_date, link: '/renewals' });
+    }
+    for (const d of dspLive.rows) {
+      evs.push({ kind: 'dsp', id: `dsp-${d.id}`, title: `${d.platform} live: ${d.project_name}`, date: d.live_date, link: `/releases/${d.release_id}` });
     }
     for (const e of events.rows) {
       evs.push({ kind: 'event', id: `event-${e.id}`, eventId: e.id, title: e.title, date: e.event_date, description: e.description, color: e.color });

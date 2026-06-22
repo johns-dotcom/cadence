@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Pencil, X, Trash2, Plus, ExternalLink, Music,
-  Instagram, Youtube, Globe, BarChart3,
+  Instagram, Youtube, Globe, BarChart3, Paperclip, Download, Archive, ArchiveRestore,
 } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
@@ -38,20 +38,38 @@ export default function ArtistProfile() {
   const navigate = useNavigate()
   const [artist, setArtist] = useState(null)
   const [log, setLog] = useState([])
+  const [files, setFiles] = useState([])
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState({})
   const [bio, setBio] = useState('')
   const [newLog, setNewLog] = useState({ entry_type: 'Note', note: '' })
 
+  const loadFiles = () => api.get(`/artists/${id}/files`).then(f => setFiles(f.data.data || [])).catch(() => {})
   const load = () => {
     setLoading(true)
     Promise.all([api.get(`/artists/${id}`), api.get(`/artists/${id}/log`)])
       .then(([a, l]) => { setArtist(a.data.data); setLog(l.data.data || []) })
       .catch(() => toast('Failed to load artist', 'error'))
       .finally(() => setLoading(false))
+    loadFiles()
   }
   useEffect(() => { load() }, [id])
+
+  const uploadFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const fd = new FormData(); fd.append('file', file)
+    try { await api.post(`/artists/${id}/files`, fd, { headers: { 'Content-Type': 'multipart/form-data' } }); toast('File uploaded'); loadFiles() }
+    catch { toast('Upload failed', 'error') }
+    finally { e.target.value = '' }
+  }
+  const openFile = async (fid) => { try { const { data } = await api.get(`/artists/${id}/files/${fid}`); window.open(data.data.url, '_blank', 'noopener') } catch { toast('No file', 'error') } }
+  const delFile = async (fid) => { try { await api.delete(`/artists/${id}/files/${fid}`); loadFiles() } catch { toast('Failed', 'error') } }
+  const toggleArchive = async () => {
+    try { await api.patch(`/artists/${id}`, { archived: !artist.archived }); toast(artist.archived ? 'Unarchived' : 'Archived'); load() }
+    catch { toast('Failed', 'error') }
+  }
 
   const startEdit = () => {
     const f = {}
@@ -122,6 +140,9 @@ export default function ArtistProfile() {
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           <button onClick={startEdit} className="btn-secondary"><Pencil size={14} /> Edit</button>
+          <button onClick={toggleArchive} title={artist.archived ? 'Unarchive' : 'Archive'} className="inline-flex items-center justify-center p-2 rounded-lg border border-rule text-gray-400 hover:text-amber-600 hover:border-amber-200">
+            {artist.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}
+          </button>
           <button onClick={remove} className="inline-flex items-center justify-center p-2 rounded-lg border border-rule text-gray-400 hover:text-red-600 hover:border-red-200"><Trash2 size={15} /></button>
         </div>
       </div>
@@ -138,6 +159,27 @@ export default function ArtistProfile() {
             <p className="text-lg font-bold text-ink">{s.value}</p>
           </div>
         ))}
+      </div>
+
+      {/* Files */}
+      <div className="card p-4 mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-sm font-semibold text-ink">Files</h2>
+          <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-600 hover:underline cursor-pointer">
+            <Paperclip size={13} /> Attach
+            <input type="file" className="hidden" onChange={uploadFile} />
+          </label>
+        </div>
+        {files.length ? (
+          <div className="flex flex-wrap gap-2">
+            {files.map(f => (
+              <span key={f.id} className="inline-flex items-center gap-1.5 text-xs bg-gray-100 rounded-lg px-2 py-1 group">
+                <button onClick={() => openFile(f.id)} className="inline-flex items-center gap-1 text-gray-600 hover:text-brand-600 max-w-[160px] truncate"><Download size={12} /> <span className="truncate">{f.original_name}</span></button>
+                <button onClick={() => delFile(f.id)} className="text-gray-300 hover:text-red-600"><X size={12} /></button>
+              </span>
+            ))}
+          </div>
+        ) : <p className="text-sm text-gray-400">No files attached.</p>}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

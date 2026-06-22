@@ -82,9 +82,11 @@ router.post('/', async (req, res) => {
 const UPDATABLE = [
   'project_name', 'release_date', 'release_type', 'genre', 'status',
   'upc', 'isrc', 'spotify_uri', 'cover_art_url', 'priority', 'notes',
-  'producer', 'featured_artists',
+  'producer', 'featured_artists', 'budget_cap',
   'cover_art_received', 'audio_uploaded', 'pitched_spotify', 'pitched_apple',
   'marketing_plan', 'content_ready', 'dsp_email_sent', 'lyrics_submitted',
+  'pitched_amazon', 'pitched_pandora', 'youtube_video', 'official_thread',
+  'musixmatch', 'recoup_setup',
 ];
 
 // PATCH /api/releases/:id — partial update of any allowed field(s).
@@ -123,6 +125,113 @@ router.delete('/:id', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Delete release error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// Confirm a release belongs to the caller's workspace before touching its
+// sub-resources.
+async function releaseInLabel(id, labelId) {
+  const { rows } = await pool.query('SELECT 1 FROM releases WHERE id = $1 AND label_id = $2', [id, labelId]);
+  return rows.length > 0;
+}
+
+// ── Comments ─────────────────────────────────────────────────────────────
+
+// GET /api/releases/:id/comments
+router.get('/:id/comments', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT c.id, c.body, c.created_at, u.name AS author
+       FROM release_comments c LEFT JOIN users u ON u.id = c.user_id AND u.label_id = c.label_id
+       WHERE c.label_id = $1 AND c.release_id = $2 ORDER BY c.created_at ASC`,
+      [req.labelId, parseInt(req.params.id, 10)]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('List comments error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/releases/:id/comments
+router.post('/:id/comments', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const body = (req.body.body || '').trim();
+    if (!body) return res.status(400).json({ success: false, error: 'Comment is required' });
+    if (!(await releaseInLabel(id, req.labelId))) return res.status(404).json({ success: false, error: 'Release not found' });
+    const { rows } = await pool.query(
+      `INSERT INTO release_comments (label_id, release_id, user_id, body) VALUES ($1,$2,$3,$4) RETURNING id, body, created_at`,
+      [req.labelId, id, req.user.id, body]
+    );
+    res.status(201).json({ success: true, data: { ...rows[0], author: req.user.name } });
+  } catch (error) {
+    console.error('Create comment error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/releases/:id/comments/:commentId
+router.delete('/:id/comments/:commentId', async (req, res) => {
+  try {
+    const { rowCount } = await pool.query(
+      'DELETE FROM release_comments WHERE id = $1 AND release_id = $2 AND label_id = $3',
+      [parseInt(req.params.commentId, 10), parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rowCount) return res.status(404).json({ success: false, error: 'Comment not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete comment error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Budget line items ────────────────────────────────────────────────────
+
+// GET /api/releases/:id/budget — cap + line items + total.
+router.get('/:id/budget', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const cap = await pool.query('SELECT budget_cap FROM releases WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    if (!cap.rows.length) return res.status(404).json({ success: false, error: 'Release not found' });
+    const items = await pool.query('SELECT * FROM release_budget_items WHERE label_id = $1 AND release_id = $2 ORDER BY id', [req.labelId, id]);
+    const total = items.rows.reduce((s, r) => s + Number(r.amount || 0), 0);
+    res.json({ success: true, data: { budget_cap: cap.rows[0].budget_cap, items: items.rows, total } });
+  } catch (error) {
+    console.error('Get budget error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/releases/:id/budget/items
+router.post('/:id/budget/items', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!(await releaseInLabel(id, req.labelId))) return res.status(404).json({ success: false, error: 'Release not found' });
+    const { rows } = await pool.query(
+      `INSERT INTO release_budget_items (label_id, release_id, category, description, amount)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [req.labelId, id, req.body.category || null, req.body.description || null, parseFloat(req.body.amount) || 0]
+    );
+    res.status(201).json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Create budget item error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/releases/:id/budget/items/:itemId
+router.delete('/:id/budget/items/:itemId', async (req, res) => {
+  try {
+    const { rowCount } = await pool.query(
+      'DELETE FROM release_budget_items WHERE id = $1 AND release_id = $2 AND label_id = $3',
+      [parseInt(req.params.itemId, 10), parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rowCount) return res.status(404).json({ success: false, error: 'Item not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete budget item error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
