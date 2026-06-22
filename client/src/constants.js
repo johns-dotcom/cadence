@@ -59,3 +59,13 @@ export const LEDGER_STATUSES = ['pending', 'approved', 'rejected']
 export const PAYMENT_STATUSES = ['Unpaid', 'Paid']
 
 export const PAYMENT_TERMS = ['Due on receipt', 'Net 7', 'Net 14', 'Net 30', 'Net 45', 'Net 60', 'Net 90']
+
+// DSP platforms tracked per release, and the submission lifecycle states.
+export const DSP_PLATFORMS = [
+  'Spotify', 'Apple Music', 'Amazon Music', 'YouTube Music',
+  'TIDAL', 'Deezer', 'Pandora', 'Audiomack',
+]
+export const DSP_STATUSES = ['Not Submitted', 'Submitted', 'Approved', 'Live', 'Rejected']
+
+// Artist development-log entry kinds (A&R timeline).
+export const DEV_LOG_TYPES = ['Note', 'Meeting', 'Demo', 'Offer', 'Call', 'Feedback', 'Milestone']

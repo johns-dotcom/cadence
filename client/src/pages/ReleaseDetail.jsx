@@ -4,6 +4,7 @@ import { ArrowLeft, Check, Trash2 } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
 import { RELEASE_TYPES, RELEASE_STATUSES, RELEASE_CHECKLIST } from '../constants'
+import DspTracker from '../components/DspTracker'
 
 export default function ReleaseDetail() {
   const { id } = useParams()
@@ -129,6 +130,8 @@ export default function ReleaseDetail() {
           </div>
         </div>
       </div>
+
+      <DspTracker releaseId={id} />
     </div>
   )
 }

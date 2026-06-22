@@ -13,4 +13,13 @@ const RELEASE_TYPES = ['Single', 'EP', 'Album', 'Compilation', 'Mixtape'];
 
 const RELEASE_STATUSES = ['Draft', 'Scheduled', 'Released', 'Archived'];
 
-module.exports = { ROLES, CURRENCIES, RELEASE_TYPES, RELEASE_STATUSES };
+const DSP_PLATFORMS = [
+  'Spotify', 'Apple Music', 'Amazon Music', 'YouTube Music',
+  'TIDAL', 'Deezer', 'Pandora', 'Audiomack',
+];
+
+const DSP_STATUSES = ['Not Submitted', 'Submitted', 'Approved', 'Live', 'Rejected'];
+
+const DEV_LOG_TYPES = ['Note', 'Meeting', 'Demo', 'Offer', 'Call', 'Feedback', 'Milestone'];
+
+module.exports = { ROLES, CURRENCIES, RELEASE_TYPES, RELEASE_STATUSES, DSP_PLATFORMS, DSP_STATUSES, DEV_LOG_TYPES };

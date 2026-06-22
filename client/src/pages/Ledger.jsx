@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign } from 'lucide-react'
+import { useEffect, useState, useRef } from 'react'
+import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
@@ -77,6 +77,57 @@ export default function Ledger() {
     navigator.clipboard.writeText(url).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
   }
 
+  // ── CSV export / import ──────────────────────────────────────────────
+  const importRef = useRef(null)
+  const [importing, setImporting] = useState(false)
+
+  const exportCsv = async () => {
+    try {
+      const res = await api.get('/ledger/export', { responseType: 'blob' })
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }))
+      const a = document.createElement('a')
+      a.href = url; a.download = `ledger-${label?.slug || 'export'}.csv`
+      document.body.appendChild(a); a.click(); a.remove()
+      window.URL.revokeObjectURL(url)
+    } catch { toast('Export failed', 'error') }
+  }
+
+  // Minimal CSV parser — header row maps to known columns; quoted fields with
+  // commas/newlines are handled.
+  const parseCsv = (text) => {
+    const rows = []; let row = []; let field = ''; let inQuotes = false
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i]
+      if (inQuotes) {
+        if (c === '"' && text[i + 1] === '"') { field += '"'; i++ }
+        else if (c === '"') inQuotes = false
+        else field += c
+      } else if (c === '"') inQuotes = true
+      else if (c === ',') { row.push(field); field = '' }
+      else if (c === '\n' || c === '\r') { if (field !== '' || row.length) { row.push(field); rows.push(row); row = []; field = '' } if (c === '\r' && text[i + 1] === '\n') i++ }
+      else field += c
+    }
+    if (field !== '' || row.length) { row.push(field); rows.push(row) }
+    if (rows.length < 2) return []
+    const headers = rows[0].map(h => h.trim().toLowerCase().replace(/\s+/g, '_'))
+    return rows.slice(1).filter(r => r.some(c => c.trim())).map(r => Object.fromEntries(headers.map((h, i) => [h, (r[i] || '').trim()])))
+  }
+
+  const onImportFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setImporting(true)
+    try {
+      const text = await file.text()
+      const rows = parseCsv(text)
+      if (!rows.length) { toast('No rows found in CSV', 'error'); return }
+      const { data } = await api.post('/ledger/import', { rows })
+      toast(`Imported ${data.data.inserted} entries`)
+      load()
+    } catch (err) { toast(err.response?.data?.error || 'Import failed', 'error') }
+    finally { setImporting(false); if (importRef.current) importRef.current.value = '' }
+  }
+
   return (
     <div>
       <PageHeader
@@ -84,6 +135,11 @@ export default function Ledger() {
         subtitle="Expenses and vendor payments"
         action={
           <div className="flex items-center gap-2">
+            <button onClick={exportCsv} className="btn-secondary"><Download size={15} /> Export</button>
+            <button onClick={() => importRef.current?.click()} disabled={importing} className="btn-secondary">
+              <Upload size={15} /> {importing ? 'Importing…' : 'Import'}
+            </button>
+            <input ref={importRef} type="file" accept=".csv" className="hidden" onChange={onImportFile} />
             <button onClick={copyVendorLink} className="btn-secondary">
               {copied ? <><Check size={15} /> Copied</> : <><Link2 size={15} /> Vendor form link</>}
             </button>

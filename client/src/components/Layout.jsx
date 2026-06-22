@@ -1,17 +1,32 @@
 import { useState, useEffect, useRef } from 'react'
-import { Outlet, Link, useLocation } from 'react-router-dom'
+import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Music, Users, UserCheck, Settings, ScrollText,
   LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
+  Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
+  FileClock, Shield, Lock, Sparkles,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
 import api from '../api'
+import GlobalSearch from './GlobalSearch'
+import NotificationBell from './NotificationBell'
+import BottomNav from './BottomNav'
+import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
 
 const PAGE_LABELS = {
   '/':           'Dashboard',
   '/my-work':    'My Work',
+  '/calendar':   'Calendar',
+  '/financials': 'Financials',
+  '/recoupments':'Recoupments',
+  '/salary':     'Salary',
+  '/marketing':  'Marketing',
+  '/pending-contracts': 'Pending Contracts',
+  '/legal':      'NDAs',
+  '/admin-docs': 'Admin Docs',
+  '/data-quality': 'Data quality',
   '/releases':   'Releases',
   '/artists':    'Artists',
   '/deals':      'Deal Pipeline',
@@ -118,6 +133,31 @@ export default function Layout() {
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
+  const [vendorLinkCopied, setVendorLinkCopied] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const navigate = useNavigate()
+
+  // Keyboard shortcuts: ⌘K search, ? help, and "g"-prefixed quick navigation
+  // (g d/r/a/c/w). Ignored while typing in a field.
+  useEffect(() => {
+    let gPending = false
+    let gTimer = null
+    const inField = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setSearchOpen(v => !v); return }
+      if (inField(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key === '?') { e.preventDefault(); setHelpOpen(v => !v); return }
+      if (gPending) {
+        const dest = { d: '/', r: '/releases', a: '/artists', c: '/calendar', w: '/my-work' }[e.key.toLowerCase()]
+        if (dest) { e.preventDefault(); navigate(dest) }
+        gPending = false; clearTimeout(gTimer); return
+      }
+      if (e.key.toLowerCase() === 'g') { gPending = true; gTimer = setTimeout(() => { gPending = false }, 800) }
+    }
+    window.addEventListener('keydown', handler)
+    return () => { window.removeEventListener('keydown', handler); clearTimeout(gTimer) }
+  }, [navigate])
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 1023px)')
@@ -132,6 +172,16 @@ export default function Layout() {
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
 
+  // Public vendor submission form — unique per workspace via the label slug.
+  const copyVendorLink = () => {
+    if (!label?.slug) return
+    const url = `${window.location.origin}/submit/${label.slug}`
+    navigator.clipboard.writeText(url).then(() => {
+      setVendorLinkCopied(true)
+      setTimeout(() => setVendorLinkCopied(false), 2000)
+    }).catch(() => {})
+  }
+
   // Pending ledger approvals → nav badge (approvers only). Refreshes on nav.
   const [pendingApprovals, setPendingApprovals] = useState(0)
   useEffect(() => {
@@ -145,8 +195,9 @@ export default function Layout() {
     {
       label: null,
       items: [
-        { path: '/',        label: 'Dashboard', icon: LayoutDashboard },
-        { path: '/my-work', label: 'My Work',   icon: Briefcase },
+        { path: '/',         label: 'Dashboard', icon: LayoutDashboard },
+        { path: '/my-work',  label: 'My Work',   icon: Briefcase },
+        { path: '/calendar', label: 'Calendar',  icon: CalendarDays },
       ],
     },
     {
@@ -159,14 +210,18 @@ export default function Layout() {
     {
       label: 'A&R',
       items: [
-        { path: '/deals', label: 'Deal Pipeline', icon: TrendingUp },
+        { path: '/deals',     label: 'Deal Pipeline', icon: TrendingUp },
+        { path: '/marketing', label: 'Marketing',     icon: Megaphone },
       ],
     },
     {
-      label: 'Contracts',
+      label: 'Contracts & Legal',
       items: [
         ...(isApprover ? [{ path: '/contracts', label: 'Contracts', icon: FileText }] : []),
+        ...(isApprover ? [{ path: '/pending-contracts', label: 'Pending', icon: FileClock }] : []),
         ...(isApprover ? [{ path: '/renewals', label: 'Renewals', icon: RefreshCw }] : []),
+        ...(isApprover ? [{ path: '/legal', label: 'NDAs', icon: Shield }] : []),
+        ...(isAdmin ? [{ path: '/admin-docs', label: 'Admin Docs', icon: Lock }] : []),
       ],
     },
     {
@@ -176,6 +231,9 @@ export default function Layout() {
         ...(isApprover ? [{ path: '/payments', label: 'Payments', icon: CreditCard }] : []),
         ...(isApprover ? [{ path: '/vendors', label: 'Vendors', icon: Building2 }] : []),
         ...(isApprover ? [{ path: '/invoices', label: 'Invoices', icon: Receipt }] : []),
+        ...(isApprover ? [{ path: '/financials', label: 'Financials', icon: PieChart }] : []),
+        ...(isApprover ? [{ path: '/recoupments', label: 'Recoupments', icon: Wallet }] : []),
+        ...(isAdmin ? [{ path: '/salary', label: 'Salary', icon: Banknote }] : []),
       ],
     },
     {
@@ -183,6 +241,7 @@ export default function Layout() {
       items: [
         ...(isAdmin ? [{ path: '/team', label: 'Team', icon: UserCheck }] : []),
         ...(isAdmin ? [{ path: '/activity', label: 'Activity', icon: ScrollText }] : []),
+        ...(isAdmin ? [{ path: '/data-quality', label: 'Data quality', icon: Sparkles }] : []),
         { path: '/settings', label: 'Settings', icon: Settings },
       ],
     },
@@ -265,6 +324,20 @@ export default function Layout() {
 
         {/* User + logout */}
         <div className="p-3 border-t border-divider">
+          {/* Public vendor form link — per-workspace, easy to copy and share. */}
+          {isApprover && label?.slug && (
+            <button
+              onClick={copyVendorLink}
+              title={`${window.location.origin}/submit/${label.slug}`}
+              className="w-full flex items-center gap-2.5 px-3 py-2 mb-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-all border-b border-divider pb-3 rounded-b-none"
+            >
+              <Link2 size={16} strokeWidth={1.5} className="text-gray-400 flex-shrink-0" />
+              <span>Vendor Form</span>
+              <span className={`ml-auto inline-flex items-center gap-1 text-xs font-semibold ${vendorLinkCopied ? 'text-emerald-600' : 'text-gray-400'}`}>
+                {vendorLinkCopied ? <><Check size={13} /> Copied</> : 'Copy link'}
+              </span>
+            </button>
+          )}
           {user && (
             <div className="flex items-center gap-3 px-3 py-2 mb-2">
               <div className="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0">
@@ -317,6 +390,17 @@ export default function Layout() {
           )}
           <h1 className="text-sm font-semibold text-ink">{PAGE_LABELS[location.pathname] || ''}</h1>
           <div className="flex-1" />
+          {/* Workspace-wide search (⌘K) */}
+          <button
+            onClick={() => setSearchOpen(true)}
+            title="Search (⌘K)"
+            className="inline-flex items-center gap-2 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-rule text-gray-400 hover:text-gray-700 hover:bg-gray-50 transition-all"
+          >
+            <Search size={14} />
+            <span className="hidden md:inline">Search</span>
+            <kbd className="hidden md:inline text-[10px] border border-rule rounded px-1 leading-tight">⌘K</kbd>
+          </button>
+          <NotificationBell />
           <span className="hidden sm:block"><ViewAsDropdown /></span>
           <button
             onClick={toggleTheme}
@@ -328,11 +412,15 @@ export default function Layout() {
         </div>
 
         <main className="flex-1 overflow-auto">
-          <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 sm:py-8">
+          <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 sm:py-8 pb-20 lg:pb-8">
             <Outlet />
           </div>
         </main>
       </div>
+
+      <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
+      <KeyboardShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      {isMobile && <BottomNav onSearch={() => setSearchOpen(true)} onMenu={() => setSidebarOpen(true)} />}
     </div>
   )
 }

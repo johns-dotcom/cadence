@@ -40,13 +40,20 @@ const EDITABLE = [
 router.get('/entries', async (req, res) => {
   try {
     const params = [req.labelId];
+    // Child rows of a split are hidden from the main list (the parent carries
+    // the combined total); pass ?parent=<id> to fetch a split's children.
     let where = 'label_id = $1 AND (deleted = false OR deleted IS NULL)';
+    if (req.query.parent) { params.push(parseInt(req.query.parent, 10)); where += ` AND parent_id = $${params.length}`; }
+    else where += ' AND parent_id IS NULL';
     if (req.query.status) { params.push(req.query.status); where += ` AND status = $${params.length}`; }
     if (req.query.payment_status) { params.push(req.query.payment_status); where += ` AND payment_status = $${params.length}`; }
-    if (req.query.q) { params.push(`%${req.query.q}%`); where += ` AND (payee ILIKE $${params.length} OR description ILIKE $${params.length} OR artist ILIKE $${params.length})`; }
+    if (req.query.category) { params.push(req.query.category); where += ` AND category = $${params.length}`; }
+    if (req.query.artist) { params.push(`%${req.query.artist}%`); where += ` AND artist ILIKE $${params.length}`; }
+    if (req.query.q) { params.push(`%${req.query.q}%`); where += ` AND (payee ILIKE $${params.length} OR description ILIKE $${params.length} OR artist ILIKE $${params.length} OR invoice_number ILIKE $${params.length})`; }
 
     const { rows } = await pool.query(
-      `SELECT * FROM expenses WHERE ${where} ORDER BY COALESCE(invoice_date, created_at::date) DESC, id DESC`,
+      `SELECT e.*, (SELECT COUNT(*)::int FROM expenses c WHERE c.parent_id = e.id) AS split_count
+       FROM expenses e WHERE ${where} ORDER BY COALESCE(invoice_date, created_at::date) DESC, id DESC`,
       params
     );
     res.json({ success: true, data: rows });
@@ -381,6 +388,151 @@ router.get('/entries/:id/file/:type', async (req, res) => {
     res.json({ success: true, data: { url } });
   } catch (error) {
     console.error('File url error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/bulk-approve — approve many pending entries at once.
+router.post('/bulk-approve', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
+    const { rows } = await pool.query(
+      `UPDATE expenses SET status = 'approved', approved_by = $1, approved_at = NOW()
+       WHERE label_id = $2 AND status = 'pending' AND id = ANY($3::int[]) RETURNING id`,
+      [req.user.name, req.labelId, ids]
+    );
+    await logActivity(req, 'Bulk approved', `${rows.length} entries`);
+    res.json({ success: true, data: { approved: rows.length } });
+  } catch (error) {
+    console.error('Bulk approve error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/entries/:id/restore — undo a soft delete.
+router.post('/entries/:id/restore', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'UPDATE expenses SET deleted = false WHERE id = $1 AND label_id = $2 RETURNING *',
+      [parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Restore error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/entries/:id/split — divide a parent entry into child rows
+// (one per { artist, amount }). The parent is retained as the container and
+// excluded from totals (its children carry the real amounts).
+router.post('/entries/:id/split', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const id = parseInt(req.params.id, 10);
+    const splits = Array.isArray(req.body.splits) ? req.body.splits : [];
+    if (splits.length < 2) return res.status(400).json({ success: false, error: 'Provide at least two splits' });
+
+    await client.query('BEGIN');
+    const { rows: prows } = await client.query('SELECT * FROM expenses WHERE id = $1 AND label_id = $2 AND parent_id IS NULL FOR UPDATE', [id, req.labelId]);
+    if (!prows.length) { await client.query('ROLLBACK'); return res.status(404).json({ success: false, error: 'Entry not found or already a child' }); }
+    const parent = prows[0];
+
+    for (const s of splits) {
+      const amount = parseFloat(s.amount);
+      if (!amount || amount <= 0) continue;
+      await client.query(
+        `INSERT INTO expenses (label_id, parent_id, invoice_date, payee, description, category, artist, song,
+           invoice_number, amount, currency, payment_method, status, payment_status, is_reimbursement, recoupable, rep, notes, created_by, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())`,
+        [req.labelId, id, parent.invoice_date, parent.payee, parent.description, parent.category,
+         s.artist || parent.artist, parent.song, parent.invoice_number, amount, parent.currency,
+         parent.payment_method, parent.status, parent.payment_status, parent.is_reimbursement,
+         parent.recoupable, parent.rep, parent.notes, req.user.name]
+      );
+    }
+    await client.query('COMMIT');
+    await logActivity(req, 'Split ledger entry', `${parent.payee} → ${splits.length} parts`);
+    res.json({ success: true });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Split error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+});
+
+// DELETE /api/ledger/entries/:id/splits — merge children back into the parent.
+router.delete('/entries/:id/splits', async (req, res) => {
+  try {
+    const { rowCount } = await pool.query('DELETE FROM expenses WHERE parent_id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId]);
+    res.json({ success: true, data: { removed: rowCount } });
+  } catch (error) {
+    console.error('Unsplit error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/import — bulk create entries from parsed rows (CSV wizard
+// on the client posts a JSON array). Inserted in one transaction.
+router.post('/import', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
+    if (!rows.length) return res.status(400).json({ success: false, error: 'No rows to import' });
+    if (rows.length > 1000) return res.status(400).json({ success: false, error: 'Too many rows (max 1000 per import)' });
+
+    await client.query('BEGIN');
+    let inserted = 0;
+    for (const r of rows) {
+      if (!r.payee || !r.amount) continue;
+      await client.query(
+        `INSERT INTO expenses (label_id, invoice_date, payee, description, category, artist, invoice_number,
+           amount, currency, payment_method, status, payment_status, rep, notes, created_by, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,COALESCE($9,'USD'),$10,COALESCE($11,'approved'),COALESCE($12,'Unpaid'),$13,$14,$15,NOW())`,
+        [req.labelId, r.invoice_date || null, String(r.payee).trim(), r.description || null, r.category || null,
+         r.artist || null, r.invoice_number || null, parseFloat(r.amount) || 0, r.currency || null,
+         r.payment_method || null, r.status || null, r.payment_status || null, r.rep || null, r.notes || null, req.user.name]
+      );
+      inserted += 1;
+    }
+    await client.query('COMMIT');
+    await logActivity(req, 'Imported ledger entries', `${inserted} rows`);
+    res.status(201).json({ success: true, data: { inserted } });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Import error:', error);
+    res.status(500).json({ success: false, error: 'Import failed' });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/ledger/export — CSV of all (non-deleted) entries for the workspace.
+router.get('/export', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT invoice_date, payee, description, category, artist, invoice_number, amount, currency,
+              payment_method, status, payment_status, payment_date, rep, notes
+       FROM expenses WHERE label_id = $1 AND (deleted = false OR deleted IS NULL) AND parent_id IS NULL
+       ORDER BY COALESCE(invoice_date, created_at::date) DESC`,
+      [req.labelId]
+    );
+    const cols = ['invoice_date', 'payee', 'description', 'category', 'artist', 'invoice_number', 'amount', 'currency', 'payment_method', 'status', 'payment_status', 'payment_date', 'rep', 'notes'];
+    const esc = (v) => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const csv = [cols.join(','), ...rows.map(r => cols.map(c => esc(r[c])).join(','))].join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="ledger-export.csv"');
+    res.send(csv);
+  } catch (error) {
+    console.error('Export error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

@@ -23,6 +23,18 @@ const vendorRoutes = require('./routes/vendor');
 const dashboardRoutes = require('./routes/dashboard');
 const activityRoutes = require('./routes/activity');
 const settingsRoutes = require('./routes/settings');
+const searchRoutes = require('./routes/search');
+const notificationsRoutes = require('./routes/notifications');
+const calendarRoutes = require('./routes/calendar');
+const repsRoutes = require('./routes/reps');
+const dspRoutes = require('./routes/dsp');
+const financialsRoutes = require('./routes/financials');
+const salaryRoutes = require('./routes/salary');
+const campaignsRoutes = require('./routes/campaigns');
+const pendingContractsRoutes = require('./routes/pending-contracts');
+const ndasRoutes = require('./routes/ndas');
+const adminDocsRoutes = require('./routes/admin-docs');
+const flagsRoutes = require('./routes/flags');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -120,6 +132,18 @@ app.use('/api/vendor', vendorRoutes); // public (no auth) — label resolved by 
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/search', searchRoutes);
+app.use('/api/notifications', notificationsRoutes);
+app.use('/api/calendar', calendarRoutes);
+app.use('/api/reps', repsRoutes);
+app.use('/api/dsp', dspRoutes);
+app.use('/api/financials', financialsRoutes);
+app.use('/api/salary', salaryRoutes);
+app.use('/api/campaigns', campaignsRoutes);
+app.use('/api/pending-contracts', pendingContractsRoutes);
+app.use('/api/ndas', ndasRoutes);
+app.use('/api/admin-docs', adminDocsRoutes);
+app.use('/api/flags', flagsRoutes);
 
 // Unknown API route → JSON 404 (don't fall through to the SPA).
 app.use('/api', (req, res) => res.status(404).json({ success: false, error: 'Not found' }));
@@ -314,6 +338,10 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS scheduled_payment_date DATE`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS paid_marked_at TIMESTAMP`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_ref TEXT`);
+  // Split invoices: child rows reference their parent. The parent stays in the
+  // list showing the combined total; children are hidden unless expanded.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS parent_id INT REFERENCES expenses(id) ON DELETE CASCADE`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_expenses_parent ON expenses (parent_id)`);
 
   // Vendors — contact + W9 on file, keyed by name within a label. Spend is
   // derived from the ledger; this just holds what shouldn't be re-keyed.
@@ -421,6 +449,210 @@ const runMigrations = async () => {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
+
+  // Artist profile depth — social links, imagery and Spotify stats. Columns
+  // are additive so existing rosters keep working.
+  for (const [col, type] of [
+    ['image_url', 'VARCHAR(500)'], ['bio', 'TEXT'], ['website', 'VARCHAR(255)'],
+    ['spotify_url', 'VARCHAR(255)'], ['apple_music_url', 'VARCHAR(255)'],
+    ['instagram', 'VARCHAR(255)'], ['tiktok', 'VARCHAR(255)'],
+    ['youtube', 'VARCHAR(255)'], ['soundcloud', 'VARCHAR(255)'],
+    ['spotify_monthly_listeners', 'INTEGER'], ['spotify_followers', 'INTEGER'],
+    ['spotify_popularity', 'INTEGER'],
+  ]) {
+    await pool.query(`ALTER TABLE artists ADD COLUMN IF NOT EXISTS ${col} ${type}`);
+  }
+
+  // Artist development log — A&R timeline of meetings, demos, offers, notes.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS artist_dev_log (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      artist_id INT NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+      entry_type VARCHAR(50) DEFAULT 'Note',
+      note TEXT NOT NULL,
+      log_date DATE DEFAULT CURRENT_DATE,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_dev_log_artist ON artist_dev_log (label_id, artist_id)`);
+
+  // Per-release DSP submission tracker — one row per (release, platform).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS dsp_submissions (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      release_id INT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+      platform VARCHAR(50) NOT NULL,
+      status VARCHAR(30) DEFAULT 'Not Submitted',
+      submitted_date DATE,
+      live_date DATE,
+      notes TEXT,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (release_id, platform)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_dsp_release ON dsp_submissions (label_id, release_id)`);
+
+  // Reps — the workspace's curated list of names used in ledger/deal dropdowns.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS reps (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      name VARCHAR(255) NOT NULL,
+      active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_reps_label_name ON reps (label_id, LOWER(name))`);
+
+  // Artist income — money in attributed to an artist (streaming, sync, etc.).
+  // Paired with recoupable ledger spend to compute recoupment per artist.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS artist_income (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      artist_id INT REFERENCES artists(id) ON DELETE SET NULL,
+      source VARCHAR(100),
+      description TEXT,
+      amount NUMERIC(12,2) NOT NULL,
+      currency VARCHAR(10) DEFAULT 'USD',
+      income_date DATE DEFAULT CURRENT_DATE,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_artist_income_label ON artist_income (label_id, artist_id)`);
+
+  // Payroll roster + monthly payment tracking.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS salary_employees (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      name VARCHAR(255) NOT NULL,
+      department VARCHAR(100),
+      monthly_amount NUMERIC(12,2) DEFAULT 0,
+      currency VARCHAR(10) DEFAULT 'USD',
+      active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_salary_employees_label ON salary_employees (label_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS salary_payments (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      employee_id INT NOT NULL REFERENCES salary_employees(id) ON DELETE CASCADE,
+      month INT NOT NULL,
+      year INT NOT NULL,
+      paid BOOLEAN DEFAULT FALSE,
+      amount NUMERIC(12,2),
+      paid_at TIMESTAMP,
+      marked_by INT REFERENCES users(id) ON DELETE SET NULL,
+      UNIQUE (employee_id, month, year)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_salary_payments_label ON salary_payments (label_id, year, month)`);
+
+  // Marketing / influencer campaigns — spend tracking linked to an artist.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS campaigns (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      artist_id INT REFERENCES artists(id) ON DELETE SET NULL,
+      name VARCHAR(255) NOT NULL,
+      platform VARCHAR(100),
+      status VARCHAR(50) DEFAULT 'Planned',
+      planned_budget NUMERIC(12,2) DEFAULT 0,
+      actual_spend NUMERIC(12,2) DEFAULT 0,
+      currency VARCHAR(10) DEFAULT 'USD',
+      start_date DATE,
+      end_date DATE,
+      handles TEXT,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_campaigns_label ON campaigns (label_id, artist_id)`);
+
+  // Pending contracts — agreements awaiting signature (a lightweight queue
+  // separate from executed contracts).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pending_contracts (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      counterparty VARCHAR(255) NOT NULL,
+      type VARCHAR(100),
+      status VARCHAR(50) DEFAULT 'Not Sent',
+      sent_date DATE,
+      due_date DATE,
+      notes TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_pending_contracts_label ON pending_contracts (label_id)`);
+
+  // NDAs — non-disclosure agreement tracking with optional document file.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ndas (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      counterparty VARCHAR(255) NOT NULL,
+      status VARCHAR(50) DEFAULT 'Active',
+      effective_date DATE,
+      expiration_date DATE,
+      notes TEXT,
+      file_name VARCHAR(255),
+      r2_key TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ndas_label ON ndas (label_id)`);
+
+  // Admin docs vault — secure company documents with categories + files.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_docs (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      title VARCHAR(255) NOT NULL,
+      category VARCHAR(100),
+      status VARCHAR(50) DEFAULT 'Active',
+      confidentiality VARCHAR(50) DEFAULT 'Internal',
+      counterparty VARCHAR(255),
+      signed_date DATE,
+      expiration_date DATE,
+      tags TEXT,
+      notes TEXT,
+      file_name VARCHAR(255),
+      r2_key TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_docs_label ON admin_docs (label_id)`);
+
+  // Manual calendar events. The calendar view also aggregates release dates,
+  // task due dates and contract dates live; this table holds ad-hoc entries.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS calendar_events (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      title VARCHAR(255) NOT NULL,
+      event_date DATE NOT NULL,
+      description TEXT,
+      color VARCHAR(20),
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_calendar_events_label ON calendar_events (label_id, event_date)`);
 
   // Helpful indexes for the hot tenant-scoped lookups.
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_releases_label ON releases (label_id)`);

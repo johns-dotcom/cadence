@@ -6,10 +6,19 @@ import Dashboard from './pages/Dashboard'
 import Releases from './pages/Releases'
 import ReleaseDetail from './pages/ReleaseDetail'
 import Artists from './pages/Artists'
+import ArtistProfile from './pages/ArtistProfile'
 import Deals from './pages/Deals'
 import Contracts from './pages/Contracts'
+import PendingContracts from './pages/PendingContracts'
+import Legal from './pages/Legal'
+import AdminDocs from './pages/AdminDocs'
 import Renewals from './pages/Renewals'
 import MyWork from './pages/MyWork'
+import Calendar from './pages/Calendar'
+import Financials from './pages/Financials'
+import Recoupments from './pages/Recoupments'
+import Salary from './pages/Salary'
+import Campaigns from './pages/Campaigns'
 import Ledger from './pages/Ledger'
 import Payments from './pages/Payments'
 import Vendors from './pages/Vendors'
@@ -19,6 +28,7 @@ import Team from './pages/Team'
 import Settings from './pages/Settings'
 import Activity from './pages/Activity'
 import Workspaces from './pages/Workspaces'
+import Duplicates from './pages/Duplicates'
 import Privacy from './pages/Privacy'
 import EULA from './pages/EULA'
 
@@ -73,18 +83,28 @@ function AppContent() {
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route path="/"             element={<Dashboard />} />
         <Route path="/my-work"      element={<MyWork />} />
+        <Route path="/calendar"     element={<Calendar />} />
         <Route path="/releases"     element={<Releases />} />
         <Route path="/releases/:id" element={<ReleaseDetail />} />
         <Route path="/artists"      element={<Artists />} />
+        <Route path="/artists/:id"  element={<ArtistProfile />} />
         <Route path="/deals"        element={<Deals />} />
         <Route path="/contracts"    element={<AdminRoute><Contracts /></AdminRoute>} />
+        <Route path="/pending-contracts" element={<AdminRoute><PendingContracts /></AdminRoute>} />
         <Route path="/renewals"     element={<AdminRoute><Renewals /></AdminRoute>} />
+        <Route path="/legal"        element={<AdminRoute><Legal /></AdminRoute>} />
+        <Route path="/admin-docs"   element={<AdminRoute><AdminDocs /></AdminRoute>} />
+        <Route path="/financials"   element={<AdminRoute><Financials /></AdminRoute>} />
+        <Route path="/recoupments"  element={<AdminRoute><Recoupments /></AdminRoute>} />
+        <Route path="/salary"       element={<AdminRoute><Salary /></AdminRoute>} />
+        <Route path="/marketing"    element={<Campaigns />} />
         <Route path="/ledger"       element={<AdminRoute><Ledger /></AdminRoute>} />
         <Route path="/payments"     element={<AdminRoute><Payments /></AdminRoute>} />
         <Route path="/vendors"      element={<AdminRoute><Vendors /></AdminRoute>} />
         <Route path="/invoices"     element={<AdminRoute><Invoices /></AdminRoute>} />
         <Route path="/team"         element={<AdminRoute><Team /></AdminRoute>} />
         <Route path="/activity"     element={<AdminRoute><Activity /></AdminRoute>} />
+        <Route path="/data-quality" element={<AdminRoute><Duplicates /></AdminRoute>} />
         <Route path="/settings"     element={<Settings />} />
         <Route path="/workspaces"   element={<PlatformRoute><Workspaces /></PlatformRoute>} />
       </Route>

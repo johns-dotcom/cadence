@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Plus, Disc3 } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
@@ -71,17 +72,21 @@ export default function Artists() {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {artists.map(a => (
-            <div key={a.id} className="card p-4 flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0">
-                <span className="text-sm font-bold text-brand-700">{a.name?.charAt(0)?.toUpperCase()}</span>
-              </div>
+            <Link key={a.id} to={`/artists/${a.id}`} className="card p-4 flex items-center gap-3 hover:border-brand-300 transition-colors">
+              {a.image_url ? (
+                <img src={a.image_url} alt="" className="w-10 h-10 rounded-full object-cover flex-shrink-0 bg-gray-100" />
+              ) : (
+                <div className="w-10 h-10 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0">
+                  <span className="text-sm font-bold text-brand-700">{a.name?.charAt(0)?.toUpperCase()}</span>
+                </div>
+              )}
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-ink truncate">{a.name}</p>
                 <p className="text-xs text-gray-400">
                   {a.genre ? `${a.genre} · ` : ''}{a.total_releases} release{a.total_releases === 1 ? '' : 's'}
                 </p>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       )}
