@@ -110,16 +110,31 @@ canonical pattern. **New tenant tables must always include `label_id`.**
 
 ## Project structure
 
+Every feature is provisioned per workspace and fully isolated by `label_id` —
+each label gets its own roster, releases, finances, documents, calendar and
+search, none of which can be read or written across tenants.
+
 ```
 cadence/
 ├── client/                 # React + Vite SPA
 │   └── src/
 │       ├── context/        # Auth (tenant-aware), Theme, Toast
-│       ├── components/     # Layout (nav, impersonation), PageHeader
-│       └── pages/          # Login, Dashboard, Releases, Artists, Team, Settings, Activity, Workspaces
+│       ├── components/     # Layout (nav + ⌘K search, notifications, bottom nav),
+│       │                   #   GlobalSearch, NotificationBell, Calendar bits,
+│       │                   #   DspTracker, RepsManager, FileAttach, KeyboardShortcutsHelp
+│       └── pages/          # Dashboard, MyWork, Calendar · Releases, ReleaseDetail,
+│                           #   Artists, ArtistProfile · Deals, Campaigns(Marketing) ·
+│                           #   Contracts, PendingContracts, Renewals, Legal(NDAs), AdminDocs ·
+│                           #   Ledger, Payments, Vendors, Invoices, Financials, Recoupments, Salary ·
+│                           #   Team, Activity, Duplicates(Data quality), Settings, Workspaces ·
+│                           #   Login, VendorSubmit (public), Privacy, EULA
 └── server/                 # Express API
-    ├── lib/                # r2.js (object storage), constants.js, slug.js
+    ├── lib/                # r2.js (object storage), constants.js, slug.js,
+    │                       #   fileResource.js (tenant-scoped document-CRUD factory)
     ├── middleware/         # auth (JWT + tenant binding), tenant (incl. platform-admin gate), sanitize, activityLogger
     ├── migrations/         # standalone migration scripts
-    └── routes/             # auth, platform (workspace provisioning), labels, team, artists, releases, dashboard, activity, settings
+    └── routes/             # auth, platform, labels, team · artists, releases, dsp, deals ·
+                            #   contracts, pending-contracts, ndas, admin-docs ·
+                            #   ledger, invoices, vendor (public), financials, salary, campaigns ·
+                            #   dashboard, activity, search, notifications, calendar, reps, flags, settings
 ```

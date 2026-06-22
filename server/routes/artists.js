@@ -7,11 +7,18 @@ const { logActivity } = require('../middleware/activityLogger');
 const router = express.Router();
 router.use(authMiddleware, withTenant);
 
+// Profile fields editable via PATCH (beyond name/genre).
+const PROFILE_FIELDS = [
+  'image_url', 'bio', 'website', 'spotify_url', 'apple_music_url',
+  'instagram', 'tiktok', 'youtube', 'soundcloud',
+  'spotify_monthly_listeners', 'spotify_followers', 'spotify_popularity',
+];
+
 // GET /api/artists — roster for the current label
 router.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT a.id, a.name, a.genre, a.created_at,
+      `SELECT a.id, a.name, a.genre, a.image_url, a.created_at,
               COUNT(r.id)::int AS total_releases
        FROM artists a
        LEFT JOIN releases r ON r.artist_id = a.id AND r.label_id = a.label_id
@@ -27,15 +34,22 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/artists/:id
+// GET /api/artists/:id — full profile + the artist's releases (label-scoped).
 router.get('/:id', async (req, res) => {
   try {
+    const artistId = parseInt(req.params.id, 10);
     const { rows } = await pool.query(
       'SELECT * FROM artists WHERE id = $1 AND label_id = $2',
-      [parseInt(req.params.id, 10), req.labelId]
+      [artistId, req.labelId]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Artist not found' });
-    res.json({ success: true, data: rows[0] });
+    const releases = await pool.query(
+      `SELECT id, project_name, release_date, release_type, status, cover_art_url
+       FROM releases WHERE label_id = $1 AND artist_id = $2
+       ORDER BY release_date DESC NULLS LAST`,
+      [req.labelId, artistId]
+    );
+    res.json({ success: true, data: { ...rows[0], releases: releases.rows } });
   } catch (error) {
     console.error('Get artist error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -63,19 +77,84 @@ router.post('/', async (req, res) => {
   }
 });
 
-// PATCH /api/artists/:id
+// PATCH /api/artists/:id — name, genre and any profile field.
 router.patch('/:id', async (req, res) => {
   try {
-    const { name, genre } = req.body;
+    const editable = ['name', 'genre', ...PROFILE_FIELDS];
+    const keys = Object.keys(req.body).filter(k => editable.includes(k));
+    if (!keys.length) return res.status(400).json({ success: false, error: 'No updatable fields provided' });
+    const setClauses = keys.map((k, i) => `${k} = $${i + 1}`);
+    const values = keys.map(k => (req.body[k] === '' ? null : req.body[k]));
+    values.push(parseInt(req.params.id, 10), req.labelId);
     const { rows } = await pool.query(
-      `UPDATE artists SET name = COALESCE($1, name), genre = COALESCE($2, genre)
-       WHERE id = $3 AND label_id = $4 RETURNING *`,
-      [name, genre, parseInt(req.params.id, 10), req.labelId]
+      `UPDATE artists SET ${setClauses.join(', ')}
+       WHERE id = $${values.length - 1} AND label_id = $${values.length} RETURNING *`,
+      values
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Artist not found' });
     res.json({ success: true, data: rows[0] });
   } catch (error) {
+    if (error.code === '23505') return res.status(400).json({ success: false, error: 'An artist with that name already exists' });
     console.error('Update artist error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Development log (A&R timeline) ───────────────────────────────────────
+// All scoped to (label_id, artist_id); artist ownership is implied by the
+// label match on the artist row in each query.
+
+// GET /api/artists/:id/log
+router.get('/:id/log', async (req, res) => {
+  try {
+    const artistId = parseInt(req.params.id, 10);
+    const { rows } = await pool.query(
+      `SELECT l.id, l.entry_type, l.note, l.log_date, l.created_at, u.name AS author
+       FROM artist_dev_log l
+       LEFT JOIN users u ON u.id = l.created_by AND u.label_id = l.label_id
+       WHERE l.label_id = $1 AND l.artist_id = $2
+       ORDER BY l.log_date DESC, l.id DESC`,
+      [req.labelId, artistId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('List dev log error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/artists/:id/log
+router.post('/:id/log', async (req, res) => {
+  try {
+    const artistId = parseInt(req.params.id, 10);
+    const note = (req.body.note || '').trim();
+    if (!note) return res.status(400).json({ success: false, error: 'Note is required' });
+    // Re-validate the artist is in this label before logging against it.
+    const owner = await pool.query('SELECT 1 FROM artists WHERE id = $1 AND label_id = $2', [artistId, req.labelId]);
+    if (!owner.rows.length) return res.status(404).json({ success: false, error: 'Artist not found' });
+    const { rows } = await pool.query(
+      `INSERT INTO artist_dev_log (label_id, artist_id, entry_type, note, log_date, created_by)
+       VALUES ($1, $2, $3, $4, COALESCE($5, CURRENT_DATE), $6) RETURNING *`,
+      [req.labelId, artistId, req.body.entry_type || 'Note', note, req.body.log_date || null, req.user.id]
+    );
+    res.status(201).json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Create dev log error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/artists/:id/log/:logId
+router.delete('/:id/log/:logId', async (req, res) => {
+  try {
+    const { rowCount } = await pool.query(
+      'DELETE FROM artist_dev_log WHERE id = $1 AND artist_id = $2 AND label_id = $3',
+      [parseInt(req.params.logId, 10), parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rowCount) return res.status(404).json({ success: false, error: 'Entry not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete dev log error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

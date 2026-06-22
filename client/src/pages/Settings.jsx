@@ -5,6 +5,7 @@ import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import { applyAccent, resetAccent, isValidHex, ACCENT_PRESETS } from '../utils/branding'
+import RepsManager from '../components/RepsManager'
 
 export default function Settings() {
   const { user, label, updateLabel } = useAuth()
@@ -178,6 +179,9 @@ export default function Settings() {
             </div>
           </form>
         )}
+
+        {/* Reps — admin only */}
+        {isAdmin && <RepsManager />}
 
         {/* Password */}
         <form onSubmit={changePassword} className="card p-5">
