@@ -38,6 +38,7 @@ const flagsRoutes = require('./routes/flags');
 const labelWaiversRoutes = require('./routes/label-waivers');
 const fullExportRoutes = require('./routes/full-export');
 const importRoutes = require('./routes/import');
+const clearancesRoutes = require('./routes/clearances');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -150,6 +151,7 @@ app.use('/api/flags', flagsRoutes);
 app.use('/api/label-waivers', labelWaiversRoutes);
 app.use('/api/full-export', fullExportRoutes);
 app.use('/api/import', importRoutes);
+app.use('/api/clearances', clearancesRoutes);
 
 // Unknown API route → JSON 404 (don't fall through to the SPA).
 app.use('/api', (req, res) => res.status(404).json({ success: false, error: 'Not found' }));
@@ -766,6 +768,28 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_release_budget_items ON release_budget_items (label_id, release_id)`);
+
+  // Artist clearance charts — per-track rights/credits/royalty documentation,
+  // exported as XLSX. tracks holds an array of track objects (flexible shape).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS clearances (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      artist_id INT REFERENCES artists(id) ON DELETE SET NULL,
+      title VARCHAR(255),
+      project_number VARCHAR(100),
+      product_commitment VARCHAR(255),
+      contractual_members TEXT,
+      effective_date DATE,
+      royalty_rate VARCHAR(50),
+      royalty_account VARCHAR(255),
+      tracks JSONB DEFAULT '[]'::jsonb,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_clearances_label ON clearances (label_id, artist_id)`);
 
   // Label waivers — side-letters waiving the label's exclusivity so a signed
   // artist can appear as co-primary on another label's release. Structured

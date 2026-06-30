@@ -21,6 +21,7 @@ import PendingContracts from './pages/PendingContracts'
 import Legal from './pages/Legal'
 import AdminDocs from './pages/AdminDocs'
 import CreateLabelWaiver from './pages/CreateLabelWaiver'
+import ArtistClearance from './pages/ArtistClearance'
 import Renewals from './pages/Renewals'
 import MyWork from './pages/MyWork'
 import Calendar from './pages/Calendar'
@@ -115,6 +116,7 @@ function AppContent() {
         <Route path="/renewals"     element={<AdminRoute><Renewals /></AdminRoute>} />
         <Route path="/legal"        element={<AdminRoute><Legal /></AdminRoute>} />
         <Route path="/label-waivers" element={<AdminRoute><CreateLabelWaiver /></AdminRoute>} />
+        <Route path="/clearances"   element={<AdminRoute><ArtistClearance /></AdminRoute>} />
         <Route path="/admin-docs"   element={<AdminRoute><AdminDocs /></AdminRoute>} />
         <Route path="/financials"   element={<AdminRoute><Financials /></AdminRoute>} />
         <Route path="/recoupments"  element={<AdminRoute><Recoupments /></AdminRoute>} />
