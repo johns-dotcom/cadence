@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Disc3, CheckCircle2, Upload } from 'lucide-react'
 import api from '../api'
+import Dropzone from '../components/Dropzone'
 import { applyAccent } from '../utils/branding'
 import { EXPENSE_CATEGORIES, PAYMENT_METHODS, CURRENCIES } from '../constants'
 
@@ -136,10 +137,16 @@ export default function VendorSubmit() {
           <div>
             <h2 className="text-sm font-bold text-ink mb-3">Documents</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="Invoice file (required)"><input type="file" className="input py-2" onChange={e => setFiles(f => ({ ...f, invoice_file: e.target.files[0] }))} /></Field>
+              <Field label="Invoice file (required)">
+                <Dropzone value={files.invoice_file} onChange={file => setFiles(f => ({ ...f, invoice_file: file }))} required />
+              </Field>
               {isReimb
-                ? <Field label="Receipt (required)"><input type="file" className="input py-2" onChange={e => setFiles(f => ({ ...f, receipt_file: e.target.files[0] }))} /></Field>
-                : <Field label="W9 / W8 form"><input type="file" className="input py-2" onChange={e => setFiles(f => ({ ...f, w9_file: e.target.files[0] }))} /></Field>}
+                ? <Field label="Receipt (required)">
+                    <Dropzone value={files.receipt_file} onChange={file => setFiles(f => ({ ...f, receipt_file: file }))} required />
+                  </Field>
+                : <Field label="W9 / W8 form">
+                    <Dropzone value={files.w9_file} onChange={file => setFiles(f => ({ ...f, w9_file: file }))} />
+                  </Field>}
             </div>
           </div>
 
