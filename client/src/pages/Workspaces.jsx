@@ -34,7 +34,7 @@ export default function Workspaces() {
   const [workspaces, setWorkspaces] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ labelName: '', ownerName: '', ownerEmail: '', ownerPassword: '' })
+  const [form, setForm] = useState({ labelName: '', ownerName: '', ownerEmail: '' })
   const [saving, setSaving] = useState(false)
   const [created, setCreated] = useState(null)
   const [copied, setCopied] = useState(false)
@@ -52,16 +52,16 @@ export default function Workspaces() {
 
   const create = async (e) => {
     e.preventDefault()
-    if (!form.labelName.trim() || !form.ownerName.trim() || !form.ownerEmail.trim() || form.ownerPassword.length < 8) {
-      toast('All fields required; temp password must be 8+ characters', 'error'); return
+    if (!form.labelName.trim() || !form.ownerName.trim() || !form.ownerEmail.trim()) {
+      toast('Label name, owner name and email are required', 'error'); return
     }
     setSaving(true)
     try {
       const { data } = await api.post('/platform/workspaces', form)
-      setCreated({ ...data.data, password: form.ownerPassword })
-      setForm({ labelName: '', ownerName: '', ownerEmail: '', ownerPassword: '' })
+      setCreated(data.data)
+      setForm({ labelName: '', ownerName: '', ownerEmail: '' })
       setShowForm(false)
-      toast('Workspace created'); load()
+      toast(data.data.email_sent ? `Workspace created — invite emailed to ${data.data.owner.email}` : 'Workspace created — share the owner invite link'); load()
     } catch (err) {
       toast(err.response?.data?.error || 'Failed to create workspace', 'error')
     } finally { setSaving(false) }
@@ -75,7 +75,7 @@ export default function Workspaces() {
 
   const copyHandoff = () => {
     if (!created) return
-    navigator.clipboard.writeText(`Workspace: ${created.label.name}\nSign-in email: ${created.owner.email}\nTemporary password: ${created.password}\nWorkspace ID (if prompted): ${created.label.slug}`)
+    navigator.clipboard.writeText(`Workspace: ${created.label.name}\nOwner: ${created.owner.email}\nInvite link: ${created.invite_link}`)
       .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
   }
 
@@ -136,15 +136,17 @@ export default function Workspaces() {
       {created && (
         <div className="card p-5 mb-6 border-brand-200 bg-brand-50/40">
           <div className="flex items-start justify-between gap-4">
-            <div>
-              <h3 className="text-sm font-bold text-ink mb-2">Workspace created — share these credentials</h3>
+            <div className="min-w-0">
+              <h3 className="text-sm font-bold text-ink mb-2">
+                {created.email_sent ? `Workspace created — invite emailed to ${created.owner.email}` : 'Workspace created — share the owner invite link'}
+              </h3>
               <dl className="text-sm space-y-1">
                 <div className="flex gap-2"><dt className="text-gray-500 w-36">Workspace</dt><dd className="text-ink font-medium">{created.label.name}</dd></div>
-                <div className="flex gap-2"><dt className="text-gray-500 w-36">Sign-in email</dt><dd className="text-ink font-medium">{created.owner.email}</dd></div>
-                <div className="flex gap-2"><dt className="text-gray-500 w-36">Temporary password</dt><dd className="text-ink font-mono">{created.password}</dd></div>
+                <div className="flex gap-2"><dt className="text-gray-500 w-36">Owner</dt><dd className="text-ink font-medium">{created.owner.email}</dd></div>
                 <div className="flex gap-2"><dt className="text-gray-500 w-36">Workspace ID</dt><dd className="text-ink font-mono">{created.label.slug}</dd></div>
+                <div className="flex gap-2"><dt className="text-gray-500 w-36">Invite link</dt><dd className="text-brand-700 font-mono break-all">{created.invite_link}</dd></div>
               </dl>
-              <p className="text-xs text-gray-400 mt-2">The owner should change this password after first sign-in.</p>
+              <p className="text-xs text-gray-400 mt-2">The owner sets their own password from this link (expires in 7 days).</p>
             </div>
             <button onClick={copyHandoff} className="btn-secondary flex-shrink-0">{copied ? <><Check size={15} /> Copied</> : <><Copy size={15} /> Copy</>}</button>
           </div>
@@ -155,9 +157,8 @@ export default function Workspaces() {
         <form onSubmit={create} className="card p-4 mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="sm:col-span-2"><label className="label">Label name</label><input className="input" value={form.labelName} onChange={set('labelName')} placeholder="e.g. Midnight Records" autoFocus /></div>
           <div><label className="label">Owner name</label><input className="input" value={form.ownerName} onChange={set('ownerName')} /></div>
-          <div><label className="label">Owner email</label><input type="email" className="input" value={form.ownerEmail} onChange={set('ownerEmail')} /></div>
-          <div className="sm:col-span-2"><label className="label">Temporary password</label><input type="text" className="input" value={form.ownerPassword} onChange={set('ownerPassword')} placeholder="8+ characters — share with the owner" /></div>
-          <div className="sm:col-span-2"><button type="submit" disabled={saving} className="btn-primary">{saving ? 'Creating…' : 'Create workspace'}</button></div>
+          <div><label className="label">Owner email</label><input type="email" className="input" value={form.ownerEmail} onChange={set('ownerEmail')} placeholder="they'll get an invite" /></div>
+          <div className="sm:col-span-2"><button type="submit" disabled={saving} className="btn-primary">{saving ? 'Creating…' : 'Create & send invite'}</button></div>
         </form>
       )}
 

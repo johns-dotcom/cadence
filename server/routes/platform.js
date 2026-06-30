@@ -1,5 +1,6 @@
 const express = require('express');
 const multer = require('multer');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
@@ -7,9 +8,16 @@ const { requirePlatformAdmin } = require('../middleware/tenant');
 const { uniqueSlug } = require('../lib/slug');
 const { signToken, publicUser } = require('../lib/token');
 const { getSignedFileUrl, uploadFile, deleteFile } = require('../lib/r2');
+const { sendEmail, inviteEmail } = require('../lib/email');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+const INVITE_DAYS = 7;
+function inviteLink(req, token) {
+  const origin = process.env.FRONTEND_URL || req.headers.origin || `${req.protocol}://${req.get('host')}`;
+  return `${origin.replace(/\/$/, '')}/accept-invite?token=${token}`;
+}
 
 // Resolve a label's primary owner (its non-operator Superadmin / most senior).
 async function ownerOf(labelId) {
@@ -235,12 +243,12 @@ router.get('/analytics', async (req, res) => {
 router.post('/workspaces', async (req, res) => {
   const client = await pool.connect();
   try {
-    const { labelName, ownerName, ownerEmail, ownerPassword } = req.body;
-    if (!labelName || !ownerName || !ownerEmail || !ownerPassword) {
-      return res.status(400).json({ success: false, error: 'Label name, owner name, owner email, and a temporary password are required' });
+    const { labelName, ownerName, ownerEmail } = req.body;
+    if (!labelName || !ownerName || !ownerEmail) {
+      return res.status(400).json({ success: false, error: 'Label name, owner name, and owner email are required' });
     }
-    if (ownerPassword.length < 8) {
-      return res.status(400).json({ success: false, error: 'Temporary password must be at least 8 characters' });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ownerEmail.trim())) {
+      return res.status(400).json({ success: false, error: 'Please enter a valid owner email' });
     }
 
     await client.query('BEGIN');
@@ -252,19 +260,33 @@ router.post('/workspaces', async (req, res) => {
     );
     const label = labelRes.rows[0];
 
-    const passwordHash = await bcrypt.hash(ownerPassword, 10);
+    // Owner is created WITHOUT a password — they activate via an invite link
+    // and set their own (same flow as team invites).
+    const token = crypto.randomBytes(32).toString('hex');
     const ownerRes = await client.query(
-      `INSERT INTO users (label_id, name, email, password_hash, role, department, hierarchy_level, created_at)
-       VALUES ($1, $2, $3, $4, 'Superadmin', 'Executive', 1, NOW())
+      `INSERT INTO users (label_id, name, email, role, department, hierarchy_level,
+         invite_token, invite_expires, invited_at, created_at)
+       VALUES ($1, $2, $3, 'Superadmin', 'Executive', 1, $4, NOW() + ($5 || ' days')::interval, NOW(), NOW())
        RETURNING id, name, email, role`,
-      [label.id, ownerName.trim(), ownerEmail.trim().toLowerCase(), passwordHash]
+      [label.id, ownerName.trim(), ownerEmail.trim().toLowerCase(), token, String(INVITE_DAYS)]
     );
 
     await client.query('COMMIT');
 
+    // Email the owner their invite (best-effort).
+    const link = inviteLink(req, token);
+    const msg = inviteEmail({
+      inviteeName: ownerName.trim(),
+      workspaceName: label.name,
+      inviterName: req.user.name,
+      link,
+      expiresDays: INVITE_DAYS,
+    });
+    const mail = await sendEmail({ to: ownerRes.rows[0].email, subject: msg.subject, html: msg.html, text: msg.text });
+
     res.status(201).json({
       success: true,
-      data: { label, owner: ownerRes.rows[0] },
+      data: { label, owner: ownerRes.rows[0], invite_link: link, email_sent: mail.sent },
     });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
