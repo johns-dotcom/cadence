@@ -20,8 +20,18 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
     invoice_number: '', amount: '', currency: 'USD', payment_method: '', notes: '',
   })
   const [files, setFiles] = useState({ invoice_file: null, w9_file: null, receipt_file: null })
+  const [dup, setDup] = useState(null)
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
+
+  // Warn on a duplicate payee + invoice# (normalized server-side).
+  const checkDup = async () => {
+    if (isReimb || !form.payee.trim() || !form.invoice_number.trim()) { setDup(null); return }
+    try {
+      const { data } = await api.get('/ledger/check-dup', { params: { payee: form.payee.trim(), invoice_number: form.invoice_number.trim() } })
+      setDup(data.data?.duplicate ? data.data.match : null)
+    } catch { setDup(null) }
+  }
 
   // AI: extract fields from the attached invoice and prefill the form.
   const scanInvoice = async () => {
@@ -72,14 +82,20 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
         subtitle={isReimb ? 'Reimburse an out-of-pocket expense — attach the receipt' : 'Record a vendor invoice — attach the invoice and W9'}
       />
 
+      {dup && (
+        <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
+          ⚠ A {dup.status} invoice <span className="font-semibold">#{dup.invoice_number}</span> for this payee already exists ({dup.currency} {Number(dup.amount).toLocaleString()}{dup.invoice_date ? `, ${new Date(dup.invoice_date).toLocaleDateString()}` : ''}). Double-check before adding.
+        </div>
+      )}
+
       <form onSubmit={create} className="card p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        <div className="sm:col-span-2 lg:col-span-1"><label className="label">{isReimb ? 'Pay to' : 'Payee'}</label><input className="input" value={form.payee} onChange={set('payee')} autoFocus /></div>
+        <div className="sm:col-span-2 lg:col-span-1"><label className="label">{isReimb ? 'Pay to' : 'Payee'}</label><input className="input" value={form.payee} onChange={set('payee')} onBlur={checkDup} autoFocus /></div>
         <div><label className="label">Amount</label><input type="number" step="0.01" className="input" value={form.amount} onChange={set('amount')} /></div>
         <div><label className="label">Currency</label><select className="input" value={form.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
         <div><label className="label">{isReimb ? 'Date' : 'Invoice date'}</label><input type="date" className="input" value={form.invoice_date} onChange={set('invoice_date')} /></div>
         <div><label className="label">Category</label><select className="input" value={form.category} onChange={set('category')}><option value="">—</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
         <div><label className="label">Artist / project</label><input className="input" value={form.artist} onChange={set('artist')} /></div>
-        {!isReimb && <div><label className="label">Invoice #</label><input className="input" value={form.invoice_number} onChange={set('invoice_number')} /></div>}
+        {!isReimb && <div><label className="label">Invoice #</label><input className="input" value={form.invoice_number} onChange={set('invoice_number')} onBlur={checkDup} /></div>}
         <div><label className="label">Payment method</label><select className="input" value={form.payment_method} onChange={set('payment_method')}><option value="">—</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
         <div className="sm:col-span-2 lg:col-span-3"><label className="label">Description</label><input className="input" value={form.description} onChange={set('description')} placeholder={isReimb ? 'What was this expense for?' : ''} /></div>
 

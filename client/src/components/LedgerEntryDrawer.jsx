@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
-import { X, Plus, Trash2, Check, History, Layers, CreditCard, Ban, RotateCcw } from 'lucide-react'
+import { X, Plus, Trash2, Check, History, Layers, CreditCard, Ban, RotateCcw, Sparkles, AlertTriangle, Paperclip, Zap } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
+
+const SEV = { high: 'bg-red-100 text-red-700', medium: 'bg-amber-100 text-amber-700', low: 'bg-gray-100 text-gray-600' }
 
 // Slide-over for one ledger entry: change history, payment installments,
 // bulk-deal deliverables, and void/unvoid. All endpoints are label-scoped.
@@ -13,7 +15,10 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
   const [paidTotal, setPaidTotal] = useState(0)
   const [items, setItems] = useState([])
   const [inst, setInst] = useState({ amount: '', method: '', reference: '', paid_date: '' })
+  const [proofFile, setProofFile] = useState(null)
   const [itemTitle, setItemTitle] = useState('')
+  const [scans, setScans] = useState({ invoice: entry?.ai_scan || null, w9: entry?.w9_scan || null })
+  const [scanning, setScanning] = useState('')
 
   const [campaigns, setCampaigns] = useState([])
   const [campaignId, setCampaignId] = useState(entry?.campaign_id || '')
@@ -26,7 +31,29 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
     api.get(`/ledger/entries/${id}/bulk-items`).then(r => setItems(r.data.data || [])).catch(() => {})
   }
   useEffect(load, [id])
-  useEffect(() => { setCampaignId(entry?.campaign_id || ''); api.get('/campaigns').then(r => setCampaigns(r.data.data || [])).catch(() => {}) }, [id])
+  useEffect(() => { setCampaignId(entry?.campaign_id || ''); setScans({ invoice: entry?.ai_scan || null, w9: entry?.w9_scan || null }); api.get('/campaigns').then(r => setCampaigns(r.data.data || [])).catch(() => {}) }, [id])
+
+  const rescan = async (type) => {
+    setScanning(type)
+    try {
+      const { data } = await api.post(`/ledger/entries/${id}/rescan?type=${type}`)
+      const r = data.data
+      setScans(s => ({
+        invoice: r.invoice?.ok ? r.invoice.scan : s.invoice,
+        w9: r.w9?.ok ? r.w9.scan : s.w9,
+      }))
+      const fail = [r.invoice, r.w9].find(x => x && !x.ok)
+      toast(fail ? fail.reason : 'Scan complete', fail ? 'error' : 'success')
+      onChanged?.()
+    } catch (err) { toast(err.response?.data?.error || 'Scan failed', 'error') }
+    finally { setScanning('') }
+  }
+  const dismissScan = async (type) => {
+    try {
+      await api.post(`/ledger/entries/${id}/dismiss-scan?type=${type}`)
+      setScans(s => ({ ...s, [type]: null })); onChanged?.()
+    } catch { toast('Failed', 'error') }
+  }
 
   const assignCampaign = async (newId) => {
     const prev = campaignId
@@ -42,8 +69,17 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
 
   const addInstallment = async () => {
     if (!inst.amount) { toast('Amount is required', 'error'); return }
-    try { await api.post(`/ledger/entries/${id}/installments`, inst); setInst({ amount: '', method: '', reference: '', paid_date: '' }); load(); onChanged?.() }
-    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+    try {
+      const fd = new FormData()
+      Object.entries(inst).forEach(([k, v]) => { if (v) fd.append(k, v) })
+      if (proofFile) fd.append('proof', proofFile)
+      await api.post(`/ledger/entries/${id}/installments`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+      setInst({ amount: '', method: '', reference: '', paid_date: '' }); setProofFile(null); load(); onChanged?.()
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+  const openProof = async (iid) => {
+    try { const { data } = await api.get(`/ledger/installments/${iid}/proof`); window.open(data.data.url, '_blank', 'noopener') }
+    catch { toast('No proof on file', 'error') }
   }
   const delInstallment = async (iid) => { try { await api.delete(`/ledger/installments/${iid}`); load(); onChanged?.() } catch { toast('Failed', 'error') } }
   const addItem = async () => {
@@ -59,10 +95,12 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
     catch { toast('Failed', 'error') }
   }
 
+  const scanFlags = (scans.invoice?.discrepancies?.length || 0) + (scans.w9?.discrepancies?.length || 0)
   const TABS = [
     { key: 'history', label: 'History', icon: History },
     { key: 'installments', label: 'Installments', icon: CreditCard },
     { key: 'items', label: 'Bulk items', icon: Layers },
+    { key: 'scan', label: 'AI scan', icon: Sparkles, badge: scanFlags },
   ]
 
   return (
@@ -92,6 +130,7 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
               <button key={t.key} onClick={() => setTab(t.key)}
                 className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg ${tab === t.key ? 'bg-brand-50 text-brand-700' : 'text-gray-500 hover:bg-gray-50'}`}>
                 <Icon size={13} /> {t.label}
+                {t.badge > 0 && <span className="bg-red-500 text-white text-[9px] font-bold rounded-full px-1 leading-tight">{t.badge}</span>}
               </button>
             )
           })}
@@ -123,13 +162,20 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
                   <input placeholder="Method" className="input !py-1.5 text-sm" value={inst.method} onChange={e => setInst(s => ({ ...s, method: e.target.value }))} />
                   <input placeholder="Reference" className="input !py-1.5 text-sm" value={inst.reference} onChange={e => setInst(s => ({ ...s, reference: e.target.value }))} />
                 </div>
+                <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
+                  <Paperclip size={13} /> {proofFile ? proofFile.name : 'Attach proof of payment (optional)'}
+                  <input type="file" className="hidden" onChange={e => setProofFile(e.target.files?.[0] || null)} />
+                </label>
                 <button onClick={addInstallment} className="btn-primary !py-1.5 text-xs w-full"><Plus size={13} /> Record installment</button>
               </div>
               <p className="text-xs text-gray-500 mb-2">Paid {entry.currency} {paidTotal.toLocaleString()} of {Number(entry.amount).toLocaleString()}</p>
               {installments.map(it => (
                 <div key={it.id} className="flex items-center justify-between text-sm py-1.5 border-b border-divider group">
                   <span>{entry.currency} {Number(it.amount).toLocaleString()} <span className="text-[11px] text-gray-400">{it.method || ''} {it.paid_date ? new Date(it.paid_date).toLocaleDateString() : ''}</span></span>
-                  <button onClick={() => delInstallment(it.id)} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-600"><Trash2 size={13} /></button>
+                  <span className="flex items-center gap-1.5">
+                    {it.proof_filename && <button onClick={() => openProof(it.id)} title="View proof" className="text-gray-400 hover:text-brand-600"><Paperclip size={13} /></button>}
+                    <button onClick={() => delInstallment(it.id)} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-600"><Trash2 size={13} /></button>
+                  </span>
                 </div>
               ))}
               {!installments.length && <p className="text-sm text-gray-400">No installments yet.</p>}
@@ -150,6 +196,50 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
                 </div>
               ))}
               {!items.length && <p className="text-sm text-gray-400">No deliverables yet.</p>}
+            </div>
+          )}
+
+          {tab === 'scan' && (
+            <div className="space-y-4">
+              {['invoice', 'w9'].map(kind => {
+                const scan = scans[kind]
+                const label = kind === 'invoice' ? 'Invoice' : 'W9 / W8'
+                const disc = scan?.discrepancies || []
+                return (
+                  <div key={kind} className="card p-3">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-xs font-bold text-ink">{label}</p>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => rescan(kind)} disabled={!!scanning} className="text-[11px] font-semibold text-brand-600 hover:underline inline-flex items-center gap-1">
+                          <Sparkles size={11} /> {scanning === kind ? 'Scanning…' : 'Rescan'}
+                        </button>
+                        {scan && <button onClick={() => dismissScan(kind)} className="text-[11px] text-gray-400 hover:text-gray-600">Dismiss</button>}
+                      </div>
+                    </div>
+                    {!scan ? (
+                      <p className="text-xs text-gray-400">Not scanned yet.</p>
+                    ) : (
+                      <>
+                        {scan.summary && <p className="text-xs text-gray-500 mb-2">{scan.summary}</p>}
+                        {disc.length === 0 ? (
+                          <p className="text-xs text-emerald-600 inline-flex items-center gap-1"><Check size={12} /> No discrepancies found</p>
+                        ) : (
+                          <div className="space-y-1.5">
+                            {disc.map((d, i) => (
+                              <div key={i} className="flex items-start gap-2 text-xs">
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase flex-shrink-0 ${SEV[d.severity] || SEV.low}`}>{d.severity}</span>
+                                <span className="text-gray-600"><span className="font-semibold text-ink">{d.field}</span>: form “{d.form_value ?? '—'}” vs doc “{d.document_value ?? '—'}”</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {scan.scanned_at && <p className="text-[10px] text-gray-400 mt-2">Scanned {new Date(scan.scanned_at).toLocaleString()}</p>}
+                      </>
+                    )}
+                  </div>
+                )
+              })}
+              <p className="text-[11px] text-gray-400 inline-flex items-center gap-1"><AlertTriangle size={11} /> AI scans compare the uploaded files against the entered values.</p>
             </div>
           )}
         </div>

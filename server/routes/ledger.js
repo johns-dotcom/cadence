@@ -2,20 +2,22 @@ const express = require('express');
 const multer = require('multer');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
-const { withTenant, requireApprover } = require('../middleware/tenant');
+const { withTenant, requireApprover, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { uploadFile, getSignedFileUrl, deleteFile, loadFileBuffer } = require('../lib/r2');
 const { computeDueDate } = require('../lib/payments');
 const { upsertVendor } = require('../lib/vendors');
 const claude = require('../lib/claude');
 const { sendEmail, vendorDecisionEmail, paymentConfirmationEmail } = require('../lib/email');
+const { stampFxRateAsync } = require('../lib/fxStamp');
+const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
+const aiScan = require('../lib/aiScan');
 const ExcelJS = require('exceljs');
 const XLSX = require('xlsx');
 const { buildZip, toCsv } = require('../lib/zip');
 
-// Normalize an invoice number for matching: strip #, INV-/INV prefixes, leading
-// zeros, and whitespace; lowercase.
-const normInv = (s) => String(s || '').toLowerCase().replace(/[#\s]/g, '').replace(/^inv-?/i, '').replace(/^0+/, '');
+// Canonical invoice-number key — shared with vendor-submit, bulk-zip, dup-check.
+const normInv = normalizeInvoiceNum;
 const fileExt = (key) => (/\.pdf$/i.test(key) ? 'pdf' : /\.png$/i.test(key) ? 'png' : /\.jpe?g$/i.test(key) ? 'jpg' : 'bin');
 const safe = (s) => String(s || '').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 80);
 
@@ -271,6 +273,7 @@ router.post('/entries/:id/mark-paid', async (req, res) => {
        req.user.name, parseInt(req.params.id, 10), req.labelId]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found or not approved' });
+    stampFxRateAsync(rows[0].id);
     await logActivity(req, 'Marked paid', `${rows[0].payee} — ${rows[0].amount}`);
     if (rows[0].vendor_email) notifyVendor(req.labelId, rows[0], 'paid', { method: rows[0].payment_method, date: rows[0].payment_date });
     res.json({ success: true, data: rows[0] });
@@ -346,6 +349,7 @@ router.post('/batch-pay', async (req, res) => {
        RETURNING id`,
       [req.body.payment_date || null, req.body.payment_method || null, req.user.name, req.labelId, ids]
     );
+    rows.forEach(r => stampFxRateAsync(r.id));
     await logActivity(req, 'Batch paid', `${rows.length} entries`);
     res.json({ success: true, data: { paid: rows.length } });
   } catch (error) {
@@ -448,6 +452,144 @@ router.post('/vendors/:name/w9', upload.single('file'), async (req, res) => {
   } catch (error) {
     console.error('Vendor W9 upload error:', error);
     res.status(500).json({ success: false, error: 'Upload failed' });
+  }
+});
+
+// ── Vendor management: rename, merge, aliases, suggest, batch W9 scan ───────
+
+// GET /api/ledger/vendor-suggest?q= — typeahead of payees with W9-on-file flag.
+// Resolves aliases so a known alias surfaces its canonical vendor.
+router.get('/vendor-suggest', async (req, res) => {
+  try {
+    const q = `%${String(req.query.q || '').toLowerCase()}%`;
+    const { rows } = await pool.query(
+      `SELECT payee AS name,
+              BOOL_OR(w9_r2_key IS NOT NULL) AS w9_on_file,
+              COUNT(*) FILTER (WHERE status = 'approved')::int AS invoices
+         FROM expenses
+        WHERE label_id = $1 AND payee IS NOT NULL AND payee <> '' AND LOWER(payee) LIKE $2
+          AND (deleted = false OR deleted IS NULL)
+        GROUP BY payee ORDER BY invoices DESC LIMIT 12`,
+      [req.labelId, q]
+    );
+    const { rows: aliases } = await pool.query(
+      `SELECT canonical, alias FROM vendor_aliases WHERE label_id = $1 AND LOWER(alias) LIKE $2 LIMIT 12`,
+      [req.labelId, q]
+    );
+    res.json({ success: true, data: { vendors: rows, aliases } });
+  } catch (error) {
+    console.error('Vendor suggest error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PUT /api/ledger/vendors/rename { from, to } — rename a vendor everywhere
+// (expenses.payee + vendor record). The old name becomes an alias.
+router.put('/vendors/rename', requireAdmin, async (req, res) => {
+  try {
+    const from = String(req.body.from || '').trim();
+    const to = String(req.body.to || '').trim();
+    if (!from || !to) return res.status(400).json({ success: false, error: 'from and to are required' });
+    if (from.toLowerCase() === to.toLowerCase()) return res.status(400).json({ success: false, error: 'Names are the same' });
+    const upd = await pool.query(`UPDATE expenses SET payee = $1 WHERE label_id = $2 AND LOWER(payee) = LOWER($3)`, [to, req.labelId, from]);
+    // Move the vendor record (or merge into an existing `to`).
+    const existing = await pool.query('SELECT id FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [req.labelId, to]);
+    if (existing.rows.length) {
+      await pool.query('DELETE FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [req.labelId, from]);
+    } else {
+      await pool.query('UPDATE vendors SET name = $1, updated_at = NOW() WHERE label_id = $2 AND LOWER(name) = LOWER($3)', [to, req.labelId, from]);
+    }
+    await pool.query(
+      `INSERT INTO vendor_aliases (label_id, canonical, alias, created_by) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical`,
+      [req.labelId, to, from, req.user.name]
+    );
+    await logActivity(req, 'Renamed vendor', `${from} → ${to}`);
+    res.json({ success: true, data: { updated: upd.rowCount } });
+  } catch (error) {
+    console.error('Vendor rename error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/vendors/merge { from, into } — fold one vendor into another.
+router.post('/vendors/merge', requireAdmin, async (req, res) => {
+  try {
+    const from = String(req.body.from || '').trim();
+    const into = String(req.body.into || '').trim();
+    if (!from || !into) return res.status(400).json({ success: false, error: 'from and into are required' });
+    if (from.toLowerCase() === into.toLowerCase()) return res.status(400).json({ success: false, error: 'Pick two different vendors' });
+    const upd = await pool.query(`UPDATE expenses SET payee = $1 WHERE label_id = $2 AND LOWER(payee) = LOWER($3)`, [into, req.labelId, from]);
+    await pool.query('DELETE FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [req.labelId, from]);
+    await pool.query(
+      `INSERT INTO vendor_aliases (label_id, canonical, alias, created_by) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical`,
+      [req.labelId, into, from, req.user.name]
+    );
+    await logActivity(req, 'Merged vendor', `${from} → ${into}`);
+    res.json({ success: true, data: { moved: upd.rowCount } });
+  } catch (error) {
+    console.error('Vendor merge error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET/POST/DELETE aliases for a canonical vendor.
+router.get('/vendors/:name/aliases', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT id, alias FROM vendor_aliases WHERE label_id = $1 AND LOWER(canonical) = LOWER($2) ORDER BY alias', [req.labelId, req.params.name]);
+    res.json({ success: true, data: rows });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+router.post('/vendors/:name/aliases', async (req, res) => {
+  try {
+    const alias = String(req.body.alias || '').trim();
+    if (!alias) return res.status(400).json({ success: false, error: 'Alias is required' });
+    await pool.query(
+      `INSERT INTO vendor_aliases (label_id, canonical, alias, created_by) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical`,
+      [req.labelId, req.params.name, alias, req.user.name]
+    );
+    res.json({ success: true });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+router.delete('/vendors/aliases/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM vendor_aliases WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId]);
+    res.json({ success: true });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// POST /api/ledger/vendors/scan-w9s — batch-validate every vendor's W9 on file.
+// Returns one result per vendor (form type, name match, signature, notes).
+router.post('/vendors/scan-w9s', requireAdmin, async (req, res) => {
+  try {
+    if (!claude.isEnabled()) return res.status(400).json({ success: false, error: 'AI is not configured on the server' });
+    // One representative W9-bearing entry per payee.
+    const { rows } = await pool.query(
+      `SELECT DISTINCT ON (LOWER(payee)) id, payee, w9_r2_key, w9_filename
+         FROM expenses
+        WHERE label_id = $1 AND w9_r2_key IS NOT NULL AND payee IS NOT NULL
+          AND (deleted = false OR deleted IS NULL)
+        ORDER BY LOWER(payee), id DESC`,
+      [req.labelId]
+    );
+    const out = [];
+    for (const e of rows) {
+      const r = await aiScan.rescanW9(req.labelId, e.id);
+      out.push({
+        vendor: e.payee,
+        ok: r.ok,
+        reason: r.ok ? null : r.reason,
+        flags: r.ok ? (r.scan.discrepancies || []) : [],
+        summary: r.ok ? r.scan.summary : null,
+      });
+    }
+    await logActivity(req, 'Batch W9 scan', `${out.length} vendors`);
+    res.json({ success: true, data: out });
+  } catch (error) {
+    console.error('Batch W9 scan error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
@@ -628,6 +770,204 @@ router.post('/entries/:id/scan', async (req, res) => {
   }
 });
 
+// ── AI discrepancy scans (persisted) ──────────────────────────────────────
+
+// POST /api/ledger/entries/:id/rescan?type=invoice|w9|both — run the AI
+// discrepancy scan and STORE the result on the entry (ai_scan / w9_scan).
+router.post('/entries/:id/rescan', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const type = req.query.type || 'both';
+    const out = {};
+    if (type === 'invoice' || type === 'both') out.invoice = await aiScan.rescanInvoice(req.labelId, id);
+    if (type === 'w9' || type === 'both') out.w9 = await aiScan.rescanW9(req.labelId, id);
+    await logActivity(req, 'AI rescan', `entry ${id} (${type})`);
+    res.json({ success: true, data: out });
+  } catch (error) {
+    console.error('Rescan error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/entries/:id/dismiss-scan?type=invoice|w9|both — clear a scan
+// (acknowledges the finding so it stops flagging).
+router.post('/entries/:id/dismiss-scan', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const type = req.query.type || 'both';
+    const cols = [];
+    if (type === 'invoice' || type === 'both') cols.push('ai_scan = NULL');
+    if (type === 'w9' || type === 'both') cols.push('w9_scan = NULL');
+    if (!cols.length) return res.status(400).json({ success: false, error: 'Nothing to dismiss' });
+    const { rowCount } = await pool.query(`UPDATE expenses SET ${cols.join(', ')} WHERE id = $1 AND label_id = $2`, [id, req.labelId]);
+    if (!rowCount) return res.status(404).json({ success: false, error: 'Entry not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Dismiss scan error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/ledger/flagged — entries whose stored scans found discrepancies.
+router.get('/flagged', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, payee, amount, currency, invoice_number, status, ai_scan, w9_scan
+         FROM expenses
+        WHERE label_id = $1 AND (deleted = false OR deleted IS NULL)
+          AND ((ai_scan IS NOT NULL AND jsonb_array_length(COALESCE(ai_scan->'discrepancies','[]')) > 0)
+            OR (w9_scan IS NOT NULL AND jsonb_array_length(COALESCE(w9_scan->'discrepancies','[]')) > 0))
+        ORDER BY id DESC`,
+      [req.labelId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Flagged error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Duplicate-invoice check ────────────────────────────────────────────────
+
+// GET /api/ledger/check-dup?payee=&invoice_number=[&exclude=] — does an entry
+// already exist for this payee + normalized invoice#? Used by the add forms
+// and the vendor portal to stop double submissions.
+router.get('/check-dup', async (req, res) => {
+  try {
+    const payee = String(req.query.payee || '').trim();
+    const key = normInv(req.query.invoice_number);
+    if (!payee || !key) return res.json({ success: true, data: { duplicate: false } });
+    const exclude = parseInt(req.query.exclude, 10) || 0;
+    const { rows } = await pool.query(
+      `SELECT id, invoice_number, amount, currency, invoice_date, status, payment_status
+         FROM expenses
+        WHERE label_id = $1 AND LOWER(TRIM(payee)) = LOWER($2)
+          AND (deleted = false OR deleted IS NULL) AND id <> $3`,
+      [req.labelId, payee, exclude]
+    );
+    const match = rows.find(r => normInv(r.invoice_number) === key);
+    res.json({ success: true, data: { duplicate: !!match, match: match || null } });
+  } catch (error) {
+    console.error('Dup check error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Rush / expedited payment ───────────────────────────────────────────────
+
+// POST /api/ledger/entries/:id/rush — flag for expedited payment.
+router.post('/entries/:id/rush', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE expenses SET rush = TRUE, rush_reason = $1, rush_needed_by = $2, rush_by = $3, rush_at = NOW()
+         WHERE id = $4 AND label_id = $5 RETURNING *`,
+      [req.body.reason || null, req.body.needed_by || null, req.user.name, parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    await logActivity(req, 'Flagged rush', `${rows[0].payee} — ${rows[0].amount}`);
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Rush error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/ledger/entries/:id/rush — clear the rush flag.
+router.delete('/entries/:id/rush', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE expenses SET rush = FALSE, rush_reason = NULL, rush_needed_by = NULL, rush_by = NULL, rush_at = NULL
+         WHERE id = $1 AND label_id = $2 RETURNING id`,
+      [parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Clear rush error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/rush-bulk { ids:[], reason } — rush several at once.
+router.post('/rush-bulk', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
+    const { rowCount } = await pool.query(
+      `UPDATE expenses SET rush = TRUE, rush_reason = $1, rush_needed_by = $2, rush_by = $3, rush_at = NOW()
+         WHERE label_id = $4 AND id = ANY($5::int[])`,
+      [req.body.reason || null, req.body.needed_by || null, req.user.name, req.labelId, ids]
+    );
+    await logActivity(req, 'Bulk rush', `${rowCount} entries`);
+    res.json({ success: true, data: { rushed: rowCount } });
+  } catch (error) {
+    console.error('Bulk rush error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Payment-confirmation emails ────────────────────────────────────────────
+
+// POST /api/ledger/entries/:id/send-confirmation — email the payee that their
+// invoice was paid; record it as notified.
+router.post('/entries/:id/send-confirmation', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM expenses WHERE id = $1 AND label_id = $2 AND payment_status = 'Paid'`,
+      [parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Paid entry not found' });
+    const e = rows[0];
+    if (!e.vendor_email) return res.status(400).json({ success: false, error: 'No vendor email on this entry' });
+    await notifyVendor(req.labelId, e, 'paid', { method: e.payment_method, date: e.payment_date });
+    await pool.query(`UPDATE expenses SET payment_notified = TRUE, payment_notified_at = NOW() WHERE id = $1 AND label_id = $2`, [e.id, req.labelId]);
+    await logActivity(req, 'Sent payment confirmation', `${e.payee} — ${e.amount}`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Send confirmation error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/send-confirmations-bulk { ids:[] } — confirm many at once
+// (skips entries with no email / not paid). De-dupes by entry id.
+router.post('/send-confirmations-bulk', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? [...new Set(req.body.ids.map(n => parseInt(n, 10)).filter(Boolean))] : [];
+    if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
+    const { rows } = await pool.query(
+      `SELECT * FROM expenses WHERE label_id = $1 AND id = ANY($2::int[]) AND payment_status = 'Paid' AND vendor_email IS NOT NULL`,
+      [req.labelId, ids]
+    );
+    let sent = 0;
+    for (const e of rows) {
+      await notifyVendor(req.labelId, e, 'paid', { method: e.payment_method, date: e.payment_date });
+      await pool.query(`UPDATE expenses SET payment_notified = TRUE, payment_notified_at = NOW() WHERE id = $1`, [e.id]);
+      sent++;
+    }
+    await logActivity(req, 'Bulk payment confirmations', `${sent} sent`);
+    res.json({ success: true, data: { sent } });
+  } catch (error) {
+    console.error('Bulk confirmation error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/entries/:id/mark-sent  &  /mark-unsent — toggle the notified
+// flag manually (e.g. confirmed out-of-band).
+router.post('/entries/:id/mark-sent', async (req, res) => {
+  try {
+    await pool.query(`UPDATE expenses SET payment_notified = TRUE, payment_notified_at = NOW() WHERE id = $1 AND label_id = $2`, [parseInt(req.params.id, 10), req.labelId]);
+    res.json({ success: true });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+router.post('/entries/:id/mark-unsent', async (req, res) => {
+  try {
+    await pool.query(`UPDATE expenses SET payment_notified = FALSE, payment_notified_at = NULL WHERE id = $1 AND label_id = $2`, [parseInt(req.params.id, 10), req.labelId]);
+    res.json({ success: true });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
 // GET /api/ledger/export — CSV of all (non-deleted) entries for the workspace.
 router.get('/export', async (req, res) => {
   try {
@@ -800,24 +1140,34 @@ router.get('/entries/:id/installments', async (req, res) => {
 
 // POST /api/ledger/entries/:id/installments — record a partial payment. If the
 // installments now cover the full amount, the entry is marked Paid.
-router.post('/entries/:id/installments', async (req, res) => {
+router.post('/entries/:id/installments', upload.single('proof'), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const amount = parseFloat(req.body.amount);
     if (!amount || amount <= 0) return res.status(400).json({ success: false, error: 'A valid amount is required' });
     const exp = await pool.query('SELECT amount FROM expenses WHERE id = $1 AND label_id = $2', [id, req.labelId]);
     if (!exp.rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    // Optional proof-of-payment file.
+    let proof = { key: null, filename: null };
+    if (req.file) { const s = await storeFile(req.labelId, req.file, 'proof'); proof = s; }
     const { rows } = await pool.query(
-      `INSERT INTO payment_installments (label_id, expense_id, amount, paid_date, method, reference, created_by)
-       VALUES ($1,$2,$3,COALESCE($4,CURRENT_DATE),$5,$6,$7) RETURNING *`,
-      [req.labelId, id, amount, req.body.paid_date || null, req.body.method || null, req.body.reference || null, req.user.name]
+      `INSERT INTO payment_installments (label_id, expense_id, amount, paid_date, method, reference, proof_r2_key, proof_filename, created_by)
+       VALUES ($1,$2,$3,COALESCE($4,CURRENT_DATE),$5,$6,$7,$8,$9) RETURNING *`,
+      [req.labelId, id, amount, req.body.paid_date || null, req.body.method || null, req.body.reference || null, proof.key, proof.filename, req.user.name]
     );
     // Settle / mark partial based on cumulative installments.
     const sum = await pool.query('SELECT COALESCE(SUM(amount),0) AS paid FROM payment_installments WHERE label_id = $1 AND expense_id = $2', [req.labelId, id]);
     const paid = Number(sum.rows[0].paid);
     const full = Number(exp.rows[0].amount || 0);
     const status = paid >= full && full > 0 ? 'Paid' : 'Partial';
-    await pool.query('UPDATE expenses SET payment_status = $1 WHERE id = $2 AND label_id = $3', [status, id, req.labelId]);
+    await pool.query(
+      `UPDATE expenses SET payment_status = $1,
+         payment_date = CASE WHEN $1 = 'Paid' THEN COALESCE(payment_date, CURRENT_DATE) ELSE payment_date END,
+         paid_by = CASE WHEN $1 = 'Paid' THEN COALESCE(paid_by, $4) ELSE paid_by END
+       WHERE id = $2 AND label_id = $3`,
+      [status, id, req.labelId, req.user.name]
+    );
+    if (status === 'Paid') stampFxRateAsync(id);  // lock the rate once fully settled
     res.status(201).json({ success: true, data: { installment: rows[0], paid, payment_status: status } });
   } catch (error) {
     console.error('Create installment error:', error);
@@ -825,12 +1175,32 @@ router.post('/entries/:id/installments', async (req, res) => {
   }
 });
 
-// DELETE /api/ledger/installments/:installmentId
+// GET /api/ledger/installments/:installmentId/proof — signed URL for the proof file.
+router.get('/installments/:installmentId/proof', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT proof_r2_key FROM payment_installments WHERE id = $1 AND label_id = $2', [parseInt(req.params.installmentId, 10), req.labelId]);
+    if (!rows.length || !rows[0].proof_r2_key) return res.status(404).json({ success: false, error: 'No proof on file' });
+    const url = await getSignedFileUrl(rows[0].proof_r2_key, 3600);
+    res.json({ success: true, data: { url } });
+  } catch (error) {
+    console.error('Installment proof error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/ledger/installments/:installmentId — remove + recompute status.
 router.delete('/installments/:installmentId', async (req, res) => {
   try {
-    const { rowCount } = await pool.query('DELETE FROM payment_installments WHERE id = $1 AND label_id = $2', [parseInt(req.params.installmentId, 10), req.labelId]);
-    if (!rowCount) return res.status(404).json({ success: false, error: 'Installment not found' });
-    res.json({ success: true });
+    const del = await pool.query('DELETE FROM payment_installments WHERE id = $1 AND label_id = $2 RETURNING expense_id', [parseInt(req.params.installmentId, 10), req.labelId]);
+    if (!del.rows.length) return res.status(404).json({ success: false, error: 'Installment not found' });
+    const id = del.rows[0].expense_id;
+    const exp = await pool.query('SELECT amount FROM expenses WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    const sum = await pool.query('SELECT COALESCE(SUM(amount),0) AS paid FROM payment_installments WHERE label_id = $1 AND expense_id = $2', [req.labelId, id]);
+    const paid = Number(sum.rows[0].paid);
+    const full = Number(exp.rows[0]?.amount || 0);
+    const status = paid <= 0 ? 'Unpaid' : (paid >= full && full > 0 ? 'Paid' : 'Partial');
+    await pool.query('UPDATE expenses SET payment_status = $1 WHERE id = $2 AND label_id = $3', [status, id, req.labelId]);
+    res.json({ success: true, data: { paid, payment_status: status } });
   } catch (error) {
     console.error('Delete installment error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });

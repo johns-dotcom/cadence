@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CreditCard, CalendarClock, Check, X } from 'lucide-react'
+import { CreditCard, CalendarClock, Check, X, Zap, Send, MailCheck } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
@@ -55,6 +55,30 @@ export default function Payments() {
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
 
+  const toggleRush = async (r) => {
+    try {
+      if (r.rush) { await api.delete(`/ledger/entries/${r.id}/rush`) }
+      else {
+        const reason = window.prompt('Why is this a rush? (optional)') ?? ''
+        await api.post(`/ledger/entries/${r.id}/rush`, { reason })
+      }
+      load()
+    } catch { toast('Failed', 'error') }
+  }
+  const rushBulk = async () => {
+    const reason = window.prompt('Rush reason for selected (optional)') ?? ''
+    try { await api.post('/ledger/rush-bulk', { ids: [...sel], reason }); toast(`${sel.size} flagged rush`); load() }
+    catch { toast('Failed', 'error') }
+  }
+  const sendConfirm = async (r) => {
+    try { await api.post(`/ledger/entries/${r.id}/send-confirmation`); toast('Confirmation sent'); load() }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+  const sendConfirmBulk = async () => {
+    try { const { data } = await api.post('/ledger/send-confirmations-bulk', { ids: [...sel] }); toast(`${data.data.sent} confirmation(s) sent`); load() }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+
   const dueTotals = totalsByCurrency(rows)
 
   return (
@@ -82,12 +106,16 @@ export default function Payments() {
       )}
 
       {/* Batch action bar */}
-      {tab === 'due' && sel.size > 0 && (
+      {sel.size > 0 && (
         <div className="flex items-center justify-between card px-4 py-2.5 mb-3 bg-brand-50 border-brand-200">
           <span className="text-sm font-medium text-ink">
             {sel.size} selected · {Object.entries(selTotals).map(([c, a]) => `${c} ${fmt(a)}`).join(' · ')}
           </span>
-          <button onClick={() => setPayModal({ ids: [...sel] })} className="btn-primary py-1.5"><CreditCard size={15} /> Mark paid</button>
+          <div className="flex items-center gap-2">
+            {tab === 'due' && <button onClick={rushBulk} className="btn-secondary py-1.5"><Zap size={15} /> Rush</button>}
+            {tab === 'due' && <button onClick={() => setPayModal({ ids: [...sel] })} className="btn-primary py-1.5"><CreditCard size={15} /> Mark paid</button>}
+            {tab === 'paid' && <button onClick={sendConfirmBulk} className="btn-primary py-1.5"><Send size={15} /> Send confirmations</button>}
+          </div>
         </div>
       )}
 
@@ -100,10 +128,10 @@ export default function Payments() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-divider text-left">
-                {tab === 'due' && <th className="px-3 py-3"><input type="checkbox" checked={sel.size === rows.length} onChange={toggleAll} /></th>}
+                <th className="px-3 py-3"><input type="checkbox" checked={rows.length > 0 && sel.size === rows.length} onChange={toggleAll} /></th>
                 {(tab === 'due'
                   ? ['Payee', 'Category', 'Amount', 'Invoice date', 'Due', 'Terms', '']
-                  : ['Payee', 'Amount', 'Paid date', 'Method', 'Paid by']
+                  : ['Payee', 'Amount', 'Paid date', 'Method', 'Confirmation', '']
                 ).map(h => <th key={h} className="px-3 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>)}
               </tr>
             </thead>
@@ -111,7 +139,10 @@ export default function Payments() {
               {rows.map(r => tab === 'due' ? (
                 <tr key={r.id} className="hover:bg-gray-50">
                   <td className="px-3 py-3"><input type="checkbox" checked={sel.has(r.id)} onChange={() => toggle(r.id)} /></td>
-                  <td className="px-3 py-3"><p className="font-medium text-ink">{r.payee}</p>{r.artist && <p className="text-xs text-gray-400">{r.artist}</p>}</td>
+                  <td className="px-3 py-3">
+                    <p className="font-medium text-ink flex items-center gap-1.5">{r.payee}{r.rush && <span title={r.rush_reason || 'Rush'} className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded"><Zap size={10} /> Rush</span>}</p>
+                    {r.artist && <p className="text-xs text-gray-400">{r.artist}</p>}
+                  </td>
                   <td className="px-3 py-3 text-gray-600">{r.category || '—'}</td>
                   <td className="px-3 py-3 text-ink font-medium whitespace-nowrap">{r.currency} {fmt(r.amount)}</td>
                   <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{r.invoice_date ? new Date(r.invoice_date).toLocaleDateString() : '—'}</td>
@@ -123,6 +154,7 @@ export default function Payments() {
                   <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{r.payment_terms || '—'}</td>
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1.5 justify-end whitespace-nowrap">
+                      <button onClick={() => toggleRush(r)} className={`p-1 ${r.rush ? 'text-amber-600' : 'text-gray-400 hover:text-amber-600'}`} title={r.rush ? 'Clear rush' : 'Flag rush'}><Zap size={15} /></button>
                       <button onClick={() => setSchedModal({ id: r.id, terms: r.payment_terms || 'Net 30' })} className="text-gray-500 hover:text-brand-600 p-1" title="Schedule"><CalendarClock size={15} /></button>
                       <button onClick={() => setPayModal({ ids: [r.id] })} className="text-gray-500 hover:text-emerald-600 p-1" title="Mark paid"><Check size={16} /></button>
                     </div>
@@ -130,11 +162,21 @@ export default function Payments() {
                 </tr>
               ) : (
                 <tr key={r.id} className="hover:bg-gray-50">
+                  <td className="px-3 py-3"><input type="checkbox" checked={sel.has(r.id)} onChange={() => toggle(r.id)} /></td>
                   <td className="px-3 py-3 font-medium text-ink">{r.payee}</td>
                   <td className="px-3 py-3 text-ink">{r.currency} {fmt(r.amount)}</td>
                   <td className="px-3 py-3 text-gray-500">{r.payment_date ? new Date(r.payment_date).toLocaleDateString() : '—'}</td>
                   <td className="px-3 py-3 text-gray-500">{r.payment_method || '—'}</td>
-                  <td className="px-3 py-3 text-gray-500">{r.paid_by || '—'}</td>
+                  <td className="px-3 py-3">
+                    {r.payment_notified
+                      ? <span className="inline-flex items-center gap-1 text-xs text-emerald-600 font-medium"><MailCheck size={13} /> Sent</span>
+                      : <span className="text-xs text-gray-400">Not sent</span>}
+                  </td>
+                  <td className="px-3 py-3 text-right">
+                    {r.vendor_email
+                      ? <button onClick={() => sendConfirm(r)} className="text-gray-500 hover:text-brand-600 p-1" title={r.payment_notified ? 'Resend confirmation' : 'Send confirmation'}><Send size={15} /></button>
+                      : <span className="text-[11px] text-gray-300">no email</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>

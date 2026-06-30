@@ -1,15 +1,25 @@
 import { useEffect, useState } from 'react'
-import { Building2, ShieldCheck, ShieldAlert, X, Upload, ExternalLink } from 'lucide-react'
+import { Building2, ShieldCheck, ShieldAlert, X, Upload, ExternalLink, Pencil, GitMerge, Tag, Trash2, Plus, Sparkles, AlertTriangle } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
+import { useAuth } from '../context/AuthContext'
 
-function VendorDrawer({ name, onClose, onChanged }) {
+const SEV = { high: 'bg-red-100 text-red-700', medium: 'bg-amber-100 text-amber-700', low: 'bg-gray-100 text-gray-600' }
+
+function VendorDrawer({ name, allNames, onClose, onChanged, onRenamed }) {
   const { toast } = useToast()
+  const { user } = useAuth()
+  const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [edit, setEdit] = useState({ email: '', address: '', bank: '', notes: '' })
+  const [aliases, setAliases] = useState([])
+  const [newAlias, setNewAlias] = useState('')
+  const [renameTo, setRenameTo] = useState('')
+  const [mergeInto, setMergeInto] = useState('')
 
+  const loadAliases = () => api.get(`/ledger/vendors/${encodeURIComponent(name)}/aliases`).then(r => setAliases(r.data.data || [])).catch(() => {})
   const load = () => {
     setLoading(true)
     api.get(`/ledger/vendors/${encodeURIComponent(name)}`).then(res => {
@@ -17,6 +27,7 @@ function VendorDrawer({ name, onClose, onChanged }) {
       const v = res.data.data.vendor || {}
       setEdit({ email: v.email || '', address: v.address || '', bank: v.bank || '', notes: v.notes || '' })
     }).catch(() => {}).finally(() => setLoading(false))
+    loadAliases()
   }
   useEffect(load, [name])
 
@@ -24,6 +35,23 @@ function VendorDrawer({ name, onClose, onChanged }) {
     try { await api.patch(`/ledger/vendors/${encodeURIComponent(name)}`, edit); toast('Saved'); onChanged?.() }
     catch { toast('Failed', 'error') }
   }
+  const doRename = async () => {
+    if (!renameTo.trim()) return
+    try { await api.put('/ledger/vendors/rename', { from: name, to: renameTo.trim() }); toast('Vendor renamed'); onChanged?.(); onRenamed?.(renameTo.trim()) }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+  const doMerge = async () => {
+    if (!mergeInto) return
+    if (!window.confirm(`Merge "${name}" into "${mergeInto}"? All invoices move over and "${name}" becomes an alias.`)) return
+    try { await api.post('/ledger/vendors/merge', { from: name, into: mergeInto }); toast('Vendors merged'); onChanged?.(); onClose() }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+  const addAlias = async () => {
+    if (!newAlias.trim()) return
+    try { await api.post(`/ledger/vendors/${encodeURIComponent(name)}/aliases`, { alias: newAlias.trim() }); setNewAlias(''); loadAliases() }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+  const delAlias = async (id) => { try { await api.delete(`/ledger/vendors/aliases/${id}`); loadAliases() } catch { toast('Failed', 'error') } }
   const uploadW9 = async (file) => {
     if (!file) return
     const fd = new FormData(); fd.append('file', file)
@@ -72,6 +100,48 @@ function VendorDrawer({ name, onClose, onChanged }) {
               <button onClick={save} className="btn-primary">Save details</button>
             </div>
 
+            {/* Aliases */}
+            <div className="card p-4 mb-4">
+              <p className="text-xs font-bold text-ink mb-2 inline-flex items-center gap-1.5"><Tag size={13} /> Aliases</p>
+              <p className="text-[11px] text-gray-400 mb-2">Alternate spellings that resolve to this vendor (used by dup-check).</p>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {aliases.map(a => (
+                  <span key={a.id} className="inline-flex items-center gap-1 text-xs bg-gray-100 rounded px-2 py-0.5">
+                    {a.alias}<button onClick={() => delAlias(a.id)} className="text-gray-400 hover:text-red-600"><X size={11} /></button>
+                  </span>
+                ))}
+                {!aliases.length && <span className="text-xs text-gray-300">No aliases</span>}
+              </div>
+              <div className="flex gap-2">
+                <input className="input !py-1.5 text-sm" placeholder="Add an alias" value={newAlias} onChange={e => setNewAlias(e.target.value)} onKeyDown={e => e.key === 'Enter' && addAlias()} />
+                <button onClick={addAlias} className="btn-secondary flex-shrink-0 !py-1.5"><Plus size={14} /></button>
+              </div>
+            </div>
+
+            {/* Rename + merge (admin) */}
+            {isAdmin && (
+              <div className="card p-4 mb-4 space-y-3">
+                <div>
+                  <label className="label inline-flex items-center gap-1.5"><Pencil size={12} /> Rename vendor</label>
+                  <div className="flex gap-2">
+                    <input className="input !py-1.5 text-sm" placeholder={name} value={renameTo} onChange={e => setRenameTo(e.target.value)} />
+                    <button onClick={doRename} className="btn-secondary flex-shrink-0 !py-1.5">Rename</button>
+                  </div>
+                  <p className="text-[11px] text-gray-400 mt-1">Updates every invoice; the old name becomes an alias.</p>
+                </div>
+                <div>
+                  <label className="label inline-flex items-center gap-1.5"><GitMerge size={12} /> Merge into</label>
+                  <div className="flex gap-2">
+                    <select className="input !py-1.5 text-sm" value={mergeInto} onChange={e => setMergeInto(e.target.value)}>
+                      <option value="">— pick vendor —</option>
+                      {(allNames || []).filter(n => n.toLowerCase() !== name.toLowerCase()).map(n => <option key={n}>{n}</option>)}
+                    </select>
+                    <button onClick={doMerge} disabled={!mergeInto} className="btn-secondary flex-shrink-0 !py-1.5">Merge</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Entries */}
             <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Invoices ({data.entries.length})</h3>
             <div className="space-y-1.5">
@@ -90,9 +160,14 @@ function VendorDrawer({ name, onClose, onChanged }) {
 }
 
 export default function Vendors() {
+  const { user } = useAuth()
+  const { toast } = useToast()
+  const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const [vendors, setVendors] = useState([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null)
+  const [scanning, setScanning] = useState(false)
+  const [scanResults, setScanResults] = useState(null)
 
   const load = () => {
     setLoading(true)
@@ -100,9 +175,52 @@ export default function Vendors() {
   }
   useEffect(load, [])
 
+  const scanAllW9s = async () => {
+    setScanning(true)
+    try { const { data } = await api.post('/ledger/vendors/scan-w9s'); setScanResults(data.data || []) }
+    catch (err) { toast(err.response?.data?.error || 'Scan failed', 'error') }
+    finally { setScanning(false) }
+  }
+
+  const allNames = vendors.map(v => v.name)
+
   return (
     <div>
-      <PageHeader title="Vendors" subtitle="Everyone you've paid, grouped by payee" />
+      <PageHeader
+        title="Vendors"
+        subtitle="Everyone you've paid, grouped by payee"
+        action={isAdmin && vendors.some(v => v.w9_on_file) ? (
+          <button onClick={scanAllW9s} disabled={scanning} className="btn-secondary"><Sparkles size={15} /> {scanning ? 'Scanning W9s…' : 'Scan all W9s'}</button>
+        ) : null}
+      />
+
+      {scanResults && (
+        <div className="card p-4 mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-sm font-bold text-ink">W9 scan results ({scanResults.length})</h2>
+            <button onClick={() => setScanResults(null)} className="text-gray-400 hover:text-gray-600"><X size={16} /></button>
+          </div>
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {scanResults.map((r, i) => (
+              <div key={i} className="text-sm border-b border-divider pb-2">
+                <p className="font-medium text-ink flex items-center gap-2">
+                  {r.flags?.length ? <AlertTriangle size={14} className="text-amber-500" /> : <ShieldCheck size={14} className="text-emerald-500" />}
+                  {r.vendor}
+                </p>
+                {!r.ok ? <p className="text-xs text-gray-400">{r.reason}</p> : (
+                  <>
+                    {r.summary && <p className="text-xs text-gray-500">{r.summary}</p>}
+                    {r.flags?.map((f, j) => (
+                      <span key={j} className={`inline-flex mt-1 mr-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${SEV[f.severity] || SEV.low}`}>{f.field}</span>
+                    ))}
+                  </>
+                )}
+              </div>
+            ))}
+            {!scanResults.length && <p className="text-sm text-gray-400">No vendors with a W9 on file.</p>}
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <p className="text-sm text-gray-400">Loading…</p>
@@ -139,7 +257,7 @@ export default function Vendors() {
         </div>
       )}
 
-      {selected && <VendorDrawer name={selected} onClose={() => setSelected(null)} onChanged={load} />}
+      {selected && <VendorDrawer name={selected} allNames={allNames} onClose={() => setSelected(null)} onChanged={load} onRenamed={(to) => setSelected(to)} />}
     </div>
   )
 }

@@ -161,6 +161,10 @@ export default function Ledger() {
                     {en.voided && <span className="text-[10px] text-red-500 font-semibold uppercase ml-1">Voided</span>}
                     {en.split_count > 0 && <span className="text-[10px] text-gray-400 font-semibold uppercase ml-1">{en.split_count} splits</span>}
                     {en.is_bulk_deal && <span className="text-[10px] text-violet-500 font-semibold uppercase ml-1">Bulk deal</span>}
+                    {en.rush && <span className="text-[10px] text-amber-600 font-semibold uppercase ml-1">⚡ Rush</span>}
+                    {(en.ai_scan?.discrepancies?.length > 0 || en.w9_scan?.discrepancies?.length > 0) && (
+                      <button onClick={() => setDrawerEntry(en)} title="AI flagged discrepancies" className="text-[10px] text-red-600 font-semibold uppercase ml-1 hover:underline">⚠ {(en.ai_scan?.discrepancies?.length || 0) + (en.w9_scan?.discrepancies?.length || 0)} flag(s)</button>
+                    )}
                     {en.artist && <p className="text-xs text-gray-400">{en.artist}</p>}
                   </td>
                   <td className="px-3 py-3 text-gray-600 whitespace-nowrap">{en.category || '—'}</td>

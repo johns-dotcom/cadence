@@ -399,6 +399,38 @@ const runMigrations = async () => {
   // is created, further down — it can't reference a table that doesn't exist
   // yet, or the whole migration would abort here.)
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS is_bulk_deal BOOLEAN DEFAULT FALSE`);
+  // FX rate locked at payment time (audit). NULL = not yet stamped; once set
+  // the USD-equivalent never changes. Convention matches lib/fx.js getRates:
+  // value of `currency` per 1 USD, so USD = native / fx_rate_to_usd.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS fx_rate_to_usd NUMERIC(18,8)`);
+  // AI discrepancy scans, stored so the finding persists across reloads.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS ai_scan JSONB`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS w9_scan JSONB`);
+  // Rush / expedited-payment flag.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS rush BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS rush_reason TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS rush_needed_by DATE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS rush_by TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS rush_at TIMESTAMP`);
+  // Payment-confirmation email tracking.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_notified BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_notified_at TIMESTAMP`);
+  // Proof-of-payment file on partial-payment installments.
+  await pool.query(`ALTER TABLE payment_installments ADD COLUMN IF NOT EXISTS proof_r2_key TEXT`);
+  await pool.query(`ALTER TABLE payment_installments ADD COLUMN IF NOT EXISTS proof_filename TEXT`);
+  // Vendor aliases — alternate spellings that should resolve to one canonical
+  // vendor name (used by dup-check, rename, and merge). Label-scoped.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS vendor_aliases (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      canonical TEXT NOT NULL,
+      alias TEXT NOT NULL,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_aliases_uniq ON vendor_aliases (label_id, LOWER(alias))`);
 
   // Per-entry field-level change history (audit trail for the ledger).
   await pool.query(`
@@ -879,5 +911,6 @@ app.listen(PORT, () => {
   console.log(`Cadence API listening on :${PORT} (${process.env.NODE_ENV || 'development'})`);
   runMigrations()
     .then(autoBootstrap)
+    .then(() => require('./lib/fxStamp').backfillPaidRows().catch(e => console.warn('fx backfill:', e.message)))
     .catch(err => console.error('Migration error:', err.message));
 });
