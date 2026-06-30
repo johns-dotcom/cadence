@@ -3,6 +3,7 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
+const { toUSD } = require('../lib/fx');
 
 const router = express.Router();
 // Financials are privileged — approvers and up. Every query is label-scoped.
@@ -25,36 +26,48 @@ router.get('/summary', async (req, res) => {
     const expClause = start ? `AND COALESCE(invoice_date, created_at::date) >= ${start}` : '';
     const incClause = start ? `AND income_date >= ${start}` : '';
 
-    const [expenseByCat, incomeBySource, totals] = await Promise.all([
+    // Pull raw rows (amount + currency + date) and roll up in USD via FX, so
+    // multi-currency ledgers/income aggregate correctly. Excludes split-child
+    // and voided rows from totals.
+    const [expRows, incRows] = await Promise.all([
       pool.query(
-        `SELECT COALESCE(category, 'Uncategorized') AS category, SUM(amount)::numeric AS total
+        `SELECT COALESCE(category,'Uncategorized') AS category, amount, currency,
+                COALESCE(payment_date, invoice_date, created_at::date) AS fx_date
          FROM expenses
-         WHERE label_id = $1 AND status = 'approved' AND (deleted = false OR deleted IS NULL) ${expClause}
-         GROUP BY category ORDER BY total DESC`,
+         WHERE label_id = $1 AND status = 'approved' AND (deleted = false OR deleted IS NULL)
+           AND parent_id IS NULL AND (voided = false OR voided IS NULL) ${expClause}`,
         [req.labelId]
       ),
       pool.query(
-        `SELECT COALESCE(source, 'Other') AS source, SUM(amount)::numeric AS total
-         FROM artist_income WHERE label_id = $1 ${incClause}
-         GROUP BY source ORDER BY total DESC`,
-        [req.labelId]
-      ),
-      pool.query(
-        `SELECT
-           (SELECT COALESCE(SUM(amount),0) FROM expenses WHERE label_id = $1 AND status='approved' AND (deleted=false OR deleted IS NULL) ${expClause}) AS expenses,
-           (SELECT COALESCE(SUM(amount),0) FROM artist_income WHERE label_id = $1 ${incClause}) AS income`,
+        `SELECT COALESCE(source,'Other') AS source, amount, currency, income_date AS fx_date
+         FROM artist_income WHERE label_id = $1 ${incClause}`,
         [req.labelId]
       ),
     ]);
 
-    const income = Number(totals.rows[0].income || 0);
-    const expenses = Number(totals.rows[0].expenses || 0);
+    const byCat = {}; let expenses = 0;
+    for (const r of expRows.rows) {
+      const usd = await toUSD(r.amount, r.currency, r.fx_date);
+      byCat[r.category] = (byCat[r.category] || 0) + usd;
+      expenses += usd;
+    }
+    const bySource = {}; let income = 0;
+    for (const r of incRows.rows) {
+      const usd = await toUSD(r.amount, r.currency, r.fx_date);
+      bySource[r.source] = (bySource[r.source] || 0) + usd;
+      income += usd;
+    }
+    const toSorted = (obj, key) => Object.entries(obj).map(([k, v]) => ({ [key]: k, total: Math.round(v * 100) / 100 })).sort((a, b) => b.total - a.total);
+
     res.json({
       success: true,
       data: {
-        income, expenses, net: income - expenses,
-        expenseByCategory: expenseByCat.rows.map(r => ({ ...r, total: Number(r.total) })),
-        incomeBySource: incomeBySource.rows.map(r => ({ ...r, total: Number(r.total) })),
+        currency: 'USD',
+        income: Math.round(income * 100) / 100,
+        expenses: Math.round(expenses * 100) / 100,
+        net: Math.round((income - expenses) * 100) / 100,
+        expenseByCategory: toSorted(byCat, 'category'),
+        incomeBySource: toSorted(bySource, 'source'),
       },
     });
   } catch (error) {
@@ -66,29 +79,36 @@ router.get('/summary', async (req, res) => {
 // GET /api/financials/recoupments — per-artist recoupable spend vs income.
 router.get('/recoupments', async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT a.id AS artist_id, a.name,
-              COALESCE(spend.total, 0)::numeric AS recoupable_spend,
-              COALESCE(inc.total, 0)::numeric AS income
-       FROM artists a
-       LEFT JOIN (
-         SELECT ar.id AS artist_id, SUM(e.amount) AS total
-         FROM artists ar
-         JOIN expenses e ON e.label_id = ar.label_id AND LOWER(e.artist) = LOWER(ar.name)
-           AND e.recoupable = TRUE AND e.status = 'approved' AND (e.deleted = false OR e.deleted IS NULL)
-         WHERE ar.label_id = $1 GROUP BY ar.id
-       ) spend ON spend.artist_id = a.id
-       LEFT JOIN (
-         SELECT artist_id, SUM(amount) AS total FROM artist_income WHERE label_id = $1 GROUP BY artist_id
-       ) inc ON inc.artist_id = a.id
-       WHERE a.label_id = $1
-       ORDER BY a.name`,
-      [req.labelId]
-    );
-    const data = rows.map(r => {
-      const spend = Number(r.recoupable_spend);
-      const income = Number(r.income);
-      return { artist_id: r.artist_id, name: r.name, recoupable_spend: spend, income, balance: income - spend, recouped: income >= spend && spend > 0 };
+    const [artists, spendRows, incRows] = await Promise.all([
+      pool.query('SELECT id, name FROM artists WHERE label_id = $1 ORDER BY name', [req.labelId]),
+      pool.query(
+        `SELECT LOWER(e.artist) AS akey, e.amount, e.currency,
+                COALESCE(e.payment_date, e.invoice_date, e.created_at::date) AS fx_date
+         FROM expenses e
+         WHERE e.label_id = $1 AND e.recoupable = TRUE AND e.status = 'approved'
+           AND (e.deleted = false OR e.deleted IS NULL) AND e.parent_id IS NULL AND (e.voided = false OR e.voided IS NULL)`,
+        [req.labelId]
+      ),
+      pool.query('SELECT artist_id, amount, currency, income_date AS fx_date FROM artist_income WHERE label_id = $1', [req.labelId]),
+    ]);
+
+    // Roll up recoupable spend (by artist name) and income (by artist_id) in USD.
+    const spendByName = {};
+    for (const r of spendRows.rows) {
+      if (!r.akey) continue;
+      spendByName[r.akey] = (spendByName[r.akey] || 0) + await toUSD(r.amount, r.currency, r.fx_date);
+    }
+    const incById = {};
+    for (const r of incRows.rows) {
+      if (!r.artist_id) continue;
+      incById[r.artist_id] = (incById[r.artist_id] || 0) + await toUSD(r.amount, r.currency, r.fx_date);
+    }
+
+    const round = (n) => Math.round((n || 0) * 100) / 100;
+    const data = artists.rows.map(a => {
+      const spend = round(spendByName[a.name.toLowerCase()]);
+      const income = round(incById[a.id]);
+      return { artist_id: a.id, name: a.name, currency: 'USD', recoupable_spend: spend, income, balance: round(income - spend), recouped: income >= spend && spend > 0 };
     });
     res.json({ success: true, data });
   } catch (error) {
