@@ -9,6 +9,15 @@ const { computeDueDate } = require('../lib/payments');
 const { upsertVendor } = require('../lib/vendors');
 const claude = require('../lib/claude');
 const { sendEmail, vendorDecisionEmail, paymentConfirmationEmail } = require('../lib/email');
+const ExcelJS = require('exceljs');
+const XLSX = require('xlsx');
+const { buildZip, toCsv } = require('../lib/zip');
+
+// Normalize an invoice number for matching: strip #, INV-/INV prefixes, leading
+// zeros, and whitespace; lowercase.
+const normInv = (s) => String(s || '').toLowerCase().replace(/[#\s]/g, '').replace(/^inv-?/i, '').replace(/^0+/, '');
+const fileExt = (key) => (/\.pdf$/i.test(key) ? 'pdf' : /\.png$/i.test(key) ? 'png' : /\.jpe?g$/i.test(key) ? 'jpg' : 'bin');
+const safe = (s) => String(s || '').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 80);
 
 // Best-effort notify a vendor about a decision/payment on their submission.
 async function notifyVendor(labelId, entry, kind, extra = {}) {
@@ -855,6 +864,148 @@ router.get('/1099-report', async (req, res) => {
   } catch (error) {
     console.error('1099 report error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// Build a branded XLSX ledger for a set of expense rows.
+async function vendorLedgerXlsx(vendorName, rows) {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Ledger');
+  const cols = ['Invoice date', 'Invoice #', 'Artist', 'Category', 'Amount', 'Currency', 'Status', 'Payment', 'Paid date', 'Method', 'Notes'];
+  const title = ws.addRow([`${vendorName} — invoice ledger`]); title.font = { bold: true, size: 14 }; ws.mergeCells(`A1:${String.fromCharCode(64 + cols.length)}1`);
+  const head = ws.addRow(cols); head.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  head.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } }; });
+  ws.views = [{ state: 'frozen', ySplit: 2 }];
+  let total = 0;
+  for (const e of rows) {
+    total += Number(e.amount || 0);
+    ws.addRow([
+      e.invoice_date ? String(e.invoice_date).slice(0, 10) : '', e.invoice_number || '', e.artist || '', e.category || '',
+      Number(e.amount || 0), e.currency || 'USD', e.status || '', e.payment_status || '',
+      e.payment_date ? String(e.payment_date).slice(0, 10) : '', e.payment_method || '', e.notes || '',
+    ]);
+  }
+  const totalRow = ws.addRow(['', '', '', 'TOTAL', total]); totalRow.font = { bold: true };
+  ws.columns.forEach(c => { c.width = 18; });
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
+// GET /api/ledger/vendor-zip?payee= — ZIP with a vendor's invoices + W9 + a
+// branded Excel ledger.
+router.get('/vendor-zip', async (req, res) => {
+  try {
+    const payee = (req.query.payee || '').trim();
+    if (!payee) return res.status(400).json({ success: false, error: 'payee is required' });
+    const { rows } = await pool.query(
+      `SELECT * FROM expenses WHERE label_id = $1 AND LOWER(payee) = LOWER($2)
+         AND (deleted = false OR deleted IS NULL) AND status != 'rejected' AND parent_id IS NULL
+       ORDER BY invoice_date DESC NULLS LAST`,
+      [req.labelId, payee]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'No invoices found for that vendor' });
+
+    const entries = [{ name: `00 - ${safe(payee)} ledger.xlsx`, content: await vendorLedgerXlsx(payee, rows) }];
+    let w9Key = null;
+    for (const e of rows) {
+      if (e.invoice_r2_key) {
+        const buf = await loadFileBuffer(e.invoice_r2_key, null).catch(() => null);
+        if (buf) entries.push({ name: `invoices/${safe(e.invoice_number || e.id)}.${fileExt(e.invoice_r2_key)}`, content: buf });
+      }
+      if (!w9Key && e.w9_r2_key) w9Key = e.w9_r2_key;
+    }
+    if (!w9Key) {
+      const v = await pool.query('SELECT w9_r2_key FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [req.labelId, payee]);
+      w9Key = v.rows[0]?.w9_r2_key || null;
+    }
+    if (w9Key) {
+      const buf = await loadFileBuffer(w9Key, null).catch(() => null);
+      if (buf) entries.push({ name: `W9 - ${safe(payee)}.${fileExt(w9Key)}`, content: buf });
+    }
+
+    const zip = buildZip(entries, Math.floor(Date.now() / 1000));
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${safe(payee)}.zip"`);
+    res.send(zip);
+  } catch (error) {
+    console.error('Vendor zip error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/bulk-zip — upload a spreadsheet of vendor + invoice# and get
+// back a ZIP of every matching invoice file + W9s + a per-sheet matches.csv.
+router.post('/bulk-zip', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: 'No spreadsheet provided' });
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+
+    // Index this label's invoices by vendor_lc|normInv for fast lookup.
+    const { rows: all } = await pool.query(
+      `SELECT id, payee, invoice_number, invoice_r2_key, w9_r2_key FROM expenses
+       WHERE label_id = $1 AND (deleted = false OR deleted IS NULL) AND parent_id IS NULL`,
+      [req.labelId]
+    );
+    const byKey = new Map();
+    const w9ByVendor = new Map();
+    for (const e of all) {
+      if (e.payee && e.invoice_number) byKey.set(`${e.payee.toLowerCase()}|${normInv(e.invoice_number)}`, e);
+      if (e.w9_r2_key && e.payee && !w9ByVendor.has(e.payee.toLowerCase())) w9ByVendor.set(e.payee.toLowerCase(), { key: e.w9_r2_key, payee: e.payee });
+    }
+
+    const entries = [];
+    const seenW9 = new Set();
+    const summary = [];
+    const matchHeaderRe = /vendor|payee|supplier|company|bill ?to/i;
+    const invHeaderRe = /invoice ?#?|inv ?#?|invoice ?number/i;
+
+    for (const sheetName of wb.SheetNames) {
+      const grid = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, blankrows: false });
+      if (!grid.length) continue;
+      // Find the header row + vendor/invoice columns in the first 15 rows.
+      let headerRow = -1, vCol = -1, iCol = -1;
+      for (let r = 0; r < Math.min(15, grid.length); r++) {
+        const row = grid[r] || [];
+        const vc = row.findIndex(c => matchHeaderRe.test(String(c)));
+        const ic = row.findIndex(c => invHeaderRe.test(String(c)));
+        if (vc !== -1 && ic !== -1) { headerRow = r; vCol = vc; iCol = ic; break; }
+      }
+      if (headerRow === -1) { entries.push({ name: `${safe(sheetName)}/_SKIPPED.txt`, content: 'Could not find VENDOR and INVOICE # columns in the first 15 rows.' }); continue; }
+
+      const csv = [['vendor', 'invoice', 'status']];
+      let matched = 0, missing = 0;
+      for (let r = headerRow + 1; r < grid.length; r++) {
+        const row = grid[r] || [];
+        const vendor = String(row[vCol] || '').trim();
+        const inv = String(row[iCol] || '').trim();
+        if (!vendor || !inv) { csv.push([vendor, inv, 'missing_field']); continue; }
+        const hit = byKey.get(`${vendor.toLowerCase()}|${normInv(inv)}`);
+        if (!hit) { csv.push([vendor, inv, 'not_found']); missing++; continue; }
+        if (!hit.invoice_r2_key) { csv.push([vendor, inv, 'no_file']); continue; }
+        const buf = await loadFileBuffer(hit.invoice_r2_key, null).catch(() => null);
+        if (!buf) { csv.push([vendor, inv, 'no_file']); continue; }
+        entries.push({ name: `${safe(sheetName)}/${safe(vendor)}-${safe(inv)}.${fileExt(hit.invoice_r2_key)}`, content: buf });
+        csv.push([vendor, inv, 'matched']); matched++;
+        // collect this vendor's W9
+        const w9 = w9ByVendor.get(vendor.toLowerCase());
+        if (w9 && !seenW9.has(vendor.toLowerCase())) {
+          seenW9.add(vendor.toLowerCase());
+          const wbuf = await loadFileBuffer(w9.key, null).catch(() => null);
+          if (wbuf) entries.push({ name: `W9s/${safe(w9.payee)}.${fileExt(w9.key)}`, content: wbuf });
+        }
+      }
+      entries.push({ name: `${safe(sheetName)}/matches.csv`, content: toCsv(['vendor', 'invoice', 'status'], csv.slice(1).map(([vendor, invoice, status]) => ({ vendor, invoice, status }))) });
+      summary.push(`${sheetName}: ${matched} matched, ${missing} not found`);
+    }
+
+    entries.unshift({ name: 'summary.txt', content: summary.join('\n') || 'No sheets processed.' });
+    const zip = buildZip(entries, Math.floor(Date.now() / 1000));
+    await logActivity(req, 'Bulk invoice ZIP', summary.join('; '));
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="invoices.zip"');
+    res.send(zip);
+  } catch (error) {
+    console.error('Bulk zip error:', error);
+    res.status(500).json({ success: false, error: 'Could not process the spreadsheet' });
   }
 });
 
