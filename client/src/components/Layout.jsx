@@ -39,6 +39,7 @@ const PAGE_LABELS = {
   '/payments':   'Payments',
   '/vendors':    'Vendors',
   '/invoices':   'Invoices',
+  '/invoices/new': 'Create invoice',
   '/team':       'Team',
   '/activity':   'Activity',
   '/settings':   'Settings',

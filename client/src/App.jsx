@@ -33,6 +33,7 @@ import Ledger from './pages/Ledger'
 import Payments from './pages/Payments'
 import Vendors from './pages/Vendors'
 import Invoices from './pages/Invoices'
+import CreateInvoice from './pages/CreateInvoice'
 import VendorSubmit from './pages/VendorSubmit'
 import AcceptInvite from './pages/AcceptInvite'
 import Team from './pages/Team'
@@ -126,6 +127,7 @@ function AppContent() {
         <Route path="/payments"     element={<AdminRoute><Payments /></AdminRoute>} />
         <Route path="/vendors"      element={<AdminRoute><Vendors /></AdminRoute>} />
         <Route path="/invoices"     element={<AdminRoute><Invoices /></AdminRoute>} />
+        <Route path="/invoices/new" element={<AdminRoute><CreateInvoice /></AdminRoute>} />
         <Route path="/team"         element={<AdminRoute><Team /></AdminRoute>} />
         <Route path="/activity"     element={<AdminRoute><Activity /></AdminRoute>} />
         <Route path="/data-quality" element={<AdminRoute><Duplicates /></AdminRoute>} />
