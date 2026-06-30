@@ -12,7 +12,9 @@ export default function RepsManager() {
   const [loading, setLoading] = useState(true)
 
   const load = () => api.get('/reps', { params: { all: 1 } }).then(r => setReps(r.data.data || [])).catch(() => {}).finally(() => setLoading(false))
-  useEffect(load, [])
+  // Wrap, don't pass `load` directly: it returns a Promise, which React would
+  // otherwise treat as the effect's cleanup function and crash on unmount.
+  useEffect(() => { load() }, [])
 
   const add = async (e) => {
     e.preventDefault()

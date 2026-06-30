@@ -25,7 +25,9 @@ export default function Financials() {
 
   const loadSummary = () => api.get('/financials/summary', { params: { period } }).then(r => setSummary(r.data.data)).catch(() => {})
   const loadIncome = () => api.get('/financials/income').then(r => setIncome(r.data.data || [])).catch(() => {})
-  useEffect(loadSummary, [period])
+  // Wrap so the returned Promise isn't mistaken for a cleanup function (which
+  // would crash on the period change / unmount).
+  useEffect(() => { loadSummary() }, [period])
   useEffect(() => { loadIncome(); api.get('/artists').then(r => setArtists(r.data.data || [])).catch(() => {}) }, [])
 
   const addIncome = async (e) => {
