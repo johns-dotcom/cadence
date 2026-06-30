@@ -157,8 +157,23 @@ app.use('/api', (req, res) => res.status(404).json({ success: false, error: 'Not
 // ── Serve the built client (production) ─────────────────────────────────
 if (process.env.NODE_ENV === 'production') {
   const clientDist = path.join(__dirname, '..', 'client', 'dist');
-  app.use(express.static(clientDist));
-  app.get('*', (req, res) => res.sendFile(path.join(clientDist, 'index.html')));
+  // Hashed build assets are content-addressed and safe to cache forever; but
+  // index.html must NEVER be cached, or an open tab keeps loading stale chunk
+  // names after a deploy and crashes ("x is not a function"). no-cache forces
+  // a revalidate so every load picks up the current asset hashes.
+  app.use(express.static(clientDist, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      } else if (/\/assets\//.test(filePath)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  }));
+  app.get('*', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.sendFile(path.join(clientDist, 'index.html'));
+  });
 }
 
 // ── Schema + migrations ─────────────────────────────────────────────────

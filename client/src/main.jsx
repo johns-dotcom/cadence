@@ -17,6 +17,15 @@ if (localStorage.getItem('theme') === 'dark') {
 const savedAccent = localStorage.getItem('brand_accent')
 if (savedAccent) applyAccent(savedAccent)
 
+// After a deploy, an open tab may try to lazy-load a chunk whose hashed name no
+// longer exists. Reload once to pull the fresh build instead of crashing.
+window.addEventListener('vite:preloadError', () => {
+  if (!sessionStorage.getItem('reloadedForChunk')) {
+    sessionStorage.setItem('reloadedForChunk', '1')
+    window.location.reload()
+  }
+})
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID || ''}>

@@ -3,6 +3,7 @@ import { Outlet, Link, useLocation } from 'react-router-dom'
 import { LayoutDashboard, Building2, BarChart3, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
+import ErrorBoundary from './ErrorBoundary'
 
 // Neutral operator shell shown to platform admins who are NOT inside a
 // workspace. No label branding, no label-scoped nav — just platform tools.
@@ -85,7 +86,9 @@ export default function PlatformLayout() {
         </div>
         <main className="flex-1 overflow-auto">
           <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 sm:py-8">
-            <Outlet />
+            <ErrorBoundary key={location.pathname}>
+              <Outlet />
+            </ErrorBoundary>
           </div>
         </main>
       </div>
