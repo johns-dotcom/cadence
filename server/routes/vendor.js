@@ -4,6 +4,7 @@ const rateLimit = require('express-rate-limit');
 const pool = require('../db');
 const { uploadFile, getSignedFileUrl } = require('../lib/r2');
 const { upsertVendor } = require('../lib/vendors');
+const claude = require('../lib/claude');
 
 const router = express.Router();
 
@@ -45,6 +46,23 @@ router.get('/:slug', async (req, res) => {
     });
   } catch (error) {
     console.error('Vendor context error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/vendor/:slug/parse-invoice — public: AI-extract fields from an
+// uploaded invoice so the vendor form can auto-fill. Rate-limited; no persistence.
+router.post('/:slug/parse-invoice', submitLimiter, upload.single('invoice_file'), async (req, res) => {
+  try {
+    if (!claude.isEnabled()) return res.status(400).json({ success: false, error: 'Auto-fill is not available' });
+    const label = await labelBySlug(req.params.slug);
+    if (!label) return res.status(404).json({ success: false, error: 'Workspace not found' });
+    if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
+    const r = await claude.parseInvoice({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+    if (!r.ok) return res.status(502).json({ success: false, error: 'Could not read the invoice' });
+    res.json({ success: true, data: r.data });
+  } catch (error) {
+    console.error('Vendor parse error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

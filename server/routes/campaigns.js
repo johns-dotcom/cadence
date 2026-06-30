@@ -1,11 +1,29 @@
 const express = require('express');
+const multer = require('multer');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
+const claude = require('../lib/claude');
 
 const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 router.use(authMiddleware, withTenant);
+
+// POST /api/campaigns/parse — AI-extract a campaign + creators from a screenshot
+// of a campaign/creator dashboard. Returns extracted data for the create form.
+router.post('/parse', upload.single('screenshot'), async (req, res) => {
+  try {
+    if (!claude.isEnabled()) return res.status(400).json({ success: false, error: 'AI is not configured on the server' });
+    if (!req.file) return res.status(400).json({ success: false, error: 'No image provided' });
+    const r = await claude.parseMarketing({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+    if (!r.ok) return res.status(502).json({ success: false, error: r.error || 'Could not read the screenshot' });
+    res.json({ success: true, data: r.data });
+  } catch (error) {
+    console.error('Marketing parse error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
 
 const UPDATABLE = [
   'artist_id', 'name', 'platform', 'status', 'planned_budget',

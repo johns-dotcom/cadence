@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart } from 'lucide-react'
+import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart, Sparkles } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
@@ -28,6 +28,31 @@ export default function Ledger() {
     invoice_number: '', amount: '', currency: 'USD', payment_method: '', notes: '',
   })
   const [files, setFiles] = useState({ invoice_file: null, w9_file: null, receipt_file: null })
+  const [scanning, setScanning] = useState(false)
+
+  // AI: extract fields from the attached invoice and prefill the form.
+  const scanInvoice = async () => {
+    if (!files.invoice_file) { toast('Attach an invoice file first', 'error'); return }
+    setScanning(true)
+    try {
+      const fd = new FormData(); fd.append('file', files.invoice_file)
+      const { data } = await api.post('/ledger/parse-invoice', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+      const d = data.data
+      setForm(f => ({
+        ...f,
+        payee: d.vendor_name || f.payee,
+        amount: d.amount != null ? String(d.amount) : f.amount,
+        currency: d.currency || f.currency,
+        invoice_number: d.invoice_number || f.invoice_number,
+        invoice_date: d.invoice_date || f.invoice_date,
+        category: d.category || f.category,
+        payment_method: d.payment_method || f.payment_method,
+        description: d.description || f.description,
+      }))
+      toast('Invoice scanned — review the prefilled fields')
+    } catch (err) { toast(err.response?.data?.error || 'Scan failed', 'error') }
+    finally { setScanning(false) }
+  }
 
   const load = () => {
     setLoading(true)
@@ -168,7 +193,11 @@ export default function Ledger() {
           <div><label className="label">Invoice #</label><input className="input" value={form.invoice_number} onChange={set('invoice_number')} /></div>
           <div><label className="label">Payment method</label><select className="input" value={form.payment_method} onChange={set('payment_method')}><option value="">—</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
           <div className="lg:col-span-2"><label className="label">Description</label><input className="input" value={form.description} onChange={set('description')} /></div>
-          <div><label className="label">Invoice file</label><input type="file" className="input py-1.5" onChange={e => setFiles(f => ({ ...f, invoice_file: e.target.files[0] }))} /></div>
+          <div>
+            <label className="label">Invoice file</label>
+            <input type="file" className="input py-1.5" onChange={e => setFiles(f => ({ ...f, invoice_file: e.target.files[0] }))} />
+            {files.invoice_file && <button type="button" onClick={scanInvoice} disabled={scanning} className="text-xs font-semibold text-brand-600 hover:underline mt-1 inline-flex items-center gap-1"><Sparkles size={12} /> {scanning ? 'Scanning…' : 'Scan & autofill'}</button>}
+          </div>
           <div><label className="label">W9 (optional)</label><input type="file" className="input py-1.5" onChange={e => setFiles(f => ({ ...f, w9_file: e.target.files[0] }))} /></div>
           <div className="lg:col-span-4"><button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving…' : 'Add entry'}</button></div>
         </form>

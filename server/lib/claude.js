@@ -78,4 +78,104 @@ async function extractFromFile({ buffer, mimeType, instruction, schema, maxToken
   });
 }
 
-module.exports = { isEnabled, callClaude, extractFromFile, fileBlock, MODEL };
+// ── Domain helpers ───────────────────────────────────────────────────────
+// Structured-output schemas use nullable types + additionalProperties:false
+// and list every property in `required` (strict-mode requirement).
+
+const nullableStr = { type: ['string', 'null'] };
+
+const INVOICE_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    vendor_name: nullableStr,
+    amount: { type: ['number', 'null'] },
+    currency: nullableStr,
+    invoice_number: nullableStr,
+    invoice_date: nullableStr,
+    description: nullableStr,
+    category: nullableStr,
+    payment_method: nullableStr,
+  },
+  required: ['vendor_name', 'amount', 'currency', 'invoice_number', 'invoice_date', 'description', 'category', 'payment_method'],
+};
+
+// Parse an invoice document/image into structured fields for auto-fill.
+function parseInvoice({ buffer, mimeType }) {
+  return extractFromFile({
+    buffer, mimeType, schema: INVOICE_SCHEMA, maxTokens: 1024,
+    instruction: 'Extract the invoice details. invoice_date as YYYY-MM-DD. amount is the total due as a number (no symbols). currency as a 3-letter ISO code. payment_method is the requested method if stated (ACH, Wire, Check, PayPal, etc.), else null. category is a short expense category if obvious, else null. Use null for anything not present.',
+  });
+}
+
+const DISCREPANCY_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    discrepancies: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false,
+        properties: { field: { type: 'string' }, severity: { type: 'string' }, detail: { type: 'string' } },
+        required: ['field', 'severity', 'detail'],
+      },
+    },
+    summary: { type: 'string' },
+  },
+  required: ['discrepancies', 'summary'],
+};
+
+// Compare an uploaded invoice against the recorded entry; flag mismatches.
+function scanInvoice({ buffer, mimeType, entry }) {
+  const recorded = `Recorded values — payee: ${entry.payee || ''}; amount: ${entry.amount || ''} ${entry.currency || ''}; invoice number: ${entry.invoice_number || ''}.`;
+  return extractFromFile({
+    buffer, mimeType, schema: DISCREPANCY_SCHEMA, maxTokens: 1024,
+    instruction: `${recorded}\nCompare these to the attached invoice. List any discrepancies (field, severity high|medium|low, detail). Be tolerant of formatting (e.g. "INV-0034" ≡ "34"). Empty list if everything matches.`,
+  });
+}
+
+const W9_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    form_type: nullableStr,
+    legal_name: nullableStr,
+    name_matches: { type: ['boolean', 'null'] },
+    has_signature: { type: ['boolean', 'null'] },
+    notes: nullableStr,
+  },
+  required: ['form_type', 'legal_name', 'name_matches', 'has_signature', 'notes'],
+};
+
+// Validate a W9/W8 against an expected vendor name.
+function validateW9({ buffer, mimeType, vendorName }) {
+  return extractFromFile({
+    buffer, mimeType, schema: W9_SCHEMA, maxTokens: 1024,
+    instruction: `Identify this US tax form. form_type: W-9 | W-8BEN | W-8BEN-E | other. legal_name: the name on the form. name_matches: does it reasonably match "${vendorName}" (tolerate middle names / business names)? has_signature: is it signed? notes: anything notable.`,
+  });
+}
+
+const MARKETING_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    campaign_name: nullableStr,
+    platform: nullableStr,
+    total_budget: { type: ['number', 'null'] },
+    creators: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false,
+        properties: { name: nullableStr, handle: nullableStr, price: { type: ['number', 'null'] }, followers: { type: ['number', 'null'] } },
+        required: ['name', 'handle', 'price', 'followers'],
+      },
+    },
+  },
+  required: ['campaign_name', 'platform', 'total_budget', 'creators'],
+};
+
+// Parse a marketing/influencer campaign screenshot into structured data.
+function parseMarketing({ buffer, mimeType }) {
+  return extractFromFile({
+    buffer, mimeType, schema: MARKETING_SCHEMA, maxTokens: 2048,
+    instruction: 'Extract the campaign name, platform, total budget (number), and the list of creators (name, @handle, price as a number, follower count). Use null for anything not present.',
+  });
+}
+
+module.exports = { isEnabled, callClaude, extractFromFile, fileBlock, MODEL, parseInvoice, scanInvoice, validateW9, parseMarketing };

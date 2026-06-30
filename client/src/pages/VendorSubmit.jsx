@@ -35,6 +35,28 @@ export default function VendorSubmit() {
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
   const isReimb = form.is_reimbursement === 'yes'
 
+  const [autofilling, setAutofilling] = useState(false)
+  // AI: read the attached invoice and prefill matching fields.
+  const autofill = async () => {
+    if (!files.invoice_file) return
+    setAutofilling(true); setError('')
+    try {
+      const fd = new FormData(); fd.append('invoice_file', files.invoice_file)
+      const { data } = await api.post(`/vendor/${slug}/parse-invoice`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+      const d = data.data
+      setForm(f => ({
+        ...f,
+        vendor_name: d.vendor_name || f.vendor_name,
+        amount: d.amount != null ? String(d.amount) : f.amount,
+        currency: d.currency || f.currency,
+        invoice_number: d.invoice_number || f.invoice_number,
+        payment_method: d.payment_method || f.payment_method,
+        notes: d.description || f.notes,
+      }))
+    } catch (err) { setError(err.response?.data?.error || 'Could not read the invoice') }
+    finally { setAutofilling(false) }
+  }
+
   const submit = async (e) => {
     e.preventDefault()
     setError(''); setSubmitting(true)
@@ -139,6 +161,11 @@ export default function VendorSubmit() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field label="Invoice file (required)">
                 <Dropzone value={files.invoice_file} onChange={file => setFiles(f => ({ ...f, invoice_file: file }))} required />
+                {files.invoice_file && (
+                  <button type="button" onClick={autofill} disabled={autofilling} className="text-xs font-semibold text-brand-600 hover:underline mt-1.5">
+                    {autofilling ? 'Reading invoice…' : '✨ Auto-fill from invoice'}
+                  </button>
+                )}
               </Field>
               {isReimb
                 ? <Field label="Receipt (required)">

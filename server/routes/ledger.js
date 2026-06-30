@@ -4,9 +4,10 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
-const { uploadFile, getSignedFileUrl, deleteFile } = require('../lib/r2');
+const { uploadFile, getSignedFileUrl, deleteFile, loadFileBuffer } = require('../lib/r2');
 const { computeDueDate } = require('../lib/payments');
 const { upsertVendor } = require('../lib/vendors');
+const claude = require('../lib/claude');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -557,6 +558,46 @@ router.post('/import', async (req, res) => {
     res.status(500).json({ success: false, error: 'Import failed' });
   } finally {
     client.release();
+  }
+});
+
+// POST /api/ledger/parse-invoice — AI-extract fields from an uploaded invoice
+// (for auto-filling the add-entry form). Does not persist anything.
+router.post('/parse-invoice', upload.single('file'), async (req, res) => {
+  try {
+    if (!claude.isEnabled()) return res.status(400).json({ success: false, error: 'AI is not configured on the server' });
+    if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
+    const r = await claude.parseInvoice({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+    if (!r.ok) return res.status(502).json({ success: false, error: r.error || 'Could not parse invoice' });
+    res.json({ success: true, data: r.data });
+  } catch (error) {
+    console.error('Parse invoice error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/entries/:id/scan?type=invoice|w9 — AI-check the stored file
+// against the entry (invoice discrepancies, or W9 name/type/signature).
+router.post('/entries/:id/scan', async (req, res) => {
+  try {
+    if (!claude.isEnabled()) return res.status(400).json({ success: false, error: 'AI is not configured on the server' });
+    const type = req.query.type === 'w9' ? 'w9' : 'invoice';
+    const col = type === 'w9' ? 'w9_r2_key' : 'invoice_r2_key';
+    const { rows } = await pool.query(`SELECT payee, amount, currency, invoice_number, ${col} AS key FROM expenses WHERE id = $1 AND label_id = $2`, [parseInt(req.params.id, 10), req.labelId]);
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    if (!rows[0].key) return res.status(400).json({ success: false, error: `No ${type} file on this entry` });
+    const buffer = await loadFileBuffer(rows[0].key, null);
+    if (!buffer) return res.status(404).json({ success: false, error: 'File not found' });
+    // Infer mime from the key extension (R2 keys preserve the original name).
+    const mimeType = /\.pdf$/i.test(rows[0].key) ? 'application/pdf' : (/\.png$/i.test(rows[0].key) ? 'image/png' : 'image/jpeg');
+    const r = type === 'w9'
+      ? await claude.validateW9({ buffer, mimeType, vendorName: rows[0].payee })
+      : await claude.scanInvoice({ buffer, mimeType, entry: rows[0] });
+    if (!r.ok) return res.status(502).json({ success: false, error: r.error || 'Scan failed' });
+    res.json({ success: true, data: r.data });
+  } catch (error) {
+    console.error('Scan error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
