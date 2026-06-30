@@ -1,6 +1,13 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+import { Suspense, lazy } from 'react'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import Layout from './components/Layout'
+import PlatformLayout from './components/PlatformLayout'
+import PlatformOverview from './pages/PlatformOverview'
+import PlatformActivity from './pages/PlatformActivity'
+// Lazy — pulls recharts into its own chunk instead of the main bundle.
+const PlatformAnalytics = lazy(() => import('./pages/PlatformAnalytics'))
+import PlatformAccount from './pages/PlatformAccount'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Releases from './pages/Releases'
@@ -61,16 +68,14 @@ function AdminRoute({ children }) {
   return children
 }
 
-// Gate: platform admin only (the SaaS operator). For workspace provisioning.
-function PlatformRoute({ children }) {
-  const { user, loading } = useAuth()
-  if (loading) return null
-  if (!user?.is_platform_admin) return <Navigate to="/" replace />
-  return children
-}
-
 function AppContent() {
-  const { token, loading } = useAuth()
+  const { token, loading, user, impersonating } = useAuth()
+
+  // Platform operators get their own neutral shell + platform pages — UNLESS
+  // they've entered a specific workspace (impersonating), in which case they
+  // get that label's full shell. This keeps the operator from being "logged
+  // into" any one label by default.
+  const platformMode = !!user?.is_platform_admin && !impersonating
 
   return (
     <Routes>
@@ -80,7 +85,18 @@ function AppContent() {
       <Route path="/privacy"      element={<Privacy />} />
       <Route path="/eula"         element={<EULA />} />
 
-      {/* Authenticated app shell */}
+      {platformMode ? (
+        /* ── Platform operator shell ── */
+        <Route element={<ProtectedRoute><PlatformLayout /></ProtectedRoute>}>
+          <Route path="/"           element={<PlatformOverview />} />
+          <Route path="/workspaces" element={<Workspaces />} />
+          <Route path="/analytics"  element={<Suspense fallback={<p className="text-sm text-gray-400">Loading…</p>}><PlatformAnalytics /></Suspense>} />
+          <Route path="/activity"   element={<PlatformActivity />} />
+          <Route path="/account"    element={<PlatformAccount />} />
+          <Route path="*"           element={<Navigate to="/" replace />} />
+        </Route>
+      ) : (
+      /* ── Label workspace shell ── */
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route path="/"             element={<Dashboard />} />
         <Route path="/my-work"      element={<MyWork />} />
@@ -108,8 +124,8 @@ function AppContent() {
         <Route path="/activity"     element={<AdminRoute><Activity /></AdminRoute>} />
         <Route path="/data-quality" element={<AdminRoute><Duplicates /></AdminRoute>} />
         <Route path="/settings"     element={<Settings />} />
-        <Route path="/workspaces"   element={<PlatformRoute><Workspaces /></PlatformRoute>} />
       </Route>
+      )}
 
       <Route path="*" element={<Navigate to={token ? '/' : '/login'} replace />} />
     </Routes>

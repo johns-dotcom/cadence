@@ -248,12 +248,6 @@ export default function Layout() {
         { path: '/settings', label: 'Settings', icon: Settings },
       ],
     },
-    // Platform-admin only — provisioning new label accounts. A level above the
-    // current workspace, so it lives in its own section.
-    ...(user?.is_platform_admin ? [{
-      label: 'Platform',
-      items: [{ path: '/workspaces', label: 'Workspaces', icon: Building2 }],
-    }] : []),
   ]
     .map(g => ({ ...g, items: g.items.filter(i => canView(i.path)) }))
     .filter(g => g.items.length > 0)

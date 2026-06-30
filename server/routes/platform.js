@@ -126,6 +126,109 @@ router.get('/workspaces/:id', async (req, res) => {
   }
 });
 
+// GET /api/platform/overview — operator home: platform-wide totals, recent
+// cross-tenant activity, and the newest workspaces.
+router.get('/overview', async (req, res) => {
+  try {
+    const [totals, recent, newest] = await Promise.all([
+      pool.query(
+        `SELECT
+           (SELECT COUNT(*) FROM labels)::int AS workspaces,
+           (SELECT COUNT(*) FROM labels WHERE COALESCE(status,'active') = 'active')::int AS active,
+           (SELECT COUNT(*) FROM labels WHERE status = 'suspended')::int AS suspended,
+           (SELECT COUNT(*) FROM labels WHERE created_at > NOW() - INTERVAL '30 days')::int AS new_30d,
+           (SELECT COUNT(*) FROM users WHERE is_platform_admin = false OR is_platform_admin IS NULL)::int AS members,
+           (SELECT COUNT(*) FROM artists)::int AS artists,
+           (SELECT COUNT(*) FROM releases)::int AS releases,
+           (SELECT COUNT(*) FROM deals)::int AS deals,
+           (SELECT COUNT(*) FROM contracts)::int AS contracts,
+           (SELECT COUNT(*) FROM expenses WHERE deleted = false OR deleted IS NULL)::int AS ledger_entries`
+      ),
+      pool.query(
+        `SELECT al.action, al.detail, al.created_at, l.name AS workspace, l.id AS label_id, u.name AS user_name
+         FROM activity_log al
+         JOIN labels l ON l.id = al.label_id
+         LEFT JOIN users u ON u.id = al.user_id AND u.label_id = al.label_id
+         ORDER BY al.created_at DESC LIMIT 20`
+      ),
+      pool.query(
+        `SELECT l.id, l.name, l.slug, l.created_at, COALESCE(l.status,'active') AS status,
+                (SELECT COUNT(*) FROM users u WHERE u.label_id = l.id AND (u.is_platform_admin = false OR u.is_platform_admin IS NULL))::int AS members
+         FROM labels l ORDER BY l.created_at DESC LIMIT 5`
+      ),
+    ]);
+    res.json({ success: true, data: { totals: totals.rows[0], recentActivity: recent.rows, newestWorkspaces: newest.rows } });
+  } catch (error) {
+    console.error('Platform overview error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/platform/activity — global cross-tenant audit feed. Optional
+// ?label_id, ?q (search action/detail), ?limit (default 100, max 300).
+router.get('/activity', async (req, res) => {
+  try {
+    const params = [];
+    let where = '1=1';
+    if (req.query.label_id) { params.push(parseInt(req.query.label_id, 10)); where += ` AND al.label_id = $${params.length}`; }
+    if (req.query.q) { params.push(`%${req.query.q}%`); where += ` AND (al.action ILIKE $${params.length} OR al.detail ILIKE $${params.length})`; }
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 300);
+    params.push(limit);
+    const { rows } = await pool.query(
+      `SELECT al.action, al.detail, al.created_at, al.ip_address, l.name AS workspace, l.id AS label_id, u.name AS user_name
+       FROM activity_log al
+       JOIN labels l ON l.id = al.label_id
+       LEFT JOIN users u ON u.id = al.user_id AND u.label_id = al.label_id
+       WHERE ${where}
+       ORDER BY al.created_at DESC LIMIT $${params.length}`,
+      params
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Platform activity error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/platform/analytics — growth over time + top workspaces by activity.
+router.get('/analytics', async (req, res) => {
+  try {
+    const [wsByMonth, usersByMonth, topByActivity, topByReleases] = await Promise.all([
+      pool.query(
+        `SELECT to_char(date_trunc('month', created_at), 'YYYY-MM') AS month, COUNT(*)::int AS n
+         FROM labels WHERE created_at > NOW() - INTERVAL '12 months'
+         GROUP BY 1 ORDER BY 1`
+      ),
+      pool.query(
+        `SELECT to_char(date_trunc('month', created_at), 'YYYY-MM') AS month, COUNT(*)::int AS n
+         FROM users WHERE (is_platform_admin = false OR is_platform_admin IS NULL) AND created_at > NOW() - INTERVAL '12 months'
+         GROUP BY 1 ORDER BY 1`
+      ),
+      pool.query(
+        `SELECT l.id, l.name, COUNT(al.id)::int AS events
+         FROM labels l LEFT JOIN activity_log al ON al.label_id = l.id AND al.created_at > NOW() - INTERVAL '30 days'
+         GROUP BY l.id, l.name ORDER BY events DESC, l.name LIMIT 8`
+      ),
+      pool.query(
+        `SELECT l.id, l.name, (SELECT COUNT(*) FROM releases r WHERE r.label_id = l.id)::int AS releases
+         FROM labels l ORDER BY releases DESC, l.name LIMIT 8`
+      ),
+    ]);
+    res.json({
+      success: true,
+      data: {
+        workspacesByMonth: wsByMonth.rows,
+        usersByMonth: usersByMonth.rows,
+        topByActivity: topByActivity.rows,
+        topByReleases: topByReleases.rows,
+      },
+    });
+  } catch (error) {
+    console.error('Platform analytics error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // POST /api/platform/workspaces — provision a new label + its owner Superadmin.
 // This replaces the old public self-serve signup. The platform admin supplies
 // the new owner's name/email and a temporary password to hand off.
