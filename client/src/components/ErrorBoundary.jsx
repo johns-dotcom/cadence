@@ -17,7 +17,7 @@ export default class ErrorBoundary extends React.Component {
     // Surface in the console so the real stack is visible in production too
     // (sourcemaps are enabled, so this points at the actual file:line).
     console.error('Render error caught by ErrorBoundary:', error, info?.componentStack)
-    this.setState({ stack: info?.componentStack || null })
+    this.setState({ stack: [error?.stack, info?.componentStack].filter(Boolean).join('\n\n') || null })
   }
 
   // A hard reload pulls the current build (fixes stale-chunk crashes after a
@@ -31,9 +31,10 @@ export default class ErrorBoundary extends React.Component {
           <div className="max-w-md w-full bg-card border border-rule rounded-2xl shadow-card p-6 text-center">
             <h1 className="text-lg font-bold text-ink mb-1">Something went wrong</h1>
             <p className="text-sm text-gray-500 mb-4">This page hit an unexpected error. The details are in your browser console.</p>
-            <pre className="text-left text-[11px] text-red-600 bg-red-50 border border-red-100 rounded-lg p-3 overflow-auto max-h-40 mb-3 whitespace-pre-wrap break-words">
+            <pre className="text-left text-[11px] text-red-600 bg-red-50 border border-red-100 rounded-lg p-3 overflow-auto max-h-40 mb-2 whitespace-pre-wrap break-words">
               {String(this.state.error?.message || this.state.error)}
             </pre>
+            <p className="text-left text-[11px] text-gray-400 mb-3">on <span className="font-mono text-gray-500">{window.location.pathname}</span></p>
             {this.state.stack && (
               <details className="text-left mb-4">
                 <summary className="text-[11px] text-gray-400 cursor-pointer">Where this happened</summary>
