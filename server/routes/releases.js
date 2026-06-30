@@ -3,9 +3,33 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
+const spotify = require('../lib/spotify');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
+
+// POST /api/releases/:id/sync-artwork — fetch cover art from Spotify (by the
+// release's spotify_uri, else a title+artist search) and store the URL.
+router.post('/:id/sync-artwork', async (req, res) => {
+  try {
+    if (!spotify.isEnabled()) return res.status(400).json({ success: false, error: 'Spotify is not configured on the server' });
+    const { rows } = await pool.query(
+      `SELECT r.id, r.project_name, r.spotify_uri, a.name AS artist_name
+       FROM releases r LEFT JOIN artists a ON a.id = r.artist_id AND a.label_id = r.label_id
+       WHERE r.id = $1 AND r.label_id = $2`,
+      [parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Release not found' });
+    const r = rows[0];
+    const url = await spotify.coverArt({ spotifyUri: r.spotify_uri, title: r.project_name, artist: r.artist_name }).catch(() => null);
+    if (!url) return res.status(404).json({ success: false, error: 'No artwork found on Spotify for this release' });
+    await pool.query('UPDATE releases SET cover_art_url = $1, updated_at = NOW() WHERE id = $2 AND label_id = $3', [url, r.id, req.labelId]);
+    res.json({ success: true, data: { cover_art_url: url } });
+  } catch (error) {
+    console.error('Sync artwork error:', error);
+    res.status(500).json({ success: false, error: 'Artwork sync failed' });
+  }
+});
 
 // GET /api/releases — release pipeline for the current label
 router.get('/', async (req, res) => {

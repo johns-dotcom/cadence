@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Pencil, X, Trash2, Plus, ExternalLink, Music,
-  Instagram, Youtube, Globe, BarChart3, Paperclip, Download, Archive, ArchiveRestore,
+  Instagram, Youtube, Globe, BarChart3, Paperclip, Download, Archive, ArchiveRestore, Sparkles,
 } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
@@ -69,6 +69,13 @@ export default function ArtistProfile() {
   const toggleArchive = async () => {
     try { await api.patch(`/artists/${id}`, { archived: !artist.archived }); toast(artist.archived ? 'Unarchived' : 'Archived'); load() }
     catch { toast('Failed', 'error') }
+  }
+  const [syncing, setSyncing] = useState(false)
+  const syncSpotify = async () => {
+    setSyncing(true)
+    try { await api.post(`/artists/${id}/sync-spotify`); toast('Synced from Spotify'); load() }
+    catch (err) { toast(err.response?.data?.error || 'Spotify sync failed', 'error') }
+    finally { setSyncing(false) }
   }
 
   const startEdit = () => {
@@ -139,6 +146,7 @@ export default function ArtistProfile() {
           )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          <button onClick={syncSpotify} disabled={syncing} className="btn-secondary"><Sparkles size={14} /> {syncing ? 'Syncing…' : 'Spotify'}</button>
           <button onClick={startEdit} className="btn-secondary"><Pencil size={14} /> Edit</button>
           <button onClick={toggleArchive} title={artist.archived ? 'Unarchive' : 'Archive'} className="inline-flex items-center justify-center p-2 rounded-lg border border-rule text-gray-400 hover:text-amber-600 hover:border-amber-200">
             {artist.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}

@@ -5,9 +5,36 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { uploadFile, getSignedFileUrl, deleteFile } = require('../lib/r2');
+const spotify = require('../lib/spotify');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
+
+// POST /api/artists/:id/sync-spotify — pull followers/popularity/image from
+// Spotify by the artist's name and fill any blank profile fields.
+router.post('/:id/sync-spotify', async (req, res) => {
+  try {
+    if (!spotify.isEnabled()) return res.status(400).json({ success: false, error: 'Spotify is not configured on the server' });
+    const id = parseInt(req.params.id, 10);
+    const a = await pool.query('SELECT id, name, image_url, spotify_url FROM artists WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    if (!a.rows.length) return res.status(404).json({ success: false, error: 'Artist not found' });
+    const stats = await spotify.artistStats(a.rows[0].name).catch(() => null);
+    if (!stats) return res.status(404).json({ success: false, error: 'Artist not found on Spotify' });
+    const { rows } = await pool.query(
+      `UPDATE artists SET
+         spotify_followers = $1, spotify_popularity = $2,
+         image_url = COALESCE(image_url, $3), spotify_url = COALESCE(spotify_url, $4),
+         genre = COALESCE(genre, $5)
+       WHERE id = $6 AND label_id = $7
+       RETURNING spotify_followers, spotify_popularity, image_url, spotify_url`,
+      [stats.spotify_followers, stats.spotify_popularity, stats.image_url, stats.spotify_url, stats.genres?.[0] || null, id, req.labelId]
+    );
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Sync spotify error:', error);
+    res.status(500).json({ success: false, error: 'Spotify sync failed' });
+  }
+});
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 

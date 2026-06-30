@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Check, Trash2 } from 'lucide-react'
+import { ArrowLeft, Check, Trash2, Sparkles } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
 import { RELEASE_TYPES, RELEASE_STATUSES, RELEASE_CHECKLIST } from '../constants'
@@ -34,6 +34,17 @@ export default function ReleaseDetail() {
   }
 
   const set = (k) => (e) => setRelease(r => ({ ...r, [k]: e.target.value }))
+
+  const [syncing, setSyncing] = useState(false)
+  const syncArtwork = async () => {
+    setSyncing(true)
+    try {
+      const { data } = await api.post(`/releases/${id}/sync-artwork`)
+      setRelease(r => ({ ...r, cover_art_url: data.data.cover_art_url }))
+      toast('Artwork synced from Spotify')
+    } catch (err) { toast(err.response?.data?.error || 'No artwork found', 'error') }
+    finally { setSyncing(false) }
+  }
 
   const saveMeta = async () => {
     setSaving(true)
@@ -79,11 +90,17 @@ export default function ReleaseDetail() {
       </button>
 
       <div className="flex items-start justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-xl font-bold text-ink tracking-tight">{release.project_name}</h1>
-          <p className="text-sm text-gray-500 mt-1">{release.artist_name || 'Unassigned'}</p>
+        <div className="flex items-center gap-3">
+          {release.cover_art_url && <img src={release.cover_art_url} alt="" className="w-14 h-14 rounded-lg object-cover bg-gray-100 flex-shrink-0" />}
+          <div>
+            <h1 className="text-xl font-bold text-ink tracking-tight">{release.project_name}</h1>
+            <p className="text-sm text-gray-500 mt-1">{release.artist_name || 'Unassigned'}</p>
+          </div>
         </div>
-        <button onClick={remove} className="btn-secondary text-danger"><Trash2 size={15} /> Delete</button>
+        <div className="flex items-center gap-2">
+          <button onClick={syncArtwork} disabled={syncing} className="btn-secondary"><Sparkles size={15} /> {syncing ? 'Syncing…' : 'Sync artwork'}</button>
+          <button onClick={remove} className="btn-secondary text-danger"><Trash2 size={15} /> Delete</button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
