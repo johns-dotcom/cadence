@@ -26,6 +26,7 @@ export default function Ledger() {
   const [form, setForm] = useState({
     invoice_date: '', payee: '', description: '', category: '', artist: '',
     invoice_number: '', amount: '', currency: 'USD', payment_method: '', notes: '',
+    is_reimbursement: false,
   })
   const [files, setFiles] = useState({ invoice_file: null, w9_file: null, receipt_file: null })
   const [scanning, setScanning] = useState(false)
@@ -73,7 +74,7 @@ export default function Ledger() {
       Object.entries(files).forEach(([k, f]) => { if (f) fd.append(k, f) })
       await api.post('/ledger/entries', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
       toast('Entry added')
-      setForm({ invoice_date: '', payee: '', description: '', category: '', artist: '', invoice_number: '', amount: '', currency: 'USD', payment_method: '', notes: '' })
+      setForm({ invoice_date: '', payee: '', description: '', category: '', artist: '', invoice_number: '', amount: '', currency: 'USD', payment_method: '', notes: '', is_reimbursement: false })
       setFiles({ invoice_file: null, w9_file: null, receipt_file: null })
       setShowForm(false); load()
     } catch (err) {
@@ -184,7 +185,16 @@ export default function Ledger() {
 
       {showForm && (
         <form onSubmit={create} className="card p-4 mb-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <div><label className="label">Payee</label><input className="input" value={form.payee} onChange={set('payee')} autoFocus /></div>
+          <div className="lg:col-span-4">
+            <label className="label">Type</label>
+            <div className="inline-flex rounded-lg border border-rule overflow-hidden">
+              <button type="button" onClick={() => setForm(f => ({ ...f, is_reimbursement: false }))}
+                className={`px-4 py-1.5 text-sm font-semibold transition ${!form.is_reimbursement ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-50'}`}>Invoice</button>
+              <button type="button" onClick={() => setForm(f => ({ ...f, is_reimbursement: true }))}
+                className={`px-4 py-1.5 text-sm font-semibold transition border-l border-rule ${form.is_reimbursement ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-50'}`}>Reimbursement</button>
+            </div>
+          </div>
+          <div><label className="label">{form.is_reimbursement ? 'Pay to' : 'Payee'}</label><input className="input" value={form.payee} onChange={set('payee')} autoFocus /></div>
           <div><label className="label">Amount</label><input type="number" step="0.01" className="input" value={form.amount} onChange={set('amount')} /></div>
           <div><label className="label">Currency</label><select className="input" value={form.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
           <div><label className="label">Invoice date</label><input type="date" className="input" value={form.invoice_date} onChange={set('invoice_date')} /></div>
@@ -194,12 +204,16 @@ export default function Ledger() {
           <div><label className="label">Payment method</label><select className="input" value={form.payment_method} onChange={set('payment_method')}><option value="">—</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
           <div className="lg:col-span-2"><label className="label">Description</label><input className="input" value={form.description} onChange={set('description')} /></div>
           <div>
-            <label className="label">Invoice file</label>
+            <label className="label">{form.is_reimbursement ? 'Invoice / backup (optional)' : 'Invoice file'}</label>
             <input type="file" className="input py-1.5" onChange={e => setFiles(f => ({ ...f, invoice_file: e.target.files[0] }))} />
             {files.invoice_file && <button type="button" onClick={scanInvoice} disabled={scanning} className="text-xs font-semibold text-brand-600 hover:underline mt-1 inline-flex items-center gap-1"><Sparkles size={12} /> {scanning ? 'Scanning…' : 'Scan & autofill'}</button>}
           </div>
-          <div><label className="label">W9 (optional)</label><input type="file" className="input py-1.5" onChange={e => setFiles(f => ({ ...f, w9_file: e.target.files[0] }))} /></div>
-          <div className="lg:col-span-4"><button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving…' : 'Add entry'}</button></div>
+          {form.is_reimbursement ? (
+            <div><label className="label">Receipt</label><input type="file" className="input py-1.5" onChange={e => setFiles(f => ({ ...f, receipt_file: e.target.files[0] }))} /></div>
+          ) : (
+            <div><label className="label">W9 (optional)</label><input type="file" className="input py-1.5" onChange={e => setFiles(f => ({ ...f, w9_file: e.target.files[0] }))} /></div>
+          )}
+          <div className="lg:col-span-4"><button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving…' : (form.is_reimbursement ? 'Add reimbursement' : 'Add invoice')}</button></div>
         </form>
       )}
 

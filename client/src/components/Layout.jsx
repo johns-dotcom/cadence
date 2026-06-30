@@ -5,7 +5,7 @@ import {
   LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
-  FileClock, Shield, Lock, Sparkles, FileSignature, FileSpreadsheet, Package,
+  FileClock, Shield, Lock, Sparkles, FileSignature, FileSpreadsheet,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
@@ -38,7 +38,6 @@ const PAGE_LABELS = {
   '/ledger':     'Ledger',
   '/payments':   'Payments',
   '/vendors':    'Vendors',
-  '/bulk-invoice-zip': 'Bulk Invoice ZIP',
   '/invoices':   'Invoices',
   '/team':       'Team',
   '/activity':   'Activity',
@@ -236,7 +235,6 @@ export default function Layout() {
         ...(isApprover ? [{ path: '/ledger', label: 'Ledger', icon: BookOpen, badge: pendingApprovals }] : []),
         ...(isApprover ? [{ path: '/payments', label: 'Payments', icon: CreditCard }] : []),
         ...(isApprover ? [{ path: '/vendors', label: 'Vendors', icon: Building2 }] : []),
-        ...(isApprover ? [{ path: '/bulk-invoice-zip', label: 'Bulk Invoice ZIP', icon: Package }] : []),
         ...(isApprover ? [{ path: '/invoices', label: 'Invoices', icon: Receipt }] : []),
         ...(isApprover ? [{ path: '/financials', label: 'Financials', icon: PieChart }] : []),
         ...(isApprover ? [{ path: '/recoupments', label: 'Recoupments', icon: Wallet }] : []),

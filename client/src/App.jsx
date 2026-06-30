@@ -32,7 +32,6 @@ import Campaigns from './pages/Campaigns'
 import Ledger from './pages/Ledger'
 import Payments from './pages/Payments'
 import Vendors from './pages/Vendors'
-import BulkInvoiceZip from './pages/BulkInvoiceZip'
 import Invoices from './pages/Invoices'
 import VendorSubmit from './pages/VendorSubmit'
 import AcceptInvite from './pages/AcceptInvite'
@@ -126,7 +125,6 @@ function AppContent() {
         <Route path="/ledger"       element={<AdminRoute><Ledger /></AdminRoute>} />
         <Route path="/payments"     element={<AdminRoute><Payments /></AdminRoute>} />
         <Route path="/vendors"      element={<AdminRoute><Vendors /></AdminRoute>} />
-        <Route path="/bulk-invoice-zip" element={<AdminRoute><BulkInvoiceZip /></AdminRoute>} />
         <Route path="/invoices"     element={<AdminRoute><Invoices /></AdminRoute>} />
         <Route path="/team"         element={<AdminRoute><Team /></AdminRoute>} />
         <Route path="/activity"     element={<AdminRoute><Activity /></AdminRoute>} />
