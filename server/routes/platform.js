@@ -19,7 +19,7 @@ router.get('/workspaces', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT l.id, l.name, l.slug, l.created_at,
-              (SELECT COUNT(*) FROM users WHERE label_id = l.id)::int AS member_count
+              (SELECT COUNT(*) FROM users WHERE label_id = l.id AND (is_platform_admin = false OR is_platform_admin IS NULL))::int AS member_count
        FROM labels l
        ORDER BY l.created_at DESC`
     );
@@ -79,13 +79,14 @@ router.post('/workspaces', async (req, res) => {
   }
 });
 
-// POST /api/platform/workspaces/:labelId/enter — issue a short-lived session
-// INTO a target workspace so the platform admin can view it exactly as that
-// label sees it. We become the label's owner (its primary Superadmin), so all
-// the normal tenant scoping applies while "inside" — there's no cross-tenant
-// leakage; the platform admin simply holds a scoped session for that label.
-// The client stashes the real platform-admin token and restores it on exit
-// (same flow as same-label impersonation).
+// POST /api/platform/workspaces/:labelId/enter — drop INTO a target workspace
+// as the PLATFORM ADMIN THEMSELVES (not as some existing member). We get-or-
+// create a Superadmin membership for this operator inside the target label,
+// keyed to their own email, and flagged is_platform_admin so it stays hidden
+// from the label's own roster. They then hold a scoped session for that label
+// with full Superadmin control, and every id-bound page (Settings, audit
+// attribution) resolves to *them*. The client stashes the real platform token
+// and restores it on exit.
 router.post('/workspaces/:labelId/enter', async (req, res) => {
   try {
     const labelId = parseInt(req.params.labelId, 10);
@@ -97,26 +98,37 @@ router.post('/workspaces/:labelId/enter', async (req, res) => {
     label.logo_url = label.logo_r2_key ? await getSignedFileUrl(label.logo_r2_key, 6 * 3600).catch(() => null) : null;
     delete label.logo_r2_key;
 
-    // Pick the label's owner: prefer a Superadmin, then most senior, then oldest.
-    const userRes = await pool.query(
-      `SELECT id, label_id, name, email, role, department, hierarchy_level, is_platform_admin, token_version
-       FROM users WHERE label_id = $1
-       ORDER BY (role = 'Superadmin') DESC, hierarchy_level ASC, id ASC
-       LIMIT 1`,
-      [labelId]
-    );
-    if (!userRes.rows.length) {
-      return res.status(409).json({ success: false, error: 'Workspace has no users to view as' });
-    }
-    const target = userRes.rows[0];
+    const email = (req.user.email || '').toLowerCase();
+    const cols = 'id, label_id, name, email, role, department, hierarchy_level, is_platform_admin, token_version';
 
-    // Audit the cross-tenant entry in BOTH the target label's log (so they can
-    // see a platform admin viewed their workspace) and is attributable to the
-    // platform admin by email.
+    // Find this operator's existing membership in the target label, or mint one.
+    let target;
+    const existing = await pool.query(`SELECT ${cols} FROM users WHERE label_id = $1 AND LOWER(email) = $2`, [labelId, email]);
+    if (existing.rows.length) {
+      target = existing.rows[0];
+      // Keep it a platform-admin Superadmin (in case it was changed).
+      if (target.role !== 'Superadmin' || !target.is_platform_admin) {
+        await pool.query("UPDATE users SET role = 'Superadmin', is_platform_admin = true WHERE id = $1", [target.id]);
+        target.role = 'Superadmin'; target.is_platform_admin = true;
+      }
+    } else {
+      // No password_hash → can't be used for a normal password login; this row
+      // is only ever assumed via the platform-enter flow.
+      const ins = await pool.query(
+        `INSERT INTO users (label_id, name, email, role, department, hierarchy_level, is_platform_admin, created_at)
+         VALUES ($1, $2, $3, 'Superadmin', 'Platform', 0, true, NOW())
+         RETURNING ${cols}`,
+        [labelId, req.user.name || 'Platform Admin', email]
+      );
+      target = ins.rows[0];
+    }
+
+    // Audit the cross-tenant entry in the target label's log, attributed to the
+    // operator by email.
     pool.query(
       `INSERT INTO activity_log (label_id, user_id, action, detail, method, endpoint, created_at)
        VALUES ($1, $2, $3, $4, 'POST', $5, NOW())`,
-      [labelId, target.id, 'Workspace viewed by platform admin', req.user.email, req.originalUrl?.split('?')[0] || null]
+      [labelId, target.id, 'Workspace entered by platform admin', req.user.email, req.originalUrl?.split('?')[0] || null]
     ).catch(() => {});
 
     const token = signToken(target, '2h');

@@ -13,9 +13,11 @@ router.use(authMiddleware, withTenant);
 // GET /api/team — list members of the current label
 router.get('/', async (req, res) => {
   try {
+    // Hide platform-admin "operator" memberships from the label's own roster.
     const { rows } = await pool.query(
       `SELECT id, name, email, role, department, hierarchy_level, created_at
-       FROM users WHERE label_id = $1 ORDER BY hierarchy_level, name`,
+       FROM users WHERE label_id = $1 AND (is_platform_admin = false OR is_platform_admin IS NULL)
+       ORDER BY hierarchy_level, name`,
       [req.labelId]
     );
     res.json({ success: true, data: rows });

@@ -14,6 +14,7 @@ import GlobalSearch from './GlobalSearch'
 import NotificationBell from './NotificationBell'
 import BottomNav from './BottomNav'
 import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
+import ErrorBoundary from './ErrorBoundary'
 
 const PAGE_LABELS = {
   '/':           'Dashboard',
@@ -372,9 +373,11 @@ export default function Layout() {
             <div className="flex items-center gap-2">
               <Eye size={13} />
               <span>
-                Viewing <span className="font-bold">{label?.name || 'workspace'}</span> as{' '}
-                <span className="font-bold">{user?.name}</span> ({user?.role})
-                {adminUser?.is_platform_admin ? ' — platform admin view' : ''}
+                {adminUser?.is_platform_admin ? (
+                  <>Operating in <span className="font-bold">{label?.name || 'workspace'}</span> as platform admin (<span className="font-bold">{user?.name}</span>)</>
+                ) : (
+                  <>Viewing <span className="font-bold">{label?.name || 'workspace'}</span> as <span className="font-bold">{user?.name}</span> ({user?.role})</>
+                )}
               </span>
             </div>
             <button onClick={exitImpersonation} className="flex items-center gap-1 font-bold hover:underline">
@@ -415,7 +418,9 @@ export default function Layout() {
 
         <main className="flex-1 overflow-auto">
           <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 sm:py-8 pb-20 lg:pb-8">
-            <Outlet />
+            <ErrorBoundary key={location.pathname}>
+              <Outlet />
+            </ErrorBoundary>
           </div>
         </main>
       </div>

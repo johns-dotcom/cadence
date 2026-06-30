@@ -359,9 +359,10 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS voided BOOLEAN DEFAULT FALSE`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS voided_at TIMESTAMP`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS voided_by TEXT`);
-  // Bulk-deal flag + campaign link (artist-campaign reconciliation).
+  // Bulk-deal flag. (The campaign_id link is added after the campaigns table
+  // is created, further down — it can't reference a table that doesn't exist
+  // yet, or the whole migration would abort here.)
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS is_bulk_deal BOOLEAN DEFAULT FALSE`);
-  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS campaign_id INT REFERENCES campaigns(id) ON DELETE SET NULL`);
 
   // Per-entry field-level change history (audit trail for the ledger).
   await pool.query(`
@@ -644,6 +645,8 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_campaigns_label ON campaigns (label_id, artist_id)`);
+  // Now that campaigns exists, link ledger rows to campaigns (reconciliation).
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS campaign_id INT REFERENCES campaigns(id) ON DELETE SET NULL`);
 
   // Pending contracts — agreements awaiting signature (a lightweight queue
   // separate from executed contracts).

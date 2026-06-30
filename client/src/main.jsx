@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { GoogleOAuthProvider } from '@react-oauth/google'
 import App from './App'
+import ErrorBoundary from './components/ErrorBoundary'
 import { ThemeProvider } from './context/ThemeContext'
 import { ToastProvider } from './context/ToastContext'
 import { applyAccent } from './utils/branding'
@@ -22,7 +23,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
       <BrowserRouter>
         <ThemeProvider>
           <ToastProvider>
-            <App />
+            <ErrorBoundary>
+              <App />
+            </ErrorBoundary>
           </ToastProvider>
         </ThemeProvider>
       </BrowserRouter>

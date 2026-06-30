@@ -43,11 +43,11 @@ router.post('/login', async (req, res) => {
     if (workspace) {
       result = await pool.query(
         `SELECT u.* FROM users u JOIN labels l ON l.id = u.label_id
-         WHERE u.email = $1 AND l.slug = $2`,
+         WHERE u.email = $1 AND l.slug = $2 AND NOT (u.is_platform_admin = true AND u.password_hash IS NULL)`,
         [email.trim().toLowerCase(), workspace]
       );
     } else {
-      result = await pool.query('SELECT * FROM users WHERE email = $1', [email.trim().toLowerCase()]);
+      result = await pool.query('SELECT * FROM users WHERE email = $1 AND NOT (is_platform_admin = true AND password_hash IS NULL)', [email.trim().toLowerCase()]);
     }
 
     if (result.rows.length === 0) {
@@ -57,7 +57,8 @@ router.post('/login', async (req, res) => {
       // Ambiguous — the email exists in multiple workspaces.
       const { rows } = await pool.query(
         `SELECT l.slug, l.name FROM labels l
-         JOIN users u ON u.label_id = l.id WHERE u.email = $1 ORDER BY l.name`,
+         JOIN users u ON u.label_id = l.id
+         WHERE u.email = $1 AND NOT (u.is_platform_admin = true AND u.password_hash IS NULL) ORDER BY l.name`,
         [email.trim().toLowerCase()]
       );
       return res.status(409).json({
@@ -106,11 +107,11 @@ router.post('/google', async (req, res) => {
     if (workspace) {
       result = await pool.query(
         `SELECT u.* FROM users u JOIN labels l ON l.id = u.label_id
-         WHERE u.email = $1 AND l.slug = $2`,
+         WHERE u.email = $1 AND l.slug = $2 AND NOT (u.is_platform_admin = true AND u.password_hash IS NULL)`,
         [email.toLowerCase(), workspace]
       );
     } else {
-      result = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
+      result = await pool.query('SELECT * FROM users WHERE email = $1 AND NOT (is_platform_admin = true AND password_hash IS NULL)', [email.toLowerCase()]);
     }
 
     if (result.rows.length === 0) {
@@ -119,7 +120,7 @@ router.post('/google', async (req, res) => {
     if (result.rows.length > 1) {
       const { rows } = await pool.query(
         `SELECT l.slug, l.name FROM labels l JOIN users u ON u.label_id = l.id
-         WHERE u.email = $1 ORDER BY l.name`,
+         WHERE u.email = $1 AND NOT (u.is_platform_admin = true AND u.password_hash IS NULL) ORDER BY l.name`,
         [email.toLowerCase()]
       );
       return res.status(409).json({ success: false, error: 'This Google account maps to multiple workspaces.', workspaces: rows });
@@ -243,7 +244,9 @@ router.get('/users', authMiddleware, async (req, res) => {
       return res.status(403).json({ success: false, error: 'Superadmin only' });
     }
     const result = await pool.query(
-      'SELECT id, name, email, role, department, hierarchy_level FROM users WHERE label_id = $1 ORDER BY hierarchy_level, name',
+      `SELECT id, name, email, role, department, hierarchy_level FROM users
+       WHERE label_id = $1 AND (is_platform_admin = false OR is_platform_admin IS NULL)
+       ORDER BY hierarchy_level, name`,
       [req.user.label_id]
     );
     res.json({ success: true, data: result.rows });
