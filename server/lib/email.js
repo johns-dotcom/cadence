@@ -102,4 +102,44 @@ function inviteEmail({ inviteeName, workspaceName, inviterName, link, expiresDay
   return { subject, html, text };
 }
 
-module.exports = { sendEmail, inviteEmail };
+const esc = (s) => String(s || '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+const shell = (title, bodyHtml) => `
+  <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:480px;margin:0 auto;padding:8px">
+    <h2 style="color:#111;font-size:18px;margin:0 0 8px">${esc(title)}</h2>
+    ${bodyHtml}
+    <p style="color:#aaa;font-size:11px;margin-top:24px">Sent via Cadence.</p>
+  </div>`;
+const money = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+
+// Vendor's invoice was approved or rejected.
+function vendorDecisionEmail({ vendorName, workspaceName, approved, invoiceNumber, amount, currency, reason }) {
+  const subject = approved
+    ? `Your invoice ${invoiceNumber || ''} was approved by ${workspaceName}`.trim()
+    : `Update on your invoice ${invoiceNumber || ''} for ${workspaceName}`.trim();
+  const body = approved
+    ? `<p style="color:#444;font-size:14px;line-height:1.6">Hi ${esc(vendorName)},</p>
+       <p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(workspaceName)}</strong> has approved your invoice${invoiceNumber ? ` <strong>${esc(invoiceNumber)}</strong>` : ''}${amount ? ` for ${esc(money(amount, currency))}` : ''}. Payment will follow per your agreed terms.</p>`
+    : `<p style="color:#444;font-size:14px;line-height:1.6">Hi ${esc(vendorName)},</p>
+       <p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(workspaceName)}</strong> was unable to approve your invoice${invoiceNumber ? ` <strong>${esc(invoiceNumber)}</strong>` : ''}.${reason ? ` Reason: ${esc(reason)}.` : ''} Please reach out if you have questions.</p>`;
+  return { subject, html: shell(approved ? 'Invoice approved' : 'Invoice update', body), text: `${subject}` };
+}
+
+// Vendor's invoice was paid.
+function paymentConfirmationEmail({ vendorName, workspaceName, invoiceNumber, amount, currency, method, date }) {
+  const subject = `Payment sent by ${workspaceName}${invoiceNumber ? ` — invoice ${invoiceNumber}` : ''}`;
+  const body = `<p style="color:#444;font-size:14px;line-height:1.6">Hi ${esc(vendorName)},</p>
+    <p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(workspaceName)}</strong> has sent payment${amount ? ` of <strong>${esc(money(amount, currency))}</strong>` : ''}${invoiceNumber ? ` for invoice <strong>${esc(invoiceNumber)}</strong>` : ''}${method ? ` via ${esc(method)}` : ''}${date ? ` on ${esc(date)}` : ''}.</p>`;
+  return { subject, html: shell('Payment sent', body), text: subject };
+}
+
+// A task was assigned to a team member.
+function taskAssignmentEmail({ assigneeName, workspaceName, description, dueDate, priority, assignerName, link }) {
+  const subject = `New task assigned to you in ${workspaceName}`;
+  const body = `<p style="color:#444;font-size:14px;line-height:1.6">Hi ${esc(assigneeName)},</p>
+    <p style="color:#444;font-size:14px;line-height:1.6">${assignerName ? `${esc(assignerName)} assigned you a task` : 'You have a new task'} in <strong>${esc(workspaceName)}</strong>:</p>
+    <p style="color:#111;font-size:14px;line-height:1.6;background:#f4f4f6;border-radius:8px;padding:12px"><strong>${esc(description)}</strong>${priority ? `<br><span style="color:#888;font-size:12px">Priority: ${esc(priority)}</span>` : ''}${dueDate ? `<br><span style="color:#888;font-size:12px">Due: ${esc(dueDate)}</span>` : ''}</p>
+    ${link ? `<p style="margin:18px 0"><a href="${link}" style="background:#4F46E5;color:#fff;text-decoration:none;font-weight:600;font-size:14px;padding:10px 18px;border-radius:8px;display:inline-block">Open My Work</a></p>` : ''}`;
+  return { subject, html: shell('New task', body), text: `${subject}: ${description}` };
+}
+
+module.exports = { sendEmail, inviteEmail, vendorDecisionEmail, paymentConfirmationEmail, taskAssignmentEmail };

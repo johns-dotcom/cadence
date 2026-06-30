@@ -8,6 +8,21 @@ const { uploadFile, getSignedFileUrl, deleteFile, loadFileBuffer } = require('..
 const { computeDueDate } = require('../lib/payments');
 const { upsertVendor } = require('../lib/vendors');
 const claude = require('../lib/claude');
+const { sendEmail, vendorDecisionEmail, paymentConfirmationEmail } = require('../lib/email');
+
+// Best-effort notify a vendor about a decision/payment on their submission.
+async function notifyVendor(labelId, entry, kind, extra = {}) {
+  try {
+    if (!entry?.vendor_email) return;
+    const label = await pool.query('SELECT name FROM labels WHERE id = $1', [labelId]);
+    const workspaceName = label.rows[0]?.name || 'the label';
+    const common = { vendorName: entry.vendor_name || entry.payee || 'there', workspaceName, invoiceNumber: entry.invoice_number, amount: entry.amount, currency: entry.currency };
+    const msg = kind === 'paid'
+      ? paymentConfirmationEmail({ ...common, method: extra.method, date: extra.date })
+      : vendorDecisionEmail({ ...common, approved: kind === 'approved', reason: extra.reason });
+    await sendEmail({ to: entry.vendor_email, subject: msg.subject, html: msg.html, text: msg.text });
+  } catch (_) { /* best-effort */ }
+}
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -209,6 +224,7 @@ router.post('/entries/:id/approve', async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
     await logActivity(req, 'Approved ledger entry', `${rows[0].payee} — ${rows[0].amount}`);
+    if (rows[0].vendor_submitted) notifyVendor(req.labelId, rows[0], 'approved');
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Approve error:', error);
@@ -226,6 +242,7 @@ router.post('/entries/:id/reject', async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
     await logActivity(req, 'Rejected ledger entry', rows[0].payee);
+    if (rows[0].vendor_submitted) notifyVendor(req.labelId, rows[0], 'rejected', { reason: req.body.reason });
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Reject error:', error);
@@ -246,6 +263,7 @@ router.post('/entries/:id/mark-paid', async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found or not approved' });
     await logActivity(req, 'Marked paid', `${rows[0].payee} — ${rows[0].amount}`);
+    if (rows[0].vendor_email) notifyVendor(req.labelId, rows[0], 'paid', { method: rows[0].payment_method, date: rows[0].payment_date });
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Mark paid error:', error);

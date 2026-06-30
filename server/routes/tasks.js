@@ -3,11 +3,32 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
+const { sendEmail, taskAssignmentEmail } = require('../lib/email');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
 
 const isAdmin = (req) => ['Superadmin', 'Admin'].includes(req.user.role);
+
+// Best-effort email to a newly-assigned member.
+async function notifyAssignee(req, assigneeId, task) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.name, u.email, l.name AS workspace FROM users u JOIN labels l ON l.id = u.label_id
+       WHERE u.id = $1 AND u.label_id = $2`,
+      [assigneeId, req.labelId]
+    );
+    const a = rows[0];
+    if (!a?.email) return;
+    const origin = process.env.FRONTEND_URL || req.headers.origin || '';
+    const msg = taskAssignmentEmail({
+      assigneeName: a.name, workspaceName: a.workspace, description: task.description,
+      dueDate: task.due_date ? String(task.due_date).slice(0, 10) : null, priority: task.priority,
+      assignerName: req.user.name, link: origin ? `${origin.replace(/\/$/, '')}/my-work` : null,
+    });
+    await sendEmail({ to: a.email, subject: msg.subject, html: msg.html, text: msg.text });
+  } catch (_) { /* best-effort */ }
+}
 
 // GET /api/tasks — by default the caller's own tasks. Admins can pass
 // ?scope=all to see the whole workspace, or ?user_id= to filter.
@@ -70,7 +91,10 @@ router.post('/', async (req, res) => {
        RETURNING *`,
       [req.labelId, assigneeId, req.user.id, description.trim(), priority || null, status || null, due_date || null, release_id || null]
     );
-    if (assigneeId !== req.user.id) await logActivity(req, 'Assigned task', description.trim());
+    if (assigneeId !== req.user.id) {
+      await logActivity(req, 'Assigned task', description.trim());
+      notifyAssignee(req, assigneeId, rows[0]); // best-effort, fire-and-forget
+    }
     res.status(201).json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Create task error:', error);
