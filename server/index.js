@@ -224,6 +224,12 @@ const runMigrations = async () => {
   `);
   // For databases created before is_platform_admin existed.
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_platform_admin BOOLEAN DEFAULT FALSE`);
+  // Invite flow: a newly-added member has no password yet — they activate via
+  // an emailed invite link and set their own password.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_token TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_expires TIMESTAMP`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invited_at TIMESTAMP`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_invite_token ON users (invite_token)`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS artists (

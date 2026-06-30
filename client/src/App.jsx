@@ -32,6 +32,7 @@ import Payments from './pages/Payments'
 import Vendors from './pages/Vendors'
 import Invoices from './pages/Invoices'
 import VendorSubmit from './pages/VendorSubmit'
+import AcceptInvite from './pages/AcceptInvite'
 import Team from './pages/Team'
 import Settings from './pages/Settings'
 import Activity from './pages/Activity'
@@ -82,6 +83,7 @@ function AppContent() {
       {/* Public */}
       <Route path="/login"        element={token ? <Navigate to="/" replace /> : <Login />} />
       <Route path="/submit/:slug" element={<VendorSubmit />} />
+      <Route path="/accept-invite" element={<AcceptInvite />} />
       <Route path="/privacy"      element={<Privacy />} />
       <Route path="/eula"         element={<EULA />} />
 

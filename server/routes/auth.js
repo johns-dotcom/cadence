@@ -251,6 +251,63 @@ router.post('/impersonate/:userId', authMiddleware, async (req, res) => {
 });
 
 // ── GET /api/auth/users ─────────────────────────────────────────────────
+// ── Invite acceptance (public, token-gated) ─────────────────────────────
+
+// GET /api/auth/invite/:token — validate an invite and return whom it's for.
+router.get('/invite/:token', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.name, u.email, u.invite_expires, l.name AS workspace
+       FROM users u JOIN labels l ON l.id = u.label_id
+       WHERE u.invite_token = $1`,
+      [req.params.token]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'This invite is invalid or has already been used.' });
+    if (rows[0].invite_expires && new Date(rows[0].invite_expires) < new Date()) {
+      return res.status(410).json({ success: false, error: 'This invite has expired. Ask an admin to resend it.' });
+    }
+    res.json({ success: true, data: { name: rows[0].name, email: rows[0].email, workspace: rows[0].workspace } });
+  } catch (error) {
+    console.error('Invite lookup error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/auth/accept-invite { token, password } — set the password, clear
+// the invite, and return a session so the user is logged straight in.
+router.post('/accept-invite', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token) return res.status(400).json({ success: false, error: 'Missing invite token' });
+    if (!password || password.length < 8) return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' });
+
+    const { rows } = await pool.query('SELECT * FROM users WHERE invite_token = $1', [token]);
+    if (!rows.length) return res.status(404).json({ success: false, error: 'This invite is invalid or has already been used.' });
+    const user = rows[0];
+    if (user.invite_expires && new Date(user.invite_expires) < new Date()) {
+      return res.status(410).json({ success: false, error: 'This invite has expired. Ask an admin to resend it.' });
+    }
+    if (await isSuspended(user.label_id)) {
+      return res.status(403).json({ success: false, error: 'This workspace has been suspended. Contact the platform operator.' });
+    }
+
+    const hash = await bcrypt.hash(password, 10);
+    const updated = await pool.query(
+      `UPDATE users SET password_hash = $1, invite_token = NULL, invite_expires = NULL,
+         token_version = COALESCE(token_version, 0) + 1
+       WHERE id = $2 RETURNING *`,
+      [hash, user.id]
+    );
+    const fresh = updated.rows[0];
+    const sessionToken = signToken(fresh);
+    recordLogin(fresh, req, 'Invite acceptance');
+    res.json({ success: true, data: { token: sessionToken, user: publicUser(fresh) } });
+  } catch (error) {
+    console.error('Accept invite error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // Superadmin only — lists users in their own label for the impersonation picker.
 router.get('/users', authMiddleware, async (req, res) => {
   try {
