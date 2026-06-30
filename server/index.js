@@ -224,6 +224,12 @@ const runMigrations = async () => {
   `);
   // For databases created before is_platform_admin existed.
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_platform_admin BOOLEAN DEFAULT FALSE`);
+  // Platform operator tier: 'owner' (full operator) vs 'admin' (Workspace Admin —
+  // enters/manages any workspace but no provisioning/suspend/delete/operator mgmt).
+  // Any operator has is_platform_admin = true; platform_role distinguishes power.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS platform_role VARCHAR(20)`);
+  // Existing operators become owners (preserve current full powers).
+  await pool.query(`UPDATE users SET platform_role = 'owner' WHERE is_platform_admin = TRUE AND platform_role IS NULL`);
   // Invite flow: a newly-added member has no password yet — they activate via
   // an emailed invite link and set their own password.
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_token TEXT`);

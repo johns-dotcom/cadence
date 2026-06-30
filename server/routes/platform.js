@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
-const { requirePlatformAdmin } = require('../middleware/tenant');
+const { requirePlatformAdmin, requirePlatformOwner } = require('../middleware/tenant');
 const { uniqueSlug } = require('../lib/slug');
 const { signToken, publicUser } = require('../lib/token');
 const { getSignedFileUrl, uploadFile, deleteFile } = require('../lib/r2');
@@ -240,7 +240,7 @@ router.get('/analytics', async (req, res) => {
 // POST /api/platform/workspaces — provision a new label + its owner Superadmin.
 // This replaces the old public self-serve signup. The platform admin supplies
 // the new owner's name/email and a temporary password to hand off.
-router.post('/workspaces', async (req, res) => {
+router.post('/workspaces', requirePlatformOwner, async (req, res) => {
   const client = await pool.connect();
   try {
     const { labelName, ownerName, ownerEmail } = req.body;
@@ -320,26 +320,32 @@ router.post('/workspaces/:labelId/enter', async (req, res) => {
     delete label.logo_r2_key;
 
     const email = (req.user.email || '').toLowerCase();
-    const cols = 'id, label_id, name, email, role, department, hierarchy_level, is_platform_admin, token_version';
+    const cols = 'id, label_id, name, email, role, department, hierarchy_level, is_platform_admin, platform_role, token_version';
+
+    // The operator's tier decides their authority inside a workspace: an owner
+    // enters as Superadmin (full), a Workspace Admin as Admin (manage data/team,
+    // no owner-only powers). The ghost carries the operator's platform_role.
+    const opRole = req.user.platform_role === 'owner' ? 'owner' : 'admin';
+    const ghostRole = opRole === 'owner' ? 'Superadmin' : 'Admin';
 
     // Find this operator's existing membership in the target label, or mint one.
     let target;
     const existing = await pool.query(`SELECT ${cols} FROM users WHERE label_id = $1 AND LOWER(email) = $2`, [labelId, email]);
     if (existing.rows.length) {
       target = existing.rows[0];
-      // Keep it a platform-admin Superadmin (in case it was changed).
-      if (target.role !== 'Superadmin' || !target.is_platform_admin) {
-        await pool.query("UPDATE users SET role = 'Superadmin', is_platform_admin = true WHERE id = $1", [target.id]);
-        target.role = 'Superadmin'; target.is_platform_admin = true;
+      // Keep the ghost aligned with the operator's current tier.
+      if (target.role !== ghostRole || !target.is_platform_admin || target.platform_role !== opRole) {
+        await pool.query('UPDATE users SET role = $1, is_platform_admin = true, platform_role = $2 WHERE id = $3', [ghostRole, opRole, target.id]);
+        target.role = ghostRole; target.is_platform_admin = true; target.platform_role = opRole;
       }
     } else {
       // No password_hash → can't be used for a normal password login; this row
       // is only ever assumed via the platform-enter flow.
       const ins = await pool.query(
-        `INSERT INTO users (label_id, name, email, role, department, hierarchy_level, is_platform_admin, created_at)
-         VALUES ($1, $2, $3, 'Superadmin', 'Platform', 0, true, NOW())
+        `INSERT INTO users (label_id, name, email, role, department, hierarchy_level, is_platform_admin, platform_role, created_at)
+         VALUES ($1, $2, $3, $4, 'Platform', 0, true, $5, NOW())
          RETURNING ${cols}`,
-        [labelId, req.user.name || 'Platform Admin', email]
+        [labelId, req.user.name || 'Platform Admin', email, ghostRole, opRole]
       );
       target = ins.rows[0];
     }
@@ -361,7 +367,7 @@ router.post('/workspaces/:labelId/enter', async (req, res) => {
 });
 
 // PATCH /api/platform/workspaces/:id — rename and/or recolor a workspace.
-router.patch('/workspaces/:id', async (req, res) => {
+router.patch('/workspaces/:id', requirePlatformOwner, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const fields = [];
@@ -383,7 +389,7 @@ router.patch('/workspaces/:id', async (req, res) => {
 });
 
 // POST /api/platform/workspaces/:id/logo — upload/replace the workspace logo.
-router.post('/workspaces/:id/logo', upload.single('logo'), async (req, res) => {
+router.post('/workspaces/:id/logo', requirePlatformOwner, upload.single('logo'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
     const id = parseInt(req.params.id, 10);
@@ -403,7 +409,7 @@ router.post('/workspaces/:id/logo', upload.single('logo'), async (req, res) => {
 });
 
 // DELETE /api/platform/workspaces/:id/logo
-router.delete('/workspaces/:id/logo', async (req, res) => {
+router.delete('/workspaces/:id/logo', requirePlatformOwner, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const { rows } = await pool.query('SELECT logo_r2_key FROM labels WHERE id = $1', [id]);
@@ -419,7 +425,7 @@ router.delete('/workspaces/:id/logo', async (req, res) => {
 
 // POST /api/platform/workspaces/:id/reset-owner — set a new temp password for
 // the workspace owner and invalidate their sessions. Returns the hand-off.
-router.post('/workspaces/:id/reset-owner', async (req, res) => {
+router.post('/workspaces/:id/reset-owner', requirePlatformOwner, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const newPassword = (req.body.password || '').trim();
@@ -440,7 +446,7 @@ router.post('/workspaces/:id/reset-owner', async (req, res) => {
 });
 
 // POST /api/platform/workspaces/:id/suspend  and  /reactivate
-router.post('/workspaces/:id/suspend', async (req, res) => {
+router.post('/workspaces/:id/suspend', requirePlatformOwner, async (req, res) => {
   try {
     const { rows } = await pool.query(
       "UPDATE labels SET status = 'suspended', suspended_at = NOW() WHERE id = $1 RETURNING id, status",
@@ -454,7 +460,7 @@ router.post('/workspaces/:id/suspend', async (req, res) => {
   }
 });
 
-router.post('/workspaces/:id/reactivate', async (req, res) => {
+router.post('/workspaces/:id/reactivate', requirePlatformOwner, async (req, res) => {
   try {
     const { rows } = await pool.query(
       "UPDATE labels SET status = 'active', suspended_at = NULL WHERE id = $1 RETURNING id, status",
@@ -470,7 +476,7 @@ router.post('/workspaces/:id/reactivate', async (req, res) => {
 
 // DELETE /api/platform/workspaces/:id — permanently delete a workspace and all
 // its data. Requires the exact workspace name as confirmation in the body.
-router.delete('/workspaces/:id', async (req, res) => {
+router.delete('/workspaces/:id', requirePlatformOwner, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const label = await pool.query('SELECT name FROM labels WHERE id = $1', [id]);
@@ -483,6 +489,89 @@ router.delete('/workspaces/:id', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Delete workspace error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Operators (owner-only) ──────────────────────────────────────────────
+// Workspace Admins are platform operators: is_platform_admin = true,
+// platform_role = 'admin'. Their "home" row lives in the inviting owner's
+// label (hidden from that label's roster); on entering any workspace a ghost
+// membership is minted. Owners manage them here.
+
+// GET /api/platform/operators — list every operator (owner + workspace admins),
+// de-duplicated by email (an operator has one home row + ghost rows).
+router.get('/operators', requirePlatformOwner, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT ON (LOWER(email)) id, email, name, platform_role,
+              (password_hash IS NULL AND invite_token IS NOT NULL) AS pending
+       FROM users
+       WHERE is_platform_admin = TRUE
+       ORDER BY LOWER(email), (platform_role = 'owner') DESC, id ASC`
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('List operators error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/platform/operators — invite a new Workspace Admin operator. Created
+// in the owner's home label (hidden from its roster); activates via invite link.
+router.post('/operators', requirePlatformOwner, async (req, res) => {
+  try {
+    const name = (req.body.name || '').trim();
+    const email = (req.body.email || '').trim().toLowerCase();
+    if (!name || !email) return res.status(400).json({ success: false, error: 'Name and email are required' });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ success: false, error: 'Please enter a valid email' });
+
+    // Block active operators / owners; allow re-inviting a still-pending admin.
+    const exists = await pool.query('SELECT password_hash, platform_role FROM users WHERE LOWER(email) = $1 AND is_platform_admin = TRUE ORDER BY (platform_role = $2) DESC LIMIT 1', [email, 'owner']);
+    if (exists.rows.length) {
+      if (exists.rows[0].platform_role === 'owner') return res.status(400).json({ success: false, error: 'That person is a platform owner' });
+      if (exists.rows[0].password_hash) return res.status(400).json({ success: false, error: 'That person is already an operator' });
+      // else: pending Workspace Admin — fall through to regenerate + resend.
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    await pool.query(
+      `INSERT INTO users (label_id, name, email, role, department, hierarchy_level,
+         is_platform_admin, platform_role, invite_token, invite_expires, invited_at, created_at)
+       VALUES ($1, $2, $3, 'Admin', 'Platform', 0, TRUE, 'admin', $4, NOW() + ($5 || ' days')::interval, NOW(), NOW())
+       ON CONFLICT (label_id, email) DO UPDATE SET
+         is_platform_admin = TRUE, platform_role = 'admin', name = EXCLUDED.name,
+         invite_token = EXCLUDED.invite_token, invite_expires = EXCLUDED.invite_expires, invited_at = NOW()`,
+      [req.user.label_id, name, email, token, String(INVITE_DAYS)]
+    );
+
+    const link = inviteLink(req, token);
+    const msg = inviteEmail({ inviteeName: name, workspaceName: 'the Cadence platform', inviterName: req.user.name, link, expiresDays: INVITE_DAYS });
+    const mail = await sendEmail({ to: email, subject: "You've been added as a Cadence Workspace Admin", html: msg.html, text: msg.text });
+
+    res.status(201).json({ success: true, data: { email, name, invite_link: link, email_sent: mail.sent, email_error: mail.sent ? null : mail.reason } });
+  } catch (error) {
+    console.error('Invite operator error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/platform/operators/:email — revoke a Workspace Admin entirely
+// (home row + all ghost rows). Owners can't be revoked here.
+router.delete('/operators/:email', requirePlatformOwner, async (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email).toLowerCase();
+    if (email === (req.user.email || '').toLowerCase()) {
+      return res.status(400).json({ success: false, error: 'You cannot revoke yourself' });
+    }
+    const { rowCount } = await pool.query(
+      "DELETE FROM users WHERE LOWER(email) = $1 AND is_platform_admin = TRUE AND platform_role = 'admin'",
+      [email]
+    );
+    if (!rowCount) return res.status(404).json({ success: false, error: 'Workspace Admin not found (owners cannot be revoked here)' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Revoke operator error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

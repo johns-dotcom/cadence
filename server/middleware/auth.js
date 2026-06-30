@@ -28,7 +28,7 @@ const authMiddleware = async (req, res, next) => {
     // Scoped by label_id so a token can never resolve a user in another tenant.
     if (decoded.id) {
       const { rows } = await pool.query(
-        `SELECT u.token_version, u.role, u.is_platform_admin, l.status AS label_status
+        `SELECT u.token_version, u.role, u.is_platform_admin, u.platform_role, l.status AS label_status
          FROM users u JOIN labels l ON l.id = u.label_id
          WHERE u.id = $1 AND u.label_id = $2`,
         [decoded.id, decoded.label_id]
@@ -48,6 +48,7 @@ const authMiddleware = async (req, res, next) => {
       // the current values, not whatever was baked into the token at login.
       if (rows[0].role) req.user.role = rows[0].role;
       req.user.is_platform_admin = !!rows[0].is_platform_admin;
+      req.user.platform_role = rows[0].platform_role || null;
     }
 
     return next();

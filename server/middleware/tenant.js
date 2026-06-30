@@ -51,4 +51,14 @@ function requirePlatformAdmin(req, res, next) {
   next();
 }
 
-module.exports = { withTenant, requireRole, requireAdmin, requireApprover, requirePlatformAdmin };
+// Owner-tier operators only — the privileged platform actions (provisioning,
+// suspend/delete, operator management). Workspace Admins (platform_role
+// 'admin') can view the console and enter workspaces, but not these.
+function requirePlatformOwner(req, res, next) {
+  if (!req.user?.is_platform_admin || req.user.platform_role !== 'owner') {
+    return res.status(403).json({ success: false, error: 'Platform owner only' });
+  }
+  next();
+}
+
+module.exports = { withTenant, requireRole, requireAdmin, requireApprover, requirePlatformAdmin, requirePlatformOwner };

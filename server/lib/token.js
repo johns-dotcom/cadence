@@ -13,6 +13,7 @@ function signToken(user, expiresIn = '8h') {
       department: user.department,
       hierarchy_level: user.hierarchy_level,
       is_platform_admin: !!user.is_platform_admin,
+      platform_role: user.platform_role || null,
       tv: user.token_version || 0,
     },
     process.env.JWT_SECRET,
@@ -30,6 +31,7 @@ function publicUser(u) {
     department: u.department,
     hierarchy_level: u.hierarchy_level,
     is_platform_admin: !!u.is_platform_admin,
+    platform_role: u.platform_role || null,
   };
 }
 

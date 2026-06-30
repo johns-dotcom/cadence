@@ -28,7 +28,7 @@ const STAT_DEFS = [
   { key: 'open_tasks', label: 'Open tasks', icon: CheckSquare },
 ]
 
-export default function WorkspaceDrawer({ workspaceId, onClose, onEnter, onChanged }) {
+export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, onEnter, onChanged }) {
   const { toast } = useToast()
   const [tab, setTab] = useState('overview')
   const [data, setData] = useState(null)
@@ -88,7 +88,7 @@ export default function WorkspaceDrawer({ workspaceId, onClose, onEnter, onChang
     { key: 'overview', label: 'Overview' },
     { key: 'members', label: 'Members' },
     { key: 'activity', label: 'Activity' },
-    { key: 'manage', label: 'Manage' },
+    ...(isOwner ? [{ key: 'manage', label: 'Manage' }] : []),
   ]
   const suspended = data?.label?.status === 'suspended'
 

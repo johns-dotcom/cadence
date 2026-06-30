@@ -1,20 +1,22 @@
 import { useState, useEffect } from 'react'
 import { Outlet, Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Building2, BarChart3, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun } from 'lucide-react'
+import { LayoutDashboard, Building2, BarChart3, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
 import ErrorBoundary from './ErrorBoundary'
 
 // Neutral operator shell shown to platform admins who are NOT inside a
 // workspace. No label branding, no label-scoped nav — just platform tools.
+// Operators (managing other admins) is owner-only.
 const NAV = [
   { path: '/', label: 'Overview', icon: LayoutDashboard },
   { path: '/workspaces', label: 'Workspaces', icon: Building2 },
   { path: '/analytics', label: 'Analytics', icon: BarChart3 },
   { path: '/activity', label: 'Activity', icon: ScrollText },
+  { path: '/operators', label: 'Operators', icon: Users, ownerOnly: true },
   { path: '/account', label: 'Account', icon: UserCog },
 ]
-const TITLES = { '/': 'Overview', '/workspaces': 'Workspaces', '/analytics': 'Analytics', '/activity': 'Activity', '/account': 'Account' }
+const TITLES = { '/': 'Overview', '/workspaces': 'Workspaces', '/analytics': 'Analytics', '/activity': 'Activity', '/operators': 'Operators', '/account': 'Account' }
 
 export default function PlatformLayout() {
   const { user, logout } = useAuth()
@@ -53,7 +55,7 @@ export default function PlatformLayout() {
         </div>
 
         <nav className="flex-1 px-3 py-4 overflow-y-auto space-y-0.5">
-          {NAV.map(({ path, label, icon: Icon }) => (
+          {NAV.filter(n => !n.ownerOnly || user?.platform_role === 'owner').map(({ path, label, icon: Icon }) => (
             <Link key={path} to={path}
               className={`group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all ${isActive(path) ? 'bg-brand-50 text-brand-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'}`}>
               <Icon size={17} strokeWidth={isActive(path) ? 2 : 1.5} className={isActive(path) ? 'text-brand-600' : 'text-gray-400 group-hover:text-gray-600'} />

@@ -54,9 +54,9 @@ const seed = async () => {
 
     const hash = await bcrypt.hash(adminPassword, 10);
     await client.query(
-      `INSERT INTO users (label_id, name, email, password_hash, role, department, hierarchy_level, is_platform_admin, created_at)
-       VALUES ($1, $2, $3, $4, 'Superadmin', 'Executive', 1, TRUE, NOW())
-       ON CONFLICT (label_id, email) DO UPDATE SET is_platform_admin = TRUE`,
+      `INSERT INTO users (label_id, name, email, password_hash, role, department, hierarchy_level, is_platform_admin, platform_role, created_at)
+       VALUES ($1, $2, $3, $4, 'Superadmin', 'Executive', 1, TRUE, 'owner', NOW())
+       ON CONFLICT (label_id, email) DO UPDATE SET is_platform_admin = TRUE, platform_role = 'owner'`,
       [labelId, adminName, adminEmail, hash]
     );
 

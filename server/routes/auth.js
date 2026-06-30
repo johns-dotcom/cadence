@@ -188,7 +188,7 @@ router.get('/me', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT u.id, u.label_id, u.name, u.email, u.role, u.department, u.hierarchy_level,
-              u.is_platform_admin, u.created_at,
+              u.is_platform_admin, u.platform_role, u.created_at,
               l.name AS label_name, l.slug AS label_slug,
               l.accent_color AS label_accent_color, l.logo_r2_key
        FROM users u JOIN labels l ON l.id = u.label_id

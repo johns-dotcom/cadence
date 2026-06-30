@@ -29,7 +29,8 @@ const SORTS = [
 
 export default function Workspaces() {
   const { toast } = useToast()
-  const { enterWorkspace } = useAuth()
+  const { enterWorkspace, user } = useAuth()
+  const isOwner = user?.platform_role === 'owner'
   const navigate = useNavigate()
   const [workspaces, setWorkspaces] = useState([])
   const [loading, setLoading] = useState(true)
@@ -117,7 +118,7 @@ export default function Workspaces() {
       <PageHeader
         title="Workspaces"
         subtitle="Provision, monitor and manage every label account on the platform"
-        action={<button onClick={() => { setShowForm(v => !v); setCreated(null) }} className="btn-primary"><Plus size={16} /> New workspace</button>}
+        action={isOwner ? <button onClick={() => { setShowForm(v => !v); setCreated(null) }} className="btn-primary"><Plus size={16} /> New workspace</button> : null}
       />
 
       {/* Platform summary */}
@@ -226,6 +227,7 @@ export default function Workspaces() {
       {drawerId && (
         <WorkspaceDrawer
           workspaceId={drawerId}
+          isOwner={isOwner}
           onClose={() => setDrawerId(null)}
           onEnter={(label) => enter(label)}
           onChanged={load}
