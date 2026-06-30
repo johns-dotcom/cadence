@@ -36,6 +36,8 @@ const PAGE_LABELS = {
   '/contracts':  'Contracts',
   '/renewals':   'Renewals',
   '/ledger':     'Ledger',
+  '/ledger/new-invoice': 'Add invoice',
+  '/ledger/new-reimbursement': 'Add reimbursement',
   '/payments':   'Payments',
   '/vendors':    'Vendors',
   '/invoices':   'Invoices',
