@@ -77,7 +77,7 @@ router.post('/', requireAdmin, async (req, res) => {
     const mail = await sendEmail({ to: rows[0].email, subject: msg.subject, html: msg.html, text: msg.text });
 
     await logActivity(req, 'Invited team member', `${name} (${role || 'User'})`);
-    res.status(201).json({ success: true, data: { ...rows[0], invite_link: link, email_sent: mail.sent } });
+    res.status(201).json({ success: true, data: { ...rows[0], invite_link: link, email_sent: mail.sent, email_error: mail.sent ? null : mail.reason } });
   } catch (error) {
     if (error.code === '23505') {
       return res.status(400).json({ success: false, error: 'That email already exists in this workspace' });
@@ -103,7 +103,7 @@ router.post('/:id/resend', requireAdmin, async (req, res) => {
     const label = await pool.query('SELECT name FROM labels WHERE id = $1', [req.labelId]);
     const msg = inviteEmail({ inviteeName: rows[0].name, workspaceName: label.rows[0]?.name || 'your workspace', inviterName: req.user.name, link, expiresDays: INVITE_DAYS });
     const mail = await sendEmail({ to: rows[0].email, subject: msg.subject, html: msg.html, text: msg.text });
-    res.json({ success: true, data: { invite_link: link, email_sent: mail.sent } });
+    res.json({ success: true, data: { invite_link: link, email_sent: mail.sent, email_error: mail.sent ? null : mail.reason } });
   } catch (error) {
     console.error('Resend invite error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });

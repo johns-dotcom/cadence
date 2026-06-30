@@ -40,7 +40,7 @@ export default function Team() {
     setSaving(true)
     try {
       const { data } = await api.post('/team', form)
-      setInvite({ link: data.data.invite_link, email_sent: data.data.email_sent, email: data.data.email })
+      setInvite({ link: data.data.invite_link, email_sent: data.data.email_sent, email: data.data.email, email_error: data.data.email_error })
       toast(data.data.email_sent ? `Invite emailed to ${data.data.email}` : 'Member added — share the invite link')
       setForm({ name: '', email: '', role: 'User', department: 'Operations' })
       setShowForm(false); load()
@@ -54,7 +54,7 @@ export default function Team() {
   const resend = async (id, name) => {
     try {
       const { data } = await api.post(`/team/${id}/resend`)
-      setInvite({ link: data.data.invite_link, email_sent: data.data.email_sent, email: name })
+      setInvite({ link: data.data.invite_link, email_sent: data.data.email_sent, email: name, email_error: data.data.email_error })
       toast(data.data.email_sent ? 'Invite resent' : 'New invite link ready — share it')
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
@@ -84,8 +84,11 @@ export default function Team() {
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-ink flex items-center gap-1.5">
-                {invite.email_sent ? <><Mail size={14} className="text-emerald-600" /> Invite emailed{invite.email ? ` to ${invite.email}` : ''}</> : 'Invite created — email not configured, share this link'}
+                {invite.email_sent ? <><Mail size={14} className="text-emerald-600" /> Invite emailed{invite.email ? ` to ${invite.email}` : ''}</> : 'Invite created — share this link'}
               </p>
+              {!invite.email_sent && invite.email_error && (
+                <p className="text-[11px] text-amber-700 mt-1">Email not sent: {invite.email_error}</p>
+              )}
               <p className="text-xs text-brand-700 font-mono break-all mt-1">{invite.link}</p>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">

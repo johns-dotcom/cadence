@@ -65,8 +65,13 @@ async function sendEmail({ to, subject, html, text }) {
     if (!to) return { sent: false, reason: 'No recipient' };
     if (process.env.RESEND_API_KEY) { await viaResend({ to, subject, html, text }); return { sent: true, via: 'resend' }; }
     if (process.env.SENDGRID_API_KEY) { await viaSendgrid({ to, subject, html, text }); return { sent: true, via: 'sendgrid' }; }
-    if (process.env.SMTP_HOST && nodemailer) { await viaSmtp({ to, subject, html, text }); return { sent: true, via: 'smtp' }; }
-    return { sent: false, reason: 'Email not configured' };
+    if (process.env.SMTP_HOST) {
+      if (!nodemailer) return { sent: false, reason: 'SMTP_HOST is set but the nodemailer package is not installed on the server' };
+      await viaSmtp({ to, subject, html, text });
+      return { sent: true, via: 'smtp' };
+    }
+    console.warn('Email not sent: no email provider env vars are set (RESEND_API_KEY / SENDGRID_API_KEY / SMTP_HOST).');
+    return { sent: false, reason: 'No email provider configured (set SMTP_* or RESEND_API_KEY in the server environment)' };
   } catch (err) {
     console.error('Email send failed:', err.message);
     return { sent: false, reason: err.message };
