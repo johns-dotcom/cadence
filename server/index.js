@@ -185,6 +185,10 @@ const runMigrations = async () => {
   // Per-workspace branding (for labels created before these columns existed).
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS accent_color VARCHAR(20)`);
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS logo_r2_key TEXT`);
+  // Workspace lifecycle: 'active' | 'suspended'. Suspended blocks all of the
+  // label's logins/sessions (platform admins excepted, so they can manage it).
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'`);
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMP`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (

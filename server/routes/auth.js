@@ -11,6 +11,14 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
+// True if the label is suspended by the platform operator.
+async function isSuspended(labelId) {
+  try {
+    const { rows } = await pool.query('SELECT status FROM labels WHERE id = $1', [labelId]);
+    return rows[0]?.status === 'suspended';
+  } catch { return false; }
+}
+
 function recordLogin(user, req, method) {
   const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || null;
   const ua = req.headers['user-agent'] || null;
@@ -73,6 +81,9 @@ router.post('/login', async (req, res) => {
     if (!passwordMatch) {
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
+    if (!user.is_platform_admin && await isSuspended(user.label_id)) {
+      return res.status(403).json({ success: false, error: 'This workspace has been suspended. Contact the platform operator.' });
+    }
 
     const token = signToken(user);
     recordLogin(user, req, 'Email/password login');
@@ -127,6 +138,9 @@ router.post('/google', async (req, res) => {
     }
 
     const user = result.rows[0];
+    if (!user.is_platform_admin && await isSuspended(user.label_id)) {
+      return res.status(403).json({ success: false, error: 'This workspace has been suspended. Contact the platform operator.' });
+    }
     const token = signToken(user);
     recordLogin(user, req, 'Google SSO');
 

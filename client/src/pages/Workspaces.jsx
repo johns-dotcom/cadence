@@ -1,13 +1,32 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Building2, Copy, Check, LogIn } from 'lucide-react'
+import { Plus, Building2, Copy, Check, LogIn, Search, Users, Music, Layers, Ban } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
+import WorkspaceDrawer from '../components/WorkspaceDrawer'
 
-// Platform-admin only: provision and list label workspaces (tenants). This is
-// the operator's onboarding surface — it replaces public self-serve signup.
+// Platform-admin command center: provision, monitor, and manage every label
+// workspace (tenant) on the platform.
+const fmtAgo = (d) => {
+  if (!d) return 'never'
+  const s = Math.floor((Date.now() - new Date(d).getTime()) / 1000)
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  if (s < 2592000) return `${Math.floor(s / 86400)}d ago`
+  return new Date(d).toLocaleDateString()
+}
+
+const SORTS = [
+  { key: 'created_at', label: 'Newest' },
+  { key: 'name', label: 'Name' },
+  { key: 'members', label: 'Members' },
+  { key: 'releases', label: 'Releases' },
+  { key: 'last_active', label: 'Last active' },
+]
+
 export default function Workspaces() {
   const { toast } = useToast()
   const { enterWorkspace } = useAuth()
@@ -17,8 +36,11 @@ export default function Workspaces() {
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ labelName: '', ownerName: '', ownerEmail: '', ownerPassword: '' })
   const [saving, setSaving] = useState(false)
-  const [created, setCreated] = useState(null) // last created {label, owner, password}
+  const [created, setCreated] = useState(null)
   const [copied, setCopied] = useState(false)
+  const [query, setQuery] = useState('')
+  const [sort, setSort] = useState('created_at')
+  const [drawerId, setDrawerId] = useState(null)
 
   const load = () => {
     setLoading(true)
@@ -39,13 +61,10 @@ export default function Workspaces() {
       setCreated({ ...data.data, password: form.ownerPassword })
       setForm({ labelName: '', ownerName: '', ownerEmail: '', ownerPassword: '' })
       setShowForm(false)
-      toast('Workspace created')
-      load()
+      toast('Workspace created'); load()
     } catch (err) {
       toast(err.response?.data?.error || 'Failed to create workspace', 'error')
-    } finally {
-      setSaving(false)
-    }
+    } finally { setSaving(false) }
   }
 
   const enter = async (w) => {
@@ -56,20 +75,64 @@ export default function Workspaces() {
 
   const copyHandoff = () => {
     if (!created) return
-    const text = `Workspace: ${created.label.name}\nSign-in email: ${created.owner.email}\nTemporary password: ${created.password}\nWorkspace ID (if prompted): ${created.label.slug}`
-    navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
+    navigator.clipboard.writeText(`Workspace: ${created.label.name}\nSign-in email: ${created.owner.email}\nTemporary password: ${created.password}\nWorkspace ID (if prompted): ${created.label.slug}`)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
   }
+
+  // Platform-wide rollups derived from the enriched list.
+  const summary = useMemo(() => {
+    const total = workspaces.length
+    const active = workspaces.filter(w => w.status !== 'suspended').length
+    const suspended = total - active
+    const members = workspaces.reduce((s, w) => s + (w.members || 0), 0)
+    const releases = workspaces.reduce((s, w) => s + (w.releases || 0), 0)
+    const newThisMonth = workspaces.filter(w => (Date.now() - new Date(w.created_at).getTime()) < 2592000000).length
+    return { total, active, suspended, members, releases, newThisMonth }
+  }, [workspaces])
+
+  const shown = useMemo(() => {
+    let list = workspaces
+    const q = query.trim().toLowerCase()
+    if (q) list = list.filter(w => w.name?.toLowerCase().includes(q) || w.slug?.toLowerCase().includes(q) || w.owner?.email?.toLowerCase().includes(q))
+    const dir = sort === 'name' ? 1 : -1
+    return [...list].sort((a, b) => {
+      let av = a[sort], bv = b[sort]
+      if (sort === 'name') return (av || '').localeCompare(bv || '')
+      if (sort === 'created_at' || sort === 'last_active') { av = av ? new Date(av).getTime() : 0; bv = bv ? new Date(bv).getTime() : 0 }
+      return (bv - av) * (dir === -1 ? 1 : 1)
+    })
+  }, [workspaces, query, sort])
+
+  const CARDS = [
+    { label: 'Workspaces', value: summary.total, icon: Building2 },
+    { label: 'Active', value: summary.active, icon: Check },
+    { label: 'Suspended', value: summary.suspended, icon: Ban },
+    { label: 'Total members', value: summary.members, icon: Users },
+    { label: 'Total releases', value: summary.releases, icon: Music },
+    { label: 'New (30d)', value: summary.newThisMonth, icon: Layers },
+  ]
 
   return (
     <div>
       <PageHeader
         title="Workspaces"
-        subtitle="Provision and manage label accounts on the platform"
+        subtitle="Provision, monitor and manage every label account on the platform"
         action={<button onClick={() => { setShowForm(v => !v); setCreated(null) }} className="btn-primary"><Plus size={16} /> New workspace</button>}
       />
 
-      {/* Hand-off card shown right after creation (the only time the temp
-          password is visible — it isn't stored in plaintext anywhere). */}
+      {/* Platform summary */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+        {CARDS.map(c => {
+          const Icon = c.icon
+          return (
+            <div key={c.label} className="card p-3">
+              <div className="flex items-center gap-1.5 text-[11px] text-gray-400 mb-1"><Icon size={12} /> {c.label}</div>
+              <p className="text-xl font-bold text-ink">{c.value}</p>
+            </div>
+          )
+        })}
+      </div>
+
       {created && (
         <div className="card p-5 mb-6 border-brand-200 bg-brand-50/40">
           <div className="flex items-start justify-between gap-4">
@@ -83,19 +146,14 @@ export default function Workspaces() {
               </dl>
               <p className="text-xs text-gray-400 mt-2">The owner should change this password after first sign-in.</p>
             </div>
-            <button onClick={copyHandoff} className="btn-secondary flex-shrink-0">
-              {copied ? <><Check size={15} /> Copied</> : <><Copy size={15} /> Copy</>}
-            </button>
+            <button onClick={copyHandoff} className="btn-secondary flex-shrink-0">{copied ? <><Check size={15} /> Copied</> : <><Copy size={15} /> Copy</>}</button>
           </div>
         </div>
       )}
 
       {showForm && (
         <form onSubmit={create} className="card p-4 mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="sm:col-span-2">
-            <label className="label">Label name</label>
-            <input className="input" value={form.labelName} onChange={set('labelName')} placeholder="e.g. Midnight Records" autoFocus />
-          </div>
+          <div className="sm:col-span-2"><label className="label">Label name</label><input className="input" value={form.labelName} onChange={set('labelName')} placeholder="e.g. Midnight Records" autoFocus /></div>
           <div><label className="label">Owner name</label><input className="input" value={form.ownerName} onChange={set('ownerName')} /></div>
           <div><label className="label">Owner email</label><input type="email" className="input" value={form.ownerEmail} onChange={set('ownerEmail')} /></div>
           <div className="sm:col-span-2"><label className="label">Temporary password</label><input type="text" className="input" value={form.ownerPassword} onChange={set('ownerPassword')} placeholder="8+ characters — share with the owner" /></div>
@@ -103,42 +161,74 @@ export default function Workspaces() {
         </form>
       )}
 
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search by name, ID or owner email…" className="input !pl-9" />
+        </div>
+        <div className="flex items-center gap-1">
+          {SORTS.map(s => (
+            <button key={s.key} onClick={() => setSort(s.key)} className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg ${sort === s.key ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-100'}`}>{s.label}</button>
+          ))}
+        </div>
+      </div>
+
       {loading ? (
         <p className="text-sm text-gray-400">Loading…</p>
-      ) : workspaces.length === 0 ? (
-        <div className="card p-10 text-center">
-          <Building2 size={28} className="text-gray-300 mx-auto mb-3" />
-          <p className="text-sm text-gray-500">No workspaces yet.</p>
-        </div>
+      ) : shown.length === 0 ? (
+        <div className="card p-10 text-center"><Building2 size={28} className="text-gray-300 mx-auto mb-3" /><p className="text-sm text-gray-500">{query ? 'No workspaces match your search.' : 'No workspaces yet.'}</p></div>
       ) : (
-        <div className="card overflow-hidden">
+        <div className="card overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-divider text-left">
-                <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Workspace</th>
-                <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Workspace ID</th>
-                <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Members</th>
-                <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Created</th>
-                <th className="px-4 py-3"></th>
+                {['Workspace', 'Owner', 'Members', 'Releases', 'Ledger', 'Last active', 'Status', ''].map(h => (
+                  <th key={h} className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-divider">
-              {workspaces.map(w => (
-                <tr key={w.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-ink">{w.name}</td>
-                  <td className="px-4 py-3 text-gray-500 font-mono">{w.slug}</td>
-                  <td className="px-4 py-3 text-gray-600">{w.member_count}</td>
-                  <td className="px-4 py-3 text-gray-500">{new Date(w.created_at).toLocaleDateString()}</td>
-                  <td className="px-4 py-3 text-right">
-                    <button onClick={() => enter(w)} className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700">
-                      <LogIn size={13} /> Enter
-                    </button>
+              {shown.map(w => (
+                <tr key={w.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => setDrawerId(w.id)}>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2.5">
+                      {w.logo_url ? (
+                        <img src={w.logo_url} alt="" className="w-8 h-8 rounded-lg object-cover bg-gray-100 flex-shrink-0" />
+                      ) : (
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: w.accent_color || '#4F46E5' }}>
+                          <span className="text-white font-bold text-xs">{w.name?.charAt(0)?.toUpperCase()}</span>
+                        </div>
+                      )}
+                      <div className="min-w-0"><p className="font-medium text-ink truncate">{w.name}</p><p className="text-[11px] text-gray-400 font-mono">{w.slug}</p></div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-500"><span className="truncate block max-w-[180px]">{w.owner?.email || '—'}</span></td>
+                  <td className="px-4 py-3 text-gray-600">{w.members}</td>
+                  <td className="px-4 py-3 text-gray-600">{w.releases}</td>
+                  <td className="px-4 py-3 text-gray-600">{w.ledger_entries}</td>
+                  <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{fmtAgo(w.last_active)}</td>
+                  <td className="px-4 py-3">
+                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${w.status === 'suspended' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>{w.status === 'suspended' ? 'Suspended' : 'Active'}</span>
+                  </td>
+                  <td className="px-4 py-3 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                    <button onClick={() => setDrawerId(w.id)} className="text-xs font-semibold text-gray-500 hover:text-gray-800 mr-3">Details</button>
+                    <button onClick={() => enter(w)} className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700"><LogIn size={13} /> Enter</button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {drawerId && (
+        <WorkspaceDrawer
+          workspaceId={drawerId}
+          onClose={() => setDrawerId(null)}
+          onEnter={(label) => enter(label)}
+          onChanged={load}
+        />
       )}
     </div>
   )
