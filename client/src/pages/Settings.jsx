@@ -17,6 +17,8 @@ export default function Settings() {
   const [labelName, setLabelName] = useState('')
   const [accent, setAccent] = useState(label?.accent_color || '')
   const [logoUrl, setLogoUrl] = useState(label?.logo_url || null)
+  const [inv, setInv] = useState({})
+  const [savingInv, setSavingInv] = useState(false)
   const [pw, setPw] = useState({ current_password: '', new_password: '' })
 
   useEffect(() => {
@@ -25,8 +27,18 @@ export default function Settings() {
       setLabelName(d.name || '')
       setAccent(d.accent_color || '')
       setLogoUrl(d.logo_url || null)
+      setInv(d.invoice_settings || {})
     }).catch(() => {})
   }, [isAdmin])
+
+  const setInvField = (k) => (e) => setInv(s => ({ ...s, [k]: e.target.value }))
+  const saveInvoiceSettings = async (e) => {
+    e.preventDefault()
+    setSavingInv(true)
+    try { await api.patch('/label', { invoice_settings: inv }); toast('Invoice details saved') }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+    finally { setSavingInv(false) }
+  }
 
   const saveProfile = async (e) => {
     e.preventDefault()
@@ -177,6 +189,40 @@ export default function Settings() {
               </div>
 
               <button className="btn-primary">Save branding</button>
+            </div>
+          </form>
+        )}
+
+        {/* Invoice details — "Funds payable to" block on issued invoices (admins only) */}
+        {isAdmin && (
+          <form onSubmit={saveInvoiceSettings} className="card p-5">
+            <h2 className="text-sm font-bold text-ink mb-1">Invoice details</h2>
+            <p className="text-xs text-gray-400 mb-4">Your company &amp; remittance info. Shown as the “Funds payable to” block on every invoice you issue.</p>
+            <div className="space-y-5">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-2">Company</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="sm:col-span-2"><label className="label">Company legal name</label><input className="input" value={inv.company_name || ''} onChange={setInvField('company_name')} placeholder="BOOM.RECORDS LLC" /></div>
+                  <div className="sm:col-span-2"><label className="label">Address</label><textarea className="input min-h-[64px]" value={inv.address || ''} onChange={setInvField('address')} placeholder={'1119 POINSETTIA DRIVE\nUNIT 01\nLOS ANGELES CA 90046-5794 USA'} /></div>
+                  <div><label className="label">Contact name</label><input className="input" value={inv.contact || ''} onChange={setInvField('contact')} placeholder="JOHN SKEAD" /></div>
+                  <div><label className="label">EIN / Tax ID</label><input className="input" value={inv.ein || ''} onChange={setInvField('ein')} placeholder="87-1095996" /></div>
+                  <div><label className="label">Phone</label><input className="input" value={inv.phone || ''} onChange={setInvField('phone')} placeholder="201-912-3991" /></div>
+                  <div><label className="label">Email</label><input className="input" value={inv.email || ''} onChange={setInvField('email')} placeholder="johns@boomrecords.co" /></div>
+                </div>
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-2">Bank</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div><label className="label">Bank name</label><input className="input" value={inv.bank_name || ''} onChange={setInvField('bank_name')} placeholder="BANK OF AMERICA" /></div>
+                  <div><label className="label">Bank address</label><input className="input" value={inv.bank_address || ''} onChange={setInvField('bank_address')} placeholder="PO BOX 25118, TAMPA FL 33622-5118" /></div>
+                  <div><label className="label">Account name</label><input className="input" value={inv.account_name || ''} onChange={setInvField('account_name')} placeholder="BOOM.RECORDS LLC" /></div>
+                  <div><label className="label">Account type</label><input className="input" value={inv.account_type || ''} onChange={setInvField('account_type')} placeholder="CHECKING" /></div>
+                  <div><label className="label">SWIFT</label><input className="input" value={inv.swift || ''} onChange={setInvField('swift')} placeholder="BOFAUS3N (for funds sent in USD)" /></div>
+                  <div><label className="label">Routing</label><input className="input" value={inv.routing || ''} onChange={setInvField('routing')} placeholder="026009593 (WIRE) / 122000661 (ACH)" /></div>
+                  <div className="sm:col-span-2"><label className="label">Account number</label><input className="input" value={inv.account_number || ''} onChange={setInvField('account_number')} placeholder="325146889268" /></div>
+                </div>
+              </div>
+              <button disabled={savingInv} className="btn-primary">{savingInv ? 'Saving…' : 'Save invoice details'}</button>
             </div>
           </form>
         )}

@@ -206,6 +206,9 @@ const runMigrations = async () => {
   // label's logins/sessions (platform admins excepted, so they can manage it).
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'`);
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMP`);
+  // Per-workspace "Funds payable to" / remittance block rendered on issued
+  // invoices (company legal name, address, contact, EIN, bank details).
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS invoice_settings JSONB`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -483,6 +486,7 @@ const runMigrations = async () => {
       UNIQUE (label_id, invoice_number)
     );
   `);
+  await pool.query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'USD'`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS tasks (

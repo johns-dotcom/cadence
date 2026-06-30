@@ -36,7 +36,7 @@ router.get('/next-number', async (req, res) => {
 // POST /api/invoices — create. Number is assigned per-label.
 router.post('/', async (req, res) => {
   try {
-    const { bill_to, bill_to_address, description, amount, purchase_order, due_by, line_items } = req.body;
+    const { bill_to, bill_to_address, description, amount, purchase_order, due_by, line_items, currency } = req.body;
     if (!bill_to || amount == null) {
       return res.status(400).json({ success: false, error: 'Bill-to and amount are required' });
     }
@@ -49,12 +49,12 @@ router.post('/', async (req, res) => {
     const invoice_number = numRows[0].next_number;
 
     const { rows } = await pool.query(
-      `INSERT INTO invoices (label_id, invoice_number, bill_to, bill_to_address, description, amount, purchase_order, due_by, line_items, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      `INSERT INTO invoices (label_id, invoice_number, bill_to, bill_to_address, description, amount, purchase_order, due_by, line_items, currency, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [
         req.labelId, invoice_number, bill_to, bill_to_address || null, description || null, amount,
         purchase_order || 'N/A', due_by || 'UPON RECEIPT',
-        line_items ? JSON.stringify(line_items) : null, req.user.name,
+        line_items ? JSON.stringify(line_items) : null, currency || 'USD', req.user.name,
       ]
     );
     await logActivity(req, 'Created invoice', `#${invoice_number} — ${bill_to}`);
@@ -68,7 +68,7 @@ router.post('/', async (req, res) => {
 // PUT /api/invoices/:id — update allowed fields (incl. payment_status)
 router.put('/:id', async (req, res) => {
   try {
-    const allowed = ['payment_status', 'bill_to', 'bill_to_address', 'description', 'amount', 'purchase_order', 'due_by', 'line_items'];
+    const allowed = ['payment_status', 'bill_to', 'bill_to_address', 'description', 'amount', 'purchase_order', 'due_by', 'line_items', 'currency'];
     const fields = Object.keys(req.body).filter(k => allowed.includes(k));
     if (!fields.length) return res.status(400).json({ success: false, error: 'No valid fields' });
     const setClauses = fields.map((f, i) => `${f} = $${i + 3}`);

@@ -33,7 +33,6 @@ import Ledger from './pages/Ledger'
 import AddLedgerEntry from './pages/AddLedgerEntry'
 import Payments from './pages/Payments'
 import Vendors from './pages/Vendors'
-import Invoices from './pages/Invoices'
 import CreateInvoice from './pages/CreateInvoice'
 import VendorSubmit from './pages/VendorSubmit'
 import AcceptInvite from './pages/AcceptInvite'
@@ -129,7 +128,7 @@ function AppContent() {
         <Route path="/ledger/new-reimbursement" element={<AdminRoute><AddLedgerEntry mode="reimbursement" /></AdminRoute>} />
         <Route path="/payments"     element={<AdminRoute><Payments /></AdminRoute>} />
         <Route path="/vendors"      element={<AdminRoute><Vendors /></AdminRoute>} />
-        <Route path="/invoices"     element={<AdminRoute><Invoices /></AdminRoute>} />
+        <Route path="/invoices"     element={<AdminRoute><CreateInvoice /></AdminRoute>} />
         <Route path="/invoices/new" element={<AdminRoute><CreateInvoice /></AdminRoute>} />
         <Route path="/team"         element={<AdminRoute><Team /></AdminRoute>} />
         <Route path="/activity"     element={<AdminRoute><Activity /></AdminRoute>} />

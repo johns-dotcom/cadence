@@ -22,7 +22,7 @@ async function logoUrl(r2Key) {
 router.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id, name, slug, accent_color, logo_r2_key, created_at,
+      `SELECT id, name, slug, accent_color, logo_r2_key, invoice_settings, created_at,
               (SELECT COUNT(*) FROM users WHERE label_id = labels.id) AS member_count
        FROM labels WHERE id = $1`,
       [req.labelId]
@@ -41,7 +41,7 @@ router.get('/', async (req, res) => {
 // PATCH /api/label — rename + set accent color (admin only). Slug is immutable.
 router.patch('/', requireAdmin, async (req, res) => {
   try {
-    const { name, accent_color } = req.body;
+    const { name, accent_color, invoice_settings } = req.body;
 
     if (accent_color !== undefined && accent_color !== null && accent_color !== '' && !HEX_RE.test(accent_color)) {
       return res.status(400).json({ success: false, error: 'Accent color must be a hex value like #4F46E5' });
@@ -56,10 +56,13 @@ router.patch('/', requireAdmin, async (req, res) => {
     const { rows } = await pool.query(
       `UPDATE labels SET
          name = COALESCE($1, name),
-         accent_color = CASE WHEN $2::boolean THEN $3 ELSE accent_color END
-       WHERE id = $4
-       RETURNING id, name, slug, accent_color`,
-      [name ?? null, accent_color !== undefined, accentValue, req.labelId]
+         accent_color = CASE WHEN $2::boolean THEN $3 ELSE accent_color END,
+         invoice_settings = CASE WHEN $4::boolean THEN $5::jsonb ELSE invoice_settings END
+       WHERE id = $6
+       RETURNING id, name, slug, accent_color, invoice_settings`,
+      [name ?? null, accent_color !== undefined, accentValue,
+       invoice_settings !== undefined, invoice_settings ? JSON.stringify(invoice_settings) : null,
+       req.labelId]
     );
     await logActivity(req, 'Updated workspace branding', rows[0].name);
     res.json({ success: true, data: rows[0] });
