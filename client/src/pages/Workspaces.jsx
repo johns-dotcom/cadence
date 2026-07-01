@@ -105,12 +105,12 @@ export default function Workspaces() {
   }, [workspaces, query, sort])
 
   const CARDS = [
-    { label: 'Workspaces', value: summary.total, icon: Building2 },
-    { label: 'Active', value: summary.active, icon: Check },
-    { label: 'Suspended', value: summary.suspended, icon: Ban },
-    { label: 'Total members', value: summary.members, icon: Users },
-    { label: 'Total releases', value: summary.releases, icon: Music },
-    { label: 'New (30d)', value: summary.newThisMonth, icon: Layers },
+    { label: 'Workspaces', value: summary.total, icon: Building2, chip: 'bg-indigo-100 text-indigo-600' },
+    { label: 'Active', value: summary.active, icon: Check, chip: 'bg-emerald-100 text-emerald-600' },
+    { label: 'Suspended', value: summary.suspended, icon: Ban, chip: 'bg-rose-100 text-rose-600', dim: summary.suspended === 0 },
+    { label: 'Members', value: summary.members, icon: Users, chip: 'bg-sky-100 text-sky-600' },
+    { label: 'Releases', value: summary.releases, icon: Music, chip: 'bg-violet-100 text-violet-600' },
+    { label: 'New (30d)', value: summary.newThisMonth, icon: Layers, chip: 'bg-amber-100 text-amber-600' },
   ]
 
   return (
@@ -126,9 +126,12 @@ export default function Workspaces() {
         {CARDS.map(c => {
           const Icon = c.icon
           return (
-            <div key={c.label} className="card p-3">
-              <div className="flex items-center gap-1.5 text-[11px] text-gray-400 mb-1"><Icon size={12} /> {c.label}</div>
-              <p className="text-xl font-bold text-ink">{c.value}</p>
+            <div key={c.label} className="card p-4 flex items-center gap-3 transition-shadow hover:shadow-sm">
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${c.chip}`}><Icon size={17} /></div>
+              <div className="min-w-0">
+                <p className={`text-2xl font-bold leading-none ${c.dim ? 'text-gray-300' : 'text-ink'}`}>{c.value}</p>
+                <p className="text-[11px] text-gray-400 mt-1 truncate">{c.label}</p>
+              </div>
             </div>
           )
         })}
@@ -169,9 +172,9 @@ export default function Workspaces() {
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search by name, ID or owner email…" className="input !pl-9" />
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5 bg-gray-100 rounded-xl p-0.5">
           {SORTS.map(s => (
-            <button key={s.key} onClick={() => setSort(s.key)} className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg ${sort === s.key ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-100'}`}>{s.label}</button>
+            <button key={s.key} onClick={() => setSort(s.key)} className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors ${sort === s.key ? 'bg-card text-ink shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>{s.label}</button>
           ))}
         </div>
       </div>
@@ -181,46 +184,62 @@ export default function Workspaces() {
       ) : shown.length === 0 ? (
         <div className="card p-10 text-center"><Building2 size={28} className="text-gray-300 mx-auto mb-3" /><p className="text-sm text-gray-500">{query ? 'No workspaces match your search.' : 'No workspaces yet.'}</p></div>
       ) : (
-        <div className="card overflow-x-auto">
+        <div className="card overflow-hidden">
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-divider text-left">
+              <tr className="bg-page/50 border-b border-divider text-left">
                 {['Workspace', 'Owner', 'Members', 'Releases', 'Ledger', 'Last active', 'Status', ''].map(h => (
-                  <th key={h} className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                  <th key={h} className="px-4 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-divider">
-              {shown.map(w => (
-                <tr key={w.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => setDrawerId(w.id)}>
+              {shown.map(w => {
+                const num = (n) => <span className={n > 0 ? 'text-ink font-medium tabular-nums' : 'text-gray-300 tabular-nums'}>{n ?? 0}</span>
+                return (
+                <tr key={w.id} className="group hover:bg-brand-50/40 cursor-pointer transition-colors" onClick={() => setDrawerId(w.id)}>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-2.5">
+                    <div className="flex items-center gap-3">
                       {w.logo_url ? (
-                        <img src={w.logo_url} alt="" className="w-8 h-8 rounded-lg object-cover bg-gray-100 flex-shrink-0" />
+                        <img src={w.logo_url} alt="" className="w-9 h-9 rounded-xl object-cover bg-gray-100 flex-shrink-0 ring-1 ring-black/5" />
                       ) : (
-                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: w.accent_color || '#4F46E5' }}>
-                          <span className="text-white font-bold text-xs">{w.name?.charAt(0)?.toUpperCase()}</span>
+                        <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ring-1 ring-black/5" style={{ background: w.accent_color || '#4F46E5' }}>
+                          <span className="text-white font-bold text-sm">{w.name?.charAt(0)?.toUpperCase()}</span>
                         </div>
                       )}
-                      <div className="min-w-0"><p className="font-medium text-ink truncate">{w.name}</p><p className="text-[11px] text-gray-400 font-mono">{w.slug}</p></div>
+                      <div className="min-w-0">
+                        <p className="font-semibold text-ink truncate">{w.name}</p>
+                        <span className="text-[10px] text-gray-400 font-mono bg-gray-100 rounded px-1.5 py-0.5">{w.slug}</span>
+                      </div>
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-gray-500"><span className="truncate block max-w-[180px]">{w.owner?.email || '—'}</span></td>
-                  <td className="px-4 py-3 text-gray-600">{w.members}</td>
-                  <td className="px-4 py-3 text-gray-600">{w.releases}</td>
-                  <td className="px-4 py-3 text-gray-600">{w.ledger_entries}</td>
+                  <td className="px-4 py-3 text-gray-500"><span className="truncate block max-w-[180px]">{w.owner?.email || <span className="text-gray-300">no owner</span>}</span></td>
+                  <td className="px-4 py-3">{num(w.members)}</td>
+                  <td className="px-4 py-3">{num(w.releases)}</td>
+                  <td className="px-4 py-3">{num(w.ledger_entries)}</td>
                   <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{fmtAgo(w.last_active)}</td>
                   <td className="px-4 py-3">
-                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${w.status === 'suspended' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>{w.status === 'suspended' ? 'Suspended' : 'Active'}</span>
+                    <span className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full ${w.status === 'suspended' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-700'}`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${w.status === 'suspended' ? 'bg-rose-500' : 'bg-emerald-500'}`} />
+                      {w.status === 'suspended' ? 'Suspended' : 'Active'}
+                    </span>
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                    <button onClick={() => setDrawerId(w.id)} className="text-xs font-semibold text-gray-500 hover:text-gray-800 mr-3">Details</button>
-                    <button onClick={() => enter(w)} className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700"><LogIn size={13} /> Enter</button>
+                    <div className="flex items-center justify-end gap-2">
+                      <button onClick={() => setDrawerId(w.id)} className="text-xs font-semibold text-gray-500 hover:text-gray-900 px-2 py-1 rounded-lg hover:bg-gray-100 transition-colors">Details</button>
+                      <button onClick={() => enter(w)} className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 border border-brand-200 hover:bg-brand-600 hover:text-white hover:border-brand-600 px-2.5 py-1 rounded-lg transition-colors"><LogIn size={13} /> Enter</button>
+                    </div>
                   </td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
+          </div>
+          <div className="flex items-center justify-between px-4 py-2.5 border-t border-divider text-[11px] text-gray-400">
+            <span>{shown.length} of {workspaces.length} workspace{workspaces.length === 1 ? '' : 's'}</span>
+            <span>{summary.members} members · {summary.releases} releases across the platform</span>
+          </div>
         </div>
       )}
 
