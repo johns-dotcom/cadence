@@ -22,46 +22,41 @@ const authMiddleware = async (req, res, next) => {
       return res.status(401).json({ success: false, error: 'Session not bound to a workspace. Please log in again.' });
     }
 
-    // Verify token_version hasn't been bumped (session invalidation) + pull the
-    // live role/flags so Settings changes take effect immediately.
+    // Verify token_version + pull live role/flags. Resolve the user by id FIRST
+    // (the DB is the source of truth — never the token's claims), then decide
+    // tenant-pinning from the DB's is_platform_admin. This is what keeps an
+    // operator signed in when their home label changes or is deleted, even if
+    // their current token was minted while the flag was momentarily false.
     if (decoded.id) {
-      let rows;
-      if (decoded.is_platform_admin) {
-        // Platform operators are NOT pinned to a tenant. Their home label_id can
-        // change (relocation to Platform HQ) or a workspace can be deleted
-        // without ending their session — resolve them by user id alone. (Their
-        // token is signed by us, so trusting the is_platform_admin claim to pick
-        // this branch is safe; the DB row is still the source of truth for the
-        // actual flags overlaid below.)
-        ({ rows } = await pool.query(
-          `SELECT token_version, role, is_platform_admin, platform_role FROM users WHERE id = $1`,
-          [decoded.id]
-        ));
-        if (!rows.length) return res.status(401).json({ success: false, error: 'Account no longer exists. Please log in again.' });
-        if (decoded.tv !== undefined && rows[0].token_version !== decoded.tv) {
-          return res.status(401).json({ success: false, error: 'Session expired. Please log in again.' });
+      const { rows } = await pool.query(
+        `SELECT token_version, role, is_platform_admin, platform_role, label_id FROM users WHERE id = $1`,
+        [decoded.id]
+      );
+      if (!rows.length) {
+        return res.status(401).json({ success: false, error: 'Account no longer exists. Please log in again.' });
+      }
+      const u = rows[0];
+      if (decoded.tv !== undefined && u.token_version !== decoded.tv) {
+        return res.status(401).json({ success: false, error: 'Session expired. Please log in again.' });
+      }
+      if (!u.is_platform_admin) {
+        // Regular members stay strictly bound to their tenant: the token's label
+        // must match the user's actual label, and the workspace must be active.
+        if (Number(decoded.label_id) !== Number(u.label_id)) {
+          return res.status(401).json({ success: false, error: 'Session not valid for this workspace. Please log in again.' });
         }
-      } else {
-        // Regular members stay strictly bound to their tenant (a token can never
-        // resolve a user in another label).
-        ({ rows } = await pool.query(
-          `SELECT u.token_version, u.role, u.is_platform_admin, u.platform_role, l.status AS label_status
-           FROM users u JOIN labels l ON l.id = u.label_id
-           WHERE u.id = $1 AND u.label_id = $2`,
-          [decoded.id, decoded.label_id]
-        ));
-        if (!rows.length) return res.status(401).json({ success: false, error: 'Account no longer exists. Please log in again.' });
-        if (decoded.tv !== undefined && rows[0].token_version !== decoded.tv) {
-          return res.status(401).json({ success: false, error: 'Session expired. Please log in again.' });
+        const lab = await pool.query('SELECT status FROM labels WHERE id = $1', [u.label_id]);
+        if (!lab.rows.length) {
+          return res.status(401).json({ success: false, error: 'Workspace no longer exists. Please log in again.' });
         }
-        if (rows[0].label_status === 'suspended' && !rows[0].is_platform_admin) {
+        if (lab.rows[0].status === 'suspended') {
           return res.status(403).json({ success: false, error: 'This workspace has been suspended. Contact the platform operator.' });
         }
       }
       // Overlay fresh role + platform flags so permission gates use current values.
-      if (rows[0].role) req.user.role = rows[0].role;
-      req.user.is_platform_admin = !!rows[0].is_platform_admin;
-      req.user.platform_role = rows[0].platform_role || null;
+      if (u.role) req.user.role = u.role;
+      req.user.is_platform_admin = !!u.is_platform_admin;
+      req.user.platform_role = u.platform_role || null;
     }
 
     return next();
