@@ -11,9 +11,9 @@ behavior is ambiguous.
 Overall completion at the 2026-07-27 audit: Foundation ~80% · Finance core ~55% ·
 Finance depth ~25% · Label ops ~60% · Cross-cutting ~60% · Mobile ~15%.
 
-## Status — updated 2026-07-27 (post M1–M3 build)
+## Status — updated 2026-07-27 (post M1–M4 build)
 
-**Milestones 1–3 are complete** (the whole finance-first half of the spec):
+**Milestones 1–4 are complete** (finance-first half + label-ops depth):
 
 - **M1 Foundation** ✅ — `components/ui/` kit, `Skeleton`, `utils/dates.js` +
   `utils/darkColors.js`; permission templates + presets + `PermissionsManager`;
@@ -35,6 +35,20 @@ Finance depth ~25% · Label ops ~60% · Cross-cutting ~60% · Mobile ~15%.
   Scoped out: QB import + Ledger matching (not needed), Expense Lookup (covered),
   bulk re-upload (N/A on R2), real-time chat (lighter comment model),
   prior-year/socials (minor).
+- **M4 Label ops** ✅ — **Catalog** (year-grouped grid, filters, artwork sync);
+  **Dashboard widgets** (`/dashboard/widgets`: task summary, bk widget, releases-
+  by-month bar, genre pie, upcoming list) + **My Work** "Waiting on you" rail;
+  **Release Tracker** — 7-tab detail (Checklist/Metadata/DSP/Budget/Activity/
+  Comments/Details), grouped checklist + completion %, 1–7 tab hotkeys, release
+  `assigned_to` owner, DSP notes col, `/releases/:id/activity`; list gets 14-day
+  banner, calendar view, filters, progress; **Artist profile** contracts section +
+  color-coded devlog; **Deal pipeline** drag-drop + card-detail drawer + `n`
+  hotkey (+ `deals.contact`/`links`); **NDA builder** (`/create-nda/:template`,
+  3 templates, clause toggles, mandatory-section validation, PDF via jsPDF +
+  Word via docx — both lazy-imported; `nda_documents` table + `/api/nda-documents`,
+  separate from the `/api/ndas` counterparty tracker); **Contracts** AI clause
+  drafting (`/contracts/draft-clause` → `claude.draftClause`) + **Pending→Active**
+  promotion.
 
 **Operator lockout hardening** (incident fixes): platform operators live in a
 non-deletable **Platform HQ** system label; auth + `/auth/me` resolve operators
@@ -42,9 +56,9 @@ by user id (never pinned to a token's `label_id`); workspace-delete MOVES
 operators (id preserved) instead of cascading; boot self-heal + break-glass
 `RECOVER_ADMIN_*` recovery; client only logs out on real 401s.
 
-**Remaining:** M4 (label ops — Catalog, Releases depth, Dashboard/My Work,
-Contracts/NDA gen, deal kanban) · M5 (usage analytics, internal requests,
-**mobile kit** — the biggest gap).
+**Remaining:** M5 only — usage analytics, internal requests, and the
+**mobile kit** + notifications/persisted mentions + `useHotkeys` (the biggest
+gap). New deps added in M4: `jspdf` + `docx` (both dynamically imported).
 
 ---
 
