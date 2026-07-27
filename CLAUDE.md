@@ -8,8 +8,43 @@ Reference app (single-tenant original) lives at
 `/Users/johnskead/Desktop/DevProjects/Dashboard/boom-dashboard` — read it when a
 behavior is ambiguous.
 
-Overall completion vs spec at audit time: **Foundation ~80% · Finance core ~55% ·
-Finance depth ~25% · Label ops (excl. finance) ~60% · Cross-cutting ~60% · Mobile ~15%.**
+Overall completion at the 2026-07-27 audit: Foundation ~80% · Finance core ~55% ·
+Finance depth ~25% · Label ops ~60% · Cross-cutting ~60% · Mobile ~15%.
+
+## Status — updated 2026-07-27 (post M1–M3 build)
+
+**Milestones 1–3 are complete** (the whole finance-first half of the spec):
+
+- **M1 Foundation** ✅ — `components/ui/` kit, `Skeleton`, `utils/dates.js` +
+  `utils/darkColors.js`; permission templates + presets + `PermissionsManager`;
+  user-delete guards + dynamic FK sweep; `vendor_form_token` (+ rotate); dev
+  label-scoping assertion; canView parent-grant. (Test users / mock adapter
+  intentionally skipped — not needed for Cadence.)
+- **M2 Finance core** ✅ — email dispatch + `EmailPreviewModal` + `CcChipInput`;
+  dedicated **Approvals** page + `bk_audit_log`; **Payments** (quick filters,
+  hold + rush/hold mutex, USD stat cards, split-family cascade, pay-with-proof,
+  Send-for-Approval, per-vendor confirmation queue, `vendor_emails`); **Ledger**
+  (toggleable persisted columns, rich filters, totals footer, `?focus`, inline
+  edit + 20-deep undo, frozen first column); public vendor form **3-step wizard**
+  + OG tags.
+- **M3 Finance depth** ✅ — **Archive**, **Invoice Search**; **Recoupments** v2
+  (drill-down, UFR statement stamping, statement tabs) + **Recoupment Planning**;
+  **Financials depth** (trends/pie/top-vendors/per-artist P&L/deltas/CSV);
+  **Bulk Upload**; **Artist Campaigns** hub + collaboration (reviewers, comments,
+  review inbox); **Recording Budgets**.
+  Scoped out: QB import + Ledger matching (not needed), Expense Lookup (covered),
+  bulk re-upload (N/A on R2), real-time chat (lighter comment model),
+  prior-year/socials (minor).
+
+**Operator lockout hardening** (incident fixes): platform operators live in a
+non-deletable **Platform HQ** system label; auth + `/auth/me` resolve operators
+by user id (never pinned to a token's `label_id`); workspace-delete MOVES
+operators (id preserved) instead of cascading; boot self-heal + break-glass
+`RECOVER_ADMIN_*` recovery; client only logs out on real 401s.
+
+**Remaining:** M4 (label ops — Catalog, Releases depth, Dashboard/My Work,
+Contracts/NDA gen, deal kanban) · M5 (usage analytics, internal requests,
+**mobile kit** — the biggest gap).
 
 ---
 
