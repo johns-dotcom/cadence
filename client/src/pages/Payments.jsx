@@ -68,13 +68,36 @@ export default function Payments() {
   const selectedRows = shown.filter(r => sel.has(r.id))
   const selTotals = totalsByCurrency(selectedRows)
 
-  const doPay = async ({ payment_date, payment_method, payment_ref }) => {
+  const doPay = async ({ payment_date, payment_method, payment_ref, proof }) => {
     const ids = payModal.ids
     try {
-      if (ids.length === 1) await api.post(`/ledger/entries/${ids[0]}/mark-paid`, { payment_date, payment_method, payment_ref })
+      if (proof && ids.length === 1) {
+        const fd = new FormData(); fd.append('proof', proof)
+        if (payment_date) fd.append('payment_date', payment_date)
+        if (payment_method) fd.append('payment_method', payment_method)
+        if (payment_ref) fd.append('payment_ref', payment_ref)
+        const { data } = await api.post(`/ledger/entries/${ids[0]}/pay-with-proof`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+        toast(`Paid${data.data.reference ? ` · ref ${data.data.reference}` : ''}`)
+      } else if (ids.length === 1) await api.post(`/ledger/entries/${ids[0]}/mark-paid`, { payment_date, payment_method, payment_ref })
       else await api.post('/ledger/batch-pay', { ids, payment_date, payment_method })
-      toast(`Marked ${ids.length} paid`); setPayModal(null); load()
+      setPayModal(null); load()
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+
+  // Send-for-Approval: preview the approval_request email, then POST the
+  // attachment-bearing route (Excel summary + invoice PDFs) on Send.
+  const sendForApproval = () => {
+    const rows = selectedRows
+    if (!rows.length) return
+    const byCur = {}
+    rows.forEach(r => { byCur[r.currency || 'USD'] = (byCur[r.currency || 'USD'] || 0) + Number(r.amount || 0) })
+    const totalLine = Object.entries(byCur).map(([c, a]) => `${c} ${fmt(a)}`).join(' · ')
+    const ids = [...sel]
+    setEmailItems([{
+      kind: 'approval_request', label: `${rows.length} invoice(s)`,
+      ctx: { to: '', count: rows.length, totalLine, note: '' },
+      onCustomSend: async ({ to, cc }) => { await api.post('/ledger/send-for-approval', { ids, to: [to, ...cc].filter(Boolean), note: '' }) },
+    }])
   }
   const doSchedule = async ({ payment_terms, scheduled_payment_date }) => {
     try {
@@ -165,6 +188,7 @@ export default function Payments() {
           <div className="flex items-center gap-2">
             {!isPaid && <button onClick={() => bulkFlag('rush')} className="btn-secondary py-1.5"><Zap size={15} /> Rush</button>}
             {!isPaid && <button onClick={() => bulkFlag('hold')} className="btn-secondary py-1.5"><Pause size={15} /> Hold</button>}
+            {!isPaid && <button onClick={sendForApproval} className="btn-secondary py-1.5"><Send size={15} /> Send for approval</button>}
             {!isPaid && <button onClick={() => setPayModal({ ids: [...sel] })} className="btn-primary py-1.5"><CreditCard size={15} /> Mark paid</button>}
             {isPaid && (
               <>
@@ -263,13 +287,20 @@ function PayModal({ count, onClose, onConfirm }) {
   const [date, setDate] = useState(today())
   const [method, setMethod] = useState('')
   const [ref, setRef] = useState('')
+  const [proof, setProof] = useState(null)
   return (
     <Modal title={`Mark ${count} paid`} onClose={onClose}>
       <div className="space-y-3">
         <div><label className="label">Payment date</label><input type="date" className="input" value={date} onChange={e => setDate(e.target.value)} /></div>
         <div><label className="label">Method</label><select className="input" value={method} onChange={e => setMethod(e.target.value)}><option value="">—</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
         {count === 1 && <div><label className="label">Reference</label><input className="input" value={ref} onChange={e => setRef(e.target.value)} placeholder="confirmation / wire ref" /></div>}
-        <button onClick={() => onConfirm({ payment_date: date, payment_method: method || undefined, payment_ref: ref || undefined })} className="btn-primary w-full">Confirm payment</button>
+        {count === 1 && (
+          <div>
+            <label className="label">Proof of payment (optional — AI reads date & ref)</label>
+            <input type="file" className="input py-1.5" onChange={e => setProof(e.target.files?.[0] || null)} />
+          </div>
+        )}
+        <button onClick={() => onConfirm({ payment_date: date, payment_method: method || undefined, payment_ref: ref || undefined, proof })} className="btn-primary w-full">{proof ? 'Pay with proof' : 'Confirm payment'}</button>
       </div>
     </Modal>
   )

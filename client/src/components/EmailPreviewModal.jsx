@@ -46,7 +46,10 @@ export default function EmailPreviewModal({ open, kind, ctx, items, onClose, onS
     if (!to.trim()) { toast('A recipient is required', 'error'); return }
     setSending(true)
     try {
-      await api.post('/email/send', { kind: cur.kind, ctx: cur.ctx, override: { to: to.trim(), cc, subject } })
+      // Custom sender (e.g. attachment-bearing Send-for-Approval) bypasses the
+      // generic /email/send, which strips attachments as a security boundary.
+      if (cur.onCustomSend) await cur.onCustomSend({ to: to.trim(), cc, subject })
+      else await api.post('/email/send', { kind: cur.kind, ctx: cur.ctx, override: { to: to.trim(), cc, subject } })
       await cur.onItemSent?.()
       onSent?.(cur)
       toast('Email sent')

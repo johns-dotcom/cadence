@@ -4,11 +4,12 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
-const { uploadFile, getSignedFileUrl, deleteFile, loadFileBuffer } = require('../lib/r2');
+const { uploadFile, getSignedFileUrl, deleteFile, loadFileBuffer, loadFileBase64 } = require('../lib/r2');
 const { computeDueDate } = require('../lib/payments');
 const { upsertVendor } = require('../lib/vendors');
 const claude = require('../lib/claude');
 const { sendEmail, vendorDecisionEmail, paymentConfirmationEmail } = require('../lib/email');
+const { dispatchSend } = require('../lib/emailDispatch');
 const { stampFxRateAsync } = require('../lib/fxStamp');
 const { toUSD } = require('../lib/fx');
 const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
@@ -293,19 +294,24 @@ router.get('/entries/:id/bk-audit', async (req, res) => {
 // POST /api/ledger/entries/:id/mark-paid
 router.post('/entries/:id/mark-paid', async (req, res) => {
   try {
+    // Split-family cascade: paying any row in a split family pays the whole
+    // family in one transactional write (never a half-paid family).
     const { rows } = await pool.query(
       `UPDATE expenses SET payment_status = 'Paid', payment_date = COALESCE($1, CURRENT_DATE),
          payment_method = COALESCE($2, payment_method), payment_ref = COALESCE($3, payment_ref),
          paid_by = $4, paid_marked_at = NOW()
-       WHERE id = $5 AND label_id = $6 AND status = 'approved' RETURNING *`,
+       WHERE label_id = $6 AND status = 'approved'
+         AND COALESCE(parent_id, id) = (SELECT COALESCE(parent_id, id) FROM expenses WHERE id = $5 AND label_id = $6)
+       RETURNING *`,
       [req.body.payment_date || null, req.body.payment_method || null, req.body.payment_ref || null,
        req.user.name, parseInt(req.params.id, 10), req.labelId]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found or not approved' });
-    stampFxRateAsync(rows[0].id);
-    await logActivity(req, 'Marked paid', `${rows[0].payee} — ${rows[0].amount}`);
-    if (rows[0].vendor_email) notifyVendor(req.labelId, rows[0], 'paid', { method: rows[0].payment_method, date: rows[0].payment_date });
-    res.json({ success: true, data: rows[0] });
+    rows.forEach(r => stampFxRateAsync(r.id));
+    const head = rows.find(r => String(r.id) === req.params.id) || rows[0];
+    await logActivity(req, 'Marked paid', `${head.payee} — ${head.amount}${rows.length > 1 ? ` (+${rows.length - 1} in family)` : ''}`);
+    if (head.vendor_email) notifyVendor(req.labelId, head, 'paid', { method: head.payment_method, date: head.payment_date });
+    res.json({ success: true, data: head });
   } catch (error) {
     console.error('Mark paid error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -369,12 +375,14 @@ router.post('/batch-pay', async (req, res) => {
     const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
     if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
 
+    // Expand each selected id to its whole split family, then pay all in one go.
     const { rows } = await pool.query(
       `UPDATE expenses SET payment_status = 'Paid',
          payment_date = COALESCE($1, CURRENT_DATE),
          payment_method = COALESCE($2, payment_method),
          paid_by = $3, paid_marked_at = NOW()
-       WHERE label_id = $4 AND status = 'approved' AND payment_status = 'Unpaid' AND id = ANY($5::int[])
+       WHERE label_id = $4 AND status = 'approved' AND payment_status IN ('Unpaid','Partial')
+         AND COALESCE(parent_id, id) IN (SELECT COALESCE(parent_id, id) FROM expenses WHERE label_id = $4 AND id = ANY($5::int[]))
        RETURNING id`,
       [req.body.payment_date || null, req.body.payment_method || null, req.user.name, req.labelId, ids]
     );
@@ -383,6 +391,109 @@ router.post('/batch-pay', async (req, res) => {
     res.json({ success: true, data: { paid: rows.length } });
   } catch (error) {
     console.error('Batch pay error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+const PROOF_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: { payment_date: { type: ['string', 'null'] }, reference: { type: ['string', 'null'] }, method: { type: ['string', 'null'] } },
+  required: ['payment_date', 'reference', 'method'],
+};
+
+// POST /api/ledger/entries/:id/pay-with-proof — upload a proof-of-payment; AI
+// extracts date/ref (fails open), the file is kept as an installment, and the
+// whole split family is marked Paid.
+router.post('/entries/:id/pay-with-proof', upload.single('proof'), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const exp = await pool.query('SELECT amount, currency FROM expenses WHERE id = $1 AND label_id = $2 AND status = $3', [id, req.labelId, 'approved']);
+    if (!exp.rows.length) return res.status(404).json({ success: false, error: 'Approved entry not found' });
+
+    let date = req.body.payment_date || null, ref = req.body.payment_ref || null, method = req.body.payment_method || null;
+    if (req.file && claude.isEnabled()) {
+      const r = await claude.extractFromFile({ buffer: req.file.buffer, mimeType: req.file.mimetype, schema: PROOF_SCHEMA, maxTokens: 512,
+        instruction: 'This is a proof of payment (bank confirmation, wire receipt, or screenshot). Extract payment_date (YYYY-MM-DD), reference (confirmation/reference number), and method (ACH, Wire, Check, PayPal, etc.). Use null for anything not present.' }).catch(() => null);
+      if (r?.ok) { date = date || r.data.payment_date; ref = ref || r.data.reference; method = method || r.data.method; }
+    }
+    let proof = { key: null, filename: null };
+    if (req.file) proof = await storeFile(req.labelId, req.file, 'proof');
+    // Record the proof as a full installment for the audit trail.
+    await pool.query(
+      `INSERT INTO payment_installments (label_id, expense_id, amount, paid_date, method, reference, proof_r2_key, proof_filename, created_by)
+       VALUES ($1,$2,$3,COALESCE($4,CURRENT_DATE),$5,$6,$7,$8,$9)`,
+      [req.labelId, id, exp.rows[0].amount, date, method, ref, proof.key, proof.filename, req.user.name]
+    );
+    // Cascade-pay the whole family.
+    const { rows } = await pool.query(
+      `UPDATE expenses SET payment_status = 'Paid', payment_date = COALESCE($1, CURRENT_DATE),
+         payment_method = COALESCE($2, payment_method), payment_ref = COALESCE($3, payment_ref),
+         paid_by = $4, paid_marked_at = NOW()
+       WHERE label_id = $5 AND status = 'approved'
+         AND COALESCE(parent_id, id) = (SELECT COALESCE(parent_id, id) FROM expenses WHERE id = $6 AND label_id = $5)
+       RETURNING *`,
+      [date, method, ref, req.user.name, req.labelId, id]
+    );
+    rows.forEach(r => stampFxRateAsync(r.id));
+    await logActivity(req, 'Paid via proof', `${rows[0]?.payee} — ${rows[0]?.amount}`);
+    res.json({ success: true, data: { paid: rows.length, payment_date: date, reference: ref } });
+  } catch (error) {
+    console.error('Pay with proof error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/send-for-approval { ids:[], to, note } — email named
+// approvers an Excel summary + the invoice PDFs for the selected entries.
+router.post('/send-for-approval', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
+    const to = req.body.to;
+    if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
+    if (!to || (Array.isArray(to) && !to.length)) return res.status(400).json({ success: false, error: 'At least one approver email is required' });
+
+    const { rows } = await pool.query(
+      `SELECT id, payee, artist, invoice_number, amount, currency, category, invoice_r2_key, invoice_filename
+         FROM expenses
+        WHERE label_id = $1 AND (deleted = false OR deleted IS NULL)
+          AND COALESCE(parent_id, id) IN (SELECT COALESCE(parent_id, id) FROM expenses WHERE label_id = $1 AND id = ANY($2::int[]))
+        ORDER BY payee, id`,
+      [req.labelId, ids]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Entries not found' });
+
+    // Excel summary.
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Invoices for approval');
+    ws.columns = [
+      { header: 'Payee', key: 'payee', width: 28 }, { header: 'Artist', key: 'artist', width: 20 },
+      { header: 'Invoice #', key: 'invoice_number', width: 16 }, { header: 'Category', key: 'category', width: 18 },
+      { header: 'Amount', key: 'amount', width: 14 }, { header: 'Currency', key: 'currency', width: 10 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    const byCur = {};
+    rows.forEach(r => { ws.addRow(r); byCur[r.currency || 'USD'] = (byCur[r.currency || 'USD'] || 0) + Number(r.amount || 0); });
+    const totalLine = Object.entries(byCur).map(([c, a]) => `${c} ${a.toLocaleString(undefined, { minimumFractionDigits: 2 })}`).join(' · ');
+    const xlsxBuf = await wb.xlsx.writeBuffer();
+
+    const attachments = [{ filename: 'invoices-summary.xlsx', content: Buffer.from(xlsxBuf).toString('base64'), contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }];
+    const seen = new Set();
+    for (const r of rows) {
+      if (!r.invoice_r2_key || seen.has(r.invoice_r2_key)) continue;
+      seen.add(r.invoice_r2_key);
+      const b64 = await loadFileBase64(r.invoice_r2_key, null).catch(() => null);
+      if (b64) attachments.push({ filename: r.invoice_filename || `invoice-${r.id}.pdf`, content: b64 });
+    }
+
+    const lab = await pool.query('SELECT name FROM labels WHERE id = $1', [req.labelId]);
+    const result = await dispatchSend('approval_request',
+      { to: Array.isArray(to) ? to[0] : to, cc: Array.isArray(to) ? to.slice(1) : [], workspaceName: lab.rows[0]?.name || 'the label', count: rows.length, totalLine, note: req.body.note, attachments }, {});
+    if (!result.sent) return res.status(502).json({ success: false, error: result.reason || 'Send failed' });
+    rows.forEach(r => bkAudit(req, r.id, 'sent for approval', `to ${Array.isArray(to) ? to.join(', ') : to}`));
+    await logActivity(req, 'Sent invoices for approval', `${rows.length} entries → ${Array.isArray(to) ? to.join(', ') : to}`);
+    res.json({ success: true, data: { sent: rows.length } });
+  } catch (error) {
+    console.error('Send for approval error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
@@ -1103,15 +1214,22 @@ router.post('/send-confirmations-bulk', async (req, res) => {
 
 // POST /api/ledger/entries/:id/mark-sent  &  /mark-unsent — toggle the notified
 // flag manually (e.g. confirmed out-of-band).
+// Confirmation flag is tracked per split family (mark the whole family).
 router.post('/entries/:id/mark-sent', async (req, res) => {
   try {
-    await pool.query(`UPDATE expenses SET payment_notified = TRUE, payment_notified_at = NOW() WHERE id = $1 AND label_id = $2`, [parseInt(req.params.id, 10), req.labelId]);
+    await pool.query(
+      `UPDATE expenses SET payment_notified = TRUE, payment_notified_at = NOW()
+        WHERE label_id = $2 AND COALESCE(parent_id, id) = (SELECT COALESCE(parent_id, id) FROM expenses WHERE id = $1 AND label_id = $2)`,
+      [parseInt(req.params.id, 10), req.labelId]);
     res.json({ success: true });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 router.post('/entries/:id/mark-unsent', async (req, res) => {
   try {
-    await pool.query(`UPDATE expenses SET payment_notified = FALSE, payment_notified_at = NULL WHERE id = $1 AND label_id = $2`, [parseInt(req.params.id, 10), req.labelId]);
+    await pool.query(
+      `UPDATE expenses SET payment_notified = FALSE, payment_notified_at = NULL
+        WHERE label_id = $2 AND COALESCE(parent_id, id) = (SELECT COALESCE(parent_id, id) FROM expenses WHERE id = $1 AND label_id = $2)`,
+      [parseInt(req.params.id, 10), req.labelId]);
     res.json({ success: true });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
