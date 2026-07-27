@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2, CheckSquare } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Plus, Trash2, CheckSquare, AlertTriangle, Inbox, Stamp } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import { TASK_STATUSES, PRIORITIES } from '../constants'
+import { isPastLocal } from '../utils/dates'
 
 const PRIORITY_DOT = { High: 'bg-red-500', Medium: 'bg-amber-500', Low: 'bg-gray-400' }
 
@@ -12,9 +14,12 @@ export default function MyWork() {
   const { user } = useAuth()
   const { toast } = useToast()
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
+  const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
 
   const [tasks, setTasks] = useState([])
   const [members, setMembers] = useState([])
+  const [reviewCount, setReviewCount] = useState(0)
+  const [pending, setPending] = useState(0)
   const [loading, setLoading] = useState(true)
   const [scope, setScope] = useState('mine') // 'mine' | 'all' (admins)
   const [showForm, setShowForm] = useState(false)
@@ -28,6 +33,13 @@ export default function MyWork() {
   }
   useEffect(load, [scope])
   useEffect(() => { if (isAdmin) api.get('/team').then(res => setMembers(res.data.data || [])).catch(() => {}) }, [isAdmin])
+  useEffect(() => {
+    if (!isApprover) return
+    api.get('/dashboard/widgets').then(r => setPending(r.data.data?.pendingApprovals || 0)).catch(() => {})
+    api.get('/artist-campaigns/review-inbox').then(r => setReviewCount((r.data.data || []).length)).catch(() => {})
+  }, [isApprover])
+
+  const overdue = tasks.filter(t => t.status !== 'Done' && t.due_date && isPastLocal(t.due_date)).length
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
 
@@ -76,6 +88,32 @@ export default function MyWork() {
           </div>
         }
       />
+
+      {isApprover && (overdue > 0 || reviewCount > 0 || pending > 0) && (
+        <div className="mb-6">
+          <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Waiting on you</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {overdue > 0 && (
+              <div className="card p-4 flex items-center gap-3 border-l-4 border-l-red-500">
+                <AlertTriangle size={20} className="text-red-500 flex-shrink-0" />
+                <div><p className="text-lg font-bold text-ink leading-none">{overdue}</p><p className="text-xs text-gray-500 mt-1">Overdue task{overdue === 1 ? '' : 's'}</p></div>
+              </div>
+            )}
+            {pending > 0 && (
+              <Link to="/approvals" className="card p-4 flex items-center gap-3 border-l-4 border-l-amber-500 hover:bg-gray-50 transition">
+                <Stamp size={20} className="text-amber-500 flex-shrink-0" />
+                <div><p className="text-lg font-bold text-ink leading-none">{pending}</p><p className="text-xs text-gray-500 mt-1">Awaiting your approval</p></div>
+              </Link>
+            )}
+            {reviewCount > 0 && (
+              <Link to="/artist-campaigns" className="card p-4 flex items-center gap-3 border-l-4 border-l-brand-500 hover:bg-gray-50 transition">
+                <Inbox size={20} className="text-brand-500 flex-shrink-0" />
+                <div><p className="text-lg font-bold text-ink leading-none">{reviewCount}</p><p className="text-xs text-gray-500 mt-1">Campaign{reviewCount === 1 ? '' : 's'} to review</p></div>
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
 
       {showForm && (
         <form onSubmit={create} className="card p-4 mb-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
