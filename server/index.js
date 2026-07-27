@@ -355,6 +355,9 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_deals_label ON deals (label_id)`);
+  // Card-detail fields for the pipeline: primary contact + freeform links.
+  await pool.query(`ALTER TABLE deals ADD COLUMN IF NOT EXISTS contact TEXT`);
+  await pool.query(`ALTER TABLE deals ADD COLUMN IF NOT EXISTS links TEXT`);
 
   // Contracts (per-artist agreements; files stored in R2 via entity_files).
   await pool.query(`

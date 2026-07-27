@@ -10,7 +10,7 @@ router.use(authMiddleware, withTenant);
 const UPDATABLE = [
   'artist_name', 'genre', 'stage', 'ar_rep', 'source', 'deal_type',
   'offer_amount', 'spotify_monthly_listeners', 'last_contact_date',
-  'next_followup_date', 'priority', 'notes',
+  'next_followup_date', 'priority', 'notes', 'contact', 'links',
 ];
 
 // GET /api/deals — full pipeline for the label
@@ -36,15 +36,15 @@ router.post('/', async (req, res) => {
     }
     const { rows } = await pool.query(
       `INSERT INTO deals (label_id, artist_name, genre, stage, ar_rep, source, deal_type,
-        offer_amount, spotify_monthly_listeners, last_contact_date, next_followup_date, priority, notes, created_at, updated_at)
-       VALUES ($1,$2,$3,COALESCE($4,'Scouting'),$5,$6,$7,$8,$9,$10,$11,COALESCE($12,'Medium'),$13,NOW(),NOW())
+        offer_amount, spotify_monthly_listeners, last_contact_date, next_followup_date, priority, notes, contact, links, created_at, updated_at)
+       VALUES ($1,$2,$3,COALESCE($4,'Scouting'),$5,$6,$7,$8,$9,$10,$11,COALESCE($12,'Medium'),$13,$14,$15,NOW(),NOW())
        RETURNING *`,
       [
         req.labelId, artist_name.trim(), req.body.genre || null, req.body.stage || null,
         req.body.ar_rep || null, req.body.source || null, req.body.deal_type || null,
         req.body.offer_amount || null, req.body.spotify_monthly_listeners || null,
         req.body.last_contact_date || null, req.body.next_followup_date || null,
-        req.body.priority || null, req.body.notes || null,
+        req.body.priority || null, req.body.notes || null, req.body.contact || null, req.body.links || null,
       ]
     );
     await logActivity(req, 'Added deal', artist_name.trim());
