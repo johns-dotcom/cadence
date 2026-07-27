@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { CreditCard, CalendarClock, Check, X, Zap, Send, MailCheck } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
+import EmailPreviewModal from '../components/EmailPreviewModal'
 import { useToast } from '../context/ToastContext'
 import { PAYMENT_TERMS, PAYMENT_METHODS } from '../constants'
 
@@ -70,13 +71,22 @@ export default function Payments() {
     try { await api.post('/ledger/rush-bulk', { ids: [...sel], reason }); toast(`${sel.size} flagged rush`); load() }
     catch { toast('Failed', 'error') }
   }
-  const sendConfirm = async (r) => {
-    try { await api.post(`/ledger/entries/${r.id}/send-confirmation`); toast('Confirmation sent'); load() }
-    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  // Payment-confirmation emails now flow through the review-before-send modal.
+  const [emailItems, setEmailItems] = useState(null)
+  const confirmCtx = (r) => ({
+    to: r.vendor_email || '', vendorName: r.vendor_name || r.payee,
+    invoiceNumber: r.invoice_number, amount: r.amount, currency: r.currency,
+    method: r.payment_method, date: r.payment_date,
+  })
+  const confirmItem = (r) => ({ kind: 'payment_confirmation', ctx: confirmCtx(r), label: r.payee, onItemSent: () => api.post(`/ledger/entries/${r.id}/mark-sent`).catch(() => {}) })
+  const sendConfirm = (r) => {
+    if (!r.vendor_email) { toast('No vendor email on this entry', 'error'); return }
+    setEmailItems([confirmItem(r)])
   }
-  const sendConfirmBulk = async () => {
-    try { const { data } = await api.post('/ledger/send-confirmations-bulk', { ids: [...sel] }); toast(`${data.data.sent} confirmation(s) sent`); load() }
-    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  const sendConfirmBulk = () => {
+    const rows = selectedRows.filter(r => r.vendor_email)
+    if (!rows.length) { toast('No selected rows have a vendor email', 'error'); return }
+    setEmailItems(rows.map(confirmItem))
   }
 
   const dueTotals = totalsByCurrency(rows)
@@ -186,6 +196,7 @@ export default function Payments() {
 
       {payModal && <PayModal count={payModal.ids.length} onClose={() => setPayModal(null)} onConfirm={doPay} />}
       {schedModal && <ScheduleModal initialTerms={schedModal.terms} onClose={() => setSchedModal(null)} onConfirm={doSchedule} />}
+      {emailItems && <EmailPreviewModal items={emailItems} onClose={() => setEmailItems(null)} onDone={() => { setEmailItems(null); load() }} />}
     </div>
   )
 }

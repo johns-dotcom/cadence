@@ -19,35 +19,43 @@ let nodemailer = null;
 try { nodemailer = require('nodemailer'); } catch { /* not installed — SMTP driver disabled */ }
 let smtpTransport = null;
 
-async function viaResend({ to, subject, html, text }) {
+// Attachments are [{ filename, content (base64 string), contentType }].
+const ccList = (cc) => (Array.isArray(cc) ? cc : cc ? [cc] : []).filter(Boolean);
+
+async function viaResend({ to, cc, subject, html, text, attachments }) {
+  const body = { from: FROM, to: [to], subject, html, text };
+  if (ccList(cc).length) body.cc = ccList(cc);
+  if (attachments?.length) body.attachments = attachments.map(a => ({ filename: a.filename, content: a.content }));
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: FROM, to: [to], subject, html, text }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text().catch(() => '')}`);
   return true;
 }
 
-async function viaSendgrid({ to, subject, html, text }) {
+async function viaSendgrid({ to, cc, subject, html, text, attachments }) {
   // SendGrid wants a bare address or "Name <addr>" split into name/email.
   const m = FROM.match(/^\s*(.*?)\s*<(.+)>\s*$/);
   const from = m ? { name: m[1], email: m[2] } : { email: FROM };
+  const personalization = { to: [{ email: to }] };
+  if (ccList(cc).length) personalization.cc = ccList(cc).map(email => ({ email }));
+  const body = {
+    personalizations: [personalization], from, subject,
+    content: [text ? { type: 'text/plain', value: text } : null, { type: 'text/html', value: html }].filter(Boolean),
+  };
+  if (attachments?.length) body.attachments = attachments.map(a => ({ content: a.content, filename: a.filename, type: a.contentType || 'application/octet-stream', disposition: 'attachment' }));
   const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
     method: 'POST',
     headers: { Authorization: `Bearer ${process.env.SENDGRID_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      personalizations: [{ to: [{ email: to }] }],
-      from,
-      subject,
-      content: [text ? { type: 'text/plain', value: text } : null, { type: 'text/html', value: html }].filter(Boolean),
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`SendGrid ${res.status}: ${await res.text().catch(() => '')}`);
   return true;
 }
 
-async function viaSmtp({ to, subject, html, text }) {
+async function viaSmtp({ to, cc, subject, html, text, attachments }) {
   if (!smtpTransport) {
     smtpTransport = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -56,18 +64,22 @@ async function viaSmtp({ to, subject, html, text }) {
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     });
   }
-  await smtpTransport.sendMail({ from: FROM, to, subject, html, text });
+  const msg = { from: FROM, to, subject, html, text };
+  if (ccList(cc).length) msg.cc = ccList(cc);
+  if (attachments?.length) msg.attachments = attachments.map(a => ({ filename: a.filename, content: a.content, encoding: 'base64', contentType: a.contentType }));
+  await smtpTransport.sendMail(msg);
   return true;
 }
 
-async function sendEmail({ to, subject, html, text }) {
+async function sendEmail({ to, cc, subject, html, text, attachments }) {
   try {
     if (!to) return { sent: false, reason: 'No recipient' };
-    if (process.env.RESEND_API_KEY) { await viaResend({ to, subject, html, text }); return { sent: true, via: 'resend' }; }
-    if (process.env.SENDGRID_API_KEY) { await viaSendgrid({ to, subject, html, text }); return { sent: true, via: 'sendgrid' }; }
+    const args = { to, cc, subject, html, text, attachments };
+    if (process.env.RESEND_API_KEY) { await viaResend(args); return { sent: true, via: 'resend' }; }
+    if (process.env.SENDGRID_API_KEY) { await viaSendgrid(args); return { sent: true, via: 'sendgrid' }; }
     if (process.env.SMTP_HOST) {
       if (!nodemailer) return { sent: false, reason: 'SMTP_HOST is set but the nodemailer package is not installed on the server' };
-      await viaSmtp({ to, subject, html, text });
+      await viaSmtp(args);
       return { sent: true, via: 'smtp' };
     }
     console.warn('Email not sent: no email provider env vars are set (RESEND_API_KEY / SENDGRID_API_KEY / SMTP_HOST).');
@@ -142,4 +154,22 @@ function taskAssignmentEmail({ assigneeName, workspaceName, description, dueDate
   return { subject, html: shell('New task', body), text: `${subject}: ${description}` };
 }
 
-module.exports = { sendEmail, inviteEmail, vendorDecisionEmail, paymentConfirmationEmail, taskAssignmentEmail };
+// Internal "request a feature / report a bug" submission → platform team.
+function internalRequestEmail({ userName, userEmail, workspaceName, requestType, title, details, page }) {
+  const subject = `[${requestType || 'Request'}] ${title || 'Internal request'} — ${workspaceName}`;
+  const body = `<p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(userName)}</strong> (${esc(userEmail)}) from <strong>${esc(workspaceName)}</strong> submitted a ${esc(requestType || 'request')}:</p>
+    <p style="color:#111;font-size:14px;line-height:1.6;background:#f4f4f6;border-radius:8px;padding:12px"><strong>${esc(title)}</strong><br>${esc(details).replace(/\n/g, '<br>')}</p>
+    ${page ? `<p style="color:#888;font-size:12px">From page: ${esc(page)}</p>` : ''}`;
+  return { subject, html: shell('Internal request', body), text: `${subject}\n\n${details || ''}` };
+}
+
+// Batch of invoices sent to a named approver for sign-off (Excel + PDFs attached).
+function approvalRequestEmail({ approverName, workspaceName, count, totalLine, note }) {
+  const subject = `${workspaceName}: ${count} invoice${count === 1 ? '' : 's'} for your approval`;
+  const body = `<p style="color:#444;font-size:14px;line-height:1.6">Hi ${esc(approverName || 'there')},</p>
+    <p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(workspaceName)}</strong> has ${count} invoice${count === 1 ? '' : 's'} totalling <strong>${esc(totalLine || '')}</strong> awaiting your approval. A summary spreadsheet and the invoice PDFs are attached.</p>
+    ${note ? `<p style="color:#444;font-size:14px;line-height:1.6">${esc(note).replace(/\n/g, '<br>')}</p>` : ''}`;
+  return { subject, html: shell('Invoices for approval', body), text: subject };
+}
+
+module.exports = { sendEmail, inviteEmail, vendorDecisionEmail, paymentConfirmationEmail, taskAssignmentEmail, internalRequestEmail, approvalRequestEmail };
