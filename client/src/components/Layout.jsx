@@ -35,6 +35,7 @@ const PAGE_LABELS = {
   '/deals':      'Deal Pipeline',
   '/contracts':  'Contracts',
   '/renewals':   'Renewals',
+  '/approvals':  'Approvals',
   '/ledger':     'Ledger',
   '/ledger/new-invoice': 'Add invoice',
   '/ledger/new-reimbursement': 'Add reimbursement',
@@ -235,7 +236,8 @@ export default function Layout() {
     {
       label: 'Bookkeeping',
       items: [
-        ...(isApprover ? [{ path: '/ledger', label: 'Ledger', icon: BookOpen, badge: pendingApprovals }] : []),
+        ...(isApprover ? [{ path: '/approvals', label: 'Approvals', icon: Check, badge: pendingApprovals }] : []),
+        ...(isApprover ? [{ path: '/ledger', label: 'Ledger', icon: BookOpen }] : []),
         ...(isApprover ? [{ path: '/payments', label: 'Payments', icon: CreditCard }] : []),
         ...(isApprover ? [{ path: '/vendors', label: 'Vendors', icon: Building2 }] : []),
         ...(isApprover ? [{ path: '/invoices', label: 'Invoices', icon: Receipt }] : []),

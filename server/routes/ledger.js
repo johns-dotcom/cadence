@@ -225,7 +225,16 @@ router.get('/entries/:id/history', async (req, res) => {
   }
 });
 
-// POST /api/ledger/entries/:id/approve
+// Bookkeeping audit trail (best-effort; never blocks the response).
+function bkAudit(req, expenseId, action, detail) {
+  pool.query(
+    `INSERT INTO bk_audit_log (label_id, expense_id, action, detail, actor) VALUES ($1,$2,$3,$4,$5)`,
+    [req.labelId, expenseId || null, action, detail || null, req.user?.name || null]
+  ).catch(() => {});
+}
+
+// POST /api/ledger/entries/:id/approve — pass notify:false to suppress the
+// auto-email (the Approvals page previews + sends via EmailPreviewModal instead).
 router.post('/entries/:id/approve', async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -235,7 +244,8 @@ router.post('/entries/:id/approve', async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
     await logActivity(req, 'Approved ledger entry', `${rows[0].payee} — ${rows[0].amount}`);
-    if (rows[0].vendor_submitted) notifyVendor(req.labelId, rows[0], 'approved');
+    bkAudit(req, rows[0].id, 'approved', `${rows[0].payee} — ${rows[0].currency} ${rows[0].amount}`);
+    if (req.body.notify !== false && rows[0].vendor_submitted) notifyVendor(req.labelId, rows[0], 'approved');
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Approve error:', error);
@@ -243,20 +253,38 @@ router.post('/entries/:id/approve', async (req, res) => {
   }
 });
 
-// POST /api/ledger/entries/:id/reject
+// POST /api/ledger/entries/:id/reject — reason required. notify:false suppresses.
 router.post('/entries/:id/reject', async (req, res) => {
   try {
+    const reason = String(req.body.reason || '').trim();
+    if (!reason) return res.status(400).json({ success: false, error: 'A rejection reason is required' });
     const { rows } = await pool.query(
       `UPDATE expenses SET status = 'rejected', rejected_reason = $1, approved_by = $2, approved_at = NOW()
        WHERE id = $3 AND label_id = $4 RETURNING *`,
-      [req.body.reason || null, req.user.name, parseInt(req.params.id, 10), req.labelId]
+      [reason, req.user.name, parseInt(req.params.id, 10), req.labelId]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
     await logActivity(req, 'Rejected ledger entry', rows[0].payee);
-    if (rows[0].vendor_submitted) notifyVendor(req.labelId, rows[0], 'rejected', { reason: req.body.reason });
+    bkAudit(req, rows[0].id, 'rejected', reason);
+    if (req.body.notify !== false && rows[0].vendor_submitted) notifyVendor(req.labelId, rows[0], 'rejected', { reason });
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Reject error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/ledger/entries/:id/bk-audit — bookkeeping audit trail for one entry.
+router.get('/entries/:id/bk-audit', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT action, detail, actor, created_at FROM bk_audit_log
+        WHERE label_id = $1 AND expense_id = $2 ORDER BY created_at DESC, id DESC`,
+      [req.labelId, parseInt(req.params.id, 10)]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('bk-audit error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
@@ -618,11 +646,14 @@ router.post('/bulk-approve', async (req, res) => {
     if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
     const { rows } = await pool.query(
       `UPDATE expenses SET status = 'approved', approved_by = $1, approved_at = NOW()
-       WHERE label_id = $2 AND status = 'pending' AND id = ANY($3::int[]) RETURNING id`,
+       WHERE label_id = $2 AND status = 'pending' AND id = ANY($3::int[])
+       RETURNING id, payee, vendor_name, vendor_email, invoice_number, amount, currency, vendor_submitted`,
       [req.user.name, req.labelId, ids]
     );
+    rows.forEach(r => bkAudit(req, r.id, 'approved', `bulk — ${r.payee} ${r.currency} ${r.amount}`));
     await logActivity(req, 'Bulk approved', `${rows.length} entries`);
-    res.json({ success: true, data: { approved: rows.length } });
+    // Return the approved rows so the client can queue per-vendor emails.
+    res.json({ success: true, data: { approved: rows.length, rows } });
   } catch (error) {
     console.error('Bulk approve error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });

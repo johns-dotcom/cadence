@@ -451,6 +451,21 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_perm_templates_uniq ON permission_templates (label_id, LOWER(name))`);
+  // Bookkeeping-specific audit trail (approvals, rejections, scans, rush, file
+  // deletions, confirmation emails). Separate from the general activity_log so
+  // the money trail can be queried per expense.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bk_audit_log (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      expense_id INT,
+      action TEXT NOT NULL,
+      detail TEXT,
+      actor TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_bk_audit_expense ON bk_audit_log (label_id, expense_id)`);
 
   // Per-entry field-level change history (audit trail for the ledger).
   await pool.query(`
