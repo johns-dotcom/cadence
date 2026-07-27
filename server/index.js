@@ -1006,6 +1006,44 @@ async function ensurePlatformHome() {
   }
 }
 
+// Break-glass admin recovery. If RECOVER_ADMIN_EMAIL + RECOVER_ADMIN_PASSWORD
+// are set in the environment, restore that email as a platform OWNER homed in
+// Platform HQ with the given password — creating or resetting it — regardless
+// of current state. Deterministic (no dependence on remembering SEED values).
+// REMOVE the two env vars after logging in. Runs after ensurePlatformHome.
+async function recoverAdmin() {
+  const email = (process.env.RECOVER_ADMIN_EMAIL || '').trim().toLowerCase();
+  const pw = process.env.RECOVER_ADMIN_PASSWORD;
+  if (!email || !pw) return;
+  try {
+    const bcrypt = require('bcryptjs');
+    const hqRes = await pool.query(`SELECT id FROM labels WHERE is_system = true ORDER BY id LIMIT 1`);
+    const hqId = hqRes.rows[0]?.id;
+    if (!hqId) { console.error('[recover] no Platform HQ yet — skipping'); return; }
+    const hash = await bcrypt.hash(pw, 10);
+    // Point any existing account(s) for this email away from ambiguity: make the
+    // HQ row canonical. Reset password + owner on it; bump token_version.
+    await pool.query(
+      `INSERT INTO users (label_id, name, email, password_hash, role, department, hierarchy_level, is_platform_admin, platform_role, token_version, created_at)
+       VALUES ($1, 'Recovered Admin', $2, $3, 'Superadmin', 'Executive', 1, TRUE, 'owner', 1, NOW())
+       ON CONFLICT (label_id, email) DO UPDATE SET
+         password_hash = EXCLUDED.password_hash, is_platform_admin = TRUE, platform_role = 'owner',
+         invite_token = NULL, invite_expires = NULL, token_version = users.token_version + 1`,
+      [hqId, email, hash]
+    );
+    // If the same email also exists in other labels (stale operator rows), give
+    // them the same password so login can't land on a wrong hash — and demote
+    // them so the HQ owner is the single source of truth.
+    await pool.query(
+      `UPDATE users SET password_hash = $1 WHERE LOWER(email) = $2 AND label_id <> $3 AND is_platform_admin = true`,
+      [hash, email, hqId]
+    );
+    console.log(`[recover] platform owner ${email} restored in Platform HQ (remove RECOVER_* env now)`);
+  } catch (err) {
+    console.error('recoverAdmin error:', err.message);
+  }
+}
+
 const autoBootstrap = async () => {
   if (!process.env.SEED_ADMIN_PASSWORD) return;
   try {
@@ -1029,6 +1067,7 @@ app.listen(PORT, () => {
   runMigrations()
     .then(autoBootstrap)
     .then(ensurePlatformHome)
+    .then(recoverAdmin)
     .then(() => require('./lib/fxStamp').backfillPaidRows().catch(e => console.warn('fx backfill:', e.message)))
     .catch(err => console.error('Migration error:', err.message));
 });
