@@ -328,6 +328,8 @@ const runMigrations = async () => {
   // Release budget cap (line items live in their own table below).
   await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS budget_cap NUMERIC(12,2)`);
   await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS archived BOOLEAN DEFAULT FALSE`);
+  // Release owner — the team member responsible for shepherding it out.
+  await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS assigned_to INT REFERENCES users(id) ON DELETE SET NULL`);
   // Soft-archive an artist without deleting (keeps historical references).
   await pool.query(`ALTER TABLE artists ADD COLUMN IF NOT EXISTS archived BOOLEAN DEFAULT FALSE`);
 

@@ -51,6 +51,7 @@ export default function DspTracker({ releaseId }) {
               <th className="py-2 pr-3 font-semibold">Status</th>
               <th className="py-2 pr-3 font-semibold">Submitted</th>
               <th className="py-2 pr-3 font-semibold">Live</th>
+              <th className="py-2 pr-3 font-semibold">Notes</th>
             </tr>
           </thead>
           <tbody>
@@ -71,6 +72,14 @@ export default function DspTracker({ releaseId }) {
                 </td>
                 <td className="py-2 pr-3">
                   <input type="date" value={r.live_date ? String(r.live_date).slice(0, 10) : ''} onChange={e => update(r.platform, { live_date: e.target.value || null })} className="text-xs border border-rule rounded px-1.5 py-1 bg-card text-ink" />
+                </td>
+                <td className="py-2 pr-3 min-w-[160px]">
+                  <input
+                    defaultValue={r.notes || ''}
+                    onBlur={e => { if ((e.target.value || '') !== (r.notes || '')) update(r.platform, { notes: e.target.value || null }) }}
+                    placeholder="—"
+                    className="w-full text-xs border border-rule rounded px-1.5 py-1 bg-card text-ink"
+                  />
                 </td>
               </tr>
             ))}

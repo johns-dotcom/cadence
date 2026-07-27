@@ -39,6 +39,15 @@ export const RELEASE_CHECKLIST = [
   { key: 'recoup_setup',      label: 'Recoupment set up' },
 ]
 
+// The same 14 checklist items grouped by workstream, for the release tracker's
+// grouped view with per-group completion. Every RELEASE_CHECKLIST key appears
+// in exactly one group.
+export const RELEASE_CHECKLIST_GROUPS = [
+  { name: 'Content', keys: ['cover_art_received', 'content_ready', 'marketing_plan', 'youtube_video', 'official_thread'] },
+  { name: 'Distribution', keys: ['audio_uploaded', 'recoup_setup'] },
+  { name: 'Pitching', keys: ['pitched_spotify', 'pitched_apple', 'pitched_amazon', 'pitched_pandora', 'dsp_email_sent', 'lyrics_submitted', 'musixmatch'] },
+]
+
 // A&R deal pipeline stages, in funnel order.
 export const DEAL_STAGES = ['Scouting', 'Meeting', 'Offer', 'Negotiation', 'Signed', 'Passed']
 

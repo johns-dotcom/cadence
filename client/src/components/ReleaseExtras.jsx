@@ -6,7 +6,10 @@ import { EXPENSE_CATEGORIES } from '../constants'
 
 // Comments thread + budget (cap + line items) for a release. Both endpoints
 // are label-scoped and re-validate the release on write.
-export default function ReleaseExtras({ releaseId, budgetCap, onCapChange }) {
+// `section` selects which panel(s) to render: 'budget', 'comments', or (default)
+// both side by side. The release tracker uses the single-section forms inside
+// its Budget and Comments tabs.
+export default function ReleaseExtras({ releaseId, budgetCap, onCapChange, section = 'both' }) {
   const { toast } = useToast()
   const [comments, setComments] = useState([])
   const [body, setBody] = useState('')
@@ -33,9 +36,7 @@ export default function ReleaseExtras({ releaseId, budgetCap, onCapChange }) {
   const money = (n) => `$${Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
   const overCap = budget.budget_cap != null && budget.total > Number(budget.budget_cap)
 
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
-      {/* Budget */}
+  const budgetPanel = (
       <div className="card p-5">
         <div className="flex items-center gap-2 mb-3"><Wallet size={15} className="text-brand-600" /><h2 className="text-sm font-bold text-ink">Budget</h2></div>
         <div className="flex items-center gap-2 mb-3">
@@ -58,8 +59,9 @@ export default function ReleaseExtras({ releaseId, budgetCap, onCapChange }) {
           <button onClick={addItem} className="btn-primary !py-1.5 text-xs flex-shrink-0"><Plus size={13} /></button>
         </div>
       </div>
+  )
 
-      {/* Comments */}
+  const commentsPanel = (
       <div className="card p-5">
         <div className="flex items-center gap-2 mb-3"><MessageSquare size={15} className="text-brand-600" /><h2 className="text-sm font-bold text-ink">Comments</h2></div>
         <div className="space-y-2 mb-3 max-h-64 overflow-y-auto">
@@ -79,6 +81,14 @@ export default function ReleaseExtras({ releaseId, budgetCap, onCapChange }) {
           <button onClick={addComment} className="btn-primary !py-1.5 text-xs flex-shrink-0"><Send size={13} /></button>
         </div>
       </div>
+  )
+
+  if (section === 'budget') return budgetPanel
+  if (section === 'comments') return commentsPanel
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+      {budgetPanel}
+      {commentsPanel}
     </div>
   )
 }

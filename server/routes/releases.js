@@ -41,9 +41,10 @@ router.get('/', async (req, res) => {
     if (q) { params.push(`%${q}%`); where += ` AND (r.project_name ILIKE $${params.length} OR a.name ILIKE $${params.length})`; }
 
     const { rows } = await pool.query(
-      `SELECT r.*, a.name AS artist_name
+      `SELECT r.*, a.name AS artist_name, u.name AS assignee_name
        FROM releases r
        LEFT JOIN artists a ON a.id = r.artist_id AND a.label_id = r.label_id
+       LEFT JOIN users u ON u.id = r.assigned_to AND u.label_id = r.label_id
        WHERE ${where}
        ORDER BY r.release_date DESC NULLS LAST, r.created_at DESC`,
       params
@@ -59,8 +60,10 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT r.*, a.name AS artist_name
-       FROM releases r LEFT JOIN artists a ON a.id = r.artist_id AND a.label_id = r.label_id
+      `SELECT r.*, a.name AS artist_name, u.name AS assignee_name
+       FROM releases r
+       LEFT JOIN artists a ON a.id = r.artist_id AND a.label_id = r.label_id
+       LEFT JOIN users u ON u.id = r.assigned_to AND u.label_id = r.label_id
        WHERE r.id = $1 AND r.label_id = $2`,
       [parseInt(req.params.id, 10), req.labelId]
     );
@@ -106,7 +109,7 @@ router.post('/', async (req, res) => {
 const UPDATABLE = [
   'project_name', 'release_date', 'release_type', 'genre', 'status',
   'upc', 'isrc', 'spotify_uri', 'cover_art_url', 'priority', 'notes',
-  'producer', 'featured_artists', 'budget_cap',
+  'producer', 'featured_artists', 'budget_cap', 'assigned_to',
   'cover_art_received', 'audio_uploaded', 'pitched_spotify', 'pitched_apple',
   'marketing_plan', 'content_ready', 'dsp_email_sent', 'lyrics_submitted',
   'pitched_amazon', 'pitched_pandora', 'youtube_video', 'official_thread',
@@ -119,6 +122,12 @@ router.patch('/:id', async (req, res) => {
     const keys = Object.keys(req.body).filter(k => UPDATABLE.includes(k));
     if (keys.length === 0) {
       return res.status(400).json({ success: false, error: 'No updatable fields provided' });
+    }
+
+    // Never trust a client-supplied assignee across tenants.
+    if (req.body.assigned_to) {
+      const { rows: u } = await pool.query('SELECT 1 FROM users WHERE id = $1 AND label_id = $2', [req.body.assigned_to, req.labelId]);
+      if (!u.length) return res.status(400).json({ success: false, error: 'Assignee not found in this workspace' });
     }
 
     const setClauses = keys.map((k, i) => `${k} = $${i + 1}`);
@@ -159,6 +168,28 @@ async function releaseInLabel(id, labelId) {
   const { rows } = await pool.query('SELECT 1 FROM releases WHERE id = $1 AND label_id = $2', [id, labelId]);
   return rows.length > 0;
 }
+
+// GET /api/releases/:id/activity — best-effort activity feed for this release,
+// drawn from the workspace activity_log by matching the release name. Not a
+// per-entity audit trail; a lightweight recent-changes view.
+router.get('/:id/activity', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { rows: rel } = await pool.query('SELECT project_name FROM releases WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    if (!rel.length) return res.status(404).json({ success: false, error: 'Release not found' });
+    const { rows } = await pool.query(
+      `SELECT al.id, al.action, al.detail, al.created_at, u.name AS user_name
+         FROM activity_log al LEFT JOIN users u ON u.id = al.user_id AND u.label_id = al.label_id
+        WHERE al.label_id = $1 AND al.detail ILIKE $2
+        ORDER BY al.created_at DESC LIMIT 40`,
+      [req.labelId, `%${rel[0].project_name}%`]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Release activity error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
 
 // ── Comments ─────────────────────────────────────────────────────────────
 
