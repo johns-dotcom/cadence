@@ -484,6 +484,18 @@ router.delete('/workspaces/:id', requirePlatformOwner, async (req, res) => {
     if ((req.body.confirm || '').trim() !== label.rows[0].name) {
       return res.status(400).json({ success: false, error: 'Type the exact workspace name to confirm deletion' });
     }
+    // Platform operators live in `users` with a home label_id + ON DELETE
+    // CASCADE — deleting their home workspace would delete THEM. Repoint any
+    // operators homed here to another surviving workspace first. If this is the
+    // last workspace and it hosts an operator, refuse (nowhere to move them).
+    const opsHere = await pool.query('SELECT COUNT(*)::int AS n FROM users WHERE label_id = $1 AND is_platform_admin = true', [id]);
+    if (opsHere.rows[0].n > 0) {
+      const other = await pool.query('SELECT id FROM labels WHERE id <> $1 ORDER BY id LIMIT 1', [id]);
+      if (!other.rows.length) {
+        return res.status(400).json({ success: false, error: 'This is the last workspace and it hosts a platform operator — create another workspace before deleting this one.' });
+      }
+      await pool.query('UPDATE users SET label_id = $1 WHERE label_id = $2 AND is_platform_admin = true', [other.rows[0].id, id]);
+    }
     // ON DELETE CASCADE on every tenant table removes all of the label's data.
     await pool.query('DELETE FROM labels WHERE id = $1', [id]);
     res.json({ success: true });

@@ -976,9 +976,14 @@ const runMigrations = async () => {
 const autoBootstrap = async () => {
   if (!process.env.SEED_ADMIN_PASSWORD) return;
   try {
-    const { rows } = await pool.query('SELECT COUNT(*)::int AS n FROM labels');
-    if (rows[0].n > 0) return; // already bootstrapped
-    console.log('No labels found — bootstrapping the first platform admin from SEED_* env…');
+    // Self-heal: reseed whenever there is NO usable platform admin — not only
+    // on a fresh DB. This recovers from a workspace deletion that cascade-
+    // removed the operator's account (their home label was deleted).
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM users WHERE is_platform_admin = true AND password_hash IS NOT NULL`
+    );
+    if (rows[0].n > 0) return; // a usable platform admin already exists
+    console.log('No platform admin found — (re)bootstrapping from SEED_* env…');
     await require('./seed')();
   } catch (err) {
     console.error('Bootstrap error:', err.message);
