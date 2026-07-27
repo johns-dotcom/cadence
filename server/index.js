@@ -240,6 +240,9 @@ const runMigrations = async () => {
   await pool.query(`UPDATE labels SET vendor_form_token = md5(random()::text || clock_timestamp()::text || id::text) WHERE vendor_form_token IS NULL`);
   await pool.query(`ALTER TABLE labels ALTER COLUMN vendor_form_token SET DEFAULT md5(random()::text || clock_timestamp()::text)`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_labels_vendor_form_token ON labels (vendor_form_token)`);
+  // System label = the permanent home for platform operators, so no tenant
+  // workspace deletion can ever cascade-delete them. Hidden from the console.
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -973,6 +976,33 @@ const runMigrations = async () => {
 // signup, the platform needs a way to create its very first account. If
 // SEED_ADMIN_PASSWORD is set and no labels exist yet, run the seed (idempotent)
 // so a fresh deploy can come up with a usable platform-admin login.
+// Ensure a permanent "Platform HQ" system label exists and that every platform
+// operator is homed there — never in a deletable tenant workspace. Idempotent;
+// collision-safe (skips an operator whose email already exists in HQ).
+async function ensurePlatformHome() {
+  try {
+    await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE`);
+    let hq = await pool.query(`SELECT id FROM labels WHERE is_system = true ORDER BY id LIMIT 1`);
+    if (!hq.rows.length) {
+      hq = await pool.query(
+        `INSERT INTO labels (name, slug, status, is_system, created_at)
+         VALUES ('Platform HQ', 'platform-hq', 'active', true, NOW())
+         ON CONFLICT (slug) DO UPDATE SET is_system = true RETURNING id`
+      );
+    }
+    const hqId = hq.rows[0].id;
+    const { rowCount } = await pool.query(
+      `UPDATE users u SET label_id = $1
+        WHERE u.is_platform_admin = true AND u.label_id <> $1
+          AND NOT EXISTS (SELECT 1 FROM users x WHERE x.label_id = $1 AND LOWER(x.email) = LOWER(u.email))`,
+      [hqId]
+    );
+    if (rowCount) console.log(`[platform-home] relocated ${rowCount} operator(s) to Platform HQ`);
+  } catch (err) {
+    console.error('ensurePlatformHome error:', err.message);
+  }
+}
+
 const autoBootstrap = async () => {
   if (!process.env.SEED_ADMIN_PASSWORD) return;
   try {
@@ -995,6 +1025,7 @@ app.listen(PORT, () => {
   console.log(`Cadence API listening on :${PORT} (${process.env.NODE_ENV || 'development'})`);
   runMigrations()
     .then(autoBootstrap)
+    .then(ensurePlatformHome)
     .then(() => require('./lib/fxStamp').backfillPaidRows().catch(e => console.warn('fx backfill:', e.message)))
     .catch(err => console.error('Migration error:', err.message));
 });

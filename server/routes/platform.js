@@ -55,6 +55,7 @@ router.get('/workspaces', async (req, res) => {
                  FROM users WHERE label_id = l.id AND (is_platform_admin = false OR is_platform_admin IS NULL)
                  ORDER BY (role = 'Superadmin') DESC, hierarchy_level ASC, id ASC LIMIT 1) AS owner
        FROM labels l
+       WHERE (l.is_system = false OR l.is_system IS NULL)
        ORDER BY l.created_at DESC`
     );
     // Sign logo URLs (best-effort) for branding previews.
@@ -141,10 +142,10 @@ router.get('/overview', async (req, res) => {
     const [totals, recent, newest] = await Promise.all([
       pool.query(
         `SELECT
-           (SELECT COUNT(*) FROM labels)::int AS workspaces,
-           (SELECT COUNT(*) FROM labels WHERE COALESCE(status,'active') = 'active')::int AS active,
-           (SELECT COUNT(*) FROM labels WHERE status = 'suspended')::int AS suspended,
-           (SELECT COUNT(*) FROM labels WHERE created_at > NOW() - INTERVAL '30 days')::int AS new_30d,
+           (SELECT COUNT(*) FROM labels WHERE (is_system = false OR is_system IS NULL))::int AS workspaces,
+           (SELECT COUNT(*) FROM labels WHERE COALESCE(status,'active') = 'active' AND (is_system = false OR is_system IS NULL))::int AS active,
+           (SELECT COUNT(*) FROM labels WHERE status = 'suspended' AND (is_system = false OR is_system IS NULL))::int AS suspended,
+           (SELECT COUNT(*) FROM labels WHERE created_at > NOW() - INTERVAL '30 days' AND (is_system = false OR is_system IS NULL))::int AS new_30d,
            (SELECT COUNT(*) FROM users WHERE is_platform_admin = false OR is_platform_admin IS NULL)::int AS members,
            (SELECT COUNT(*) FROM artists)::int AS artists,
            (SELECT COUNT(*) FROM releases)::int AS releases,
@@ -162,7 +163,7 @@ router.get('/overview', async (req, res) => {
       pool.query(
         `SELECT l.id, l.name, l.slug, l.created_at, COALESCE(l.status,'active') AS status,
                 (SELECT COUNT(*) FROM users u WHERE u.label_id = l.id AND (u.is_platform_admin = false OR u.is_platform_admin IS NULL))::int AS members
-         FROM labels l ORDER BY l.created_at DESC LIMIT 5`
+         FROM labels l WHERE (l.is_system = false OR l.is_system IS NULL) ORDER BY l.created_at DESC LIMIT 5`
       ),
     ]);
     res.json({ success: true, data: { totals: totals.rows[0], recentActivity: recent.rows, newestWorkspaces: newest.rows } });
@@ -480,8 +481,9 @@ router.delete('/workspaces/:id', requirePlatformOwner, async (req, res) => {
   const client = await pool.connect();
   try {
     const id = parseInt(req.params.id, 10);
-    const label = await client.query('SELECT name FROM labels WHERE id = $1', [id]);
+    const label = await client.query('SELECT name, is_system FROM labels WHERE id = $1', [id]);
     if (!label.rows.length) { client.release(); return res.status(404).json({ success: false, error: 'Workspace not found' }); }
+    if (label.rows[0].is_system) { client.release(); return res.status(400).json({ success: false, error: 'The platform system workspace cannot be deleted.' }); }
     if ((req.body.confirm || '').trim() !== label.rows[0].name) {
       client.release();
       return res.status(400).json({ success: false, error: 'Type the exact workspace name to confirm deletion' });
@@ -564,6 +566,11 @@ router.post('/operators', requirePlatformOwner, async (req, res) => {
     }
 
     const token = crypto.randomBytes(32).toString('hex');
+    // Home operators in the permanent "Platform HQ" system label so a tenant
+    // workspace deletion can never cascade-delete them. Fall back to the
+    // inviter's home only if HQ somehow doesn't exist yet.
+    const hq = await pool.query('SELECT id FROM labels WHERE is_system = true ORDER BY id LIMIT 1');
+    const homeLabel = hq.rows[0]?.id || req.user.label_id;
     await pool.query(
       `INSERT INTO users (label_id, name, email, role, department, hierarchy_level,
          is_platform_admin, platform_role, invite_token, invite_expires, invited_at, created_at)
@@ -571,7 +578,7 @@ router.post('/operators', requirePlatformOwner, async (req, res) => {
        ON CONFLICT (label_id, email) DO UPDATE SET
          is_platform_admin = TRUE, platform_role = 'admin', name = EXCLUDED.name,
          invite_token = EXCLUDED.invite_token, invite_expires = EXCLUDED.invite_expires, invited_at = NOW()`,
-      [req.user.label_id, name, email, token, String(INVITE_DAYS)]
+      [homeLabel, name, email, token, String(INVITE_DAYS)]
     );
 
     const link = inviteLink(req, token);
