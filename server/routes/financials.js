@@ -117,6 +117,102 @@ router.get('/recoupments', async (req, res) => {
   }
 });
 
+// Statement month for a date: cutoff day 20 — on day >= 21 it rolls to next
+// month (shared rule; a UFR mark stamped on the 22nd lands next month).
+function statementMonthFor(value) {
+  const d = value ? new Date(value) : new Date();
+  if (isNaN(d.getTime())) return null;
+  let m = d.getMonth(), y = d.getFullYear();
+  if (d.getDate() >= 21) { m += 1; if (m > 11) { m = 0; y += 1; } }
+  return `${y}-${String(m + 1).padStart(2, '0')}`;
+}
+
+// GET /api/financials/recoupments/:artistId — one artist's recoupable ledger
+// entries (for song grouping) + income + totals, in USD.
+router.get('/recoupments/:artistId', async (req, res) => {
+  try {
+    const artistId = parseInt(req.params.artistId, 10);
+    const a = await pool.query('SELECT id, name FROM artists WHERE id = $1 AND label_id = $2', [artistId, req.labelId]);
+    if (!a.rows.length) return res.status(404).json({ success: false, error: 'Artist not found' });
+    const name = a.rows[0].name;
+
+    const [spend, income] = await Promise.all([
+      pool.query(
+        `SELECT id, payee, song, category, amount, currency, invoice_date, payment_date, payment_status,
+                ufr, ufr_marked_at, created_at
+           FROM expenses
+          WHERE label_id = $1 AND recoupable = TRUE AND status = 'approved'
+            AND LOWER(artist) = LOWER($2) AND (deleted = false OR deleted IS NULL)
+            AND parent_id IS NULL AND (voided = false OR voided IS NULL)
+          ORDER BY COALESCE(payment_date, invoice_date, created_at::date) DESC`,
+        [req.labelId, name]
+      ),
+      pool.query('SELECT id, amount, currency, income_date, source FROM artist_income WHERE label_id = $1 AND artist_id = $2 ORDER BY income_date DESC', [req.labelId, artistId]),
+    ]);
+
+    let spendUsd = 0;
+    const entries = [];
+    for (const r of spend.rows) {
+      const usd = await toUSD(r.amount, r.currency, r.payment_date || r.invoice_date || r.created_at);
+      spendUsd += usd;
+      entries.push({ ...r, amount_usd: Math.round(usd * 100) / 100, statement_month: r.ufr ? statementMonthFor(r.ufr_marked_at) : null });
+    }
+    let incUsd = 0;
+    for (const r of income.rows) incUsd += await toUSD(r.amount, r.currency, r.income_date);
+    const round = (n) => Math.round((n || 0) * 100) / 100;
+
+    res.json({ success: true, data: {
+      artist: { id: artistId, name },
+      entries,
+      income: income.rows,
+      totals: { recoupable_spend: round(spendUsd), income: round(incUsd), balance: round(incUsd - spendUsd), recouped: incUsd >= spendUsd && spendUsd > 0 },
+    } });
+  } catch (error) {
+    console.error('Recoupment detail error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/financials/recoupments/:id/ufr { ufr } — toggle the statement mark.
+router.post('/recoupments/:id/ufr', async (req, res) => {
+  try {
+    const on = req.body.ufr !== false;
+    const { rows } = await pool.query(
+      `UPDATE expenses SET ufr = $1, ufr_marked_at = CASE WHEN $1 THEN NOW() ELSE NULL END
+        WHERE id = $2 AND label_id = $3 RETURNING id, ufr, ufr_marked_at`,
+      [on, parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    res.json({ success: true, data: { ...rows[0], statement_month: rows[0].ufr ? statementMonthFor(rows[0].ufr_marked_at) : null } });
+  } catch (error) {
+    console.error('UFR toggle error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/financials/recoupments/add-expense — add a recoupable expense to an
+// artist straight from Recoupments (auto-approved, recoupable, source-stamped).
+router.post('/recoupments/add-expense', async (req, res) => {
+  try {
+    const b = req.body;
+    const amount = parseFloat(b.amount);
+    if (!b.artist || !amount || amount <= 0) return res.status(400).json({ success: false, error: 'Artist and a valid amount are required' });
+    const { rows } = await pool.query(
+      `INSERT INTO expenses (label_id, invoice_date, payee, description, category, artist, song, amount, currency,
+         status, payment_status, recoupable, entry_source, created_by, created_at)
+       VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7, COALESCE($8,'USD'), 'approved', 'Unpaid', TRUE, 'recoupment', $9, NOW())
+       RETURNING id`,
+      [req.labelId, (b.payee || b.description || 'Recoupable expense').trim(), (b.description || '').trim() || null,
+       (b.category || '').trim() || null, b.artist.trim(), (b.song || '').trim() || null, amount, (b.currency || 'USD').trim(), req.user.name]
+    );
+    await logActivity(req, 'Added recoupable expense', `${b.artist} — ${amount}`);
+    res.status(201).json({ success: true, data: { id: rows[0].id } });
+  } catch (error) {
+    console.error('Add recoupable expense error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // ── Artist income entries ────────────────────────────────────────────────
 
 // GET /api/financials/income

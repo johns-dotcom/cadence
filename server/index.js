@@ -449,6 +449,11 @@ const runMigrations = async () => {
   // Payment-confirmation email tracking.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_notified BOOLEAN DEFAULT FALSE`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_notified_at TIMESTAMP`);
+  // Recoupment statement tracking: UFR ("un-recouped funds recovered") marker
+  // + when it was stamped (drives the statement month), and entry source.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS ufr BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS ufr_marked_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS entry_source TEXT`);
   // Soft-delete attribution (who/when) for the Archive + restore.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS deleted_by TEXT`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP`);
