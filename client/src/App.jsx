@@ -30,6 +30,7 @@ import Recoupments from './pages/Recoupments'
 import RecoupmentPlanning from './pages/RecoupmentPlanning'
 import Salary from './pages/Salary'
 import Campaigns from './pages/Campaigns'
+import ArtistCampaigns from './pages/ArtistCampaigns'
 import Ledger from './pages/Ledger'
 import Approvals from './pages/Approvals'
 import Archive from './pages/Archive'
@@ -129,6 +130,7 @@ function AppContent() {
         <Route path="/recoupments/planning" element={<AdminRoute><RecoupmentPlanning /></AdminRoute>} />
         <Route path="/salary"       element={<AdminRoute><Salary /></AdminRoute>} />
         <Route path="/marketing"    element={<Campaigns />} />
+        <Route path="/artist-campaigns" element={<AdminRoute><ArtistCampaigns /></AdminRoute>} />
         <Route path="/approvals"    element={<AdminRoute><Approvals /></AdminRoute>} />
         <Route path="/ledger"       element={<AdminRoute><Ledger /></AdminRoute>} />
         <Route path="/ledger/new-invoice"       element={<AdminRoute><AddLedgerEntry mode="invoice" /></AdminRoute>} />

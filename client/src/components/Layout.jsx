@@ -25,6 +25,7 @@ const PAGE_LABELS = {
   '/recoupments/planning': 'Recoupment Planning',
   '/salary':     'Salary',
   '/marketing':  'Marketing',
+  '/artist-campaigns': 'Artist Campaigns',
   '/pending-contracts': 'Pending Contracts',
   '/legal':      'NDAs',
   '/label-waivers': 'Label Waivers',
@@ -223,6 +224,7 @@ export default function Layout() {
       items: [
         { path: '/deals',     label: 'Deal Pipeline', icon: TrendingUp },
         { path: '/marketing', label: 'Marketing',     icon: Megaphone },
+        ...(isApprover ? [{ path: '/artist-campaigns', label: 'Artist Campaigns', icon: Megaphone }] : []),
       ],
     },
     {

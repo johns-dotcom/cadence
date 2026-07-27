@@ -13,6 +13,7 @@ const platformRoutes = require('./routes/platform');
 const labelsRoutes = require('./routes/labels');
 const teamRoutes = require('./routes/team');
 const emailRoutes = require('./routes/email');
+const artistCampaignsRoutes = require('./routes/artist-campaigns');
 const artistsRoutes = require('./routes/artists');
 const releasesRoutes = require('./routes/releases');
 const dealsRoutes = require('./routes/deals');
@@ -127,6 +128,7 @@ app.use('/api/platform', platformRoutes);
 app.use('/api/label', labelsRoutes);
 app.use('/api/team', teamRoutes);
 app.use('/api/email', emailRoutes);
+app.use('/api/artist-campaigns', artistCampaignsRoutes);
 app.use('/api/artists', artistsRoutes);
 app.use('/api/releases', releasesRoutes);
 app.use('/api/deals', dealsRoutes);
@@ -449,6 +451,10 @@ const runMigrations = async () => {
   // Payment-confirmation email tracking.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_notified BOOLEAN DEFAULT FALSE`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_notified_at TIMESTAMP`);
+  // Artist-campaign hub: per-expense campaign inclusion (NULL = auto by
+  // category, TRUE = force in, FALSE = force out) + cobrand flag.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS artist_campaign BOOLEAN`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS cobrand BOOLEAN DEFAULT FALSE`);
   // Recoupment statement tracking: UFR ("un-recouped funds recovered") marker
   // + when it was stamped (drives the statement month), and entry source.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS ufr BOOLEAN DEFAULT FALSE`);
