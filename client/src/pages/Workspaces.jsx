@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Plus, Building2, Copy, Check, LogIn, Search, Users, Music, Layers, Ban } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
+import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import WorkspaceDrawer from '../components/WorkspaceDrawer'
@@ -180,7 +181,7 @@ export default function Workspaces() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-gray-400">Loading…</p>
+        <div className="card p-2"><Skeleton.Table rows={5} cols={7} /></div>
       ) : shown.length === 0 ? (
         <div className="card p-10 text-center"><Building2 size={28} className="text-gray-300 mx-auto mb-3" /><p className="text-sm text-gray-500">{query ? 'No workspaces match your search.' : 'No workspaces yet.'}</p></div>
       ) : (
