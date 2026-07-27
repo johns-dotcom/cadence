@@ -423,6 +423,12 @@ const runMigrations = async () => {
   // Payment-confirmation email tracking.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_notified BOOLEAN DEFAULT FALSE`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_notified_at TIMESTAMP`);
+  // Hold flag (payment paused). Mutually exclusive with rush. Held rows drop
+  // out of the Due Soon / Overdue payment queues.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS on_hold BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS hold_reason TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS hold_by TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS hold_at TIMESTAMP`);
   // Proof-of-payment file on partial-payment installments.
   await pool.query(`ALTER TABLE payment_installments ADD COLUMN IF NOT EXISTS proof_r2_key TEXT`);
   await pool.query(`ALTER TABLE payment_installments ADD COLUMN IF NOT EXISTS proof_filename TEXT`);
@@ -439,6 +445,20 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_aliases_uniq ON vendor_aliases (label_id, LOWER(alias))`);
+  // Vendor saved emails — multiple labeled addresses per vendor, auto-CC'd on
+  // payment confirmations. Keyed to the canonical vendor name.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS vendor_emails (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      vendor TEXT NOT NULL,
+      email TEXT NOT NULL,
+      label_text TEXT,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_emails_uniq ON vendor_emails (label_id, LOWER(vendor), LOWER(email))`);
   // Admin-built permission templates — named page-sets applied to users.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS permission_templates (
@@ -679,6 +699,7 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_reps_label_name ON reps (label_id, LOWER(name))`);
+  await pool.query(`ALTER TABLE reps ADD COLUMN IF NOT EXISTS email TEXT`);
 
   // Artist income — money in attributed to an artist (streaming, sync, etc.).
   // Paired with recoupable ledger spend to compute recoupment per artist.

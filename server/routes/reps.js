@@ -14,7 +14,7 @@ router.get('/', async (req, res) => {
   try {
     const includeInactive = req.query.all === '1';
     const { rows } = await pool.query(
-      `SELECT id, name, active FROM reps
+      `SELECT id, name, email, active FROM reps
        WHERE label_id = $1 ${includeInactive ? '' : 'AND active = TRUE'}
        ORDER BY active DESC, LOWER(name)`,
       [req.labelId]

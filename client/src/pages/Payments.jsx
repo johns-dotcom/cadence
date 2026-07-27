@@ -1,16 +1,26 @@
 import { useEffect, useState } from 'react'
-import { CreditCard, CalendarClock, Check, X, Zap, Send, MailCheck } from 'lucide-react'
+import { CreditCard, CalendarClock, Check, X, Zap, Send, MailCheck, Pause } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
+import Skeleton from '../components/Skeleton'
 import EmailPreviewModal from '../components/EmailPreviewModal'
 import { useToast } from '../context/ToastContext'
 import { PAYMENT_TERMS, PAYMENT_METHODS } from '../constants'
+import { formatDate, isPastLocal, daysUntilLocal } from '../utils/dates'
 
-const today = () => new Date().toISOString().slice(0, 10)
 const fmt = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })
-const isOverdue = (d) => d && new Date(d) < new Date(new Date().toDateString())
+const usd = (n) => `$${fmt(n)}`
+const today = () => new Date().toISOString().slice(0, 10)
 
-// Sum payables by currency.
+const FILTERS = [
+  { key: 'unpaid', label: 'Unpaid' },
+  { key: 'duesoon', label: 'Due Soon' },
+  { key: 'overdue', label: 'Overdue' },
+  { key: 'rush', label: 'Rush' },
+  { key: 'hold', label: 'Hold' },
+  { key: 'paid', label: 'Paid' },
+]
+
 function totalsByCurrency(rows) {
   const t = {}
   rows.forEach(r => { t[r.currency] = (t[r.currency] || 0) + Number(r.amount || 0) })
@@ -19,36 +29,53 @@ function totalsByCurrency(rows) {
 
 export default function Payments() {
   const { toast } = useToast()
-  const [tab, setTab] = useState('due') // due | paid
+  const [filter, setFilter] = useState('unpaid')
   const [rows, setRows] = useState([])
+  const [stats, setStats] = useState(null)
+  const [reps, setReps] = useState({})
   const [loading, setLoading] = useState(true)
   const [sel, setSel] = useState(new Set())
-  const [payModal, setPayModal] = useState(null)   // { ids } | null
-  const [schedModal, setSchedModal] = useState(null) // { id } | null
+  const [payModal, setPayModal] = useState(null)
+  const [schedModal, setSchedModal] = useState(null)
+  const [emailItems, setEmailItems] = useState(null)
+  const [ccRep, setCcRep] = useState(false) // default OFF per spec
+
+  const isPaid = filter === 'paid'
 
   const load = () => {
-    setLoading(true)
-    setSel(new Set())
-    const url = tab === 'due' ? '/ledger/payables' : '/ledger/entries?payment_status=Paid'
+    setLoading(true); setSel(new Set())
+    const url = isPaid ? '/ledger/entries?payment_status=Paid' : '/ledger/payables'
     api.get(url).then(res => setRows(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
+    api.get('/ledger/payment-stats').then(r => setStats(r.data.data)).catch(() => {})
   }
-  useEffect(load, [tab])
+  useEffect(load, [filter])
+  useEffect(() => { api.get('/reps').then(r => setReps(Object.fromEntries((r.data.data || []).filter(x => x.email).map(x => [String(x.name).toLowerCase(), x.email])))).catch(() => {}) }, [])
+
+  // Client-side quick filter over the payables list (paid loads its own list).
+  const shown = isPaid ? rows : rows.filter(r => {
+    if (filter === 'unpaid') return true
+    if (filter === 'rush') return r.rush
+    if (filter === 'hold') return r.on_hold
+    if (r.on_hold) return false // held rows leave Due Soon / Overdue
+    const d = daysUntilLocal(r.scheduled_payment_date)
+    if (filter === 'overdue') return isPastLocal(r.scheduled_payment_date)
+    if (filter === 'duesoon') return d !== null && d >= 0 && d <= 7
+    return true
+  })
 
   const toggle = (id) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
-  const toggleAll = () => setSel(s => s.size === rows.length ? new Set() : new Set(rows.map(r => r.id)))
-
-  const selectedRows = rows.filter(r => sel.has(r.id))
+  const toggleAll = () => setSel(s => s.size === shown.length ? new Set() : new Set(shown.map(r => r.id)))
+  const selectedRows = shown.filter(r => sel.has(r.id))
   const selTotals = totalsByCurrency(selectedRows)
 
-  const doPay = async ({ payment_date, payment_method }) => {
+  const doPay = async ({ payment_date, payment_method, payment_ref }) => {
     const ids = payModal.ids
     try {
-      if (ids.length === 1) await api.post(`/ledger/entries/${ids[0]}/mark-paid`, { payment_date, payment_method })
+      if (ids.length === 1) await api.post(`/ledger/entries/${ids[0]}/mark-paid`, { payment_date, payment_method, payment_ref })
       else await api.post('/ledger/batch-pay', { ids, payment_date, payment_method })
       toast(`Marked ${ids.length} paid`); setPayModal(null); load()
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
-
   const doSchedule = async ({ payment_terms, scheduled_payment_date }) => {
     try {
       await api.post(`/ledger/entries/${schedModal.id}/schedule`, { payment_terms, scheduled_payment_date: scheduled_payment_date || undefined })
@@ -58,134 +85,150 @@ export default function Payments() {
 
   const toggleRush = async (r) => {
     try {
-      if (r.rush) { await api.delete(`/ledger/entries/${r.id}/rush`) }
-      else {
-        const reason = window.prompt('Why is this a rush? (optional)') ?? ''
-        await api.post(`/ledger/entries/${r.id}/rush`, { reason })
-      }
+      if (r.rush) await api.delete(`/ledger/entries/${r.id}/rush`)
+      else await api.post(`/ledger/entries/${r.id}/rush`, { reason: window.prompt('Why is this a rush? (optional)') ?? '' })
       load()
     } catch { toast('Failed', 'error') }
   }
-  const rushBulk = async () => {
-    const reason = window.prompt('Rush reason for selected (optional)') ?? ''
-    try { await api.post('/ledger/rush-bulk', { ids: [...sel], reason }); toast(`${sel.size} flagged rush`); load() }
+  const toggleHold = async (r) => {
+    try {
+      if (r.on_hold) await api.delete(`/ledger/entries/${r.id}/hold`)
+      else await api.post(`/ledger/entries/${r.id}/hold`, { reason: window.prompt('Reason for hold? (optional)') ?? '' })
+      load()
+    } catch { toast('Failed', 'error') }
+  }
+  const bulkFlag = async (kind) => {
+    const reason = window.prompt(`${kind === 'rush' ? 'Rush' : 'Hold'} reason for selected (optional)`) ?? ''
+    try { await api.post(`/ledger/${kind}-bulk`, { ids: [...sel], reason }); toast(`${sel.size} ${kind === 'rush' ? 'flagged rush' : 'held'}`); load() }
     catch { toast('Failed', 'error') }
   }
-  // Payment-confirmation emails now flow through the review-before-send modal.
-  const [emailItems, setEmailItems] = useState(null)
-  const confirmCtx = (r) => ({
-    to: r.vendor_email || '', vendorName: r.vendor_name || r.payee,
-    invoiceNumber: r.invoice_number, amount: r.amount, currency: r.currency,
-    method: r.payment_method, date: r.payment_date,
-  })
-  const confirmItem = (r) => ({ kind: 'payment_confirmation', ctx: confirmCtx(r), label: r.payee, onItemSent: () => api.post(`/ledger/entries/${r.id}/mark-sent`).catch(() => {}) })
-  const sendConfirm = (r) => {
-    if (!r.vendor_email) { toast('No vendor email on this entry', 'error'); return }
-    setEmailItems([confirmItem(r)])
+
+  // Build confirmation items with CC = vendor saved emails (+ rep if toggled).
+  const buildConfirmItems = async (list) => {
+    const items = []
+    for (const r of list) {
+      const cc = []
+      try { const { data } = await api.get(`/ledger/vendors/${encodeURIComponent(r.payee)}/emails`); cc.push(...data.data.map(e => e.email)) } catch { /* none */ }
+      if (ccRep && r.rep && reps[r.rep.toLowerCase()]) cc.push(reps[r.rep.toLowerCase()])
+      items.push({
+        kind: 'payment_confirmation', label: r.payee,
+        ctx: { to: r.vendor_email || '', cc: [...new Set(cc)], vendorName: r.vendor_name || r.payee, invoiceNumber: r.invoice_number, amount: r.amount, currency: r.currency, method: r.payment_method, date: r.payment_date },
+        onItemSent: () => api.post(`/ledger/entries/${r.id}/mark-sent`).catch(() => {}),
+      })
+    }
+    return items
   }
-  const sendConfirmBulk = () => {
-    const rows = selectedRows.filter(r => r.vendor_email)
-    if (!rows.length) { toast('No selected rows have a vendor email', 'error'); return }
-    setEmailItems(rows.map(confirmItem))
+  const sendConfirm = async (r) => {
+    if (!r.vendor_email) { toast('No vendor email on this entry', 'error'); return }
+    setEmailItems(await buildConfirmItems([r]))
+  }
+  const sendConfirmBulk = async () => {
+    const list = selectedRows.filter(r => r.vendor_email)
+    if (!list.length) { toast('No selected rows have a vendor email', 'error'); return }
+    setEmailItems(await buildConfirmItems(list))
   }
 
-  const dueTotals = totalsByCurrency(rows)
+  const CARDS = stats ? [
+    { label: 'Outstanding', value: stats.outstanding, sub: `${stats.counts.unpaid} unpaid`, chip: 'bg-indigo-100 text-indigo-600' },
+    { label: 'Overdue', value: stats.overdue, sub: `${stats.counts.overdue} past due`, chip: 'bg-rose-100 text-rose-600', dim: !stats.counts.overdue },
+    { label: 'Rush', value: stats.rush, sub: `${stats.counts.rush} flagged`, chip: 'bg-amber-100 text-amber-600', dim: !stats.counts.rush },
+    { label: 'On hold', value: stats.hold, sub: `${stats.counts.hold} paused`, chip: 'bg-gray-200 text-gray-600', dim: !stats.counts.hold },
+    { label: 'Paid (14d)', value: stats.paid14, sub: `${stats.counts.paid14} recent`, chip: 'bg-emerald-100 text-emerald-600' },
+  ] : []
 
   return (
     <div>
-      <PageHeader title="Payments" subtitle="Approved invoices awaiting payment" />
+      <PageHeader title="Payments" subtitle="The payment queue — USD-equivalent, honoring locked FX rates" />
 
-      <div className="flex items-center gap-1 mb-4">
-        {['due', 'paid'].map(t => (
-          <button key={t} onClick={() => setTab(t)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg capitalize transition ${tab === t ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}>
-            {t === 'due' ? 'Due' : 'Paid'}
-          </button>
+      {/* USD stat cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
+        {CARDS.map(c => (
+          <div key={c.label} className="card p-4">
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-2 ${c.chip}`}><CreditCard size={15} /></div>
+            <p className={`text-xl font-bold leading-none ${c.dim ? 'text-gray-300' : 'text-ink'}`}>{usd(c.value)}</p>
+            <p className="text-[11px] text-gray-400 mt-1">{c.label} · {c.sub}</p>
+          </div>
         ))}
       </div>
 
-      {/* Totals */}
-      {!loading && rows.length > 0 && (
-        <div className="flex flex-wrap gap-3 mb-4">
-          {Object.entries(tab === 'due' ? dueTotals : totalsByCurrency(rows)).map(([cur, amt]) => (
-            <div key={cur} className="card px-4 py-2">
-              <p className="text-[10px] text-gray-400 uppercase tracking-wide">{tab === 'due' ? 'Outstanding' : 'Paid'} ({cur})</p>
-              <p className="text-lg font-bold text-ink">{cur} {fmt(amt)}</p>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* Quick filters */}
+      <div className="flex flex-wrap items-center gap-1 mb-4">
+        {FILTERS.map(f => (
+          <button key={f.key} onClick={() => setFilter(f.key)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition ${filter === f.key ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}>{f.label}</button>
+        ))}
+      </div>
 
       {/* Batch action bar */}
       {sel.size > 0 && (
-        <div className="flex items-center justify-between card px-4 py-2.5 mb-3 bg-brand-50 border-brand-200">
-          <span className="text-sm font-medium text-ink">
-            {sel.size} selected · {Object.entries(selTotals).map(([c, a]) => `${c} ${fmt(a)}`).join(' · ')}
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-2 card px-4 py-2.5 mb-3 bg-brand-50 border-brand-200">
+          <span className="text-sm font-medium text-ink">{sel.size} selected · {Object.entries(selTotals).map(([c, a]) => `${c} ${fmt(a)}`).join(' · ')}</span>
           <div className="flex items-center gap-2">
-            {tab === 'due' && <button onClick={rushBulk} className="btn-secondary py-1.5"><Zap size={15} /> Rush</button>}
-            {tab === 'due' && <button onClick={() => setPayModal({ ids: [...sel] })} className="btn-primary py-1.5"><CreditCard size={15} /> Mark paid</button>}
-            {tab === 'paid' && <button onClick={sendConfirmBulk} className="btn-primary py-1.5"><Send size={15} /> Send confirmations</button>}
+            {!isPaid && <button onClick={() => bulkFlag('rush')} className="btn-secondary py-1.5"><Zap size={15} /> Rush</button>}
+            {!isPaid && <button onClick={() => bulkFlag('hold')} className="btn-secondary py-1.5"><Pause size={15} /> Hold</button>}
+            {!isPaid && <button onClick={() => setPayModal({ ids: [...sel] })} className="btn-primary py-1.5"><CreditCard size={15} /> Mark paid</button>}
+            {isPaid && (
+              <>
+                <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer mr-1"><input type="checkbox" checked={ccRep} onChange={e => setCcRep(e.target.checked)} /> CC rep</label>
+                <button onClick={sendConfirmBulk} className="btn-primary py-1.5"><Send size={15} /> Send confirmations</button>
+              </>
+            )}
           </div>
         </div>
       )}
 
       {loading ? (
-        <p className="text-sm text-gray-400">Loading…</p>
-      ) : rows.length === 0 ? (
-        <div className="card p-10 text-center"><CreditCard size={28} className="text-gray-300 mx-auto mb-3" /><p className="text-sm text-gray-500">{tab === 'due' ? 'Nothing due. All caught up. 🎉' : 'No payments recorded yet.'}</p></div>
+        <div className="card p-2"><Skeleton.Table rows={6} cols={6} /></div>
+      ) : shown.length === 0 ? (
+        <div className="card p-10 text-center"><CreditCard size={28} className="text-gray-300 mx-auto mb-3" /><p className="text-sm text-gray-500">{isPaid ? 'No payments recorded yet.' : 'Nothing here. All caught up. 🎉'}</p></div>
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-divider text-left">
-                <th className="px-3 py-3"><input type="checkbox" checked={rows.length > 0 && sel.size === rows.length} onChange={toggleAll} /></th>
-                {(tab === 'due'
-                  ? ['Payee', 'Category', 'Amount', 'Invoice date', 'Due', 'Terms', '']
-                  : ['Payee', 'Amount', 'Paid date', 'Method', 'Confirmation', '']
-                ).map(h => <th key={h} className="px-3 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>)}
+              <tr className="bg-page/50 border-b border-divider text-left">
+                <th className="px-3 py-2.5"><input type="checkbox" checked={shown.length > 0 && sel.size === shown.length} onChange={toggleAll} /></th>
+                {(isPaid ? ['Payee', 'Amount', 'Paid date', 'Method', 'Confirmation', '']
+                  : ['Payee', 'Category', 'Amount', 'Invoice date', 'Due', 'Terms', '']
+                ).map(h => <th key={h} className="px-3 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap">{h}</th>)}
               </tr>
             </thead>
             <tbody className="divide-y divide-divider">
-              {rows.map(r => tab === 'due' ? (
+              {shown.map(r => isPaid ? (
                 <tr key={r.id} className="hover:bg-gray-50">
                   <td className="px-3 py-3"><input type="checkbox" checked={sel.has(r.id)} onChange={() => toggle(r.id)} /></td>
+                  <td className="px-3 py-3 font-medium text-ink">{r.payee}</td>
+                  <td className="px-3 py-3 text-ink">{r.currency} {fmt(r.amount)}</td>
+                  <td className="px-3 py-3 text-gray-500">{formatDate(r.payment_date)}</td>
+                  <td className="px-3 py-3 text-gray-500">{r.payment_method || '—'}</td>
+                  <td className="px-3 py-3">{r.payment_notified ? <span className="inline-flex items-center gap-1 text-xs text-emerald-600 font-medium"><MailCheck size={13} /> Sent</span> : <span className="text-xs text-gray-400">Not sent</span>}</td>
+                  <td className="px-3 py-3 text-right">{r.vendor_email ? <button onClick={() => sendConfirm(r)} className="text-gray-500 hover:text-brand-600 p-1" title={r.payment_notified ? 'Resend confirmation' : 'Send confirmation'}><Send size={15} /></button> : <span className="text-[11px] text-gray-300">no email</span>}</td>
+                </tr>
+              ) : (
+                <tr key={r.id} className={`hover:bg-gray-50 ${r.on_hold ? 'opacity-60' : ''}`}>
+                  <td className="px-3 py-3"><input type="checkbox" checked={sel.has(r.id)} onChange={() => toggle(r.id)} /></td>
                   <td className="px-3 py-3">
-                    <p className="font-medium text-ink flex items-center gap-1.5">{r.payee}{r.rush && <span title={r.rush_reason || 'Rush'} className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded"><Zap size={10} /> Rush</span>}</p>
+                    <p className="font-medium text-ink flex items-center gap-1.5">
+                      {r.payee}
+                      {r.rush && <span title={r.rush_reason || 'Rush'} className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded"><Zap size={10} /> Rush</span>}
+                      {r.on_hold && <span title={r.hold_reason || 'On hold'} className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded"><Pause size={10} /> Hold</span>}
+                    </p>
                     {r.artist && <p className="text-xs text-gray-400">{r.artist}</p>}
                   </td>
                   <td className="px-3 py-3 text-gray-600">{r.category || '—'}</td>
                   <td className="px-3 py-3 text-ink font-medium whitespace-nowrap">{r.currency} {fmt(r.amount)}</td>
-                  <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{r.invoice_date ? new Date(r.invoice_date).toLocaleDateString() : '—'}</td>
+                  <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{formatDate(r.invoice_date)}</td>
                   <td className="px-3 py-3 whitespace-nowrap">
                     {r.scheduled_payment_date
-                      ? <span className={isOverdue(r.scheduled_payment_date) ? 'text-red-600 font-medium' : 'text-gray-600'}>{new Date(r.scheduled_payment_date).toLocaleDateString()}{isOverdue(r.scheduled_payment_date) ? ' · overdue' : ''}</span>
+                      ? <span className={isPastLocal(r.scheduled_payment_date) && !r.on_hold ? 'text-red-600 font-medium' : 'text-gray-600'}>{formatDate(r.scheduled_payment_date)}{isPastLocal(r.scheduled_payment_date) && !r.on_hold ? ' · overdue' : ''}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{r.payment_terms || '—'}</td>
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1.5 justify-end whitespace-nowrap">
                       <button onClick={() => toggleRush(r)} className={`p-1 ${r.rush ? 'text-amber-600' : 'text-gray-400 hover:text-amber-600'}`} title={r.rush ? 'Clear rush' : 'Flag rush'}><Zap size={15} /></button>
+                      <button onClick={() => toggleHold(r)} className={`p-1 ${r.on_hold ? 'text-gray-700' : 'text-gray-400 hover:text-gray-700'}`} title={r.on_hold ? 'Release hold' : 'Hold'}><Pause size={15} /></button>
                       <button onClick={() => setSchedModal({ id: r.id, terms: r.payment_terms || 'Net 30' })} className="text-gray-500 hover:text-brand-600 p-1" title="Schedule"><CalendarClock size={15} /></button>
                       <button onClick={() => setPayModal({ ids: [r.id] })} className="text-gray-500 hover:text-emerald-600 p-1" title="Mark paid"><Check size={16} /></button>
                     </div>
-                  </td>
-                </tr>
-              ) : (
-                <tr key={r.id} className="hover:bg-gray-50">
-                  <td className="px-3 py-3"><input type="checkbox" checked={sel.has(r.id)} onChange={() => toggle(r.id)} /></td>
-                  <td className="px-3 py-3 font-medium text-ink">{r.payee}</td>
-                  <td className="px-3 py-3 text-ink">{r.currency} {fmt(r.amount)}</td>
-                  <td className="px-3 py-3 text-gray-500">{r.payment_date ? new Date(r.payment_date).toLocaleDateString() : '—'}</td>
-                  <td className="px-3 py-3 text-gray-500">{r.payment_method || '—'}</td>
-                  <td className="px-3 py-3">
-                    {r.payment_notified
-                      ? <span className="inline-flex items-center gap-1 text-xs text-emerald-600 font-medium"><MailCheck size={13} /> Sent</span>
-                      : <span className="text-xs text-gray-400">Not sent</span>}
-                  </td>
-                  <td className="px-3 py-3 text-right">
-                    {r.vendor_email
-                      ? <button onClick={() => sendConfirm(r)} className="text-gray-500 hover:text-brand-600 p-1" title={r.payment_notified ? 'Resend confirmation' : 'Send confirmation'}><Send size={15} /></button>
-                      : <span className="text-[11px] text-gray-300">no email</span>}
                   </td>
                 </tr>
               ))}
@@ -219,12 +262,14 @@ function Modal({ title, onClose, children }) {
 function PayModal({ count, onClose, onConfirm }) {
   const [date, setDate] = useState(today())
   const [method, setMethod] = useState('')
+  const [ref, setRef] = useState('')
   return (
     <Modal title={`Mark ${count} paid`} onClose={onClose}>
       <div className="space-y-3">
         <div><label className="label">Payment date</label><input type="date" className="input" value={date} onChange={e => setDate(e.target.value)} /></div>
         <div><label className="label">Method</label><select className="input" value={method} onChange={e => setMethod(e.target.value)}><option value="">—</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
-        <button onClick={() => onConfirm({ payment_date: date, payment_method: method || undefined })} className="btn-primary w-full">Confirm payment</button>
+        {count === 1 && <div><label className="label">Reference</label><input className="input" value={ref} onChange={e => setRef(e.target.value)} placeholder="confirmation / wire ref" /></div>}
+        <button onClick={() => onConfirm({ payment_date: date, payment_method: method || undefined, payment_ref: ref || undefined })} className="btn-primary w-full">Confirm payment</button>
       </div>
     </Modal>
   )

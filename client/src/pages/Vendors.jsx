@@ -19,7 +19,10 @@ function VendorDrawer({ name, allNames, onClose, onChanged, onRenamed }) {
   const [renameTo, setRenameTo] = useState('')
   const [mergeInto, setMergeInto] = useState('')
 
+  const [emails, setEmails] = useState([])
+  const [newEmail, setNewEmail] = useState('')
   const loadAliases = () => api.get(`/ledger/vendors/${encodeURIComponent(name)}/aliases`).then(r => setAliases(r.data.data || [])).catch(() => {})
+  const loadEmails = () => api.get(`/ledger/vendors/${encodeURIComponent(name)}/emails`).then(r => setEmails(r.data.data || [])).catch(() => {})
   const load = () => {
     setLoading(true)
     api.get(`/ledger/vendors/${encodeURIComponent(name)}`).then(res => {
@@ -27,9 +30,16 @@ function VendorDrawer({ name, allNames, onClose, onChanged, onRenamed }) {
       const v = res.data.data.vendor || {}
       setEdit({ email: v.email || '', address: v.address || '', bank: v.bank || '', notes: v.notes || '' })
     }).catch(() => {}).finally(() => setLoading(false))
-    loadAliases()
+    loadAliases(); loadEmails()
   }
   useEffect(load, [name])
+
+  const addEmail = async () => {
+    if (!newEmail.trim()) return
+    try { await api.post(`/ledger/vendors/${encodeURIComponent(name)}/emails`, { email: newEmail.trim() }); setNewEmail(''); loadEmails() }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+  const delEmail = async (id) => { try { await api.delete(`/ledger/vendor-emails/${id}`); loadEmails() } catch { toast('Failed', 'error') } }
 
   const save = async () => {
     try { await api.patch(`/ledger/vendors/${encodeURIComponent(name)}`, edit); toast('Saved'); onChanged?.() }
@@ -115,6 +125,24 @@ function VendorDrawer({ name, allNames, onClose, onChanged, onRenamed }) {
               <div className="flex gap-2">
                 <input className="input !py-1.5 text-sm" placeholder="Add an alias" value={newAlias} onChange={e => setNewAlias(e.target.value)} onKeyDown={e => e.key === 'Enter' && addAlias()} />
                 <button onClick={addAlias} className="btn-secondary flex-shrink-0 !py-1.5"><Plus size={14} /></button>
+              </div>
+            </div>
+
+            {/* Saved emails (auto-CC'd on payment confirmations) */}
+            <div className="card p-4 mb-4">
+              <p className="text-xs font-bold text-ink mb-2">Saved emails</p>
+              <p className="text-[11px] text-gray-400 mb-2">Auto-CC'd when you send this vendor a payment confirmation.</p>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {emails.map(e => (
+                  <span key={e.id} className="inline-flex items-center gap-1 text-xs bg-gray-100 rounded px-2 py-0.5">
+                    {e.email}<button onClick={() => delEmail(e.id)} className="text-gray-400 hover:text-red-600"><X size={11} /></button>
+                  </span>
+                ))}
+                {!emails.length && <span className="text-xs text-gray-300">None</span>}
+              </div>
+              <div className="flex gap-2">
+                <input className="input !py-1.5 text-sm" placeholder="add@email.com" value={newEmail} onChange={e => setNewEmail(e.target.value)} onKeyDown={e => e.key === 'Enter' && addEmail()} />
+                <button onClick={addEmail} className="btn-secondary flex-shrink-0 !py-1.5"><Plus size={14} /></button>
               </div>
             </div>
 

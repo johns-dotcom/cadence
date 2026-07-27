@@ -10,6 +10,7 @@ const { upsertVendor } = require('../lib/vendors');
 const claude = require('../lib/claude');
 const { sendEmail, vendorDecisionEmail, paymentConfirmationEmail } = require('../lib/email');
 const { stampFxRateAsync } = require('../lib/fxStamp');
+const { toUSD } = require('../lib/fx');
 const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
 const aiScan = require('../lib/aiScan');
 const ExcelJS = require('exceljs');
@@ -532,6 +533,8 @@ router.put('/vendors/rename', requireAdmin, async (req, res) => {
        ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical`,
       [req.labelId, to, from, req.user.name]
     );
+    // Carry saved emails over to the new canonical name.
+    await pool.query(`UPDATE vendor_emails SET vendor = $1 WHERE label_id = $2 AND LOWER(vendor) = LOWER($3)`, [to, req.labelId, from]).catch(() => {});
     await logActivity(req, 'Renamed vendor', `${from} → ${to}`);
     res.json({ success: true, data: { updated: upd.rowCount } });
   } catch (error) {
@@ -554,6 +557,7 @@ router.post('/vendors/merge', requireAdmin, async (req, res) => {
        ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical`,
       [req.labelId, into, from, req.user.name]
     );
+    await pool.query(`UPDATE vendor_emails SET vendor = $1 WHERE label_id = $2 AND LOWER(vendor) = LOWER($3)`, [into, req.labelId, from]).catch(() => {});
     await logActivity(req, 'Merged vendor', `${from} → ${into}`);
     res.json({ success: true, data: { moved: upd.rowCount } });
   } catch (error) {
@@ -889,8 +893,10 @@ router.get('/check-dup', async (req, res) => {
 // POST /api/ledger/entries/:id/rush — flag for expedited payment.
 router.post('/entries/:id/rush', async (req, res) => {
   try {
+    // rush/hold are mutually exclusive — flagging rush clears any hold.
     const { rows } = await pool.query(
-      `UPDATE expenses SET rush = TRUE, rush_reason = $1, rush_needed_by = $2, rush_by = $3, rush_at = NOW()
+      `UPDATE expenses SET rush = TRUE, rush_reason = $1, rush_needed_by = $2, rush_by = $3, rush_at = NOW(),
+         on_hold = FALSE, hold_reason = NULL, hold_by = NULL, hold_at = NULL
          WHERE id = $4 AND label_id = $5 RETURNING *`,
       [req.body.reason || null, req.body.needed_by || null, req.user.name, parseInt(req.params.id, 10), req.labelId]
     );
@@ -925,7 +931,8 @@ router.post('/rush-bulk', async (req, res) => {
     const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
     if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
     const { rowCount } = await pool.query(
-      `UPDATE expenses SET rush = TRUE, rush_reason = $1, rush_needed_by = $2, rush_by = $3, rush_at = NOW()
+      `UPDATE expenses SET rush = TRUE, rush_reason = $1, rush_needed_by = $2, rush_by = $3, rush_at = NOW(),
+         on_hold = FALSE, hold_reason = NULL, hold_by = NULL, hold_at = NULL
          WHERE label_id = $4 AND id = ANY($5::int[])`,
       [req.body.reason || null, req.body.needed_by || null, req.user.name, req.labelId, ids]
     );
@@ -935,6 +942,116 @@ router.post('/rush-bulk', async (req, res) => {
     console.error('Bulk rush error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
+});
+
+// POST /api/ledger/entries/:id/hold — pause payment (clears any rush).
+router.post('/entries/:id/hold', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE expenses SET on_hold = TRUE, hold_reason = $1, hold_by = $2, hold_at = NOW(),
+         rush = FALSE, rush_reason = NULL, rush_needed_by = NULL, rush_by = NULL, rush_at = NULL
+         WHERE id = $3 AND label_id = $4 RETURNING *`,
+      [req.body.reason || null, req.user.name, parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    await logActivity(req, 'Put payment on hold', `${rows[0].payee} — ${rows[0].amount}`);
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Hold error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/ledger/entries/:id/hold — release the hold.
+router.delete('/entries/:id/hold', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE expenses SET on_hold = FALSE, hold_reason = NULL, hold_by = NULL, hold_at = NULL
+         WHERE id = $1 AND label_id = $2 RETURNING id`,
+      [parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Clear hold error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/hold-bulk { ids:[], reason }
+router.post('/hold-bulk', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
+    const { rowCount } = await pool.query(
+      `UPDATE expenses SET on_hold = TRUE, hold_reason = $1, hold_by = $2, hold_at = NOW(),
+         rush = FALSE, rush_reason = NULL, rush_needed_by = NULL, rush_by = NULL, rush_at = NULL
+         WHERE label_id = $3 AND id = ANY($4::int[])`,
+      [req.body.reason || null, req.user.name, req.labelId, ids]
+    );
+    await logActivity(req, 'Bulk hold', `${rowCount} entries`);
+    res.json({ success: true, data: { held: rowCount } });
+  } catch (error) {
+    console.error('Bulk hold error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/ledger/payment-stats — USD-equivalent headline totals for the
+// payment dashboard cards. Honors the locked fx_rate_to_usd on paid rows;
+// falls back to live conversion otherwise.
+router.get('/payment-stats', async (req, res) => {
+  try {
+    const usd = (r) => (r.fx_rate_to_usd ? Number(r.amount) / Number(r.fx_rate_to_usd) : toUSD(r.amount, r.currency, r.payment_date || r.invoice_date));
+    const { rows } = await pool.query(
+      `SELECT amount, currency, fx_rate_to_usd, payment_date, invoice_date, scheduled_payment_date,
+              payment_status, rush, on_hold
+         FROM expenses
+        WHERE label_id = $1 AND status = 'approved' AND (deleted = false OR deleted IS NULL) AND (voided = false OR voided IS NULL)
+          AND (payment_status IN ('Unpaid','Partial') OR (payment_status = 'Paid' AND payment_date >= CURRENT_DATE - INTERVAL '14 days'))`,
+      [req.labelId]
+    );
+    const today = new Date().toISOString().slice(0, 10);
+    const acc = { outstanding: 0, overdue: 0, rush: 0, hold: 0, paid14: 0, counts: { unpaid: 0, overdue: 0, rush: 0, hold: 0, paid14: 0 } };
+    for (const r of rows) {
+      const u = await usd(r);
+      if (r.payment_status === 'Paid') { acc.paid14 += u; acc.counts.paid14++; continue; }
+      acc.outstanding += u; acc.counts.unpaid++;
+      if (r.on_hold) { acc.hold += u; acc.counts.hold++; continue; }
+      if (r.rush) { acc.rush += u; acc.counts.rush++; }
+      if (r.scheduled_payment_date && String(r.scheduled_payment_date).slice(0, 10) < today) { acc.overdue += u; acc.counts.overdue++; }
+    }
+    res.json({ success: true, data: acc });
+  } catch (error) {
+    console.error('Payment stats error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Vendor saved emails (auto-CC on confirmations) ─────────────────────────
+router.get('/vendors/:name/emails', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT id, email, label_text FROM vendor_emails WHERE label_id = $1 AND LOWER(vendor) = LOWER($2) ORDER BY id', [req.labelId, req.params.name]);
+    res.json({ success: true, data: rows });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+router.post('/vendors/:name/emails', async (req, res) => {
+  try {
+    const email = String(req.body.email || '').trim();
+    if (!email) return res.status(400).json({ success: false, error: 'Email is required' });
+    await pool.query(
+      `INSERT INTO vendor_emails (label_id, vendor, email, label_text, created_by) VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (label_id, LOWER(vendor), LOWER(email)) DO UPDATE SET label_text = EXCLUDED.label_text`,
+      [req.labelId, req.params.name, email, req.body.label_text || null, req.user.name]
+    );
+    res.json({ success: true });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+router.delete('/vendor-emails/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM vendor_emails WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId]);
+    res.json({ success: true });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 
 // ── Payment-confirmation emails ────────────────────────────────────────────
