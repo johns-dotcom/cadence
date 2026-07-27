@@ -20,6 +20,7 @@ export const PAGE_GROUPS = [
     { path: '/pending-contracts', label: 'Pending Contracts' },
     { path: '/renewals', label: 'Renewals' },
     { path: '/legal', label: 'NDAs' },
+    { path: '/create-nda', label: 'Create NDA' },
     { path: '/label-waivers', label: 'Label Waivers' },
     { path: '/clearances', label: 'Clearances' },
     { path: '/admin-docs', label: 'Admin Docs' },
@@ -51,5 +52,5 @@ export const PERMISSION_PRESETS = [
   { name: 'Finance exec', pages: P('/financials', '/recoupments', '/payments', '/ledger', '/salary') },
   { name: 'Marketing', pages: P('/calendar', '/marketing', '/artists', '/releases', '/deals') },
   { name: 'A&R', pages: P('/calendar', '/deals', '/artists', '/releases', '/contracts', '/pending-contracts') },
-  { name: 'Legal', pages: P('/contracts', '/pending-contracts', '/renewals', '/legal', '/label-waivers', '/clearances', '/admin-docs') },
+  { name: 'Legal', pages: P('/contracts', '/pending-contracts', '/renewals', '/legal', '/create-nda', '/label-waivers', '/clearances', '/admin-docs') },
 ]

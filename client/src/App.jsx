@@ -22,6 +22,7 @@ import PendingContracts from './pages/PendingContracts'
 import Legal from './pages/Legal'
 import AdminDocs from './pages/AdminDocs'
 import CreateLabelWaiver from './pages/CreateLabelWaiver'
+import CreateNda from './pages/CreateNda'
 import ArtistClearance from './pages/ArtistClearance'
 import Renewals from './pages/Renewals'
 import MyWork from './pages/MyWork'
@@ -126,6 +127,8 @@ function AppContent() {
         <Route path="/renewals"     element={<AdminRoute><Renewals /></AdminRoute>} />
         <Route path="/legal"        element={<AdminRoute><Legal /></AdminRoute>} />
         <Route path="/label-waivers" element={<AdminRoute><CreateLabelWaiver /></AdminRoute>} />
+        <Route path="/create-nda"          element={<AdminRoute><CreateNda /></AdminRoute>} />
+        <Route path="/create-nda/:template" element={<AdminRoute><CreateNda /></AdminRoute>} />
         <Route path="/clearances"   element={<AdminRoute><ArtistClearance /></AdminRoute>} />
         <Route path="/admin-docs"   element={<AdminRoute><AdminDocs /></AdminRoute>} />
         <Route path="/financials"   element={<AdminRoute><Financials /></AdminRoute>} />

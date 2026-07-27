@@ -36,6 +36,7 @@ const salaryRoutes = require('./routes/salary');
 const campaignsRoutes = require('./routes/campaigns');
 const pendingContractsRoutes = require('./routes/pending-contracts');
 const ndasRoutes = require('./routes/ndas');
+const ndaDocumentsRoutes = require('./routes/nda-documents');
 const adminDocsRoutes = require('./routes/admin-docs');
 const flagsRoutes = require('./routes/flags');
 const labelWaiversRoutes = require('./routes/label-waivers');
@@ -152,6 +153,7 @@ app.use('/api/salary', salaryRoutes);
 app.use('/api/campaigns', campaignsRoutes);
 app.use('/api/pending-contracts', pendingContractsRoutes);
 app.use('/api/ndas', ndasRoutes);
+app.use('/api/nda-documents', ndaDocumentsRoutes);
 app.use('/api/admin-docs', adminDocsRoutes);
 app.use('/api/flags', flagsRoutes);
 app.use('/api/label-waivers', labelWaiversRoutes);
@@ -912,6 +914,24 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_ndas_label ON ndas (label_id)`);
+
+  // Generated NDA documents (the /create-nda builder). Template-driven, with
+  // the finished body stored for export/re-edit. Distinct from `ndas` above,
+  // which tracks executed counterparty agreements + their signed files.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS nda_documents (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      template VARCHAR(50) NOT NULL,
+      title VARCHAR(255),
+      data JSONB DEFAULT '{}',
+      custom_body TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_nda_documents_label ON nda_documents (label_id)`);
 
   // Admin docs vault — secure company documents with categories + files.
   await pool.query(`

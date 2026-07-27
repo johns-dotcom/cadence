@@ -5,7 +5,7 @@ import {
   LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
-  FileClock, Shield, Lock, Sparkles, FileSignature, FileSpreadsheet, Archive, Layers, Upload, PiggyBank,
+  FileClock, Shield, Lock, Sparkles, FileSignature, FileSpreadsheet, Archive, Layers, Upload, PiggyBank, FilePlus2,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
@@ -29,6 +29,7 @@ const PAGE_LABELS = {
   '/artist-campaigns': 'Artist Campaigns',
   '/pending-contracts': 'Pending Contracts',
   '/legal':      'NDAs',
+  '/create-nda': 'Create NDA',
   '/label-waivers': 'Label Waivers',
   '/clearances': 'Clearances',
   '/admin-docs': 'Admin Docs',
@@ -237,6 +238,7 @@ export default function Layout() {
         ...(isApprover ? [{ path: '/pending-contracts', label: 'Pending', icon: FileClock }] : []),
         ...(isApprover ? [{ path: '/renewals', label: 'Renewals', icon: RefreshCw }] : []),
         ...(isApprover ? [{ path: '/legal', label: 'NDAs', icon: Shield }] : []),
+        ...(isApprover ? [{ path: '/create-nda', label: 'Create NDA', icon: FilePlus2 }] : []),
         ...(isApprover ? [{ path: '/label-waivers', label: 'Label Waivers', icon: FileSignature }] : []),
         ...(isApprover ? [{ path: '/clearances', label: 'Clearances', icon: FileSpreadsheet }] : []),
         ...(isAdmin ? [{ path: '/admin-docs', label: 'Admin Docs', icon: Lock }] : []),
