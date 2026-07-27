@@ -1,89 +1,132 @@
-import { useEffect, useState, useRef } from 'react'
-import { Link } from 'react-router-dom'
-import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart } from 'lucide-react'
+import { useEffect, useState, useRef, useMemo } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart, Search } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
+import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import LedgerEntryDrawer from '../components/LedgerEntryDrawer'
+import { formatDate } from '../utils/dates'
+import { EXPENSE_CATEGORIES, PAYMENT_METHODS } from '../constants'
 
-const STATUS_STYLES = {
-  pending:  'bg-amber-100 text-amber-700',
-  approved: 'bg-emerald-100 text-emerald-700',
-  rejected: 'bg-red-100 text-red-700',
+const STATUS_STYLES = { pending: 'bg-amber-100 text-amber-700', approved: 'bg-emerald-100 text-emerald-700', rejected: 'bg-red-100 text-red-700' }
+const STATUSES = ['all', 'pending', 'approved', 'rejected']
+const money = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+const PAID_CYCLE = { Unpaid: 'Paid', Paid: 'Partial', Partial: 'Unpaid' }
+const PAID_STYLE = { Paid: 'text-emerald-600', Partial: 'text-amber-600', Unpaid: 'text-gray-400' }
+
+// Amount query → predicate. Supports "500", "500-1000", ">500", "<500".
+function amountPred(raw) {
+  const s = String(raw || '').trim(); if (!s) return null
+  let m
+  if ((m = s.match(/^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)$/))) { const a = +m[1], b = +m[2]; return v => v >= a && v <= b }
+  if ((m = s.match(/^>=?\s*(\d+(?:\.\d+)?)$/))) { const a = +m[1]; return v => v >= a }
+  if ((m = s.match(/^<=?\s*(\d+(?:\.\d+)?)$/))) { const a = +m[1]; return v => v <= a }
+  if ((m = s.match(/^(\d+(?:\.\d+)?)$/))) { const a = +m[1]; return v => v >= a }
+  return null
 }
-const FILTERS = ['all', 'pending', 'approved', 'rejected']
 
 export default function Ledger() {
   const { toast } = useToast()
-  const { label } = useAuth()
+  const { label, user } = useAuth()
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState('all')
+  const [params] = useSearchParams()
+  const focusId = params.get('focus')
+
+  // Filters (all client-side over the loaded set for instant response).
+  const [status, setStatus] = useState('all')
+  const [search, setSearch] = useState('')
+  const [amountQ, setAmountQ] = useState('')
+  const [fCategory, setFCategory] = useState('')
+  const [fPaid, setFPaid] = useState('')
+  const [fMethod, setFMethod] = useState('')
+  const [fSource, setFSource] = useState('')
+  const [flaggedOnly, setFlaggedOnly] = useState(false)
+  const [sort, setSort] = useState({ key: 'invoice_date', dir: 'desc' })
+
   const [copied, setCopied] = useState(false)
+  const importRef = useRef(null)
+  const [importing, setImporting] = useState(false)
+  const [drawerEntry, setDrawerEntry] = useState(null)
+  const [report1099, setReport1099] = useState(null)
+
+  // ── Toggleable columns, persisted per user+workspace ──────────────────
+  const COLS = useMemo(() => [
+    { key: 'invoice_date', label: 'Date', render: en => <span className="text-gray-500 whitespace-nowrap">{formatDate(en.invoice_date)}</span> },
+    { key: 'payee', label: 'Payee', render: en => <PayeeCell en={en} onFlag={() => setDrawerEntry(en)} /> },
+    { key: 'artist', label: 'Artist', render: en => <span className="text-gray-600">{en.artist || '—'}</span> },
+    { key: 'song', label: 'Song', render: en => <span className="text-gray-600">{en.song || '—'}</span> },
+    { key: 'category', label: 'Category', render: en => <span className="text-gray-600 whitespace-nowrap">{en.category || '—'}</span> },
+    { key: 'invoice_number', label: 'Invoice #', render: en => <span className="text-gray-500 whitespace-nowrap">{en.invoice_number || '—'}</span> },
+    { key: 'amount', label: 'Amount', render: en => <span className="text-ink font-medium whitespace-nowrap tabular-nums">{money(en.amount, en.currency)}</span> },
+    { key: 'status', label: 'Status', render: en => <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium capitalize ${STATUS_STYLES[en.status] || ''}`}>{en.status}</span> },
+    { key: 'payment', label: 'Payment', render: en => <button onClick={() => cyclePaid(en)} title="Click to cycle" className={`text-xs font-medium hover:underline ${PAID_STYLE[en.payment_status] || PAID_STYLE.Unpaid}`}>{en.payment_status || 'Unpaid'}</button> },
+    { key: 'payment_method', label: 'Method', render: en => <span className="text-gray-500 whitespace-nowrap">{en.payment_method || '—'}</span> },
+    { key: 'rep', label: 'Rep', render: en => <span className="text-gray-500">{en.rep || '—'}</span> },
+    { key: 'recoupable', label: 'Recoup', render: en => <span className="text-gray-500">{en.recoupable ? 'Yes' : 'No'}</span> },
+    { key: 'type', label: 'Type', render: en => <span className="text-gray-500">{en.is_reimbursement ? 'Reimb.' : 'Invoice'}</span> },
+    { key: 'files', label: 'Files', render: en => <FilesCell en={en} openFile={openFile} /> },
+  ], [])
+  const ALL_KEYS = COLS.map(c => c.key)
+  const DEFAULT_COLS = ['invoice_date', 'payee', 'category', 'amount', 'status', 'payment', 'files']
+  const storeKey = `ledger-cols:${label?.id || 0}:${user?.id || 0}`
+  const [visible, setVisible] = useState(DEFAULT_COLS)
+  const [colMenu, setColMenu] = useState(false)
+  useEffect(() => {
+    try { const s = JSON.parse(localStorage.getItem(storeKey) || 'null'); if (Array.isArray(s) && s.length) setVisible(s.filter(k => ALL_KEYS.includes(k))) } catch { /* default */ }
+  }, [storeKey]) // eslint-disable-line
+  const toggleCol = (key) => setVisible(v => { const n = v.includes(key) ? v.filter(k => k !== key) : [...v, key]; localStorage.setItem(storeKey, JSON.stringify(n)); return n })
+  const shownCols = COLS.filter(c => visible.includes(c.key))
 
   const load = () => {
     setLoading(true)
-    const q = filter === 'all' ? '' : `?status=${filter}`
-    api.get(`/ledger/entries${q}`).then(res => setEntries(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
+    api.get('/ledger/entries').then(res => setEntries(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
-  useEffect(load, [filter])
+  useEffect(load, [])
 
-  const act = async (id, path, body) => {
-    try { await api.post(`/ledger/entries/${id}/${path}`, body || {}); load() }
-    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  // Focus deep-link: scroll + amber spotlight for a few seconds.
+  const rowRefs = useRef({})
+  useEffect(() => {
+    if (!focusId || loading) return
+    const el = rowRefs.current[focusId]
+    if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.add('ring-2', 'ring-amber-400'); setTimeout(() => el.classList.remove('ring-2', 'ring-amber-400'), 3500) }
+  }, [focusId, loading, entries])
+
+  const cyclePaid = async (en) => {
+    const next = PAID_CYCLE[en.payment_status] || 'Paid'
+    try {
+      if (next === 'Paid') await api.post(`/ledger/entries/${en.id}/mark-paid`, {})   // stamps fx + notify path
+      else await api.patch(`/ledger/entries/${en.id}`, { payment_status: next })
+      load()
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
-  const reject = async (id) => {
-    const reason = window.prompt('Reason for rejection (optional):') ?? null
-    act(id, 'reject', { reason })
-  }
-  const remove = async (id) => {
-    if (!window.confirm('Delete this entry?')) return
-    try { await api.delete(`/ledger/entries/${id}`); load() } catch { toast('Failed', 'error') }
-  }
-  const openFile = async (id, type) => {
-    try { const { data } = await api.get(`/ledger/entries/${id}/file/${type}`); window.open(data.data.url, '_blank', 'noopener') }
-    catch { toast('No file', 'error') }
-  }
+  const act = async (id, path, body) => { try { await api.post(`/ledger/entries/${id}/${path}`, body || {}); load() } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') } }
+  const reject = async (id) => { const reason = window.prompt('Reason for rejection (required):')?.trim(); if (!reason) return; act(id, 'reject', { reason }) }
+  const remove = async (id) => { if (!window.confirm('Delete this entry?')) return; try { await api.delete(`/ledger/entries/${id}`); load() } catch { toast('Failed', 'error') } }
+  function openFile(id, type) { api.get(`/ledger/entries/${id}/file/${type}`).then(({ data }) => window.open(data.data.url, '_blank', 'noopener')).catch(() => toast('No file', 'error')) }
 
   const copyVendorLink = () => {
     const url = `${window.location.origin}/submit/${label?.vendor_form_token || label?.slug}`
     navigator.clipboard.writeText(url).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
   }
 
-  // ── CSV export / import ──────────────────────────────────────────────
-  const importRef = useRef(null)
-  const [importing, setImporting] = useState(false)
-  const [drawerEntry, setDrawerEntry] = useState(null)
-  const [report1099, setReport1099] = useState(null)
-
-  const open1099 = async () => {
-    try { const { data } = await api.get('/ledger/1099-report'); setReport1099(data.data) }
-    catch { toast('Failed to load 1099 report', 'error') }
-  }
-
+  const open1099 = async () => { try { const { data } = await api.get('/ledger/1099-report'); setReport1099(data.data) } catch { toast('Failed to load 1099 report', 'error') } }
   const exportCsv = async () => {
     try {
       const res = await api.get('/ledger/export', { responseType: 'blob' })
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }))
-      const a = document.createElement('a')
-      a.href = url; a.download = `ledger-${label?.slug || 'export'}.csv`
-      document.body.appendChild(a); a.click(); a.remove()
-      window.URL.revokeObjectURL(url)
+      const a = document.createElement('a'); a.href = url; a.download = `ledger-${label?.slug || 'export'}.csv`
+      document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url)
     } catch { toast('Export failed', 'error') }
   }
-
-  // Minimal CSV parser — header row maps to known columns; quoted fields with
-  // commas/newlines are handled.
   const parseCsv = (text) => {
     const rows = []; let row = []; let field = ''; let inQuotes = false
     for (let i = 0; i < text.length; i++) {
       const c = text[i]
-      if (inQuotes) {
-        if (c === '"' && text[i + 1] === '"') { field += '"'; i++ }
-        else if (c === '"') inQuotes = false
-        else field += c
-      } else if (c === '"') inQuotes = true
+      if (inQuotes) { if (c === '"' && text[i + 1] === '"') { field += '"'; i++ } else if (c === '"') inQuotes = false; else field += c }
+      else if (c === '"') inQuotes = true
       else if (c === ',') { row.push(field); field = '' }
       else if (c === '\n' || c === '\r') { if (field !== '' || row.length) { row.push(field); rows.push(row); row = []; field = '' } if (c === '\r' && text[i + 1] === '\n') i++ }
       else field += c
@@ -93,21 +136,47 @@ export default function Ledger() {
     const headers = rows[0].map(h => h.trim().toLowerCase().replace(/\s+/g, '_'))
     return rows.slice(1).filter(r => r.some(c => c.trim())).map(r => Object.fromEntries(headers.map((h, i) => [h, (r[i] || '').trim()])))
   }
-
   const onImportFile = async (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+    const file = e.target.files?.[0]; if (!file) return
     setImporting(true)
-    try {
-      const text = await file.text()
-      const rows = parseCsv(text)
-      if (!rows.length) { toast('No rows found in CSV', 'error'); return }
-      const { data } = await api.post('/ledger/import', { rows })
-      toast(`Imported ${data.data.inserted} entries`)
-      load()
-    } catch (err) { toast(err.response?.data?.error || 'Import failed', 'error') }
+    try { const rows = parseCsv(await file.text()); if (!rows.length) { toast('No rows found in CSV', 'error'); return } const { data } = await api.post('/ledger/import', { rows }); toast(`Imported ${data.data.inserted} entries`); load() }
+    catch (err) { toast(err.response?.data?.error || 'Import failed', 'error') }
     finally { setImporting(false); if (importRef.current) importRef.current.value = '' }
   }
+
+  // ── Apply filters + sort client-side ──────────────────────────────────
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    const amt = amountPred(amountQ)
+    let list = entries.filter(en => {
+      if (status !== 'all' && en.status !== status) return false
+      if (q && !`${en.payee} ${en.artist} ${en.song} ${en.invoice_number}`.toLowerCase().includes(q)) return false
+      if (amt && !amt(Number(en.amount) || 0)) return false
+      if (fCategory && en.category !== fCategory) return false
+      if (fPaid && (en.payment_status || 'Unpaid') !== fPaid) return false
+      if (fMethod && en.payment_method !== fMethod) return false
+      if (fSource === 'vendor' && !en.vendor_submitted) return false
+      if (fSource === 'manual' && en.vendor_submitted) return false
+      if (flaggedOnly && !(en.ai_scan?.discrepancies?.length || en.w9_scan?.discrepancies?.length)) return false
+      return true
+    })
+    const dir = sort.dir === 'asc' ? 1 : -1
+    list = [...list].sort((a, b) => {
+      let av = a[sort.key], bv = b[sort.key]
+      if (sort.key === 'amount') { av = Number(av) || 0; bv = Number(bv) || 0; return (av - bv) * dir }
+      if (sort.key === 'invoice_date') { av = av || ''; bv = bv || ''; return av < bv ? -dir : av > bv ? dir : 0 }
+      return String(av || '').localeCompare(String(bv || '')) * dir
+    })
+    return list
+  }, [entries, status, search, amountQ, fCategory, fPaid, fMethod, fSource, flaggedOnly, sort])
+
+  const totals = useMemo(() => {
+    const t = {}
+    filtered.filter(e => !e.voided).forEach(e => { t[e.currency || 'USD'] = (t[e.currency || 'USD'] || 0) + (Number(e.amount) || 0) })
+    return t
+  }, [filtered])
+
+  const setSortKey = (key) => setSort(s => s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' })
 
   return (
     <div>
@@ -118,70 +187,69 @@ export default function Ledger() {
           <div className="flex items-center gap-2">
             <button onClick={open1099} className="btn-secondary"><FileBarChart size={15} /> 1099</button>
             <button onClick={exportCsv} className="btn-secondary"><Download size={15} /> Export</button>
-            <button onClick={() => importRef.current?.click()} disabled={importing} className="btn-secondary">
-              <Upload size={15} /> {importing ? 'Importing…' : 'Import'}
-            </button>
+            <button onClick={() => importRef.current?.click()} disabled={importing} className="btn-secondary"><Upload size={15} /> {importing ? 'Importing…' : 'Import'}</button>
             <input ref={importRef} type="file" accept=".csv" className="hidden" onChange={onImportFile} />
-            <button onClick={copyVendorLink} className="btn-secondary">
-              {copied ? <><Check size={15} /> Copied</> : <><Link2 size={15} /> Vendor form link</>}
-            </button>
+            <button onClick={copyVendorLink} className="btn-secondary">{copied ? <><Check size={15} /> Copied</> : <><Link2 size={15} /> Vendor form link</>}</button>
             <Link to="/ledger/new-reimbursement" className="btn-secondary"><Plus size={16} /> Add reimbursement</Link>
             <Link to="/ledger/new-invoice" className="btn-primary"><Plus size={16} /> Add invoice</Link>
           </div>
         }
       />
 
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="relative flex-1 min-w-[180px]">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search payee, artist, song, invoice #…" className="input !pl-9" />
+        </div>
+        <input value={amountQ} onChange={e => setAmountQ(e.target.value)} placeholder="Amount: 500 · 500-1000 · >500" className="input !w-52" />
+        <select className="input !w-auto" value={fCategory} onChange={e => setFCategory(e.target.value)}><option value="">All categories</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
+        <select className="input !w-auto" value={fPaid} onChange={e => setFPaid(e.target.value)}><option value="">Any payment</option><option>Unpaid</option><option>Partial</option><option>Paid</option></select>
+        <select className="input !w-auto" value={fMethod} onChange={e => setFMethod(e.target.value)}><option value="">Any method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select>
+        <select className="input !w-auto" value={fSource} onChange={e => setFSource(e.target.value)}><option value="">Any source</option><option value="vendor">Vendor-submitted</option><option value="manual">Manual</option></select>
+        <button onClick={() => setFlaggedOnly(v => !v)} className={`text-xs font-semibold px-3 py-2 rounded-lg ${flaggedOnly ? 'bg-red-600 text-white' : 'text-gray-500 hover:bg-gray-100 border border-rule'}`}>⚠ Flagged</button>
+        <div className="relative">
+          <button onClick={() => setColMenu(v => !v)} className="btn-secondary"><SlidersHorizontal size={15} /> Columns</button>
+          {colMenu && (
+            <div className="absolute right-0 top-full mt-1 z-30 w-48 card p-2 shadow-modal" onMouseLeave={() => setColMenu(false)}>
+              {COLS.map(c => (
+                <label key={c.key} className="flex items-center gap-2 px-2 py-1 text-sm text-ink hover:bg-gray-50 rounded cursor-pointer">
+                  <input type="checkbox" checked={visible.includes(c.key)} onChange={() => toggleCol(c.key)} /> {c.label}
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="flex items-center gap-1 mb-4">
-        {FILTERS.map(f => (
-          <button key={f} onClick={() => setFilter(f)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg capitalize transition ${filter === f ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}>{f}</button>
+        {STATUSES.map(f => (
+          <button key={f} onClick={() => setStatus(f)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg capitalize transition ${status === f ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}>{f}</button>
         ))}
+        <span className="text-xs text-gray-400 ml-2">{filtered.length} of {entries.length}</span>
       </div>
 
       {loading ? (
-        <p className="text-sm text-gray-400">Loading…</p>
-      ) : entries.length === 0 ? (
-        <div className="card p-10 text-center"><BookOpen size={28} className="text-gray-300 mx-auto mb-3" /><p className="text-sm text-gray-500">No entries{filter !== 'all' ? ` (${filter})` : ''}.</p></div>
+        <div className="card p-2"><Skeleton.Table rows={8} cols={shownCols.length + 1} /></div>
+      ) : filtered.length === 0 ? (
+        <div className="card p-10 text-center"><BookOpen size={28} className="text-gray-300 mx-auto mb-3" /><p className="text-sm text-gray-500">No entries match.</p></div>
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-divider text-left">
-                {['Date', 'Payee', 'Category', 'Amount', 'Status', 'Payment', 'Files', ''].map(h => (
-                  <th key={h} className="px-3 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+              <tr className="bg-page/50 border-b border-divider text-left">
+                {shownCols.map(c => (
+                  <th key={c.key} onClick={() => setSortKey(c.key)} className="px-3 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap cursor-pointer select-none hover:text-gray-600">
+                    {c.label}{sort.key === c.key ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                  </th>
                 ))}
+                <th className="px-3 py-2.5" />
               </tr>
             </thead>
             <tbody className="divide-y divide-divider">
-              {entries.map(en => (
-                <tr key={en.id} className={`hover:bg-gray-50 align-top ${en.voided ? 'opacity-50' : ''}`}>
-                  <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{en.invoice_date ? new Date(en.invoice_date).toLocaleDateString() : '—'}</td>
-                  <td className="px-3 py-3">
-                    <p className={`font-medium text-ink ${en.voided ? 'line-through' : ''}`}>{en.payee}</p>
-                    {en.vendor_submitted && <span className="text-[10px] text-brand-600 font-semibold uppercase">Vendor submission</span>}
-                    {en.voided && <span className="text-[10px] text-red-500 font-semibold uppercase ml-1">Voided</span>}
-                    {en.split_count > 0 && <span className="text-[10px] text-gray-400 font-semibold uppercase ml-1">{en.split_count} splits</span>}
-                    {en.is_bulk_deal && <span className="text-[10px] text-violet-500 font-semibold uppercase ml-1">Bulk deal</span>}
-                    {en.rush && <span className="text-[10px] text-amber-600 font-semibold uppercase ml-1">⚡ Rush</span>}
-                    {(en.ai_scan?.discrepancies?.length > 0 || en.w9_scan?.discrepancies?.length > 0) && (
-                      <button onClick={() => setDrawerEntry(en)} title="AI flagged discrepancies" className="text-[10px] text-red-600 font-semibold uppercase ml-1 hover:underline">⚠ {(en.ai_scan?.discrepancies?.length || 0) + (en.w9_scan?.discrepancies?.length || 0)} flag(s)</button>
-                    )}
-                    {en.artist && <p className="text-xs text-gray-400">{en.artist}</p>}
-                  </td>
-                  <td className="px-3 py-3 text-gray-600 whitespace-nowrap">{en.category || '—'}</td>
-                  <td className="px-3 py-3 text-ink font-medium whitespace-nowrap">{en.currency} {Number(en.amount).toLocaleString()}</td>
-                  <td className="px-3 py-3"><span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium capitalize ${STATUS_STYLES[en.status] || ''}`}>{en.status}</span></td>
-                  <td className="px-3 py-3">
-                    {en.payment_status === 'Paid'
-                      ? <span className="text-xs text-emerald-600 font-medium">Paid</span>
-                      : <span className="text-xs text-gray-400">Unpaid</span>}
-                  </td>
-                  <td className="px-3 py-3">
-                    <div className="flex gap-1.5">
-                      {en.invoice_r2_key && <button onClick={() => openFile(en.id, 'invoice')} title="Invoice" className="text-gray-400 hover:text-brand-600"><Paperclip size={14} /></button>}
-                      {en.w9_r2_key && <button onClick={() => openFile(en.id, 'w9')} title="W9" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">W9</button>}
-                      {en.receipt_r2_key && <button onClick={() => openFile(en.id, 'receipt')} title="Receipt" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">RCT</button>}
-                    </div>
-                  </td>
+              {filtered.map(en => (
+                <tr key={en.id} ref={el => (rowRefs.current[en.id] = el)} className={`hover:bg-gray-50 align-top transition-shadow ${en.voided ? 'opacity-50' : ''}`}>
+                  {shownCols.map(c => <td key={c.key} className="px-3 py-3">{c.render(en)}</td>)}
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1.5 justify-end whitespace-nowrap">
                       {en.status === 'pending' && (
@@ -200,13 +268,18 @@ export default function Ledger() {
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-divider bg-page/40">
+                <td className="px-3 py-2.5 text-[11px] font-semibold text-gray-500" colSpan={shownCols.length + 1}>
+                  Totals: {Object.entries(totals).map(([c, a]) => `${c} ${a.toLocaleString(undefined, { minimumFractionDigits: 2 })}`).join('  ·  ') || '—'}
+                </td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       )}
 
-      {drawerEntry && (
-        <LedgerEntryDrawer entry={drawerEntry} onClose={() => setDrawerEntry(null)} onChanged={load} />
-      )}
+      {drawerEntry && <LedgerEntryDrawer entry={drawerEntry} onClose={() => setDrawerEntry(null)} onChanged={load} />}
 
       {report1099 && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center px-4 py-8 bg-overlay overflow-y-auto" onClick={() => setReport1099(null)}>
@@ -238,6 +311,32 @@ export default function Ledger() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function PayeeCell({ en, onFlag }) {
+  const flags = (en.ai_scan?.discrepancies?.length || 0) + (en.w9_scan?.discrepancies?.length || 0)
+  return (
+    <div>
+      <p className={`font-medium text-ink ${en.voided ? 'line-through' : ''}`}>{en.payee}</p>
+      {en.vendor_submitted && <span className="text-[10px] text-brand-600 font-semibold uppercase">Vendor</span>}
+      {en.voided && <span className="text-[10px] text-red-500 font-semibold uppercase ml-1">Voided</span>}
+      {en.split_count > 0 && <span className="text-[10px] text-gray-400 font-semibold uppercase ml-1">{en.split_count} splits</span>}
+      {en.is_bulk_deal && <span className="text-[10px] text-violet-500 font-semibold uppercase ml-1">Bulk</span>}
+      {en.rush && <span className="text-[10px] text-amber-600 font-semibold uppercase ml-1">⚡ Rush</span>}
+      {flags > 0 && <button onClick={onFlag} className="text-[10px] text-red-600 font-semibold uppercase ml-1 hover:underline">⚠ {flags} flag(s)</button>}
+    </div>
+  )
+}
+
+function FilesCell({ en, openFile }) {
+  return (
+    <div className="flex gap-1.5">
+      {en.invoice_r2_key && <button onClick={() => openFile(en.id, 'invoice')} title="Invoice" className="text-gray-400 hover:text-brand-600"><Paperclip size={14} /></button>}
+      {en.w9_r2_key && <button onClick={() => openFile(en.id, 'w9')} title="W9" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">W9</button>}
+      {en.receipt_r2_key && <button onClick={() => openFile(en.id, 'receipt')} title="Receipt" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">RCT</button>}
+      {!en.invoice_r2_key && !en.w9_r2_key && !en.receipt_r2_key && <span className="text-gray-300">—</span>}
     </div>
   )
 }
