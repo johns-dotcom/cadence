@@ -14,6 +14,7 @@ const labelsRoutes = require('./routes/labels');
 const teamRoutes = require('./routes/team');
 const emailRoutes = require('./routes/email');
 const artistCampaignsRoutes = require('./routes/artist-campaigns');
+const recordingBudgetsRoutes = require('./routes/recording-budgets');
 const artistsRoutes = require('./routes/artists');
 const releasesRoutes = require('./routes/releases');
 const dealsRoutes = require('./routes/deals');
@@ -129,6 +130,7 @@ app.use('/api/label', labelsRoutes);
 app.use('/api/team', teamRoutes);
 app.use('/api/email', emailRoutes);
 app.use('/api/artist-campaigns', artistCampaignsRoutes);
+app.use('/api/recording-budgets', recordingBudgetsRoutes);
 app.use('/api/artists', artistsRoutes);
 app.use('/api/releases', releasesRoutes);
 app.use('/api/deals', dealsRoutes);
@@ -549,6 +551,37 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_review_assign_uniq ON review_assignments (label_id, expense_id, assignee_id)`);
+  // Recording budgets: draft → approved → locked, with line items grouped by
+  // section and mapped to a ledger category for actual-vs-budget rollups.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS recording_budgets (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      artist TEXT,
+      status TEXT DEFAULT 'draft',
+      contingency_pct NUMERIC(5,2) DEFAULT 0,
+      notes TEXT,
+      created_by TEXT,
+      approved_by TEXT,
+      approved_at TIMESTAMP,
+      locked_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_recording_budgets ON recording_budgets (label_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS recording_budget_items (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      budget_id INT NOT NULL REFERENCES recording_budgets(id) ON DELETE CASCADE,
+      section TEXT,
+      description TEXT,
+      category TEXT,
+      amount NUMERIC(12,2) DEFAULT 0
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_recording_budget_items ON recording_budget_items (budget_id)`);
 
   // Per-entry field-level change history (audit trail for the ledger).
   await pool.query(`

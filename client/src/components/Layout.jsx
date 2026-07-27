@@ -5,7 +5,7 @@ import {
   LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
-  FileClock, Shield, Lock, Sparkles, FileSignature, FileSpreadsheet, Archive, Layers, Upload,
+  FileClock, Shield, Lock, Sparkles, FileSignature, FileSpreadsheet, Archive, Layers, Upload, PiggyBank,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
@@ -21,6 +21,7 @@ const PAGE_LABELS = {
   '/my-work':    'My Work',
   '/calendar':   'Calendar',
   '/financials': 'Financials',
+  '/recording-budgets': 'Recording Budgets',
   '/recoupments':'Recoupments',
   '/recoupments/planning': 'Recoupment Planning',
   '/salary':     'Salary',
@@ -251,6 +252,7 @@ export default function Layout() {
         ...(isApprover ? [{ path: '/bulk-upload', label: 'Bulk Upload', icon: Upload }] : []),
         ...(isAdmin ? [{ path: '/archive', label: 'Archive', icon: Archive }] : []),
         ...(isApprover ? [{ path: '/financials', label: 'Financials', icon: PieChart }] : []),
+        ...(isApprover ? [{ path: '/recording-budgets', label: 'Recording Budgets', icon: PiggyBank }] : []),
         ...(isApprover ? [{ path: '/recoupments', label: 'Recoupments', icon: Wallet }] : []),
         ...(isApprover ? [{ path: '/recoupments/planning', label: 'Recoup. Planning', icon: Layers }] : []),
         ...(isAdmin ? [{ path: '/salary', label: 'Salary', icon: Banknote }] : []),
