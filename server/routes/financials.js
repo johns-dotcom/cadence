@@ -76,6 +76,65 @@ router.get('/summary', async (req, res) => {
   }
 });
 
+// GET /api/financials/analytics — 12-month trend, top vendors, per-artist P&L,
+// and this-vs-last-month deltas. All USD; voided/split-child rows excluded.
+router.get('/analytics', async (req, res) => {
+  try {
+    const monthKey = (d) => { const x = new Date(d); return `${x.getUTCFullYear()}-${String(x.getUTCMonth() + 1).padStart(2, '0')}`; };
+    const [artists, exp, inc] = await Promise.all([
+      pool.query('SELECT id, name FROM artists WHERE label_id = $1', [req.labelId]),
+      pool.query(
+        `SELECT payee, artist, amount, currency, COALESCE(payment_date, invoice_date, created_at::date) AS d
+           FROM expenses
+          WHERE label_id = $1 AND status = 'approved' AND (deleted = false OR deleted IS NULL)
+            AND parent_id IS NULL AND (voided = false OR voided IS NULL)
+            AND COALESCE(payment_date, invoice_date, created_at::date) >= (CURRENT_DATE - INTERVAL '12 months')`,
+        [req.labelId]
+      ),
+      pool.query(
+        `SELECT artist_id, amount, currency, income_date AS d FROM artist_income
+          WHERE label_id = $1 AND income_date >= (CURRENT_DATE - INTERVAL '12 months')`,
+        [req.labelId]
+      ),
+    ]);
+
+    // 12 month buckets (oldest → newest).
+    const months = [];
+    const now = new Date();
+    for (let i = 11; i >= 0; i--) { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1)); months.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`); }
+    const series = Object.fromEntries(months.map(m => [m, { month: m, income: 0, expenses: 0 }]));
+
+    const vendor = {}, spendByName = {};
+    for (const r of exp.rows) {
+      const usd = await toUSD(r.amount, r.currency, r.d);
+      const k = monthKey(r.d); if (series[k]) series[k].expenses += usd;
+      if (r.payee) vendor[r.payee] = (vendor[r.payee] || 0) + usd;
+      if (r.artist) spendByName[r.artist.toLowerCase()] = (spendByName[r.artist.toLowerCase()] || 0) + usd;
+    }
+    const incById = {};
+    for (const r of inc.rows) {
+      const usd = await toUSD(r.amount, r.currency, r.d);
+      const k = monthKey(r.d); if (series[k]) series[k].income += usd;
+      if (r.artist_id) incById[r.artist_id] = (incById[r.artist_id] || 0) + usd;
+    }
+
+    const round = (n) => Math.round((n || 0) * 100) / 100;
+    const monthlySeries = months.map(m => ({ month: m.slice(2), income: round(series[m].income), expenses: round(series[m].expenses), net: round(series[m].income - series[m].expenses) }));
+    const topVendors = Object.entries(vendor).map(([v, t]) => ({ vendor: v, total: round(t) })).sort((a, b) => b.total - a.total).slice(0, 10);
+    const byArtist = artists.rows.map(a => {
+      const spend = round(spendByName[a.name.toLowerCase()]); const income = round(incById[a.id]);
+      return { artist_id: a.id, name: a.name, spend, income, net: round(income - spend) };
+    }).filter(a => a.spend > 0 || a.income > 0).sort((a, b) => b.spend - a.spend).slice(0, 20);
+
+    const cur = monthlySeries[monthlySeries.length - 1] || { income: 0, expenses: 0, net: 0 };
+    const prev = monthlySeries[monthlySeries.length - 2] || { income: 0, expenses: 0, net: 0 };
+    res.json({ success: true, data: { monthlySeries, topVendors, byArtist, deltas: { income: round(cur.income - prev.income), expenses: round(cur.expenses - prev.expenses), net: round(cur.net - prev.net) } } });
+  } catch (error) {
+    console.error('Financials analytics error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // GET /api/financials/recoupments — per-artist recoupable spend vs income.
 router.get('/recoupments', async (req, res) => {
   try {
