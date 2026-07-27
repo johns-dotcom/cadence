@@ -52,23 +52,60 @@ export default function Ledger() {
   const [drawerEntry, setDrawerEntry] = useState(null)
   const [report1099, setReport1099] = useState(null)
 
+  // Inline edit + 20-deep undo.
+  const [editing, setEditing] = useState(null) // { id, key }
+  const [draft, setDraft] = useState('')
+  const [undoStack, setUndoStack] = useState([])
+  const [artistNames, setArtistNames] = useState([])
+
+  const beginEdit = (en, key) => { setEditing({ id: en.id, key }); setDraft(en[key] ?? '') }
+  const commitEdit = async (en, key, raw) => {
+    setEditing(null)
+    const val = key === 'amount' ? (raw === '' ? null : Number(raw)) : (raw === '' ? null : raw)
+    if (String(en[key] ?? '') === String(val ?? '')) return
+    setEntries(list => list.map(e => e.id === en.id ? { ...e, [key]: val } : e))
+    setUndoStack(s => [...s.slice(-19), { id: en.id, key, old: en[key], label: `${en.payee}: ${key}` }])
+    try { await api.patch(`/ledger/entries/${en.id}`, { [key]: val }) } catch { toast('Save failed', 'error'); load() }
+  }
+  const undoLast = async () => {
+    setUndoStack(s => {
+      const last = s[s.length - 1]; if (!last) return s
+      setEntries(list => list.map(e => e.id === last.id ? { ...e, [last.key]: last.old } : e))
+      api.patch(`/ledger/entries/${last.id}`, { [last.key]: last.old }).catch(() => load())
+      toast('Reverted')
+      return s.slice(0, -1)
+    })
+  }
+
+  // Editable cell: click to edit; Enter/blur commits, Esc cancels.
+  const EditCell = ({ en, field, kind = 'text', options, display }) => {
+    if (editing?.id === en.id && editing?.key === field) {
+      const common = { autoFocus: true, className: 'input !py-1 !px-1.5 text-sm w-full', value: draft, onChange: e => setDraft(e.target.value), onBlur: () => commitEdit(en, field, draft), onKeyDown: e => { if (e.key === 'Enter') commitEdit(en, field, draft); if (e.key === 'Escape') setEditing(null) } }
+      if (kind === 'select') return <select {...common}><option value="">—</option>{options.map(o => <option key={o}>{o}</option>)}</select>
+      if (kind === 'number') return <input type="number" step="0.01" {...common} />
+      if (kind === 'datalist') return <><input list="ledger-artists" {...common} /><datalist id="ledger-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist></>
+      return <input {...common} />
+    }
+    return <span onClick={() => beginEdit(en, field)} className="cursor-text hover:bg-brand-50/60 rounded px-1 -mx-1 block min-h-[1.25rem]" title="Click to edit">{display}</span>
+  }
+
   // ── Toggleable columns, persisted per user+workspace ──────────────────
-  const COLS = useMemo(() => [
+  const COLS = [
     { key: 'invoice_date', label: 'Date', render: en => <span className="text-gray-500 whitespace-nowrap">{formatDate(en.invoice_date)}</span> },
     { key: 'payee', label: 'Payee', render: en => <PayeeCell en={en} onFlag={() => setDrawerEntry(en)} /> },
-    { key: 'artist', label: 'Artist', render: en => <span className="text-gray-600">{en.artist || '—'}</span> },
-    { key: 'song', label: 'Song', render: en => <span className="text-gray-600">{en.song || '—'}</span> },
-    { key: 'category', label: 'Category', render: en => <span className="text-gray-600 whitespace-nowrap">{en.category || '—'}</span> },
-    { key: 'invoice_number', label: 'Invoice #', render: en => <span className="text-gray-500 whitespace-nowrap">{en.invoice_number || '—'}</span> },
-    { key: 'amount', label: 'Amount', render: en => <span className="text-ink font-medium whitespace-nowrap tabular-nums">{money(en.amount, en.currency)}</span> },
+    { key: 'artist', label: 'Artist', render: en => <EditCell en={en} field="artist" kind="datalist" display={<span className="text-gray-600">{en.artist || '—'}</span>} /> },
+    { key: 'song', label: 'Song', render: en => <EditCell en={en} field="song" display={<span className="text-gray-600">{en.song || '—'}</span>} /> },
+    { key: 'category', label: 'Category', render: en => <EditCell en={en} field="category" kind="select" options={EXPENSE_CATEGORIES} display={<span className="text-gray-600 whitespace-nowrap">{en.category || '—'}</span>} /> },
+    { key: 'invoice_number', label: 'Invoice #', render: en => <EditCell en={en} field="invoice_number" display={<span className="text-gray-500 whitespace-nowrap">{en.invoice_number || '—'}</span>} /> },
+    { key: 'amount', label: 'Amount', render: en => <EditCell en={en} field="amount" kind="number" display={<span className="text-ink font-medium whitespace-nowrap tabular-nums">{money(en.amount, en.currency)}</span>} /> },
     { key: 'status', label: 'Status', render: en => <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium capitalize ${STATUS_STYLES[en.status] || ''}`}>{en.status}</span> },
     { key: 'payment', label: 'Payment', render: en => <button onClick={() => cyclePaid(en)} title="Click to cycle" className={`text-xs font-medium hover:underline ${PAID_STYLE[en.payment_status] || PAID_STYLE.Unpaid}`}>{en.payment_status || 'Unpaid'}</button> },
-    { key: 'payment_method', label: 'Method', render: en => <span className="text-gray-500 whitespace-nowrap">{en.payment_method || '—'}</span> },
-    { key: 'rep', label: 'Rep', render: en => <span className="text-gray-500">{en.rep || '—'}</span> },
-    { key: 'recoupable', label: 'Recoup', render: en => <span className="text-gray-500">{en.recoupable ? 'Yes' : 'No'}</span> },
+    { key: 'payment_method', label: 'Method', render: en => <EditCell en={en} field="payment_method" kind="select" options={PAYMENT_METHODS} display={<span className="text-gray-500 whitespace-nowrap">{en.payment_method || '—'}</span>} /> },
+    { key: 'rep', label: 'Rep', render: en => <EditCell en={en} field="rep" display={<span className="text-gray-500">{en.rep || '—'}</span>} /> },
+    { key: 'recoupable', label: 'Recoup', render: en => <button onClick={() => commitEdit(en, 'recoupable', !en.recoupable)} className="text-gray-500 hover:text-brand-600">{en.recoupable ? 'Yes' : 'No'}</button> },
     { key: 'type', label: 'Type', render: en => <span className="text-gray-500">{en.is_reimbursement ? 'Reimb.' : 'Invoice'}</span> },
     { key: 'files', label: 'Files', render: en => <FilesCell en={en} openFile={openFile} /> },
-  ], [])
+  ]
   const ALL_KEYS = COLS.map(c => c.key)
   const DEFAULT_COLS = ['invoice_date', 'payee', 'category', 'amount', 'status', 'payment', 'files']
   const storeKey = `ledger-cols:${label?.id || 0}:${user?.id || 0}`
@@ -85,6 +122,18 @@ export default function Ledger() {
     api.get('/ledger/entries').then(res => setEntries(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
   useEffect(load, [])
+  useEffect(() => { api.get('/artists').then(r => setArtistNames((r.data.data || []).map(a => a.name).filter(Boolean))).catch(() => {}) }, [])
+
+  // Hotkey: z = undo last inline edit (ignored while typing).
+  useEffect(() => {
+    const onKey = (e) => {
+      const t = e.target
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return
+      if (e.key === 'z' && !e.metaKey && !e.ctrlKey) undoLast()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }) // eslint-disable-line
 
   // Focus deep-link: scroll + amber spotlight for a few seconds.
   const rowRefs = useRef({})
@@ -238,8 +287,8 @@ export default function Ledger() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-page/50 border-b border-divider text-left">
-                {shownCols.map(c => (
-                  <th key={c.key} onClick={() => setSortKey(c.key)} className="px-3 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap cursor-pointer select-none hover:text-gray-600">
+                {shownCols.map((c, ci) => (
+                  <th key={c.key} onClick={() => setSortKey(c.key)} className={`px-3 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap cursor-pointer select-none hover:text-gray-600 ${ci === 0 ? 'sticky left-0 z-20 bg-page' : ''}`}>
                     {c.label}{sort.key === c.key ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
                   </th>
                 ))}
@@ -248,8 +297,8 @@ export default function Ledger() {
             </thead>
             <tbody className="divide-y divide-divider">
               {filtered.map(en => (
-                <tr key={en.id} ref={el => (rowRefs.current[en.id] = el)} className={`hover:bg-gray-50 align-top transition-shadow ${en.voided ? 'opacity-50' : ''}`}>
-                  {shownCols.map(c => <td key={c.key} className="px-3 py-3">{c.render(en)}</td>)}
+                <tr key={en.id} ref={el => (rowRefs.current[en.id] = el)} className={`group hover:bg-gray-50 align-top transition-shadow ${en.voided ? 'opacity-50' : ''}`}>
+                  {shownCols.map((c, ci) => <td key={c.key} className={`px-3 py-3 ${ci === 0 ? 'sticky left-0 z-10 bg-card group-hover:bg-gray-50' : ''}`}>{c.render(en)}</td>)}
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1.5 justify-end whitespace-nowrap">
                       {en.status === 'pending' && (
@@ -276,6 +325,14 @@ export default function Ledger() {
               </tr>
             </tfoot>
           </table>
+        </div>
+      )}
+
+      {/* Undo affordance for inline edits (also: press z) */}
+      {undoStack.length > 0 && (
+        <div className="fixed bottom-6 left-6 z-[90] flex items-center gap-3 bg-card border border-rule shadow-modal rounded-xl px-4 py-2.5">
+          <span className="text-xs text-gray-500">Edited {undoStack[undoStack.length - 1].label}</span>
+          <button onClick={undoLast} className="text-xs font-semibold text-brand-600 hover:underline">Undo (z)</button>
         </div>
       )}
 
