@@ -35,6 +35,7 @@ import Approvals from './pages/Approvals'
 import Archive from './pages/Archive'
 import InvoiceSearch from './pages/InvoiceSearch'
 import AddLedgerEntry from './pages/AddLedgerEntry'
+import BulkUpload from './pages/BulkUpload'
 import Payments from './pages/Payments'
 import Vendors from './pages/Vendors'
 import CreateInvoice from './pages/CreateInvoice'
@@ -132,6 +133,7 @@ function AppContent() {
         <Route path="/ledger"       element={<AdminRoute><Ledger /></AdminRoute>} />
         <Route path="/ledger/new-invoice"       element={<AdminRoute><AddLedgerEntry mode="invoice" /></AdminRoute>} />
         <Route path="/ledger/new-reimbursement" element={<AdminRoute><AddLedgerEntry mode="reimbursement" /></AdminRoute>} />
+        <Route path="/bulk-upload"  element={<AdminRoute><BulkUpload /></AdminRoute>} />
         <Route path="/payments"     element={<AdminRoute><Payments /></AdminRoute>} />
         <Route path="/vendors"      element={<AdminRoute><Vendors /></AdminRoute>} />
         <Route path="/archive"      element={<AdminRoute><Archive /></AdminRoute>} />
