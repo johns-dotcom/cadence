@@ -31,6 +31,7 @@ import Salary from './pages/Salary'
 import Campaigns from './pages/Campaigns'
 import Ledger from './pages/Ledger'
 import Approvals from './pages/Approvals'
+import Archive from './pages/Archive'
 import AddLedgerEntry from './pages/AddLedgerEntry'
 import Payments from './pages/Payments'
 import Vendors from './pages/Vendors'
@@ -130,6 +131,7 @@ function AppContent() {
         <Route path="/ledger/new-reimbursement" element={<AdminRoute><AddLedgerEntry mode="reimbursement" /></AdminRoute>} />
         <Route path="/payments"     element={<AdminRoute><Payments /></AdminRoute>} />
         <Route path="/vendors"      element={<AdminRoute><Vendors /></AdminRoute>} />
+        <Route path="/archive"      element={<AdminRoute><Archive /></AdminRoute>} />
         <Route path="/invoices"     element={<AdminRoute><CreateInvoice /></AdminRoute>} />
         <Route path="/invoices/new" element={<AdminRoute><CreateInvoice /></AdminRoute>} />
         <Route path="/team"         element={<AdminRoute><Team /></AdminRoute>} />

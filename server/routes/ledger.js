@@ -778,14 +778,40 @@ router.post('/bulk-approve', async (req, res) => {
 // POST /api/ledger/entries/:id/restore — undo a soft delete.
 router.post('/entries/:id/restore', async (req, res) => {
   try {
+    // Un-delete (family-wide) AND revive a rejected entry back to pending.
     const { rows } = await pool.query(
-      'UPDATE expenses SET deleted = false WHERE id = $1 AND label_id = $2 RETURNING *',
+      `UPDATE expenses SET deleted = false, deleted_by = NULL, deleted_at = NULL,
+         status = CASE WHEN status = 'rejected' THEN 'pending' ELSE status END,
+         rejected_reason = CASE WHEN status = 'rejected' THEN NULL ELSE rejected_reason END
+        WHERE label_id = $2 AND COALESCE(parent_id, id) = (SELECT COALESCE(parent_id, id) FROM expenses WHERE id = $1 AND label_id = $2)
+        RETURNING *`,
       [parseInt(req.params.id, 10), req.labelId]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    bkAudit(req, parseInt(req.params.id, 10), 'restored', null);
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Restore error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/ledger/archive — rejected + soft-deleted entries with who/when
+// attribution, for review and restore (admin surface).
+router.get('/archive', requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, payee, artist, invoice_number, amount, currency, category, status, payment_status,
+              rejected_reason, approved_by, approved_at, deleted, deleted_by, deleted_at, created_at,
+              (invoice_r2_key IS NOT NULL) AS has_invoice, (w9_r2_key IS NOT NULL) AS has_w9, (receipt_r2_key IS NOT NULL) AS has_receipt
+         FROM expenses
+        WHERE label_id = $1 AND (deleted = true OR status = 'rejected')
+        ORDER BY COALESCE(deleted_at, approved_at, created_at) DESC`,
+      [req.labelId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Archive error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
@@ -1648,11 +1674,15 @@ router.post('/bulk-zip', upload.single('file'), async (req, res) => {
 // DELETE /api/ledger/entries/:id — soft delete
 router.delete('/entries/:id', async (req, res) => {
   try {
+    // Soft-delete with attribution; cascade to split children so a family
+    // disappears together (and can be restored together).
     const { rowCount } = await pool.query(
-      'UPDATE expenses SET deleted = true WHERE id = $1 AND label_id = $2',
-      [parseInt(req.params.id, 10), req.labelId]
+      `UPDATE expenses SET deleted = true, deleted_by = $3, deleted_at = NOW()
+        WHERE label_id = $2 AND COALESCE(parent_id, id) = (SELECT COALESCE(parent_id, id) FROM expenses WHERE id = $1 AND label_id = $2)`,
+      [parseInt(req.params.id, 10), req.labelId, req.user.name]
     );
     if (!rowCount) return res.status(404).json({ success: false, error: 'Entry not found' });
+    bkAudit(req, parseInt(req.params.id, 10), 'deleted', null);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete ledger entry error:', error);

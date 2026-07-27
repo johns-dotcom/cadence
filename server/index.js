@@ -449,6 +449,9 @@ const runMigrations = async () => {
   // Payment-confirmation email tracking.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_notified BOOLEAN DEFAULT FALSE`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_notified_at TIMESTAMP`);
+  // Soft-delete attribution (who/when) for the Archive + restore.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS deleted_by TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP`);
   // Hold flag (payment paused). Mutually exclusive with rush. Held rows drop
   // out of the Due Soon / Overdue payment queues.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS on_hold BOOLEAN DEFAULT FALSE`);

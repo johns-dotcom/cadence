@@ -5,7 +5,7 @@ import {
   LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
-  FileClock, Shield, Lock, Sparkles, FileSignature, FileSpreadsheet,
+  FileClock, Shield, Lock, Sparkles, FileSignature, FileSpreadsheet, Archive,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
@@ -41,6 +41,7 @@ const PAGE_LABELS = {
   '/ledger/new-reimbursement': 'Add reimbursement',
   '/payments':   'Payments',
   '/vendors':    'Vendors',
+  '/archive':    'Archive',
   '/invoices':   'Invoices',
   '/invoices/new': 'Create invoice',
   '/team':       'Team',
@@ -241,6 +242,7 @@ export default function Layout() {
         ...(isApprover ? [{ path: '/payments', label: 'Payments', icon: CreditCard }] : []),
         ...(isApprover ? [{ path: '/vendors', label: 'Vendors', icon: Building2 }] : []),
         ...(isApprover ? [{ path: '/invoices', label: 'Invoices', icon: Receipt }] : []),
+        ...(isAdmin ? [{ path: '/archive', label: 'Archive', icon: Archive }] : []),
         ...(isApprover ? [{ path: '/financials', label: 'Financials', icon: PieChart }] : []),
         ...(isApprover ? [{ path: '/recoupments', label: 'Recoupments', icon: Wallet }] : []),
         ...(isAdmin ? [{ path: '/salary', label: 'Salary', icon: Banknote }] : []),
