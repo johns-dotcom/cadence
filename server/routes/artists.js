@@ -76,13 +76,21 @@ router.get('/:id', async (req, res) => {
       [artistId, req.labelId]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Artist not found' });
-    const releases = await pool.query(
-      `SELECT id, project_name, release_date, release_type, status, cover_art_url
-       FROM releases WHERE label_id = $1 AND artist_id = $2
-       ORDER BY release_date DESC NULLS LAST`,
-      [req.labelId, artistId]
-    );
-    res.json({ success: true, data: { ...rows[0], releases: releases.rows } });
+    const [releases, contracts] = await Promise.all([
+      pool.query(
+        `SELECT id, project_name, release_date, release_type, status, cover_art_url
+         FROM releases WHERE label_id = $1 AND artist_id = $2
+         ORDER BY release_date DESC NULLS LAST`,
+        [req.labelId, artistId]
+      ),
+      pool.query(
+        `SELECT id, type, status, date_signed, expiration_date, royalty_split, advance, territory, file_name
+         FROM contracts WHERE label_id = $1 AND artist_id = $2
+         ORDER BY date_signed DESC NULLS LAST`,
+        [req.labelId, artistId]
+      ),
+    ]);
+    res.json({ success: true, data: { ...rows[0], releases: releases.rows, contracts: contracts.rows } });
   } catch (error) {
     console.error('Get artist error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });

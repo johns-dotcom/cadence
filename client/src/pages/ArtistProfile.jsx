@@ -2,12 +2,24 @@ import { useEffect, useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Pencil, X, Trash2, Plus, ExternalLink, Music,
-  Instagram, Youtube, Globe, BarChart3, Paperclip, Download, Archive, ArchiveRestore, Sparkles,
+  Instagram, Youtube, Globe, BarChart3, Paperclip, Download, Archive, ArchiveRestore, Sparkles, FileText,
 } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { DEV_LOG_TYPES } from '../constants'
+import { formatDate } from '../utils/dates'
+
+// Color-coding for development-log entry types (dot + label tint).
+const LOG_STYLE = {
+  Note:      { dot: 'bg-gray-400',    text: 'text-gray-500' },
+  Meeting:   { dot: 'bg-blue-500',    text: 'text-blue-600' },
+  Demo:      { dot: 'bg-violet-500',  text: 'text-violet-600' },
+  Offer:     { dot: 'bg-emerald-500', text: 'text-emerald-600' },
+  Call:      { dot: 'bg-cyan-500',    text: 'text-cyan-600' },
+  Feedback:  { dot: 'bg-amber-500',   text: 'text-amber-600' },
+  Milestone: { dot: 'bg-pink-500',    text: 'text-pink-600' },
+}
 
 const SOCIALS = [
   { key: 'spotify_url',     label: 'Spotify',      icon: Music },
@@ -190,6 +202,31 @@ export default function ArtistProfile() {
         ) : <p className="text-sm text-gray-400">No files attached.</p>}
       </div>
 
+      {/* Contracts */}
+      <div className="card p-4 mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-sm font-semibold text-ink inline-flex items-center gap-1.5"><FileText size={14} /> Contracts ({artist.contracts?.length || 0})</h2>
+          <Link to="/contracts" className="text-xs font-semibold text-brand-600 hover:underline">Manage →</Link>
+        </div>
+        {artist.contracts?.length ? (
+          <div className="divide-y divide-divider">
+            {artist.contracts.map(c => (
+              <div key={c.id} className="py-2 flex items-center justify-between gap-3 text-sm">
+                <div className="min-w-0">
+                  <p className="font-medium text-ink truncate">{c.type}{c.royalty_split ? ` · ${c.royalty_split}` : ''}{c.advance ? ` · ${c.advance}` : ''}</p>
+                  <p className="text-[11px] text-gray-400">
+                    {c.date_signed ? `Signed ${formatDate(c.date_signed)}` : 'Unsigned'}
+                    {c.expiration_date ? ` · expires ${formatDate(c.expiration_date)}` : ''}
+                    {c.territory ? ` · ${c.territory}` : ''}
+                  </p>
+                </div>
+                <span className={`flex-shrink-0 text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full ${c.status === 'Active' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>{c.status || '—'}</span>
+              </div>
+            ))}
+          </div>
+        ) : <p className="text-sm text-gray-400">No contracts on file.</p>}
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Releases */}
         <div>
@@ -230,10 +267,12 @@ export default function ArtistProfile() {
           </div>
           {log.length ? (
             <div className="space-y-2">
-              {log.map(e => (
+              {log.map(e => {
+                const st = LOG_STYLE[e.entry_type] || LOG_STYLE.Note
+                return (
                 <div key={e.id} className="card p-3 group">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] font-semibold text-brand-600 uppercase tracking-wide">{e.entry_type}</span>
+                    <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide ${st.text}`}><span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />{e.entry_type}</span>
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] text-gray-400">{new Date(e.log_date).toLocaleDateString()}</span>
                       <button onClick={() => deleteLog(e.id)} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-600 transition-opacity"><Trash2 size={12} /></button>
@@ -242,7 +281,8 @@ export default function ArtistProfile() {
                   <p className="text-sm text-ink whitespace-pre-line">{e.note}</p>
                   {e.author && <p className="text-[10px] text-gray-400 mt-1">— {e.author}</p>}
                 </div>
-              ))}
+                )
+              })}
             </div>
           ) : (
             <div className="card p-6 text-center"><p className="text-sm text-gray-400">No log entries yet.</p></div>
