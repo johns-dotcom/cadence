@@ -20,10 +20,14 @@ export default function Recoupments() {
   const [adding, setAdding] = useState(null)    // artistId being added to
   const [form, setForm] = useState({ payee: '', category: '', song: '', amount: '', currency: 'USD' })
 
+  const [tab, setTab] = useState('artists')
+  const [statements, setStatements] = useState([])
   const load = () => { setLoading(true); api.get('/financials/recoupments').then(r => setRows(r.data.data || [])).catch(() => {}).finally(() => setLoading(false)) }
   useEffect(load, [])
+  useEffect(() => { if (tab === 'statements') api.get('/financials/statements').then(r => setStatements(r.data.data || [])).catch(() => {}) }, [tab])
 
   const active = rows.filter(r => r.recoupable_spend > 0 || r.income > 0)
+  const byMonth = statements.reduce((g, e) => { (g[e.statement_month || 'Unstamped'] = g[e.statement_month || 'Unstamped'] || []).push(e); return g }, {})
 
   const loadDetail = (artistId) => {
     setLoadingDetail(true)
@@ -60,7 +64,40 @@ export default function Recoupments() {
     <div>
       <PageHeader title="Recoupments" subtitle="Recoupable spend vs. income — expand an artist for the detail"
         action={<Link to="/recoupments/planning" className="btn-secondary"><Plus size={15} /> Planning</Link>} />
-      {loading ? (
+
+      <div className="flex items-center gap-1 mb-4">
+        {[['artists', 'By artist'], ['statements', 'Statements']].map(([k, lbl]) => (
+          <button key={k} onClick={() => setTab(k)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition ${tab === k ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}>{lbl}</button>
+        ))}
+      </div>
+
+      {tab === 'statements' ? (
+        Object.keys(byMonth).length === 0 ? (
+          <div className="card p-10 text-center"><p className="text-sm text-gray-500">No committed statements yet. Mark entries UFR (here or in Planning) to build a statement.</p></div>
+        ) : (
+          <div className="space-y-4">
+            {Object.entries(byMonth).map(([month, items]) => (
+              <div key={month} className="card overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-2.5 border-b border-divider bg-page/50">
+                  <span className="font-semibold text-ink text-sm">Statement {month}</span>
+                  <span className="text-sm font-semibold text-ink">{money(items.reduce((s, e) => s + Number(e.amount_usd || 0), 0))}</span>
+                </div>
+                <table className="w-full text-sm"><tbody className="divide-y divide-divider">
+                  {items.map(e => (
+                    <tr key={e.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-2 text-ink">{e.artist || '—'}</td>
+                      <td className="px-4 py-2 text-gray-500">{e.song || '—'}</td>
+                      <td className="px-4 py-2 text-gray-500 truncate">{e.payee || '—'}</td>
+                      <td className="px-4 py-2 text-right text-ink tabular-nums">{money(e.amount_usd)}</td>
+                      <td className="px-4 py-2 text-right"><Link to={`/ledger?focus=${e.id}`} className="text-gray-400 hover:text-brand-600 inline-block"><ExternalLink size={13} /></Link></td>
+                    </tr>
+                  ))}
+                </tbody></table>
+              </div>
+            ))}
+          </div>
+        )
+      ) : loading ? (
         <div className="card p-2"><Skeleton.Table rows={6} cols={5} /></div>
       ) : active.length === 0 ? (
         <div className="card p-10 text-center"><p className="text-sm text-gray-500">No recoupable activity yet. Mark ledger entries as recoupable and record artist income to see balances here.</p></div>

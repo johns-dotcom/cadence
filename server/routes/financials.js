@@ -232,6 +232,28 @@ router.get('/recoupments/:artistId', async (req, res) => {
   }
 });
 
+// GET /api/financials/statements — committed (UFR) recoupable entries grouped
+// by statement month (client groups on statement_month).
+router.get('/statements', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, payee, artist, song, amount, currency, ufr_marked_at,
+              COALESCE(payment_date, invoice_date, created_at::date) AS fx_date
+         FROM expenses
+        WHERE label_id = $1 AND recoupable = TRUE AND ufr = TRUE
+          AND (deleted = false OR deleted IS NULL) AND (voided = false OR voided IS NULL) AND parent_id IS NULL
+        ORDER BY ufr_marked_at DESC`,
+      [req.labelId]
+    );
+    const out = [];
+    for (const r of rows) out.push({ ...r, amount_usd: Math.round((await toUSD(r.amount, r.currency, r.fx_date)) * 100) / 100, statement_month: statementMonthFor(r.ufr_marked_at) });
+    res.json({ success: true, data: out });
+  } catch (error) {
+    console.error('Statements error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // POST /api/financials/recoupments/:id/ufr { ufr } — toggle the statement mark.
 router.post('/recoupments/:id/ufr', async (req, res) => {
   try {
