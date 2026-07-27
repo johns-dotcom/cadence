@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Upload, Trash2, Check } from 'lucide-react'
+import { Upload, Trash2, Check, Link2, Copy, RefreshCw } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import { applyAccent, resetAccent, isValidHex, ACCENT_PRESETS } from '../utils/branding'
 import RepsManager from '../components/RepsManager'
+import PermissionsManager from '../components/PermissionsManager'
 import DataTools from '../components/DataTools'
 
 export default function Settings() {
@@ -30,6 +31,15 @@ export default function Settings() {
       setInv(d.invoice_settings || {})
     }).catch(() => {})
   }, [isAdmin])
+
+  const [vfCopied, setVfCopied] = useState(false)
+  const vendorFormUrl = `${window.location.origin}/submit/${label?.vendor_form_token || label?.slug}`
+  const copyVendorFormLink = () => navigator.clipboard.writeText(vendorFormUrl).then(() => { setVfCopied(true); setTimeout(() => setVfCopied(false), 2000) })
+  const rotateVendorFormLink = async () => {
+    if (!window.confirm('Rotate the vendor form link? The current link stops working immediately.')) return
+    try { const { data } = await api.post('/label/vendor-form-token/rotate'); updateLabel({ vendor_form_token: data.data.vendor_form_token }); toast('Vendor form link rotated') }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
 
   const setInvField = (k) => (e) => setInv(s => ({ ...s, [k]: e.target.value }))
   const saveInvoiceSettings = async (e) => {
@@ -193,6 +203,19 @@ export default function Settings() {
           </form>
         )}
 
+        {/* Vendor form link — public submission URL (admins only) */}
+        {isAdmin && (
+          <div className="card p-5">
+            <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><Link2 size={15} /> Vendor form link</h2>
+            <p className="text-xs text-gray-400 mb-3">Share this with vendors to submit invoices — no login required. Rotating it invalidates the old link everywhere.</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <code className="flex-1 min-w-[200px] text-xs bg-page border border-rule rounded-lg px-3 py-2 text-gray-600 truncate">{vendorFormUrl}</code>
+              <button onClick={copyVendorFormLink} className="btn-secondary">{vfCopied ? <><Check size={15} /> Copied</> : <><Copy size={15} /> Copy</>}</button>
+              <button onClick={rotateVendorFormLink} className="btn-secondary"><RefreshCw size={15} /> Rotate</button>
+            </div>
+          </div>
+        )}
+
         {/* Invoice details — "Funds payable to" block on issued invoices (admins only) */}
         {isAdmin && (
           <form onSubmit={saveInvoiceSettings} className="card p-5">
@@ -226,6 +249,9 @@ export default function Settings() {
             </div>
           </form>
         )}
+
+        {/* Permissions — admin only */}
+        {isAdmin && <PermissionsManager />}
 
         {/* Reps — admin only */}
         {isAdmin && <RepsManager />}

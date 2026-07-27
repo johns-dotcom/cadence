@@ -151,9 +151,12 @@ export const AuthProvider = ({ children }) => {
   // are unrestricted; a null permission set means unrestricted for everyone.
   const canView = (path) => {
     if (!user) return false
+    if (path === '/settings') return true // self-service (My Nav / Theme) — never gated
     if (['Superadmin', 'Admin', 'Approver'].includes(user.role)) return true
     if (pagePermissions === null) return true
-    return pagePermissions.includes(path)
+    // A grant on a parent path covers its carved-out subpages
+    // (e.g. '/recoupments' covers '/recoupments/planning').
+    return pagePermissions.some(p => path === p || (p !== '/' && path.startsWith(p + '/')))
   }
 
   return (

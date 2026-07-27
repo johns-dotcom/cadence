@@ -143,4 +143,50 @@ router.put('/visible-reps/:userId', requireAdmin, async (req, res) => {
   }
 });
 
+// ── Permission templates (admin-managed named page-sets) ────────────────
+
+// GET /api/settings/permission-templates — this label's saved templates.
+router.get('/permission-templates', requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, name, pages FROM permission_templates WHERE label_id = $1 ORDER BY LOWER(name)',
+      [req.labelId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('List templates error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/settings/permission-templates { name, pages } — upsert by ci-name.
+router.post('/permission-templates', requireAdmin, async (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    const pages = Array.isArray(req.body.pages) ? req.body.pages : [];
+    if (!name) return res.status(400).json({ success: false, error: 'Template name is required' });
+    const existing = await pool.query('SELECT id FROM permission_templates WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [req.labelId, name]);
+    if (existing.rows.length) {
+      await pool.query('UPDATE permission_templates SET pages = $1::jsonb, name = $2 WHERE id = $3', [JSON.stringify(pages), name, existing.rows[0].id]);
+    } else {
+      await pool.query('INSERT INTO permission_templates (label_id, name, pages, created_by) VALUES ($1,$2,$3::jsonb,$4)', [req.labelId, name, JSON.stringify(pages), req.user.name]);
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Save template error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/settings/permission-templates/:id
+router.delete('/permission-templates/:id', requireAdmin, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM permission_templates WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete template error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 module.exports = router;

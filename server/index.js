@@ -437,6 +437,18 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_aliases_uniq ON vendor_aliases (label_id, LOWER(alias))`);
+  // Admin-built permission templates — named page-sets applied to users.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS permission_templates (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      pages JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_perm_templates_uniq ON permission_templates (label_id, LOWER(name))`);
 
   // Per-entry field-level change history (audit trail for the ledger).
   await pool.query(`
