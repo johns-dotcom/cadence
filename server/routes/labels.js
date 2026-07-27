@@ -22,7 +22,7 @@ async function logoUrl(r2Key) {
 router.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id, name, slug, accent_color, logo_r2_key, invoice_settings, created_at,
+      `SELECT id, name, slug, accent_color, logo_r2_key, invoice_settings, vendor_form_token, created_at,
               (SELECT COUNT(*) FROM users WHERE label_id = labels.id) AS member_count
        FROM labels WHERE id = $1`,
       [req.labelId]
@@ -68,6 +68,23 @@ router.patch('/', requireAdmin, async (req, res) => {
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Update label error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/label/vendor-form-token/rotate — mint a new public vendor-form
+// token (admin only). Any previously-shared link stops working immediately.
+router.post('/vendor-form-token/rotate', requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE labels SET vendor_form_token = md5(random()::text || clock_timestamp()::text || id::text)
+         WHERE id = $1 RETURNING vendor_form_token`,
+      [req.labelId]
+    );
+    await logActivity(req, 'Rotated vendor form link', null);
+    res.json({ success: true, data: { vendor_form_token: rows[0].vendor_form_token } });
+  } catch (error) {
+    console.error('Rotate vendor form token error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

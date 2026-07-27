@@ -190,7 +190,8 @@ router.get('/me', authMiddleware, async (req, res) => {
       `SELECT u.id, u.label_id, u.name, u.email, u.role, u.department, u.hierarchy_level,
               u.is_platform_admin, u.platform_role, u.created_at,
               l.name AS label_name, l.slug AS label_slug,
-              l.accent_color AS label_accent_color, l.logo_r2_key
+              l.accent_color AS label_accent_color, l.logo_r2_key,
+              l.vendor_form_token AS label_vendor_form_token
        FROM users u JOIN labels l ON l.id = u.label_id
        WHERE u.id = $1 AND u.label_id = $2`,
       [req.user.id, req.user.label_id]

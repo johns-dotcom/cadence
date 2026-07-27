@@ -5,6 +5,7 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { sendEmail, inviteEmail } = require('../lib/email');
+const { checkUserDeletable, deleteUserWithSweep } = require('../lib/userDelete');
 
 const router = express.Router();
 
@@ -139,19 +140,15 @@ router.patch('/:id', requireAdmin, async (req, res) => {
   }
 });
 
-// DELETE /api/team/:id — remove a member (admin only)
+// DELETE /api/team/:id — remove a member (admin only). Guarded (last-Superadmin,
+// only-Superadmin-deletes-Admins) + dynamic FK sweep so references clear cleanly.
 router.delete('/:id', requireAdmin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    if (id === req.user.id) {
-      return res.status(400).json({ success: false, error: 'You cannot remove yourself' });
-    }
-    const { rowCount } = await pool.query(
-      'DELETE FROM users WHERE id = $1 AND label_id = $2',
-      [id, req.labelId]
-    );
-    if (!rowCount) return res.status(404).json({ success: false, error: 'User not found' });
-    await logActivity(req, 'Removed team member', `user #${id}`);
+    const guard = await checkUserDeletable(req.labelId, req.user, id);
+    if (!guard.ok) return res.status(guard.status).json({ success: false, error: guard.error });
+    await deleteUserWithSweep(req.labelId, id);
+    await logActivity(req, 'Removed team member', `user #${id} (${guard.target.role})`);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete member error:', error);

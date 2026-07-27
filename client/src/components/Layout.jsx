@@ -181,7 +181,7 @@ export default function Layout() {
   // Public vendor submission form — unique per workspace via the label slug.
   const copyVendorLink = () => {
     if (!label?.slug) return
-    const url = `${window.location.origin}/submit/${label.slug}`
+    const url = `${window.location.origin}/submit/${label.vendor_form_token || label.slug}`
     navigator.clipboard.writeText(url).then(() => {
       setVendorLinkCopied(true)
       setTimeout(() => setVendorLinkCopied(false), 2000)
@@ -330,7 +330,7 @@ export default function Layout() {
           {isApprover && label?.slug && (
             <button
               onClick={copyVendorLink}
-              title={`${window.location.origin}/submit/${label.slug}`}
+              title={`${window.location.origin}/submit/${label.vendor_form_token || label.slug}`}
               className="w-full flex items-center gap-2.5 px-3 py-2 mb-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-all border-b border-divider pb-3 rounded-b-none"
             >
               <Link2 size={16} strokeWidth={1.5} className="text-gray-400 flex-shrink-0" />

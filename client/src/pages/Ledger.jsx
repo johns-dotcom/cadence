@@ -47,7 +47,7 @@ export default function Ledger() {
   }
 
   const copyVendorLink = () => {
-    const url = `${window.location.origin}/submit/${label?.slug}`
+    const url = `${window.location.origin}/submit/${label?.vendor_form_token || label?.slug}`
     navigator.clipboard.writeText(url).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
   }
 

@@ -29,8 +29,15 @@ const submitLimiter = rateLimit({
 
 const isValidEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 
-async function labelBySlug(slug) {
-  const { rows } = await pool.query('SELECT id, name, slug, accent_color, logo_r2_key FROM labels WHERE slug = $1', [slug]);
+// Resolve a label from the public URL key. Accepts the unguessable
+// vendor_form_token (preferred) OR the legacy slug so old links keep working.
+async function labelBySlug(key) {
+  const { rows } = await pool.query(
+    `SELECT id, name, slug, accent_color, logo_r2_key FROM labels
+       WHERE vendor_form_token = $1 OR slug = $1
+       ORDER BY (vendor_form_token = $1) DESC LIMIT 1`,
+    [key]
+  );
   return rows[0] || null;
 }
 

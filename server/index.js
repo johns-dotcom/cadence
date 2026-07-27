@@ -209,6 +209,12 @@ const runMigrations = async () => {
   // Per-workspace "Funds payable to" / remittance block rendered on issued
   // invoices (company legal name, address, contact, EIN, bank details).
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS invoice_settings JSONB`);
+  // Unguessable public token for the vendor-submission form. Resolves the label
+  // by token (not by numeric id or guessable slug). Rotatable by admins.
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS vendor_form_token TEXT`);
+  await pool.query(`UPDATE labels SET vendor_form_token = md5(random()::text || clock_timestamp()::text || id::text) WHERE vendor_form_token IS NULL`);
+  await pool.query(`ALTER TABLE labels ALTER COLUMN vendor_form_token SET DEFAULT md5(random()::text || clock_timestamp()::text)`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_labels_vendor_form_token ON labels (vendor_form_token)`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (

@@ -31,7 +31,7 @@ export const AuthProvider = ({ children }) => {
       const { data } = await api.get('/auth/me')
       const u = data.data
       setUser(u)
-      setLabel({ id: u.label_id, name: u.label_name, slug: u.label_slug, accent_color: u.label_accent_color, logo_url: u.label_logo_url })
+      setLabel({ id: u.label_id, name: u.label_name, slug: u.label_slug, accent_color: u.label_accent_color, logo_url: u.label_logo_url, vendor_form_token: u.label_vendor_form_token })
       setPagePermissions(u.pagePermissions ?? null)
     } catch (error) {
       console.error('Failed to fetch user:', error)
