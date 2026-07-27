@@ -477,31 +477,48 @@ router.post('/workspaces/:id/reactivate', requirePlatformOwner, async (req, res)
 // DELETE /api/platform/workspaces/:id — permanently delete a workspace and all
 // its data. Requires the exact workspace name as confirmation in the body.
 router.delete('/workspaces/:id', requirePlatformOwner, async (req, res) => {
+  const client = await pool.connect();
   try {
     const id = parseInt(req.params.id, 10);
-    const label = await pool.query('SELECT name FROM labels WHERE id = $1', [id]);
-    if (!label.rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
+    const label = await client.query('SELECT name FROM labels WHERE id = $1', [id]);
+    if (!label.rows.length) { client.release(); return res.status(404).json({ success: false, error: 'Workspace not found' }); }
     if ((req.body.confirm || '').trim() !== label.rows[0].name) {
+      client.release();
       return res.status(400).json({ success: false, error: 'Type the exact workspace name to confirm deletion' });
     }
+
+    await client.query('BEGIN');
     // Platform operators live in `users` with a home label_id + ON DELETE
-    // CASCADE — deleting their home workspace would delete THEM. Repoint any
-    // operators homed here to another surviving workspace first. If this is the
-    // last workspace and it hosts an operator, refuse (nowhere to move them).
-    const opsHere = await pool.query('SELECT COUNT(*)::int AS n FROM users WHERE label_id = $1 AND is_platform_admin = true', [id]);
-    if (opsHere.rows[0].n > 0) {
-      const other = await pool.query('SELECT id FROM labels WHERE id <> $1 ORDER BY id LIMIT 1', [id]);
-      if (!other.rows.length) {
-        return res.status(400).json({ success: false, error: 'This is the last workspace and it hosts a platform operator — create another workspace before deleting this one.' });
+    // CASCADE — deleting their home workspace would delete THEM. Relocate each
+    // operator homed here to another workspace BEFORE the cascade. Relocation
+    // must respect UNIQUE(label_id, email): pick a target where that email is
+    // free. If the same operator already exists in another workspace, the home
+    // row here is a duplicate — let the cascade remove it (they keep the other).
+    const ops = await client.query('SELECT id, email FROM users WHERE label_id = $1 AND is_platform_admin = true', [id]);
+    for (const op of ops.rows) {
+      const dupe = await client.query(
+        `SELECT 1 FROM users WHERE LOWER(email) = LOWER($1) AND label_id <> $2 LIMIT 1`, [op.email, id]);
+      if (dupe.rows.length) continue; // exists elsewhere already — safe to drop this copy
+      const target = await client.query(
+        `SELECT id FROM labels WHERE id <> $1
+           AND NOT EXISTS (SELECT 1 FROM users u WHERE u.label_id = labels.id AND LOWER(u.email) = LOWER($2))
+         ORDER BY id LIMIT 1`, [id, op.email]);
+      if (!target.rows.length) {
+        await client.query('ROLLBACK'); client.release();
+        return res.status(400).json({ success: false, error: 'Create another workspace before deleting this one so the platform operator account can be moved to safety.' });
       }
-      await pool.query('UPDATE users SET label_id = $1 WHERE label_id = $2 AND is_platform_admin = true', [other.rows[0].id, id]);
+      await client.query('UPDATE users SET label_id = $1 WHERE id = $2', [target.rows[0].id, op.id]);
     }
     // ON DELETE CASCADE on every tenant table removes all of the label's data.
-    await pool.query('DELETE FROM labels WHERE id = $1', [id]);
+    await client.query('DELETE FROM labels WHERE id = $1', [id]);
+    await client.query('COMMIT');
     res.json({ success: true });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('Delete workspace error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 
