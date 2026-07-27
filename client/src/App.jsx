@@ -14,6 +14,7 @@ import Dashboard from './pages/Dashboard'
 import Releases from './pages/Releases'
 import ReleaseDetail from './pages/ReleaseDetail'
 import Artists from './pages/Artists'
+import Catalog from './pages/Catalog'
 import ArtistProfile from './pages/ArtistProfile'
 import Deals from './pages/Deals'
 import Contracts from './pages/Contracts'
@@ -117,6 +118,7 @@ function AppContent() {
         <Route path="/releases"     element={<Releases />} />
         <Route path="/releases/:id" element={<ReleaseDetail />} />
         <Route path="/artists"      element={<Artists />} />
+        <Route path="/catalog"      element={<Catalog />} />
         <Route path="/artists/:id"  element={<ArtistProfile />} />
         <Route path="/deals"        element={<Deals />} />
         <Route path="/contracts"    element={<AdminRoute><Contracts /></AdminRoute>} />

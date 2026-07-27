@@ -110,7 +110,7 @@ const UPDATABLE = [
   'cover_art_received', 'audio_uploaded', 'pitched_spotify', 'pitched_apple',
   'marketing_plan', 'content_ready', 'dsp_email_sent', 'lyrics_submitted',
   'pitched_amazon', 'pitched_pandora', 'youtube_video', 'official_thread',
-  'musixmatch', 'recoup_setup',
+  'musixmatch', 'recoup_setup', 'archived',
 ];
 
 // PATCH /api/releases/:id — partial update of any allowed field(s).

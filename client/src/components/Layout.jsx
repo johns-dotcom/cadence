@@ -34,6 +34,7 @@ const PAGE_LABELS = {
   '/admin-docs': 'Admin Docs',
   '/data-quality': 'Data quality',
   '/releases':   'Releases',
+  '/catalog':    'Catalog',
   '/artists':    'Artists',
   '/deals':      'Deal Pipeline',
   '/contracts':  'Contracts',
@@ -217,7 +218,8 @@ export default function Layout() {
       label: 'Catalog',
       items: [
         { path: '/releases', label: 'Releases', icon: Music },
-        { path: '/artists',  label: 'Artists',  icon: Disc3 },
+        { path: '/catalog',  label: 'Catalog',  icon: Disc3 },
+        { path: '/artists',  label: 'Artists',  icon: Users },
       ],
     },
     {
