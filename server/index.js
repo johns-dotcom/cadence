@@ -526,6 +526,29 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_bk_audit_expense ON bk_audit_log (label_id, expense_id)`);
+  // Campaign collaboration: threaded comments + reviewer assignments per expense.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS expense_comments (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      expense_id INT NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+      author TEXT,
+      body TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_expense_comments ON expense_comments (label_id, expense_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS review_assignments (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      expense_id INT NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+      assignee_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      assigned_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_review_assign_uniq ON review_assignments (label_id, expense_id, assignee_id)`);
 
   // Per-entry field-level change history (audit trail for the ledger).
   await pool.query(`

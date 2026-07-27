@@ -104,4 +104,80 @@ router.post('/entries/:id/flags', async (req, res) => {
   }
 });
 
+// ── Collaboration: comments + reviewer assignments ────────────────────────
+
+// GET /api/artist-campaigns/entries/:id/comments
+router.get('/entries/:id/comments', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, author, body, created_at FROM expense_comments WHERE label_id = $1 AND expense_id = $2 ORDER BY created_at',
+      [req.labelId, parseInt(req.params.id, 10)]
+    );
+    res.json({ success: true, data: rows });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// POST /api/artist-campaigns/entries/:id/comments { body }
+router.post('/entries/:id/comments', async (req, res) => {
+  try {
+    const body = String(req.body.body || '').trim();
+    if (!body) return res.status(400).json({ success: false, error: 'Comment is empty' });
+    const { rows } = await pool.query(
+      'INSERT INTO expense_comments (label_id, expense_id, author, body) VALUES ($1,$2,$3,$4) RETURNING id, author, body, created_at',
+      [req.labelId, parseInt(req.params.id, 10), req.user.name, body]
+    );
+    res.status(201).json({ success: true, data: rows[0] });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// GET /api/artist-campaigns/entries/:id/reviewers → assigned users
+router.get('/entries/:id/reviewers', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT ra.assignee_id, u.name FROM review_assignments ra JOIN users u ON u.id = ra.assignee_id
+        WHERE ra.label_id = $1 AND ra.expense_id = $2 ORDER BY u.name`,
+      [req.labelId, parseInt(req.params.id, 10)]
+    );
+    res.json({ success: true, data: rows });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// POST /api/artist-campaigns/entries/:id/reviewers { user_ids } — replace set.
+router.post('/entries/:id/reviewers', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const id = parseInt(req.params.id, 10);
+    const ids = Array.isArray(req.body.user_ids) ? req.body.user_ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
+    await client.query('BEGIN');
+    await client.query('DELETE FROM review_assignments WHERE label_id = $1 AND expense_id = $2', [req.labelId, id]);
+    for (const uid of ids) {
+      await client.query(
+        `INSERT INTO review_assignments (label_id, expense_id, assignee_id, assigned_by) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (label_id, expense_id, assignee_id) DO NOTHING`,
+        [req.labelId, id, uid, req.user.name]
+      );
+    }
+    await client.query('COMMIT');
+    res.json({ success: true });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  } finally { client.release(); }
+});
+
+// GET /api/artist-campaigns/review-inbox — entries assigned to the current user.
+router.get('/review-inbox', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT e.id, e.payee, e.artist, e.song, e.amount, e.currency,
+              (SELECT COUNT(*)::int FROM expense_comments c WHERE c.expense_id = e.id) AS comments
+         FROM review_assignments ra JOIN expenses e ON e.id = ra.expense_id
+        WHERE ra.label_id = $1 AND ra.assignee_id = $2 AND (e.deleted = false OR e.deleted IS NULL)
+        ORDER BY ra.created_at DESC`,
+      [req.labelId, req.user.id]
+    );
+    res.json({ success: true, data: rows });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
 module.exports = router;
