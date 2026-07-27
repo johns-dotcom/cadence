@@ -4,6 +4,8 @@ const rateLimit = require('express-rate-limit');
 const pool = require('../db');
 const { uploadFile, getSignedFileUrl } = require('../lib/r2');
 const { upsertVendor } = require('../lib/vendors');
+const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
+const aiScan = require('../lib/aiScan');
 const claude = require('../lib/claude');
 
 const router = express.Router();
@@ -47,9 +49,10 @@ router.get('/:slug', async (req, res) => {
     const label = await labelBySlug(req.params.slug);
     if (!label) return res.status(404).json({ success: false, error: 'Workspace not found' });
     const logo_url = label.logo_r2_key ? await getSignedFileUrl(label.logo_r2_key, 6 * 3600).catch(() => null) : null;
+    const reps = await pool.query(`SELECT name FROM reps WHERE label_id = $1 AND active = TRUE ORDER BY LOWER(name)`, [label.id]).catch(() => ({ rows: [] }));
     res.json({
       success: true,
-      data: { name: label.name, slug: label.slug, accent_color: label.accent_color, logo_url },
+      data: { name: label.name, slug: label.slug, accent_color: label.accent_color, logo_url, reps: reps.rows.map(r => r.name) },
     });
   } catch (error) {
     console.error('Vendor context error:', error);
@@ -72,6 +75,72 @@ router.post('/:slug/parse-invoice', submitLimiter, upload.single('invoice_file')
     console.error('Vendor parse error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
+});
+
+// Resolve a vendor name to its canonical form (walk one alias level).
+async function canonicalVendor(labelId, name) {
+  const { rows } = await pool.query('SELECT canonical FROM vendor_aliases WHERE label_id = $1 AND LOWER(alias) = LOWER($2) LIMIT 1', [labelId, name]);
+  return rows[0]?.canonical || name;
+}
+
+// GET /api/vendor/:slug/w9-status?name= — does this vendor already have a W9 on
+// file (so the form can skip the upload requirement)? Alias-aware.
+router.get('/:slug/w9-status', async (req, res) => {
+  try {
+    const label = await labelBySlug(req.params.slug);
+    if (!label) return res.status(404).json({ success: false, error: 'Workspace not found' });
+    const name = String(req.query.name || '').trim();
+    if (!name) return res.json({ success: true, data: { on_file: false } });
+    const canonical = await canonicalVendor(label.id, name);
+    const { rows } = await pool.query(
+      `SELECT 1 FROM vendors WHERE label_id = $1 AND LOWER(name) IN (LOWER($2), LOWER($3)) AND w9_r2_key IS NOT NULL
+       UNION ALL
+       SELECT 1 FROM expenses WHERE label_id = $1 AND LOWER(vendor_name) IN (LOWER($2), LOWER($3))
+         AND w9_r2_key IS NOT NULL AND (deleted = false OR deleted IS NULL) LIMIT 1`,
+      [label.id, name, canonical]
+    );
+    res.json({ success: true, data: { on_file: rows.length > 0 } });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// GET /api/vendor/:slug/check-dup?email=&name=&invoice_number=&amount= — warn on
+// a likely duplicate (normalized invoice# against this vendor's email OR name)
+// or a same-amount near-duplicate.
+router.get('/:slug/check-dup', async (req, res) => {
+  try {
+    const label = await labelBySlug(req.params.slug);
+    if (!label) return res.status(404).json({ success: false, error: 'Workspace not found' });
+    const email = String(req.query.email || '').trim().toLowerCase();
+    const name = String(req.query.name || '').trim().toLowerCase();
+    const key = normalizeInvoiceNum(req.query.invoice_number);
+    const amount = parseFloat(req.query.amount) || null;
+    if (!email && !name) return res.json({ success: true, data: { duplicate: false, similar: false } });
+    const { rows } = await pool.query(
+      `SELECT invoice_number, amount, invoice_date FROM expenses
+        WHERE label_id = $1 AND status != 'rejected' AND (deleted = false OR deleted IS NULL)
+          AND (LOWER(vendor_email) = $2 OR LOWER(vendor_name) = $3)`,
+      [label.id, email, name]
+    );
+    const duplicate = key ? rows.some(r => normalizeInvoiceNum(r.invoice_number) === key) : false;
+    const similar = amount ? rows.some(r => Math.abs(Number(r.amount) - amount) < 0.01) : false;
+    res.json({ success: true, data: { duplicate, similar } });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// POST /api/vendor/:slug/check-invoice-number — invoice-number gate. Extracts
+// the number from the uploaded file and compares (normalized) to what was
+// entered. FAILS OPEN (matches:true) if AI is unavailable or errors.
+router.post('/:slug/check-invoice-number', submitLimiter, upload.single('invoice_file'), async (req, res) => {
+  try {
+    const label = await labelBySlug(req.params.slug);
+    if (!label) return res.status(404).json({ success: false, error: 'Workspace not found' });
+    const entered = normalizeInvoiceNum(req.body.invoice_number);
+    if (!entered || !req.file || !claude.isEnabled()) return res.json({ success: true, data: { matches: true, checked: false } });
+    const r = await claude.parseInvoice({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+    if (!r.ok || r.data?.invoice_number == null) return res.json({ success: true, data: { matches: true, checked: false } });
+    const doc = normalizeInvoiceNum(r.data.invoice_number);
+    res.json({ success: true, data: { matches: doc === entered, checked: true, document_number: r.data.invoice_number } });
+  } catch { res.json({ success: true, data: { matches: true, checked: false } }); }
 });
 
 // POST /api/vendor/:slug/submit — create a pending ledger entry for the label.
@@ -125,15 +194,27 @@ router.post('/:slug/submit', submitLimiter, fileFields, async (req, res) => {
       if (!rows.length) return res.status(400).json({ success: false, error: 'Please upload your W9 / W8 form.' });
     }
 
-    // Duplicate guard — same vendor email + invoice number in this label.
-    const dup = await pool.query(
-      `SELECT 1 FROM expenses WHERE label_id = $1 AND LOWER(vendor_email) = LOWER($2)
-         AND LOWER(invoice_number) = LOWER($3) AND status != 'rejected'
-         AND (deleted = false OR deleted IS NULL) LIMIT 1`,
-      [labelId, vendorEmail, invoiceNum]
+    // Duplicate guard — normalized invoice number against this vendor's email
+    // OR name (so "INV-0012" and "12" collide).
+    const dupKey = normalizeInvoiceNum(invoiceNum);
+    const dupRows = await pool.query(
+      `SELECT invoice_number FROM expenses WHERE label_id = $1 AND status != 'rejected'
+         AND (deleted = false OR deleted IS NULL)
+         AND (LOWER(vendor_email) = LOWER($2) OR LOWER(vendor_name) = LOWER($3))`,
+      [labelId, vendorEmail, vendorName]
     );
-    if (dup.rows.length) {
+    if (dupKey && dupRows.rows.some(r => normalizeInvoiceNum(r.invoice_number) === dupKey)) {
       return res.status(409).json({ success: false, error: 'We already have a submission from you with that invoice number.' });
+    }
+
+    // Invoice-number gate — the entered number must match the document. Fails
+    // OPEN when AI is unavailable so a scan outage never blocks a real vendor.
+    if (claude.isEnabled()) {
+      const parsed = await claude.parseInvoice({ buffer: invoiceFile.buffer, mimeType: invoiceFile.mimetype }).catch(() => null);
+      const docNum = parsed?.ok ? parsed.data?.invoice_number : null;
+      if (docNum != null && normalizeInvoiceNum(docNum) !== dupKey) {
+        return res.status(400).json({ success: false, error: `The invoice number you entered (${invoiceNum}) doesn't match the document (${docNum}). Please correct it.` });
+      }
     }
 
     // Store files in R2 (tenant-namespaced).
@@ -168,11 +249,43 @@ router.post('/:slug/submit', submitLimiter, fileFields, async (req, res) => {
       ]
     );
 
+    // Song + socials (not in the base insert positional list).
+    const song = (b.song || '').trim();
+    const socials = (b.socials || '').trim();
+    if (song || socials) {
+      pool.query(
+        `UPDATE expenses SET song = COALESCE(NULLIF($1,''), song),
+           notes = TRIM(COALESCE(notes,'') || CASE WHEN $2 <> '' THEN E'\nSocials: ' || $2 ELSE '' END)
+         WHERE id = $3 AND label_id = $4`,
+        [song, socials, rows[0].id, labelId]
+      ).catch(() => {});
+    }
+
     // Keep the vendor record current (contact + W9 for next time).
     upsertVendor(pool, labelId, {
       name: vendorName, email: vendorEmail, address: vendorAddress, bank: vendorBank,
       w9_r2_key: w9Key, w9_filename: w9Name,
     }).catch(() => {});
+
+    // Save up to 4 extra emails against the vendor (auto-CC'd on confirmations).
+    let extra = [];
+    try { extra = JSON.parse(b.extra_emails || '[]'); } catch { extra = String(b.extra_emails || '').split(/[,;]/); }
+    for (const raw of (Array.isArray(extra) ? extra : []).slice(0, 4)) {
+      const em = String(raw || '').trim();
+      if (em && isValidEmail(em) && em.toLowerCase() !== vendorEmail.toLowerCase()) {
+        pool.query(
+          `INSERT INTO vendor_emails (label_id, vendor, email, created_by) VALUES ($1,$2,$3,'Vendor form')
+           ON CONFLICT (label_id, LOWER(vendor), LOWER(email)) DO NOTHING`,
+          [labelId, vendorName, em]
+        ).catch(() => {});
+      }
+    }
+
+    // Background AI discrepancy scans (fire-and-forget; no key = graceful no-op).
+    if (claude.isEnabled()) {
+      aiScan.rescanInvoice(labelId, rows[0].id).catch(() => {});
+      if (w9Key) aiScan.rescanW9(labelId, rows[0].id).catch(() => {});
+    }
 
     // Audit it in the label's activity feed.
     pool.query(

@@ -174,6 +174,29 @@ if (process.env.NODE_ENV === 'production') {
       }
     },
   }));
+  // Public vendor form: serve index.html with the label's title/OG tags injected
+  // so a shared /submit/<token> link unfurls as that label's vendor form.
+  const fs = require('fs');
+  const ogEsc = (s) => String(s || '').replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+  app.get('/submit/:token', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    try {
+      const { rows } = await pool.query('SELECT name FROM labels WHERE vendor_form_token = $1 OR slug = $1 LIMIT 1', [req.params.token]);
+      let html = fs.readFileSync(path.join(clientDist, 'index.html'), 'utf8');
+      if (rows[0]) {
+        const title = `Submit an invoice to ${rows[0].name}`;
+        const desc = `${rows[0].name} uses Cadence to collect vendor invoices. Submit yours securely — no account needed.`;
+        const tags = `<title>${ogEsc(title)}</title>`
+          + `<meta name="description" content="${ogEsc(desc)}"/>`
+          + `<meta property="og:title" content="${ogEsc(title)}"/>`
+          + `<meta property="og:description" content="${ogEsc(desc)}"/>`
+          + `<meta property="og:type" content="website"/>`
+          + `<meta name="twitter:card" content="summary"/>`;
+        html = html.replace(/<title>.*?<\/title>/i, '').replace('</head>', `${tags}</head>`);
+      }
+      res.type('html').send(html);
+    } catch { res.sendFile(path.join(clientDist, 'index.html')); }
+  });
   app.get('*', (req, res) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.sendFile(path.join(clientDist, 'index.html'));
