@@ -58,7 +58,8 @@ export default function Recoupments() {
 
   return (
     <div>
-      <PageHeader title="Recoupments" subtitle="Recoupable spend vs. income — expand an artist for the detail" />
+      <PageHeader title="Recoupments" subtitle="Recoupable spend vs. income — expand an artist for the detail"
+        action={<Link to="/recoupments/planning" className="btn-secondary"><Plus size={15} /> Planning</Link>} />
       {loading ? (
         <div className="card p-2"><Skeleton.Table rows={6} cols={5} /></div>
       ) : active.length === 0 ? (

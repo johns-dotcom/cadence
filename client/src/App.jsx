@@ -27,6 +27,7 @@ import MyWork from './pages/MyWork'
 import Calendar from './pages/Calendar'
 import Financials from './pages/Financials'
 import Recoupments from './pages/Recoupments'
+import RecoupmentPlanning from './pages/RecoupmentPlanning'
 import Salary from './pages/Salary'
 import Campaigns from './pages/Campaigns'
 import Ledger from './pages/Ledger'
@@ -124,6 +125,7 @@ function AppContent() {
         <Route path="/admin-docs"   element={<AdminRoute><AdminDocs /></AdminRoute>} />
         <Route path="/financials"   element={<AdminRoute><Financials /></AdminRoute>} />
         <Route path="/recoupments"  element={<AdminRoute><Recoupments /></AdminRoute>} />
+        <Route path="/recoupments/planning" element={<AdminRoute><RecoupmentPlanning /></AdminRoute>} />
         <Route path="/salary"       element={<AdminRoute><Salary /></AdminRoute>} />
         <Route path="/marketing"    element={<Campaigns />} />
         <Route path="/approvals"    element={<AdminRoute><Approvals /></AdminRoute>} />

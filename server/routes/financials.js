@@ -190,6 +190,46 @@ router.post('/recoupments/:id/ufr', async (req, res) => {
   }
 });
 
+// GET /api/financials/planning — recoupable entries not yet marked UFR, across
+// all artists, for staged batch statement commits. Grouped client-side.
+router.get('/planning', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, payee, artist, song, category, amount, currency, invoice_date, payment_date, payment_status, created_at
+         FROM expenses
+        WHERE label_id = $1 AND recoupable = TRUE AND status = 'approved' AND (ufr = false OR ufr IS NULL)
+          AND (deleted = false OR deleted IS NULL) AND parent_id IS NULL AND (voided = false OR voided IS NULL)
+          AND artist IS NOT NULL AND artist <> ''
+        ORDER BY LOWER(artist), LOWER(COALESCE(song,'')), COALESCE(payment_date, invoice_date, created_at::date) DESC`,
+      [req.labelId]
+    );
+    const out = [];
+    for (const r of rows) out.push({ ...r, amount_usd: Math.round((await toUSD(r.amount, r.currency, r.payment_date || r.invoice_date || r.created_at)) * 100) / 100 });
+    res.json({ success: true, data: out });
+  } catch (error) {
+    console.error('Planning error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/financials/recoupments/ufr-bulk { ids } — commit a batch of entries
+// to a statement (mark UFR, stamped now).
+router.post('/recoupments/ufr-bulk', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
+    const { rowCount } = await pool.query(
+      `UPDATE expenses SET ufr = TRUE, ufr_marked_at = NOW() WHERE label_id = $1 AND id = ANY($2::int[])`,
+      [req.labelId, ids]
+    );
+    await logActivity(req, 'Committed recoupment statement', `${rowCount} entries`);
+    res.json({ success: true, data: { committed: rowCount } });
+  } catch (error) {
+    console.error('UFR bulk error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // POST /api/financials/recoupments/add-expense — add a recoupable expense to an
 // artist straight from Recoupments (auto-approved, recoupable, source-stamped).
 router.post('/recoupments/add-expense', async (req, res) => {

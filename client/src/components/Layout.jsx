@@ -5,7 +5,7 @@ import {
   LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
-  FileClock, Shield, Lock, Sparkles, FileSignature, FileSpreadsheet, Archive,
+  FileClock, Shield, Lock, Sparkles, FileSignature, FileSpreadsheet, Archive, Layers,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
@@ -22,6 +22,7 @@ const PAGE_LABELS = {
   '/calendar':   'Calendar',
   '/financials': 'Financials',
   '/recoupments':'Recoupments',
+  '/recoupments/planning': 'Recoupment Planning',
   '/salary':     'Salary',
   '/marketing':  'Marketing',
   '/pending-contracts': 'Pending Contracts',
@@ -247,6 +248,7 @@ export default function Layout() {
         ...(isAdmin ? [{ path: '/archive', label: 'Archive', icon: Archive }] : []),
         ...(isApprover ? [{ path: '/financials', label: 'Financials', icon: PieChart }] : []),
         ...(isApprover ? [{ path: '/recoupments', label: 'Recoupments', icon: Wallet }] : []),
+        ...(isApprover ? [{ path: '/recoupments/planning', label: 'Recoup. Planning', icon: Layers }] : []),
         ...(isAdmin ? [{ path: '/salary', label: 'Salary', icon: Banknote }] : []),
       ],
     },
