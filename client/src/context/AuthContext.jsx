@@ -35,7 +35,10 @@ export const AuthProvider = ({ children }) => {
       setPagePermissions(u.pagePermissions ?? null)
     } catch (error) {
       console.error('Failed to fetch user:', error)
-      logout()
+      // Only end the session on a real auth failure (401 — the interceptor also
+      // handles the redirect). A transient 5xx/network error must NOT nuke a
+      // valid session, or a blip logs the user out.
+      if (error.response?.status === 401) logout()
     } finally {
       setLoading(false)
     }

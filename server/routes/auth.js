@@ -186,6 +186,11 @@ router.post('/register', authMiddleware, async (req, res) => {
 // ── GET /api/auth/me ────────────────────────────────────────────────────
 router.get('/me', authMiddleware, async (req, res) => {
   try {
+    // Platform operators aren't pinned to a tenant: resolve by user id and join
+    // to their CURRENT home label, so a deleted/changed home workspace never
+    // 404s them (which the client would treat as a logout). Regular members
+    // stay pinned to the token's label.
+    const isOp = !!req.user.is_platform_admin;
     const result = await pool.query(
       `SELECT u.id, u.label_id, u.name, u.email, u.role, u.department, u.hierarchy_level,
               u.is_platform_admin, u.platform_role, u.created_at,
@@ -193,8 +198,8 @@ router.get('/me', authMiddleware, async (req, res) => {
               l.accent_color AS label_accent_color, l.logo_r2_key,
               l.vendor_form_token AS label_vendor_form_token
        FROM users u JOIN labels l ON l.id = u.label_id
-       WHERE u.id = $1 AND u.label_id = $2`,
-      [req.user.id, req.user.label_id]
+       WHERE u.id = $1 ${isOp ? '' : 'AND u.label_id = $2'}`,
+      isOp ? [req.user.id] : [req.user.id, req.user.label_id]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'User not found' });
@@ -211,7 +216,7 @@ router.get('/me', authMiddleware, async (req, res) => {
 
     const permsResult = await pool.query(
       'SELECT page FROM user_page_permissions WHERE user_id = $1 AND label_id = $2 ORDER BY page',
-      [req.user.id, req.user.label_id]
+      [req.user.id, me.label_id]
     );
     const pagePermissions = permsResult.rows.length > 0 ? permsResult.rows.map(r => r.page) : null;
 
