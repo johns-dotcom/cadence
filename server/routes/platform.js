@@ -491,25 +491,27 @@ router.delete('/workspaces/:id', requirePlatformOwner, async (req, res) => {
 
     await client.query('BEGIN');
     // Platform operators live in `users` with a home label_id + ON DELETE
-    // CASCADE — deleting their home workspace would delete THEM. Relocate each
-    // operator homed here to another workspace BEFORE the cascade. Relocation
-    // must respect UNIQUE(label_id, email): pick a target where that email is
-    // free. If the same operator already exists in another workspace, the home
-    // row here is a duplicate — let the cascade remove it (they keep the other).
-    const ops = await client.query('SELECT id, email FROM users WHERE label_id = $1 AND is_platform_admin = true', [id]);
-    for (const op of ops.rows) {
-      const dupe = await client.query(
-        `SELECT 1 FROM users WHERE LOWER(email) = LOWER($1) AND label_id <> $2 LIMIT 1`, [op.email, id]);
-      if (dupe.rows.length) continue; // exists elsewhere already — safe to drop this copy
-      const target = await client.query(
-        `SELECT id FROM labels WHERE id <> $1
-           AND NOT EXISTS (SELECT 1 FROM users u WHERE u.label_id = labels.id AND LOWER(u.email) = LOWER($2))
-         ORDER BY id LIMIT 1`, [id, op.email]);
-      if (!target.rows.length) {
-        await client.query('ROLLBACK'); client.release();
-        return res.status(400).json({ success: false, error: 'Create another workspace before deleting this one so the platform operator account can be moved to safety.' });
+    // CASCADE — deleting their home workspace would delete THEM (and kill the
+    // session bound to that exact row). So we NEVER let an operator row be
+    // cascade-deleted: each operator homed here is MOVED (id preserved, so the
+    // session survives) to Platform HQ. Any duplicate of that email already in
+    // HQ is removed first to satisfy UNIQUE(label_id, email) — we keep the row
+    // that was actually in use here rather than a stale duplicate.
+    let target = await client.query(`SELECT id FROM labels WHERE is_system = true ORDER BY id LIMIT 1`);
+    if (!target.rows.length) {
+      target = await client.query(
+        `INSERT INTO labels (name, slug, status, is_system, created_at)
+         VALUES ('Platform HQ', 'platform-hq', 'active', true, NOW())
+         ON CONFLICT (slug) DO UPDATE SET is_system = true RETURNING id`
+      );
+    }
+    const hqId = target.rows[0].id;
+    if (hqId !== id) {
+      const ops = await client.query('SELECT id, email FROM users WHERE label_id = $1 AND is_platform_admin = true', [id]);
+      for (const op of ops.rows) {
+        await client.query('DELETE FROM users WHERE label_id = $1 AND LOWER(email) = LOWER($2) AND id <> $3', [hqId, op.email, op.id]);
+        await client.query('UPDATE users SET label_id = $1 WHERE id = $2', [hqId, op.id]);
       }
-      await client.query('UPDATE users SET label_id = $1 WHERE id = $2', [target.rows[0].id, op.id]);
     }
     // ON DELETE CASCADE on every tenant table removes all of the label's data.
     await client.query('DELETE FROM labels WHERE id = $1', [id]);
