@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2, FileClock } from 'lucide-react'
+import { Plus, Trash2, FileClock, CheckCircle2 } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { CONTRACT_TYPES } from '../constants'
+import { localDateStr } from '../utils/dates'
 
 const STATUSES = ['Not Sent', 'Sent', 'In Review', 'Signed']
 const STATUS_STYLE = {
@@ -34,6 +35,20 @@ export default function PendingContracts() {
   const remove = async (id) => {
     if (!window.confirm('Delete this pending contract?')) return
     try { await api.delete(`/pending-contracts/${id}`); load() } catch { toast('Failed', 'error') }
+  }
+
+  // Counter-signed → promote into an Active contract, then clear the pending row.
+  const promote = async (r) => {
+    if (!window.confirm(`Promote "${r.counterparty}" to an active contract?`)) return
+    try {
+      await api.post('/contracts', {
+        type: r.type || 'Recording', status: 'Active', date_signed: localDateStr(),
+        notes: `Counterparty: ${r.counterparty}${r.notes ? `\n${r.notes}` : ''}`,
+      })
+      await api.delete(`/pending-contracts/${r.id}`)
+      toast('Promoted to active contract')
+      load()
+    } catch (err) { toast(err.response?.data?.error || 'Failed to promote', 'error') }
   }
 
   return (
@@ -83,7 +98,12 @@ export default function PendingContracts() {
                       {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </td>
-                  <td className="px-4 py-3 text-right"><button onClick={() => remove(r.id)} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-600 transition-opacity"><Trash2 size={14} /></button></td>
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    {r.status === 'Signed' && (
+                      <button onClick={() => promote(r)} title="Promote to active contract" className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 px-2"><CheckCircle2 size={13} /> Activate</button>
+                    )}
+                    <button onClick={() => remove(r.id)} className="text-gray-300 hover:text-red-600 px-1.5"><Trash2 size={14} /></button>
+                  </td>
                 </tr>
               ))}
             </tbody>

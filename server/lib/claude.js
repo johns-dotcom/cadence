@@ -99,6 +99,18 @@ const INVOICE_SCHEMA = {
   required: ['vendor_name', 'amount', 'currency', 'invoice_number', 'invoice_date', 'description', 'category', 'payment_method'],
 };
 
+// Draft a contract clause from a kind + freeform context. Plain-prose output
+// (no schema). Returns { ok, text?, disabled?, error? }.
+function draftClause({ kind, context, labelName }) {
+  const system = 'You are a music-industry legal assistant helping a record label draft contract clauses. '
+    + 'Write clear, professional, plain-English clause text suitable for a recording or artist agreement. '
+    + 'Output ONLY the clause text itself — no headings, preamble, disclaimers, or markdown. '
+    + 'Keep it balanced and reasonable; do not invent specific dollar figures or dates unless supplied in the context.';
+  const text = `Draft a "${kind}" clause${labelName ? ` for ${labelName}` : ''}.`
+    + (context && String(context).trim() ? ` Context / terms to incorporate: ${String(context).trim()}` : '');
+  return callClaude({ system, content: [{ type: 'text', text }], maxTokens: 900 });
+}
+
 // Parse an invoice document/image into structured fields for auto-fill.
 function parseInvoice({ buffer, mimeType }) {
   return extractFromFile({
@@ -178,4 +190,4 @@ function parseMarketing({ buffer, mimeType }) {
   });
 }
 
-module.exports = { isEnabled, callClaude, extractFromFile, fileBlock, MODEL, parseInvoice, scanInvoice, validateW9, parseMarketing };
+module.exports = { isEnabled, callClaude, extractFromFile, fileBlock, MODEL, parseInvoice, scanInvoice, validateW9, parseMarketing, draftClause };

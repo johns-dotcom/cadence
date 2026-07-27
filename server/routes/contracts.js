@@ -5,6 +5,7 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { uploadFile, getSignedFileUrl, deleteFile } = require('../lib/r2');
+const { draftClause, isEnabled: aiEnabled } = require('../lib/claude');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -19,6 +20,22 @@ const UPDATABLE = [
   'artist_id', 'type', 'status', 'date_signed', 'expiration_date',
   'royalty_split', 'advance', 'territory', 'num_releases', 'notes',
 ];
+
+// POST /api/contracts/draft-clause — AI-assisted clause drafting. Degrades
+// gracefully (503 with a clear message) when no ANTHROPIC_API_KEY is set.
+router.post('/draft-clause', async (req, res) => {
+  try {
+    const { kind, context } = req.body || {};
+    if (!kind || !String(kind).trim()) return res.status(400).json({ success: false, error: 'Clause kind is required' });
+    if (!aiEnabled()) return res.status(503).json({ success: false, error: 'AI drafting is not configured on this workspace.' });
+    const result = await draftClause({ kind: String(kind).trim(), context });
+    if (!result.ok) return res.status(502).json({ success: false, error: result.error || 'Drafting failed' });
+    res.json({ success: true, data: { text: result.text } });
+  } catch (error) {
+    console.error('Draft clause error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
 
 // GET /api/contracts — all contracts for the label (with artist name)
 router.get('/', async (req, res) => {

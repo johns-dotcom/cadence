@@ -1,9 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Plus, FileText, Upload, Trash2, Download } from 'lucide-react'
+import { Plus, FileText, Upload, Trash2, Download, Sparkles, Loader2 } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { CONTRACT_TYPES, CONTRACT_STATUSES } from '../constants'
+
+const CLAUSE_KINDS = [
+  'Recording royalty', 'Advance & recoupment', 'Term & option periods', 'Delivery commitment',
+  'Territory', 'Exclusivity', 'Mechanical royalties', 'Publishing split', 'Termination', 'Confidentiality',
+]
 
 const STATUS_STYLES = {
   Active:     'bg-emerald-100 text-emerald-700',
@@ -20,6 +25,24 @@ export default function Contracts() {
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ artist_id: '', type: 'Recording', status: 'Active', date_signed: '', expiration_date: '', royalty_split: '', advance: '', territory: '', num_releases: '', notes: '' })
   const [saving, setSaving] = useState(false)
+  const [aiKind, setAiKind] = useState(CLAUSE_KINDS[0])
+  const [aiContext, setAiContext] = useState('')
+  const [aiBusy, setAiBusy] = useState(false)
+
+  const draftClause = async () => {
+    setAiBusy(true)
+    try {
+      const { data } = await api.post('/contracts/draft-clause', { kind: aiKind, context: aiContext })
+      const clause = data.data?.text?.trim()
+      if (clause) {
+        setForm(f => ({ ...f, notes: f.notes ? `${f.notes}\n\n${aiKind.toUpperCase()}\n${clause}` : `${aiKind.toUpperCase()}\n${clause}` }))
+        setAiContext('')
+        toast('Clause drafted — review and edit in Notes')
+      }
+    } catch (err) {
+      toast(err.response?.data?.error || 'Drafting failed', 'error')
+    } finally { setAiBusy(false) }
+  }
 
   const load = () => {
     setLoading(true)
@@ -95,7 +118,16 @@ export default function Contracts() {
           <div><label className="label">Advance</label><input className="input" value={form.advance} onChange={set('advance')} /></div>
           <div><label className="label">Territory</label><input className="input" value={form.territory} onChange={set('territory')} placeholder="e.g. Worldwide" /></div>
           <div><label className="label"># Releases</label><input className="input" value={form.num_releases} onChange={set('num_releases')} /></div>
-          <div className="lg:col-span-3"><label className="label">Notes</label><textarea className="input" rows={2} value={form.notes} onChange={set('notes')} /></div>
+          <div className="lg:col-span-3 rounded-xl border border-dashed border-rule bg-page/40 p-3">
+            <div className="flex items-center gap-1.5 mb-2"><Sparkles size={14} className="text-brand-600" /><span className="text-xs font-semibold text-ink">Draft a clause with AI</span></div>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="w-44"><label className="label">Clause</label><select className="input !py-1.5 text-sm" value={aiKind} onChange={e => setAiKind(e.target.value)}>{CLAUSE_KINDS.map(k => <option key={k}>{k}</option>)}</select></div>
+              <div className="flex-1 min-w-[180px]"><label className="label">Terms / context (optional)</label><input className="input !py-1.5 text-sm" value={aiContext} onChange={e => setAiContext(e.target.value)} placeholder="e.g. 18% royalty, 2 albums, recoupable advance" /></div>
+              <button type="button" onClick={draftClause} disabled={aiBusy} className="btn-secondary !py-1.5">{aiBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {aiBusy ? 'Drafting…' : 'Generate'}</button>
+            </div>
+            <p className="text-[11px] text-gray-400 mt-1.5">Generated clauses are appended to Notes for review. AI features require a configured key.</p>
+          </div>
+          <div className="lg:col-span-3"><label className="label">Notes / clauses</label><textarea className="input" rows={4} value={form.notes} onChange={set('notes')} /></div>
           <div><button type="submit" disabled={saving} className="btn-primary w-full">{saving ? 'Saving…' : 'Add contract'}</button></div>
         </form>
       )}
