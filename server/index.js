@@ -1020,25 +1020,34 @@ async function recoverAdmin() {
     const hqRes = await pool.query(`SELECT id FROM labels WHERE is_system = true ORDER BY id LIMIT 1`);
     const hqId = hqRes.rows[0]?.id;
     if (!hqId) { console.error('[recover] no Platform HQ yet — skipping'); return; }
+
+    // IDEMPOTENT: if the HQ account already exists with this exact password, do
+    // NOTHING — importantly, never bump token_version, or a redeploy would kill
+    // the operator's live session (that was the repeat-signout bug).
+    const ex = await pool.query('SELECT id, password_hash, is_platform_admin, platform_role FROM users WHERE label_id = $1 AND LOWER(email) = $2', [hqId, email]);
+    if (ex.rows.length) {
+      const row = ex.rows[0];
+      const already = row.password_hash && await bcrypt.compare(pw, row.password_hash);
+      if (already && row.is_platform_admin && row.platform_role === 'owner') {
+        console.log(`[recover] ${email} already restored — no-op`);
+        return;
+      }
+      const hash = already ? row.password_hash : await bcrypt.hash(pw, 10);
+      await pool.query(
+        `UPDATE users SET password_hash = $1, is_platform_admin = TRUE, platform_role = 'owner', invite_token = NULL, invite_expires = NULL WHERE id = $2`,
+        [hash, row.id]
+      );
+      console.log(`[recover] platform owner ${email} restored in Platform HQ (remove RECOVER_* env now)`);
+      return;
+    }
+    // No HQ account yet — create it (fresh row; no session to preserve).
     const hash = await bcrypt.hash(pw, 10);
-    // Point any existing account(s) for this email away from ambiguity: make the
-    // HQ row canonical. Reset password + owner on it; bump token_version.
     await pool.query(
-      `INSERT INTO users (label_id, name, email, password_hash, role, department, hierarchy_level, is_platform_admin, platform_role, token_version, created_at)
-       VALUES ($1, 'Recovered Admin', $2, $3, 'Superadmin', 'Executive', 1, TRUE, 'owner', 1, NOW())
-       ON CONFLICT (label_id, email) DO UPDATE SET
-         password_hash = EXCLUDED.password_hash, is_platform_admin = TRUE, platform_role = 'owner',
-         invite_token = NULL, invite_expires = NULL, token_version = users.token_version + 1`,
+      `INSERT INTO users (label_id, name, email, password_hash, role, department, hierarchy_level, is_platform_admin, platform_role, created_at)
+       VALUES ($1, 'Recovered Admin', $2, $3, 'Superadmin', 'Executive', 1, TRUE, 'owner', NOW())`,
       [hqId, email, hash]
     );
-    // If the same email also exists in other labels (stale operator rows), give
-    // them the same password so login can't land on a wrong hash — and demote
-    // them so the HQ owner is the single source of truth.
-    await pool.query(
-      `UPDATE users SET password_hash = $1 WHERE LOWER(email) = $2 AND label_id <> $3 AND is_platform_admin = true`,
-      [hash, email, hqId]
-    );
-    console.log(`[recover] platform owner ${email} restored in Platform HQ (remove RECOVER_* env now)`);
+    console.log(`[recover] platform owner ${email} created in Platform HQ (remove RECOVER_* env now)`);
   } catch (err) {
     console.error('recoverAdmin error:', err.message);
   }
