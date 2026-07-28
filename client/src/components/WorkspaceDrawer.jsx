@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import {
   X, LogIn, Users, Music, Disc3, TrendingUp, FileText, BookOpen, Receipt,
   CheckSquare, Clock, Upload, Trash2, KeyRound, Ban, RotateCcw, Copy, Check, Palette,
-  UserPlus, Crown,
+  UserPlus, Crown, CreditCard,
 } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
 import { ACCENT_PRESETS, isValidHex } from '../utils/branding'
+import { PLANS, PLAN, BILLING_STATUSES, money } from '../constants/plans'
 
 const MEMBER_ROLES = ['Superadmin', 'Admin', 'Approver', 'User']
 
@@ -53,10 +54,18 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
   const [inviteBusy, setInviteBusy] = useState(false)
   const [inviteCopied, setInviteCopied] = useState(false)
 
+  // Billing form state
+  const [billing, setBilling] = useState({ plan: 'free', billing_status: 'active', mrr_override: '' })
+  const [billingSaving, setBillingSaving] = useState(false)
+
   const load = () => {
     setLoading(true)
     api.get(`/platform/workspaces/${workspaceId}`)
-      .then(r => { setData(r.data.data); setName(r.data.data.label.name); setAccent(r.data.data.label.accent_color || '') })
+      .then(r => {
+        const d = r.data.data
+        setData(d); setName(d.label.name); setAccent(d.label.accent_color || '')
+        setBilling({ plan: d.label.plan || 'free', billing_status: d.label.billing_status || 'active', mrr_override: d.label.mrr_override ?? '' })
+      })
       .catch(() => toast('Failed to load workspace', 'error'))
       .finally(() => setLoading(false))
   }
@@ -125,6 +134,17 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
     if (!inviteResult) return
     navigator.clipboard.writeText(inviteResult.invite_link).then(() => { setInviteCopied(true); setTimeout(() => setInviteCopied(false), 2000) })
   }
+  const saveBilling = async () => {
+    setBillingSaving(true)
+    try {
+      await api.post(`/platform/workspaces/${workspaceId}/plan`, {
+        plan: billing.plan, billing_status: billing.billing_status,
+        mrr_override: billing.mrr_override === '' ? null : billing.mrr_override,
+      })
+      toast('Plan updated'); load(); onChanged?.()
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+    finally { setBillingSaving(false) }
+  }
 
   const TABS = [
     { key: 'overview', label: 'Overview' },
@@ -154,6 +174,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
                 <div className="flex items-center gap-2">
                   <h2 className="text-base font-bold text-ink truncate">{data.label.name}</h2>
                   <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${suspended ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>{suspended ? 'Suspended' : 'Active'}</span>
+                  {data.label.plan && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600">{PLAN[data.label.plan]?.name || data.label.plan}</span>}
                 </div>
                 <p className="text-xs text-gray-400 font-mono">{data.label.slug}</p>
                 <p className="text-[11px] text-gray-400 mt-0.5">
@@ -313,6 +334,46 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
                         </div>
                       </div>
                     )}
+                  </div>
+
+                  {/* Billing & plan */}
+                  <div>
+                    <h3 className="text-sm font-bold text-ink mb-2 flex items-center gap-1.5"><CreditCard size={14} /> Plan & billing</h3>
+                    <div className="grid grid-cols-2 gap-3 mb-2">
+                      <div>
+                        <label className="label">Plan</label>
+                        <select className="input" value={billing.plan} onChange={e => setBilling(b => ({ ...b, plan: e.target.value }))}>
+                          {PLANS.map(p => <option key={p.key} value={p.key}>{p.name}{p.price ? ` · $${p.price}/mo` : ' · free'}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="label">Billing status</label>
+                        <select className="input" value={billing.billing_status} onChange={e => setBilling(b => ({ ...b, billing_status: e.target.value }))}>
+                          {BILLING_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <label className="label">MRR override (optional)</label>
+                    <div className="flex items-center gap-2 mb-2">
+                      <input type="number" step="0.01" min="0" className="input !w-40" value={billing.mrr_override} onChange={e => setBilling(b => ({ ...b, mrr_override: e.target.value }))} placeholder={`Default ${money(PLAN[billing.plan]?.price)}`} />
+                      <span className="text-xs text-gray-400">Leave blank to use the plan's list price.</span>
+                    </div>
+                    {(() => {
+                      const used = data.members?.length || 0
+                      const limit = PLAN[billing.plan]?.seats
+                      const over = limit != null && used > limit
+                      return (
+                        <div className="rounded-lg bg-page/50 p-3 mb-3">
+                          <div className="flex items-center justify-between text-xs mb-1">
+                            <span className="text-gray-500">Seats</span>
+                            <span className={over ? 'text-red-600 font-semibold' : 'text-gray-600'}>{used}{limit != null ? ` / ${limit}` : ' · unlimited'}</span>
+                          </div>
+                          {limit != null && <div className="h-1.5 rounded-full bg-gray-200 overflow-hidden"><div className={`h-full rounded-full ${over ? 'bg-red-500' : 'bg-brand-500'}`} style={{ width: `${Math.min(100, Math.round((used / limit) * 100))}%` }} /></div>}
+                          {over && <p className="text-[11px] text-red-600 mt-1">Over the plan's seat allowance.</p>}
+                        </div>
+                      )
+                    })()}
+                    <button onClick={saveBilling} disabled={billingSaving} className="btn-primary !py-1.5 text-xs">{billingSaving ? 'Saving…' : 'Save plan'}</button>
                   </div>
 
                   {/* Danger zone */}

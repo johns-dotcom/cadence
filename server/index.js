@@ -257,6 +257,12 @@ const runMigrations = async () => {
   // System label = the permanent home for platform operators, so no tenant
   // workspace deletion can ever cascade-delete them. Hidden from the console.
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE`);
+  // Billing — plan key + status + optional MRR override (plan pricing lives in
+  // lib/plans.js). Defaults keep existing workspaces on a free/active footing.
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS plan VARCHAR(30) DEFAULT 'free'`);
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS billing_status VARCHAR(20) DEFAULT 'active'`);
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS mrr_override NUMERIC(10,2)`);
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS plan_since TIMESTAMP`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (

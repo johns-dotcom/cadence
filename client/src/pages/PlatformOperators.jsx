@@ -6,7 +6,7 @@ import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 
-const PAGE_NAMES = { '/workspaces': 'Workspaces', '/analytics': 'Analytics', '/activity': 'Activity', '/security': 'Security', '/announcements': 'Announcements', '/feature-flags': 'Feature flags' }
+const PAGE_NAMES = { '/workspaces': 'Workspaces', '/analytics': 'Analytics', '/billing': 'Billing', '/activity': 'Activity', '/security': 'Security', '/announcements': 'Announcements', '/feature-flags': 'Feature flags' }
 
 // Owner-only: manage platform operators. Owners have full powers; Workspace
 // Admins can enter/manage any workspace but not provision/suspend/delete or

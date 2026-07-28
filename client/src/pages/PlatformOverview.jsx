@@ -73,6 +73,7 @@ export default function PlatformOverview() {
               <p className="text-xs text-white/60 mt-1.5">Active workspaces</p>
             </div>
             <div className="h-9 w-px bg-white/15 hidden sm:block" />
+            <div><p className="text-2xl font-semibold leading-none">${loading ? '—' : num(t.mrr)}</p><p className="text-xs text-white/60 mt-1.5">MRR</p></div>
             <div><p className="text-2xl font-semibold leading-none">{loading ? '—' : num(t.members)}</p><p className="text-xs text-white/60 mt-1.5">Members</p></div>
             <div><p className="text-2xl font-semibold leading-none">{loading ? '—' : num(t.releases)}</p><p className="text-xs text-white/60 mt-1.5">Releases</p></div>
             {t.suspended > 0 && (

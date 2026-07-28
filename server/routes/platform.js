@@ -10,6 +10,7 @@ const { signToken, publicUser } = require('../lib/token');
 const { getSignedFileUrl, uploadFile, deleteFile } = require('../lib/r2');
 const { sendEmail, inviteEmail } = require('../lib/email');
 const { deleteUserWithSweep } = require('../lib/userDelete');
+const { PLANS, PLAN, PLAN_KEYS, BILLING_STATUSES, effectiveMrr } = require('../lib/plans');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -77,13 +78,17 @@ router.get('/workspaces/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const labelRes = await pool.query(
-      `SELECT id, name, slug, accent_color, logo_r2_key, COALESCE(status,'active') AS status, suspended_at, created_at FROM labels WHERE id = $1`,
+      `SELECT id, name, slug, accent_color, logo_r2_key, COALESCE(status,'active') AS status, suspended_at, created_at,
+              COALESCE(plan,'free') AS plan, COALESCE(billing_status,'active') AS billing_status, mrr_override, plan_since
+         FROM labels WHERE id = $1`,
       [id]
     );
     if (!labelRes.rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
     const label = labelRes.rows[0];
     label.logo_url = label.logo_r2_key ? await getSignedFileUrl(label.logo_r2_key, 6 * 3600).catch(() => null) : null;
     delete label.logo_r2_key;
+    label.mrr = effectiveMrr(label);
+    label.seat_limit = PLAN[label.plan]?.seats ?? null;
 
     const [counts, members, byRole, recent, lastLogin] = await Promise.all([
       pool.query(
@@ -140,7 +145,7 @@ router.get('/workspaces/:id', async (req, res) => {
 // cross-tenant activity, and the newest workspaces.
 router.get('/overview', async (req, res) => {
   try {
-    const [totals, recent, newest] = await Promise.all([
+    const [totals, recent, newest, billing] = await Promise.all([
       pool.query(
         `SELECT
            (SELECT COUNT(*) FROM labels WHERE (is_system = false OR is_system IS NULL))::int AS workspaces,
@@ -166,8 +171,15 @@ router.get('/overview', async (req, res) => {
                 (SELECT COUNT(*) FROM users u WHERE u.label_id = l.id AND (u.is_platform_admin = false OR u.is_platform_admin IS NULL))::int AS members
          FROM labels l WHERE (l.is_system = false OR l.is_system IS NULL) ORDER BY l.created_at DESC LIMIT 5`
       ),
+      // Billing rows for the MRR rollup (prices resolved in JS via lib/plans).
+      pool.query(
+        `SELECT COALESCE(plan,'free') AS plan, COALESCE(billing_status,'active') AS billing_status, mrr_override
+           FROM labels WHERE (is_system = false OR is_system IS NULL)`
+      ),
     ]);
-    res.json({ success: true, data: { totals: totals.rows[0], recentActivity: recent.rows, newestWorkspaces: newest.rows } });
+    const totalsRow = totals.rows[0];
+    totalsRow.mrr = billing.rows.reduce((a, w) => a + effectiveMrr(w), 0);
+    res.json({ success: true, data: { totals: totalsRow, recentActivity: recent.rows, newestWorkspaces: newest.rows } });
   } catch (error) {
     console.error('Platform overview error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -204,7 +216,7 @@ router.get('/activity', async (req, res) => {
 // Console pages an admin operator can be restricted from. Overview ('/') and
 // Account are always allowed so an operator is never fully locked out;
 // Operators is owner-only anyway.
-const RESTRICTABLE_PAGES = ['/workspaces', '/analytics', '/activity', '/security', '/announcements', '/feature-flags'];
+const RESTRICTABLE_PAGES = ['/workspaces', '/analytics', '/billing', '/activity', '/security', '/announcements', '/feature-flags'];
 
 async function operatorAccess(email) {
   const e = (email || '').toLowerCase();
@@ -265,6 +277,55 @@ router.put('/operators/:email/access', requirePlatformOwner, async (req, res) =>
     console.error('Set operator access error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   } finally { client.release(); }
+});
+
+// ── Billing & plans ─────────────────────────────────────────────────────────
+// GET /api/platform/billing — every workspace's plan + status + MRR, with rollups.
+router.get('/billing', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT l.id, l.name, l.slug, COALESCE(l.status,'active') AS status,
+              COALESCE(l.plan,'free') AS plan, COALESCE(l.billing_status,'active') AS billing_status,
+              l.mrr_override, l.plan_since,
+              (SELECT COUNT(*) FROM users u WHERE u.label_id = l.id AND (u.is_platform_admin = false OR u.is_platform_admin IS NULL))::int AS members
+         FROM labels l WHERE (l.is_system = false OR l.is_system IS NULL) ORDER BY l.name`
+    );
+    const workspaces = rows.map(w => ({ ...w, mrr: effectiveMrr(w), seat_limit: PLAN[w.plan]?.seats ?? null }));
+    const planMix = Object.fromEntries(PLANS.map(p => [p.key, 0]));
+    const statusMix = {};
+    let mrr = 0;
+    for (const w of workspaces) {
+      planMix[w.plan] = (planMix[w.plan] || 0) + 1;
+      statusMix[w.billing_status] = (statusMix[w.billing_status] || 0) + 1;
+      mrr += w.mrr;
+    }
+    res.json({ success: true, data: { registry: PLANS, workspaces, totals: { mrr, planMix, statusMix, count: workspaces.length } } });
+  } catch (error) {
+    console.error('Billing error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/platform/workspaces/:id/plan — set plan / status / MRR override.
+router.post('/workspaces/:id/plan', requirePlatformOwner, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const plan = PLAN_KEYS.has(req.body.plan) ? req.body.plan : 'free';
+    const billing_status = BILLING_STATUSES.includes(req.body.billing_status) ? req.body.billing_status : 'active';
+    const mrr = (req.body.mrr_override === '' || req.body.mrr_override == null) ? null : Number(req.body.mrr_override);
+    if (mrr != null && (isNaN(mrr) || mrr < 0)) return res.status(400).json({ success: false, error: 'Invalid MRR override' });
+    const { rows } = await pool.query(
+      `UPDATE labels SET plan = $1, billing_status = $2, mrr_override = $3, plan_since = COALESCE(plan_since, NOW())
+        WHERE id = $4 AND (is_system = false OR is_system IS NULL)
+        RETURNING id, plan, billing_status, mrr_override`,
+      [plan, billing_status, mrr, id]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
+    res.json({ success: true, data: { ...rows[0], mrr: effectiveMrr(rows[0]) } });
+  } catch (error) {
+    console.error('Set plan error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
 });
 
 // ── Feature flags ───────────────────────────────────────────────────────────
