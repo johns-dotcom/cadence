@@ -194,6 +194,14 @@ export default function Layout() {
     api.post('/analytics/ping', { path: location.pathname }).catch(() => {})
   }, [location.pathname, user?.id])
 
+  // Platform announcements — dismissible banner stack.
+  const [announcements, setAnnouncements] = useState([])
+  useEffect(() => {
+    if (!user) return
+    api.get('/announcements/active').then(r => setAnnouncements(r.data.data || [])).catch(() => {})
+  }, [user?.id])
+  const dismissAnnouncement = (id) => { setAnnouncements(a => a.filter(x => x.id !== id)); api.post(`/announcements/${id}/dismiss`).catch(() => {}) }
+
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
 
@@ -446,6 +454,22 @@ export default function Layout() {
         </div>
 
         <main className="flex-1 overflow-auto">
+          {announcements.length > 0 && (
+            <div>
+              {announcements.map(a => {
+                const style = a.level === 'critical' ? 'bg-red-50 text-red-800 border-red-200'
+                  : a.level === 'warning' ? 'bg-amber-50 text-amber-800 border-amber-200'
+                  : 'bg-brand-50 text-brand-800 border-brand-200'
+                return (
+                  <div key={a.id} className={`px-4 sm:px-6 py-2.5 flex items-start gap-3 border-b ${style}`}>
+                    <Megaphone size={15} className="mt-0.5 flex-shrink-0" />
+                    <div className="flex-1 min-w-0 text-sm"><span className="font-semibold">{a.title}</span>{a.body && <span className="opacity-80"> — {a.body}</span>}</div>
+                    <button onClick={() => dismissAnnouncement(a.id)} className="opacity-60 hover:opacity-100 flex-shrink-0" title="Dismiss"><X size={15} /></button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
           <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 sm:py-8 pb-20 lg:pb-8">
             <ErrorBoundary key={location.pathname}>
               <Outlet />

@@ -200,6 +200,78 @@ router.get('/activity', async (req, res) => {
   }
 });
 
+// ── Announcements (operator-authored broadcasts) ───────────────────────────
+const ANN_LEVELS = ['info', 'warning', 'critical'];
+
+// GET /api/platform/announcements — all announcements, with dismissal counts.
+router.get('/announcements', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT a.*, u.name AS author,
+              (SELECT COUNT(*)::int FROM announcement_dismissals d WHERE d.announcement_id = a.id) AS dismissals
+         FROM announcements a LEFT JOIN users u ON u.id = a.created_by
+        ORDER BY a.created_at DESC LIMIT 100`
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('List announcements error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/platform/announcements — broadcast to all or a targeted set.
+router.post('/announcements', requirePlatformOwner, async (req, res) => {
+  try {
+    const title = (req.body.title || '').trim();
+    if (!title) return res.status(400).json({ success: false, error: 'A title is required' });
+    const level = ANN_LEVELS.includes(req.body.level) ? req.body.level : 'info';
+    const targets = Array.isArray(req.body.target_label_ids) && req.body.target_label_ids.length
+      ? req.body.target_label_ids.map(n => parseInt(n, 10)).filter(Boolean)
+      : null;
+    const { rows } = await pool.query(
+      `INSERT INTO announcements (title, body, level, target_label_ids, starts_at, ends_at, created_by)
+       VALUES ($1, $2, $3, $4, COALESCE($5, NOW()), $6, $7) RETURNING *`,
+      [title, req.body.body || null, level, targets, req.body.starts_at || null, req.body.ends_at || null, req.user.id]
+    );
+    res.status(201).json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Create announcement error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PATCH /api/platform/announcements/:id — toggle active (or edit basics).
+router.patch('/announcements/:id', requirePlatformOwner, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const sets = [], vals = [];
+    if (typeof req.body.active === 'boolean') { sets.push(`active = $${sets.length + 1}`); vals.push(req.body.active); }
+    if (typeof req.body.title === 'string' && req.body.title.trim()) { sets.push(`title = $${sets.length + 1}`); vals.push(req.body.title.trim()); }
+    if (req.body.body !== undefined) { sets.push(`body = $${sets.length + 1}`); vals.push(req.body.body || null); }
+    if (ANN_LEVELS.includes(req.body.level)) { sets.push(`level = $${sets.length + 1}`); vals.push(req.body.level); }
+    if (!sets.length) return res.status(400).json({ success: false, error: 'No updatable fields provided' });
+    vals.push(id);
+    const { rows } = await pool.query(`UPDATE announcements SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING *`, vals);
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Announcement not found' });
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Update announcement error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/platform/announcements/:id
+router.delete('/announcements/:id', requirePlatformOwner, async (req, res) => {
+  try {
+    const { rowCount } = await pool.query('DELETE FROM announcements WHERE id = $1', [parseInt(req.params.id, 10)]);
+    if (!rowCount) return res.status(404).json({ success: false, error: 'Announcement not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete announcement error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // GET /api/platform/security — cross-tenant login audit: headline counts,
 // recent logins, and dormant workspaces (no login in 30 days).
 router.get('/security', async (req, res) => {

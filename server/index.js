@@ -39,6 +39,7 @@ const ndasRoutes = require('./routes/ndas');
 const ndaDocumentsRoutes = require('./routes/nda-documents');
 const analyticsRoutes = require('./routes/analytics');
 const internalRequestsRoutes = require('./routes/internal-requests');
+const announcementsRoutes = require('./routes/announcements');
 const adminDocsRoutes = require('./routes/admin-docs');
 const flagsRoutes = require('./routes/flags');
 const labelWaiversRoutes = require('./routes/label-waivers');
@@ -158,6 +159,7 @@ app.use('/api/ndas', ndasRoutes);
 app.use('/api/nda-documents', ndaDocumentsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/internal-requests', internalRequestsRoutes);
+app.use('/api/announcements', announcementsRoutes);
 app.use('/api/admin-docs', adminDocsRoutes);
 app.use('/api/flags', flagsRoutes);
 app.use('/api/label-waivers', labelWaiversRoutes);
@@ -789,6 +791,32 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_operator_sessions_recent ON operator_sessions (created_at DESC)`);
+
+  // Platform announcements — operators broadcast a banner to all or a targeted
+  // set of workspaces (target_label_ids NULL/empty = every workspace). Users
+  // dismiss per-announcement; dismissals persist.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS announcements (
+      id SERIAL PRIMARY KEY,
+      title VARCHAR(200) NOT NULL,
+      body TEXT,
+      level VARCHAR(20) DEFAULT 'info',
+      target_label_ids INT[],
+      starts_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      ends_at TIMESTAMP,
+      active BOOLEAN DEFAULT TRUE,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS announcement_dismissals (
+      announcement_id INT REFERENCES announcements(id) ON DELETE CASCADE,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      dismissed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (announcement_id, user_id)
+    );
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_page_permissions (
