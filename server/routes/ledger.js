@@ -48,6 +48,7 @@ const fileFields = upload.fields([
   { name: 'invoice_file', maxCount: 1 },
   { name: 'w9_file', maxCount: 1 },
   { name: 'receipt_file', maxCount: 1 },
+  { name: 'proof_file', maxCount: 1 },
 ]);
 
 // Map a multipart file → R2 and return { filename, r2_key }. Tenant-namespaced.
@@ -137,6 +138,11 @@ router.post('/entries', fileFields, async (req, res) => {
       const f = req.files?.[field]?.[0];
       if (f) files[kind] = await storeFile(req.labelId, f, kind);
     }
+    // Proof of payment → store (in the receipt slot if free) and auto-mark paid.
+    const proofF = req.files?.proof_file?.[0];
+    if (proofF) { if (!files.receipt) files.receipt = await storeFile(req.labelId, proofF, 'proof'); }
+    const paymentStatus = proofF ? 'Paid' : b.payment_status;
+    const paymentDate = proofF ? (b.payment_date || new Date().toISOString().slice(0, 10)) : (b.payment_date || null);
 
     const { rows } = await pool.query(
       `INSERT INTO expenses (
@@ -153,7 +159,7 @@ router.post('/entries', fileFields, async (req, res) => {
       [
         req.labelId, b.invoice_date || null, b.payee, b.description || null, b.category || null,
         b.artist || null, b.song || null, b.invoice_number || null, b.amount, b.currency,
-        b.payment_method || null, b.payment_date || null, b.status, b.payment_status,
+        b.payment_method || null, paymentDate, b.status, paymentStatus,
         b.is_reimbursement === 'true' || b.is_reimbursement === true,
         b.recoupable === undefined ? true : (b.recoupable === 'true' || b.recoupable === true),
         b.rep || null, b.notes || null,
@@ -170,8 +176,20 @@ router.post('/entries', fileFields, async (req, res) => {
       w9_r2_key: files.w9?.key || null, w9_filename: files.w9?.filename || null,
     }).catch(() => {});
 
+    // Optional multi-artist / social allocation → store + apply as splits now
+    // (staff entries are created approved, so the children are approved too).
+    let splitParts = 0;
+    try {
+      const arr = JSON.parse(b.splits || '[]');
+      if (Array.isArray(arr) && arr.length) {
+        await pool.query('UPDATE expenses SET artist_breakdown = $1::jsonb WHERE id = $2 AND label_id = $3', [JSON.stringify(arr), rows[0].id, req.labelId]);
+        rows[0].artist_breakdown = arr;
+        splitParts = await applyBreakdownSplits(req.labelId, rows[0], req.user.name);
+      }
+    } catch { /* no/invalid split — single entry stands */ }
+
     await logActivity(req, 'Added ledger entry', `${b.payee} — ${b.amount}`);
-    res.status(201).json({ success: true, data: rows[0] });
+    res.status(201).json({ success: true, data: { ...rows[0], split_parts: splitParts } });
   } catch (error) {
     console.error('Create ledger entry error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
