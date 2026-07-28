@@ -249,7 +249,7 @@ router.post('/impersonate/:userId', authMiddleware, async (req, res) => {
       return res.status(404).json({ success: false, error: 'User not found in this workspace' });
     }
 
-    const token = signToken(target, '2h');
+    const token = signToken(target, '8h');
     res.json({ success: true, data: { token, user: publicUser(target) } });
   } catch (error) {
     console.error('Impersonate error:', error);

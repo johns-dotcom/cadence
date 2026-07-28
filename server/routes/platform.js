@@ -527,7 +527,7 @@ router.post('/workspaces/:labelId/enter', async (req, res) => {
       [req.user.id, req.user.email, req.user.name || null, labelId, req.ip || req.headers['x-forwarded-for'] || null]
     ).catch(() => {});
 
-    const token = signToken(target, '2h');
+    const token = signToken(target, '8h');
     res.json({ success: true, data: { token, user: publicUser(target), label } });
   } catch (error) {
     console.error('Enter workspace error:', error);
