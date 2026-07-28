@@ -216,7 +216,7 @@ router.get('/activity', async (req, res) => {
 // Console pages an admin operator can be restricted from. Overview ('/') and
 // Account are always allowed so an operator is never fully locked out;
 // Operators is owner-only anyway.
-const RESTRICTABLE_PAGES = ['/workspaces', '/analytics', '/billing', '/activity', '/security', '/announcements', '/feature-flags'];
+const RESTRICTABLE_PAGES = ['/workspaces', '/analytics', '/billing', '/activity', '/announcements'];
 
 async function operatorAccess(email) {
   const e = (email || '').toLowerCase();
@@ -328,80 +328,6 @@ router.post('/workspaces/:id/plan', requirePlatformOwner, async (req, res) => {
   }
 });
 
-// ── Feature flags ───────────────────────────────────────────────────────────
-const { FLAGS, KEYS } = require('../lib/featureFlags');
-
-// GET /api/platform/feature-flags — registry + all overrides + workspace names.
-router.get('/feature-flags', async (req, res) => {
-  try {
-    const [overrides, ws] = await Promise.all([
-      pool.query('SELECT flag_key, label_id, enabled FROM feature_flags'),
-      pool.query(`SELECT id, name FROM labels WHERE (is_system = false OR is_system IS NULL) ORDER BY name`),
-    ]);
-    res.json({ success: true, data: { registry: FLAGS, overrides: overrides.rows, workspaces: ws.rows } });
-  } catch (error) {
-    console.error('List feature flags error:', error);
-    res.status(500).json({ success: false, error: 'Internal server error' });
-  }
-});
-
-// Upsert a flag override. labelId null → global default; otherwise per-workspace.
-async function setFlag(flagKey, labelId, enabled) {
-  if (labelId === null) {
-    await pool.query(
-      `INSERT INTO feature_flags (flag_key, label_id, enabled, updated_at) VALUES ($1, NULL, $2, NOW())
-       ON CONFLICT (flag_key) WHERE label_id IS NULL DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = NOW()`,
-      [flagKey, enabled]
-    );
-  } else {
-    await pool.query(
-      `INSERT INTO feature_flags (flag_key, label_id, enabled, updated_at) VALUES ($1, $2, $3, NOW())
-       ON CONFLICT (flag_key, label_id) WHERE label_id IS NOT NULL DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = NOW()`,
-      [flagKey, labelId, enabled]
-    );
-  }
-}
-
-// PATCH /api/platform/feature-flags — set global default { key, enabled }.
-router.patch('/feature-flags', requirePlatformOwner, async (req, res) => {
-  try {
-    const { key, enabled } = req.body;
-    if (!KEYS.has(key) || typeof enabled !== 'boolean') return res.status(400).json({ success: false, error: 'Invalid flag' });
-    await setFlag(key, null, enabled);
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Set global flag error:', error);
-    res.status(500).json({ success: false, error: 'Internal server error' });
-  }
-});
-
-// PATCH /api/platform/feature-flags/workspace — per-workspace override.
-router.patch('/feature-flags/workspace', requirePlatformOwner, async (req, res) => {
-  try {
-    const { key, label_id, enabled } = req.body;
-    const labelId = parseInt(label_id, 10);
-    if (!KEYS.has(key) || !labelId || typeof enabled !== 'boolean') return res.status(400).json({ success: false, error: 'Invalid override' });
-    await setFlag(key, labelId, enabled);
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Set workspace flag error:', error);
-    res.status(500).json({ success: false, error: 'Internal server error' });
-  }
-});
-
-// DELETE /api/platform/feature-flags/workspace?key=&label_id= — revert to global.
-router.delete('/feature-flags/workspace', requirePlatformOwner, async (req, res) => {
-  try {
-    const labelId = parseInt(req.query.label_id, 10);
-    if (!req.query.key || !labelId) return res.status(400).json({ success: false, error: 'Invalid override' });
-    await pool.query('DELETE FROM feature_flags WHERE flag_key = $1 AND label_id = $2', [req.query.key, labelId]);
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Delete workspace flag error:', error);
-    res.status(500).json({ success: false, error: 'Internal server error' });
-  }
-});
-
 // ── Announcements (operator-authored broadcasts) ───────────────────────────
 const ANN_LEVELS = ['info', 'warning', 'critical'];
 
@@ -470,66 +396,6 @@ router.delete('/announcements/:id', requirePlatformOwner, async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Delete announcement error:', error);
-    res.status(500).json({ success: false, error: 'Internal server error' });
-  }
-});
-
-// GET /api/platform/security — cross-tenant login audit: headline counts,
-// recent logins, and dormant workspaces (no login in 30 days).
-router.get('/security', async (req, res) => {
-  try {
-    const [stats, logins, dormant] = await Promise.all([
-      pool.query(
-        `SELECT
-           (SELECT COUNT(*) FROM user_login_logs WHERE logged_in_at >= NOW() - INTERVAL '24 hours')::int AS logins_24h,
-           (SELECT COUNT(*) FROM user_login_logs WHERE logged_in_at >= NOW() - INTERVAL '7 days')::int AS logins_7d,
-           (SELECT COUNT(DISTINCT user_id) FROM user_login_logs WHERE logged_in_at >= NOW() - INTERVAL '7 days')::int AS active_users_7d,
-           (SELECT COUNT(*) FROM operator_sessions WHERE created_at >= NOW() - INTERVAL '7 days')::int AS operator_entries_7d`
-      ),
-      pool.query(
-        `SELECT ull.logged_in_at, ull.ip_address, u.name, u.email, u.role,
-                (u.is_platform_admin = true) AS is_operator, l.name AS workspace, l.id AS label_id
-           FROM user_login_logs ull
-           JOIN users u ON u.id = ull.user_id
-           LEFT JOIN labels l ON l.id = ull.label_id
-          ORDER BY ull.logged_in_at DESC LIMIT 100`
-      ),
-      pool.query(
-        `SELECT l.id, l.name, COALESCE(l.status,'active') AS status, ll.last_login,
-                (SELECT COUNT(*) FROM users u WHERE u.label_id = l.id AND (u.is_platform_admin = false OR u.is_platform_admin IS NULL))::int AS members
-           FROM labels l
-           LEFT JOIN LATERAL (SELECT MAX(logged_in_at) AS last_login FROM user_login_logs ull WHERE ull.label_id = l.id) ll ON true
-          WHERE (l.is_system = false OR l.is_system IS NULL)
-            AND (ll.last_login IS NULL OR ll.last_login < NOW() - INTERVAL '30 days')
-          ORDER BY ll.last_login ASC NULLS FIRST LIMIT 20`
-      ),
-    ]);
-    res.json({ success: true, data: { stats: stats.rows[0], recentLogins: logins.rows, dormant: dormant.rows } });
-  } catch (error) {
-    console.error('Security audit error:', error);
-    res.status(500).json({ success: false, error: 'Internal server error' });
-  }
-});
-
-// GET /api/platform/enter-sessions — recent operator enter-workspace events.
-// Optional ?label_id, ?limit (default 100, max 300).
-router.get('/enter-sessions', async (req, res) => {
-  try {
-    const params = [];
-    let where = '1=1';
-    if (req.query.label_id) { params.push(parseInt(req.query.label_id, 10)); where += ` AND os.label_id = $${params.length}`; }
-    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 300);
-    params.push(limit);
-    const { rows } = await pool.query(
-      `SELECT os.id, os.operator_name, os.operator_email, os.ip_address, os.created_at, l.name AS workspace, l.id AS label_id
-         FROM operator_sessions os LEFT JOIN labels l ON l.id = os.label_id
-        WHERE ${where}
-        ORDER BY os.created_at DESC LIMIT $${params.length}`,
-      params
-    );
-    res.json({ success: true, data: rows });
-  } catch (error) {
-    console.error('Enter sessions error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

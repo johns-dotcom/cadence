@@ -10,7 +10,6 @@ export const AuthProvider = ({ children }) => {
   const [token, setToken] = useState(localStorage.getItem('token'))
   const [loading, setLoading] = useState(true)
   const [pagePermissions, setPagePermissions] = useState(null) // null = unrestricted
-  const [features, setFeatures] = useState({}) // effective feature flags for the workspace
 
   // Impersonation — stash real admin token in a separate key while viewing as someone else
   const [impersonating, setImpersonating] = useState(!!localStorage.getItem('admin_token'))
@@ -34,8 +33,6 @@ export const AuthProvider = ({ children }) => {
       setUser(u)
       setLabel({ id: u.label_id, name: u.label_name, slug: u.label_slug, accent_color: u.label_accent_color, logo_url: u.label_logo_url, vendor_form_token: u.label_vendor_form_token })
       setPagePermissions(u.pagePermissions ?? null)
-      // Effective feature flags (best-effort; fail open — hasFeature defaults on).
-      api.get('/feature-flags').then(r => setFeatures(r.data.data?.flags || {})).catch(() => {})
     } catch (error) {
       console.error('Failed to fetch user:', error)
       // Only end the session on a real auth failure (401 — the interceptor also
@@ -171,7 +168,6 @@ export const AuthProvider = ({ children }) => {
       login, googleLogin, logout, updateLabel,
       impersonate, enterWorkspace, exitImpersonation, impersonating, adminUser,
       pagePermissions, canView,
-      features, hasFeature: (key) => features[key] !== false,
     }}>
       {children}
     </AuthContext.Provider>
