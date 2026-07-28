@@ -406,8 +406,26 @@ router.post('/workspaces', requirePlatformOwner, async (req, res) => {
   const client = await pool.connect();
   try {
     const { labelName, ownerName, ownerEmail } = req.body;
-    if (!labelName || !ownerName || !ownerEmail) {
-      return res.status(400).json({ success: false, error: 'Label name, owner name, and owner email are required' });
+    const ownerOperatorId = req.body.owner_operator_id ? parseInt(req.body.owner_operator_id, 10) : null;
+    if (!labelName || !String(labelName).trim()) {
+      return res.status(400).json({ success: false, error: 'Label name is required' });
+    }
+
+    // Path A — assign an existing console operator as owner (no invite needed).
+    if (ownerOperatorId) {
+      const { rows: op } = await pool.query('SELECT id, name, email FROM users WHERE id = $1 AND is_platform_admin = TRUE LIMIT 1', [ownerOperatorId]);
+      if (!op.length) return res.status(400).json({ success: false, error: 'Selected operator not found' });
+      const slug = await uniqueSlug(labelName, pool);
+      const labelRes = await pool.query(
+        'INSERT INTO labels (name, slug, owner_user_id, created_at) VALUES ($1, $2, $3, NOW()) RETURNING id, name, slug, created_at',
+        [labelName.trim(), slug, ownerOperatorId]
+      );
+      return res.status(201).json({ success: true, data: { label: labelRes.rows[0], owner: op[0], assigned_operator: true } });
+    }
+
+    // Path B — invite a brand-new owner by name + email.
+    if (!ownerName || !ownerEmail) {
+      return res.status(400).json({ success: false, error: 'Choose an operator, or enter an owner name and email' });
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ownerEmail.trim())) {
       return res.status(400).json({ success: false, error: 'Please enter a valid owner email' });

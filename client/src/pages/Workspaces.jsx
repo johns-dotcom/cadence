@@ -36,7 +36,8 @@ export default function Workspaces() {
   const [workspaces, setWorkspaces] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ labelName: '', ownerName: '', ownerEmail: '' })
+  const [form, setForm] = useState({ labelName: '', ownerName: '', ownerEmail: '', owner_operator_id: '' })
+  const [operators, setOperators] = useState([])
   const [saving, setSaving] = useState(false)
   const [created, setCreated] = useState(null)
   const [copied, setCopied] = useState(false)
@@ -49,21 +50,28 @@ export default function Workspaces() {
     api.get('/platform/workspaces').then(res => setWorkspaces(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
   useEffect(load, [])
+  useEffect(() => { if (isOwner) api.get('/platform/operators').then(r => setOperators(r.data.data || [])).catch(() => {}) }, [isOwner])
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
 
   const create = async (e) => {
     e.preventDefault()
-    if (!form.labelName.trim() || !form.ownerName.trim() || !form.ownerEmail.trim()) {
-      toast('Label name, owner name and email are required', 'error'); return
+    if (!form.labelName.trim()) { toast('Label name is required', 'error'); return }
+    const assigning = !!form.owner_operator_id
+    if (!assigning && (!form.ownerName.trim() || !form.ownerEmail.trim())) {
+      toast('Choose an operator, or enter an owner name and email', 'error'); return
     }
     setSaving(true)
     try {
-      const { data } = await api.post('/platform/workspaces', form)
-      setCreated(data.data)
-      setForm({ labelName: '', ownerName: '', ownerEmail: '' })
+      const payload = assigning
+        ? { labelName: form.labelName, owner_operator_id: form.owner_operator_id }
+        : { labelName: form.labelName, ownerName: form.ownerName, ownerEmail: form.ownerEmail }
+      const { data } = await api.post('/platform/workspaces', payload)
+      setForm({ labelName: '', ownerName: '', ownerEmail: '', owner_operator_id: '' })
       setShowForm(false)
-      toast(data.data.email_sent ? `Workspace created — invite emailed to ${data.data.owner.email}` : 'Workspace created — share the owner invite link'); load()
+      if (data.data.assigned_operator) { setCreated(null); toast(`Workspace created — ${data.data.owner.name} is the owner`) }
+      else { setCreated(data.data); toast(data.data.email_sent ? `Workspace created — invite emailed to ${data.data.owner.email}` : 'Workspace created — share the owner invite link') }
+      load()
     } catch (err) {
       toast(err.response?.data?.error || 'Failed to create workspace', 'error')
     } finally { setSaving(false) }
@@ -161,9 +169,20 @@ export default function Workspaces() {
       {showForm && (
         <form onSubmit={create} className="card p-4 mb-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="sm:col-span-2"><label className="label">Label name</label><input className="input" value={form.labelName} onChange={set('labelName')} placeholder="e.g. Midnight Records" autoFocus /></div>
-          <div><label className="label">Owner name</label><input className="input" value={form.ownerName} onChange={set('ownerName')} /></div>
-          <div><label className="label">Owner email</label><input type="email" className="input" value={form.ownerEmail} onChange={set('ownerEmail')} placeholder="they'll get an invite" /></div>
-          <div className="sm:col-span-2"><button type="submit" disabled={saving} className="btn-primary">{saving ? 'Creating…' : 'Create & send invite'}</button></div>
+          <div className="sm:col-span-2">
+            <label className="label">Owner</label>
+            <select className="input" value={form.owner_operator_id} onChange={set('owner_operator_id')}>
+              <option value="">Invite a new person…</option>
+              {operators.length > 0 && <optgroup label="Console operators">{operators.map(op => <option key={op.id} value={op.id}>{op.name}{op.platform_role === 'owner' ? ' (owner)' : ''} · {op.email}</option>)}</optgroup>}
+            </select>
+          </div>
+          {!form.owner_operator_id && (
+            <>
+              <div><label className="label">Owner name</label><input className="input" value={form.ownerName} onChange={set('ownerName')} /></div>
+              <div><label className="label">Owner email</label><input type="email" className="input" value={form.ownerEmail} onChange={set('ownerEmail')} placeholder="they'll get an invite" /></div>
+            </>
+          )}
+          <div className="sm:col-span-2"><button type="submit" disabled={saving} className="btn-primary">{saving ? 'Creating…' : (form.owner_operator_id ? 'Create workspace' : 'Create & send invite')}</button></div>
         </form>
       )}
 
