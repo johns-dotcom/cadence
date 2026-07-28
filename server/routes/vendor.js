@@ -242,12 +242,22 @@ router.post('/:slug/submit', submitLimiter, fileFields, async (req, res) => {
         $17, $18, $19, $20, $21, $22, 'Vendor Submission', NOW()
       ) RETURNING id`,
       [
-        labelId, vendorName, (b.notes || '').trim() || null, category, artist, invoiceNum,
+        labelId, vendorName, (b.description || b.notes || '').trim() || null, category, artist, invoiceNum,
         amount, (b.currency || 'USD').trim(), paymentPref, isReimb,
         vendorName, vendorEmail, vendorAddress, vendorBank, (b.rep || '').trim() || null,
-        (b.notes || '').trim() || null, invName, invKey, w9Name, w9Key, rcName, rcKey,
+        null, invName, invKey, w9Name, w9Key, rcName, rcKey,
       ]
     );
+
+    // Multi-artist allocation breakdown (artists + per-line socials/amounts),
+    // stored for the bookkeeper to review and apply as splits.
+    try {
+      const arr = JSON.parse(b.splits || '[]');
+      if (Array.isArray(arr) && arr.length) {
+        await pool.query('UPDATE expenses SET artist_breakdown = $1::jsonb WHERE id = $2 AND label_id = $3',
+          [JSON.stringify(arr), rows[0].id, labelId]);
+      }
+    } catch { /* invalid/absent breakdown — the single artist/amount is already saved */ }
 
     // Song + socials (not in the base insert positional list).
     const song = (b.song || '').trim();

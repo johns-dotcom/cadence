@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { Disc3, CheckCircle2, Upload, ArrowRight, ArrowLeft, ShieldCheck, AlertTriangle, Sparkles } from 'lucide-react'
+import { Disc3, CheckCircle2, Upload, ArrowRight, ArrowLeft, ShieldCheck, AlertTriangle, Sparkles, Plus, X, Trash2 } from 'lucide-react'
 import api from '../api'
 import Dropzone from '../components/Dropzone'
 import CcChipInput from '../components/CcChipInput'
@@ -10,9 +10,10 @@ import { EXPENSE_CATEGORIES, PAYMENT_METHODS, CURRENCIES } from '../constants'
 const STEPS = ['Your info', 'Documents', 'Project info']
 const BLANK = {
   vendor_name: '', vendor_email: '', vendor_address: '', vendor_bank: '',
-  artist: '', category: '', invoice_number: '', payment_method: '',
-  amount: '', currency: 'USD', rep: '', notes: '', socials: '', is_reimbursement: 'no',
+  category: '', invoice_number: '', payment_method: '',
+  amount: '', currency: 'USD', rep: '', description: '', is_reimbursement: 'no',
 }
+const BLANK_SPLIT = () => ({ artist: '', song: '', amount: '', socials: [] })
 
 // PUBLIC page — no auth. Reached at /submit/:token. Three-step wizard, branded
 // per label. Draft autosaves to localStorage (files excluded) so a refresh
@@ -28,6 +29,7 @@ export default function VendorSubmit() {
   const [step, setStep] = useState(1)
 
   const [form, setForm] = useState(BLANK)
+  const [splits, setSplits] = useState([BLANK_SPLIT()])
   const [extraEmails, setExtraEmails] = useState([])
   const [files, setFiles] = useState({ invoice_file: null, w9_file: null, receipt_file: null })
   const [w9OnFile, setW9OnFile] = useState(false)
@@ -39,6 +41,19 @@ export default function VendorSubmit() {
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
   const isReimb = form.is_reimbursement === 'yes'
 
+  // ── Artist allocation (split the invoice across artists) ──
+  const updSplit = (i, patch) => setSplits(s => s.map((l, idx) => idx === i ? { ...l, ...patch } : l))
+  const splitField = (i) => (field, value) => updSplit(i, { [field]: value })
+  const addArtist = () => setSplits(s => [...s, BLANK_SPLIT()])
+  const removeArtist = (i) => setSplits(s => (s.length > 1 ? s.filter((_, idx) => idx !== i) : s))
+  const addSocial = (i) => () => setSplits(s => s.map((l, idx) => idx === i ? { ...l, socials: [...l.socials, { handle: '', amount: '' }] } : l))
+  const updSocial = (i) => (sIdx, field, value) => setSplits(s => s.map((l, idx) => idx === i ? { ...l, socials: l.socials.map((so, j) => j === sIdx ? { ...so, [field]: value } : so) } : l))
+  const removeSocial = (i) => (sIdx) => setSplits(s => s.map((l, idx) => idx === i ? { ...l, socials: l.socials.filter((_, j) => j !== sIdx) } : l))
+
+  const total = parseFloat(form.amount) || 0
+  const allocated = splits.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0)
+  const multi = splits.length > 1
+
   useEffect(() => {
     api.get(`/vendor/${slug}`)
       .then(res => { setCtx(res.data.data); if (res.data.data?.accent_color) applyAccent(res.data.data.accent_color) })
@@ -49,14 +64,19 @@ export default function VendorSubmit() {
   // Autosave draft (form fields only — never files).
   useEffect(() => {
     if (!ctx) return
-    try { localStorage.setItem(draftKey, JSON.stringify({ form, extraEmails })) } catch { /* quota */ }
-  }, [form, extraEmails, ctx]) // eslint-disable-line
+    try { localStorage.setItem(draftKey, JSON.stringify({ form, extraEmails, splits })) } catch { /* quota */ }
+  }, [form, extraEmails, splits, ctx]) // eslint-disable-line
 
   const resumeDraft = () => {
-    try { const d = JSON.parse(localStorage.getItem(draftKey) || '{}'); if (d.form) setForm({ ...BLANK, ...d.form }); if (d.extraEmails) setExtraEmails(d.extraEmails) } catch { /* ignore */ }
+    try {
+      const d = JSON.parse(localStorage.getItem(draftKey) || '{}')
+      if (d.form) setForm({ ...BLANK, ...d.form })
+      if (d.extraEmails) setExtraEmails(d.extraEmails)
+      if (Array.isArray(d.splits) && d.splits.length) setSplits(d.splits.map(l => ({ ...BLANK_SPLIT(), ...l, socials: l.socials || [] })))
+    } catch { /* ignore */ }
     setHasDraft(false)
   }
-  const clearDraft = () => { try { localStorage.removeItem(draftKey) } catch { /* ignore */ } setHasDraft(false); setForm(BLANK); setExtraEmails([]) }
+  const clearDraft = () => { try { localStorage.removeItem(draftKey) } catch { /* ignore */ } setHasDraft(false); setForm(BLANK); setExtraEmails([]); setSplits([BLANK_SPLIT()]) }
 
   const checkW9 = async () => {
     if (!form.vendor_name.trim()) { setW9OnFile(false); return }
@@ -79,9 +99,33 @@ export default function VendorSubmit() {
         invoice_number: f.invoice_number || d.invoice_number || '',
         category: f.category || d.category || '',
         payment_method: f.payment_method || d.payment_method || '',
-        notes: f.notes || d.description || '',
+        description: f.description || d.description || '',
       }))
     } catch { setError('Could not read the invoice — fill the fields manually.') }
+    finally { setAutofilling(false) }
+  }
+  // Auto-parse the moment an invoice is chosen (with a manual retry button too).
+  const onInvoiceFile = (file) => {
+    setFiles(f => ({ ...f, invoice_file: file }))
+    if (file) setTimeout(() => autofillFrom(file), 0)
+  }
+  const autofillFrom = async (file) => {
+    setAutofilling(true); setError('')
+    try {
+      const fd = new FormData(); fd.append('invoice_file', file)
+      const { data } = await api.post(`/vendor/${slug}/parse-invoice`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+      const d = data.data
+      setForm(f => ({
+        ...f,
+        vendor_name: f.vendor_name || d.vendor_name || '',
+        amount: f.amount || (d.amount != null ? String(d.amount) : ''),
+        currency: d.currency || f.currency,
+        invoice_number: f.invoice_number || d.invoice_number || '',
+        category: f.category || d.category || '',
+        payment_method: f.payment_method || d.payment_method || '',
+        description: f.description || d.description || '',
+      }))
+    } catch { /* silent on auto — the manual button surfaces errors */ }
     finally { setAutofilling(false) }
   }
 
@@ -121,13 +165,30 @@ export default function VendorSubmit() {
   }
 
   const submit = async (e) => {
-    e.preventDefault(); setError(''); setSubmitting(true)
-    if (!form.artist.trim()) { setError('Please enter the artist or project.'); setSubmitting(false); return }
-    if (!form.category) { setError('Please select a category.'); setSubmitting(false); return }
-    if (!form.amount || Number(form.amount) <= 0) { setError('Please enter a valid amount.'); setSubmitting(false); return }
+    e.preventDefault(); setError('')
+    const cleanSplits = splits
+      .map(l => ({
+        artist: (l.artist || '').trim(), song: (l.song || '').trim(), amount: parseFloat(l.amount) || 0,
+        socials: (l.socials || []).map(s => ({ handle: (s.handle || '').trim(), amount: parseFloat(s.amount) || 0 })).filter(s => s.handle),
+      }))
+      .filter(l => l.artist)
+    if (!cleanSplits.length) return setError('Please enter at least one artist / project.')
+    if (!form.category) return setError('Please select a category.')
+    if (!total || total <= 0) return setError('Please enter a valid invoice amount.')
+    // One artist with no amount → allocate the whole invoice to them.
+    if (cleanSplits.length === 1 && !cleanSplits[0].amount) cleanSplits[0].amount = total
+    const sum = cleanSplits.reduce((a, l) => a + l.amount, 0)
+    if (Math.abs(sum - total) > 0.01) return setError(`Your artist split (${sum.toFixed(2)}) must add up to the invoice total (${total.toFixed(2)} ${form.currency}).`)
+
+    setSubmitting(true)
     try {
       const fd = new FormData()
       Object.entries(form).forEach(([k, v]) => fd.append(k, v))
+      // Primary/legacy fields for compatibility + the full breakdown.
+      fd.append('artist', cleanSplits[0].artist)
+      fd.append('song', cleanSplits[0].song)
+      fd.append('socials', cleanSplits.flatMap(l => l.socials.map(s => s.handle)).join(', '))
+      fd.append('splits', JSON.stringify(cleanSplits))
       fd.append('extra_emails', JSON.stringify(extraEmails))
       if (files.invoice_file) fd.append('invoice_file', files.invoice_file)
       if (files.w9_file) fd.append('w9_file', files.w9_file)
@@ -202,8 +263,9 @@ export default function VendorSubmit() {
                 <Field label="Invoice number"><input className="input" value={form.invoice_number} onChange={set('invoice_number')} /></Field>
                 <div />
                 <Field label="Invoice file (required)">
-                  <Dropzone value={files.invoice_file} onChange={file => setFiles(f => ({ ...f, invoice_file: file }))} required />
-                  {files.invoice_file && <button type="button" onClick={autofill} disabled={autofilling} className="text-xs font-semibold text-brand-600 hover:underline mt-1.5 inline-flex items-center gap-1"><Sparkles size={12} /> {autofilling ? 'Reading…' : 'Auto-fill from invoice'}</button>}
+                  <Dropzone value={files.invoice_file} onChange={onInvoiceFile} required />
+                  {files.invoice_file && <button type="button" onClick={autofill} disabled={autofilling} className="text-xs font-semibold text-brand-600 hover:underline mt-1.5 inline-flex items-center gap-1"><Sparkles size={12} /> {autofilling ? 'Reading…' : 'Re-read from invoice'}</button>}
+                  {autofilling && <p className="text-[11px] text-gray-400 mt-1 inline-flex items-center gap-1"><Sparkles size={11} className="animate-pulse" /> Reading your invoice…</p>}
                 </Field>
                 {isReimb
                   ? <Field label="Receipt (required)"><Dropzone value={files.receipt_file} onChange={file => setFiles(f => ({ ...f, receipt_file: file }))} required /></Field>
@@ -214,22 +276,41 @@ export default function VendorSubmit() {
           )}
 
           {step === 3 && (
-            <div className="space-y-3">
+            <div className="space-y-4">
               {dupWarn && <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 inline-flex items-center gap-1.5"><AlertTriangle size={13} /> {dupWarn}</div>}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Field label="Artist / project"><input className="input" value={form.artist} onChange={set('artist')} /></Field>
-                <Field label="Song (optional)"><input className="input" value={form.song || ''} onChange={set('song')} /></Field>
                 <Field label="Category"><select className="input" value={form.category} onChange={set('category')}><option value="">Select…</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></Field>
                 <Field label="Your contact at the label">
                   {ctx.reps?.length
                     ? <select className="input" value={form.rep} onChange={set('rep')}><option value="">Select…</option>{ctx.reps.map(r => <option key={r}>{r}</option>)}</select>
                     : <input className="input" value={form.rep} onChange={set('rep')} />}
                 </Field>
-                <Field label="Amount"><input type="number" step="0.01" className="input" value={form.amount} onChange={set('amount')} /></Field>
+                <Field label="Invoice total"><input type="number" step="0.01" className="input" value={form.amount} onChange={set('amount')} /></Field>
                 <Field label="Currency"><select className="input" value={form.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></Field>
-                <div className="sm:col-span-2"><Field label="Social links (optional)"><input className="input" value={form.socials} onChange={set('socials')} placeholder="@handles / links relevant to this spend" /></Field></div>
-                <div className="sm:col-span-2"><Field label="Notes (optional)"><textarea className="input" rows={2} value={form.notes} onChange={set('notes')} /></Field></div>
               </div>
+
+              {/* Artist allocation */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="label !mb-0">Artist{multi ? 's' : ''} &amp; allocation</label>
+                  {(multi || splits.some(l => l.amount)) && (
+                    <span className={`text-[11px] font-semibold ${total > 0 && Math.abs(total - allocated) < 0.01 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                      Allocated {allocated.toFixed(2)} / {total.toFixed(2)} {form.currency}
+                    </span>
+                  )}
+                </div>
+                <div className="space-y-3">
+                  {splits.map((l, i) => (
+                    <SplitLine key={i} index={i} line={l} multi={multi}
+                      onField={splitField(i)} onSocial={updSocial(i)} addSocial={addSocial(i)} removeSocial={removeSocial(i)}
+                      onRemove={() => removeArtist(i)} canRemove={splits.length > 1} />
+                  ))}
+                </div>
+                <button type="button" onClick={addArtist} className="text-xs font-semibold text-brand-600 hover:underline mt-2 inline-flex items-center gap-1"><Plus size={13} /> Add another artist</button>
+                <p className="text-[11px] text-gray-400 mt-1">Split the invoice across artists and, optionally, attach socials (with amounts) to each.</p>
+              </div>
+
+              <Field label="Description (optional)"><textarea className="input" rows={2} value={form.description} onChange={set('description')} placeholder="What this invoice is for" /></Field>
             </div>
           )}
 
@@ -254,6 +335,36 @@ export default function VendorSubmit() {
 // the component remounts every input on each keystroke and drops focus.
 function Field({ label, children }) {
   return <div><label className="label">{label}</label>{children}</div>
+}
+
+// One artist allocation line: artist / song / amount + a socials sub-list
+// (each social with an optional amount). Module-scope for stable focus.
+function SplitLine({ line, index, multi, onField, onSocial, addSocial, removeSocial, onRemove, canRemove }) {
+  return (
+    <div className="rounded-xl border border-rule p-3 bg-page/30">
+      {multi && (
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Artist {index + 1}</span>
+          {canRemove && <button type="button" onClick={onRemove} className="text-gray-300 hover:text-red-600"><Trash2 size={13} /></button>}
+        </div>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div><label className="label">Artist / project</label><input className="input" value={line.artist} onChange={e => onField('artist', e.target.value)} /></div>
+        <div><label className="label">Song (optional)</label><input className="input" value={line.song} onChange={e => onField('song', e.target.value)} /></div>
+        <div><label className="label">Amount</label><input type="number" step="0.01" className="input" value={line.amount} onChange={e => onField('amount', e.target.value)} placeholder={multi ? '' : 'full invoice'} /></div>
+      </div>
+      <div className="mt-2 pl-0.5">
+        {line.socials.map((s, si) => (
+          <div key={si} className="flex items-center gap-2 mb-1.5">
+            <input className="input !py-1.5 text-sm flex-1" value={s.handle} onChange={e => onSocial(si, 'handle', e.target.value)} placeholder="@handle / link" />
+            <input type="number" step="0.01" className="input !py-1.5 text-sm !w-28" value={s.amount} onChange={e => onSocial(si, 'amount', e.target.value)} placeholder="amount" />
+            <button type="button" onClick={() => removeSocial(si)} className="text-gray-300 hover:text-red-600 flex-shrink-0"><X size={14} /></button>
+          </div>
+        ))}
+        <button type="button" onClick={addSocial} className="text-[11px] font-semibold text-brand-600 hover:underline inline-flex items-center gap-1"><Plus size={12} /> Add social</button>
+      </div>
+    </div>
+  )
 }
 
 function Center({ children }) {

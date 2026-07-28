@@ -485,6 +485,8 @@ const runMigrations = async () => {
   // category, TRUE = force in, FALSE = force out) + cobrand flag.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS artist_campaign BOOLEAN`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS cobrand BOOLEAN DEFAULT FALSE`);
+  // Vendor-provided multi-artist allocation: [{ artist, song, amount, socials:[{handle, amount}] }].
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS artist_breakdown JSONB`);
   // Recoupment statement tracking: UFR ("un-recouped funds recovered") marker
   // + when it was stamped (drives the statement month), and entry source.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS ufr BOOLEAN DEFAULT FALSE`);
