@@ -4,11 +4,16 @@ const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 // Resolve each R2 setting from any of several common env-var names, so the
 // integration works regardless of exactly what the values were named.
 const pick = (...names) => { for (const n of names) if (process.env[n]) return process.env[n]; return ''; };
-const ACCOUNT_ID = () => pick('R2_ACCOUNT_ID', 'CLOUDFLARE_ACCOUNT_ID', 'R2_ACCOUNTID', 'CF_ACCOUNT_ID');
+const ACCOUNT_ID = () => pick('R2_ACCOUNT_ID', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_R2_ACCOUNT_ID', 'R2_ACCOUNTID', 'CF_ACCOUNT_ID', 'R2_ACCOUNT', 'ACCOUNT_ID');
 const ACCESS_KEY = () => pick('R2_ACCESS_KEY_ID', 'R2_ACCESS_KEY', 'R2_ACCESSKEYID', 'CLOUDFLARE_R2_ACCESS_KEY_ID');
 const SECRET_KEY = () => pick('R2_SECRET_ACCESS_KEY', 'R2_SECRET_KEY', 'R2_SECRETACCESSKEY', 'CLOUDFLARE_R2_SECRET_ACCESS_KEY');
 const bucket = () => pick('R2_BUCKET_NAME', 'R2_BUCKET', 'CLOUDFLARE_R2_BUCKET', 'R2_BUCKETNAME');
-const ENDPOINT = () => pick('R2_ENDPOINT', 'R2_S3_ENDPOINT') || (ACCOUNT_ID() ? `https://${ACCOUNT_ID()}.r2.cloudflarestorage.com` : '');
+let ENDPOINT = () => {
+  const explicit = pick('R2_ENDPOINT', 'R2_S3_ENDPOINT', 'R2_URL', 'S3_ENDPOINT', 'AWS_ENDPOINT_URL_S3');
+  if (explicit) return explicit.replace(/\/+$/, '');
+  const id = ACCOUNT_ID();
+  return id ? `https://${id}.r2.cloudflarestorage.com` : '';
+};
 
 // Build the S3 client lazily + memoize, so it uses whatever env is present at
 // first use (and isn't constructed with empty creds at import time).
