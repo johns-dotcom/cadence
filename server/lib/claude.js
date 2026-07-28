@@ -10,8 +10,12 @@
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-4-8';
 const API = 'https://api.anthropic.com/v1/messages';
 
+// Accept either env var name (CLAUDE_API_KEY is what some hosts default to).
+function apiKey() {
+  return process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY || '';
+}
 function isEnabled() {
-  return !!process.env.ANTHROPIC_API_KEY;
+  return !!apiKey();
 }
 
 // Map a stored file to a Claude content block. PDFs use a `document` block;
@@ -45,7 +49,7 @@ async function callClaude({ system, content, schema, maxTokens = 2048 }) {
     const res = await fetch(API, {
       method: 'POST',
       headers: {
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'x-api-key': apiKey(),
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json',
       },
