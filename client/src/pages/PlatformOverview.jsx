@@ -81,7 +81,6 @@ export default function PlatformOverview() {
           </div>
           <div className="flex items-center gap-2 mt-5">
             <Link to="/workspaces" className="inline-flex items-center gap-1.5 text-sm font-semibold bg-white text-gray-900 px-3.5 py-2 rounded-lg hover:bg-white/90 transition"><Building2 size={15} /> Manage workspaces</Link>
-            <Link to="/analytics" className="inline-flex items-center gap-1.5 text-sm font-semibold bg-white/10 text-white px-3.5 py-2 rounded-lg hover:bg-white/20 transition">Analytics <ArrowRight size={14} /></Link>
           </div>
         </div>
       </div>

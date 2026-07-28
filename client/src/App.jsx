@@ -1,5 +1,4 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
-import { Suspense, lazy } from 'react'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import Layout from './components/Layout'
 import PlatformLayout from './components/PlatformLayout'
@@ -7,8 +6,6 @@ import PlatformOverview from './pages/PlatformOverview'
 import PlatformActivity from './pages/PlatformActivity'
 import PlatformAnnouncements from './pages/PlatformAnnouncements'
 import PlatformOperators from './pages/PlatformOperators'
-// Lazy — pulls recharts into its own chunk instead of the main bundle.
-const PlatformAnalytics = lazy(() => import('./pages/PlatformAnalytics'))
 import PlatformAccount from './pages/PlatformAccount'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -105,7 +102,6 @@ function AppContent() {
         <Route element={<ProtectedRoute><PlatformLayout /></ProtectedRoute>}>
           <Route path="/"           element={<PlatformOverview />} />
           <Route path="/workspaces" element={<Workspaces />} />
-          <Route path="/analytics"  element={<Suspense fallback={<p className="text-sm text-gray-400">Loading…</p>}><PlatformAnalytics /></Suspense>} />
           <Route path="/activity"   element={<PlatformActivity />} />
           <Route path="/announcements" element={<PlatformAnnouncements />} />
           {user?.platform_role === 'owner' && <Route path="/operators" element={<PlatformOperators />} />}

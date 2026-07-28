@@ -217,7 +217,7 @@ router.get('/activity', async (req, res) => {
 // Console pages an admin operator can be restricted from. Overview ('/') and
 // Account are always allowed so an operator is never fully locked out;
 // Operators is owner-only anyway.
-const RESTRICTABLE_PAGES = ['/workspaces', '/analytics', '/activity', '/announcements'];
+const RESTRICTABLE_PAGES = ['/workspaces', '/activity', '/announcements'];
 
 async function operatorAccess(email) {
   const e = (email || '').toLowerCase();
