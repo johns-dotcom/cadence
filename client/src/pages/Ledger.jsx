@@ -8,6 +8,7 @@ import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import LedgerEntryDrawer from '../components/LedgerEntryDrawer'
 import { formatDate } from '../utils/dates'
+import useIsMobile from '../hooks/useIsMobile'
 import { EXPENSE_CATEGORIES, PAYMENT_METHODS } from '../constants'
 
 const STATUS_STYLES = { pending: 'bg-amber-100 text-amber-700', approved: 'bg-emerald-100 text-emerald-700', rejected: 'bg-red-100 text-red-700' }
@@ -30,6 +31,7 @@ function amountPred(raw) {
 export default function Ledger() {
   const { toast } = useToast()
   const { label, user } = useAuth()
+  const isMobile = useIsMobile()
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [params] = useSearchParams()
@@ -282,6 +284,46 @@ export default function Ledger() {
         <div className="card p-2"><Skeleton.Table rows={8} cols={shownCols.length + 1} /></div>
       ) : filtered.length === 0 ? (
         <div className="card p-10 text-center"><BookOpen size={28} className="text-gray-300 mx-auto mb-3" /><p className="text-sm text-gray-500">No entries match.</p></div>
+      ) : isMobile ? (
+        /* Mobile card list (<768px). Tap a card to open the detail drawer;
+           inline quick actions mirror the desktop row actions. */
+        <div className="space-y-2">
+          {filtered.map(en => (
+            <div
+              key={en.id}
+              ref={el => (rowRefs.current[en.id] = el)}
+              onClick={() => setDrawerEntry(en)}
+              className={`card p-3 ${en.voided ? 'opacity-50' : ''}`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-ink truncate">{en.payee || '—'}</p>
+                  <p className="text-[11px] text-gray-400 truncate">{[en.category, en.artist].filter(Boolean).join(' · ') || '—'} · {formatDate(en.invoice_date)}</p>
+                </div>
+                <span className={`flex-shrink-0 inline-block px-2 py-0.5 rounded-full text-[10px] font-medium capitalize ${STATUS_STYLES[en.status] || ''}`}>{en.status}</span>
+              </div>
+              <div className="flex items-center justify-between mt-2">
+                <span className="text-sm font-semibold text-ink tabular-nums">{money(en.amount, en.currency)}</span>
+                <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                  <button onClick={() => cyclePaid(en)} className={`text-[11px] font-medium px-1.5 ${PAID_STYLE[en.payment_status] || PAID_STYLE.Unpaid}`}>{en.payment_status || 'Unpaid'}</button>
+                  {en.status === 'pending' && (
+                    <>
+                      <button onClick={() => act(en.id, 'approve')} title="Approve" className="text-emerald-600 p-1"><Check size={16} /></button>
+                      <button onClick={() => reject(en.id)} title="Reject" className="text-red-500 p-1"><X size={16} /></button>
+                    </>
+                  )}
+                  {en.status === 'approved' && en.payment_status !== 'Paid' && (
+                    <button onClick={() => act(en.id, 'mark-paid')} title="Mark paid" className="text-gray-500 p-1"><DollarSign size={16} /></button>
+                  )}
+                  <button onClick={() => setDrawerEntry(en)} title="Details" className="text-gray-400 p-1"><SlidersHorizontal size={15} /></button>
+                </div>
+              </div>
+            </div>
+          ))}
+          <div className="card px-3 py-2.5 text-[11px] font-semibold text-gray-500 sticky bottom-16">
+            Totals: {Object.entries(totals).map(([c, a]) => `${c} ${a.toLocaleString(undefined, { minimumFractionDigits: 2 })}`).join('  ·  ') || '—'}
+          </div>
+        </div>
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm">

@@ -7,6 +7,7 @@ import EmailPreviewModal from '../components/EmailPreviewModal'
 import { useToast } from '../context/ToastContext'
 import { PAYMENT_TERMS, PAYMENT_METHODS } from '../constants'
 import { formatDate, isPastLocal, daysUntilLocal } from '../utils/dates'
+import useIsMobile from '../hooks/useIsMobile'
 
 const fmt = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })
 const usd = (n) => `$${fmt(n)}`
@@ -29,6 +30,7 @@ function totalsByCurrency(rows) {
 
 export default function Payments() {
   const { toast } = useToast()
+  const isMobile = useIsMobile()
   const [filter, setFilter] = useState('unpaid')
   const [rows, setRows] = useState([])
   const [stats, setStats] = useState(null)
@@ -204,6 +206,47 @@ export default function Payments() {
         <div className="card p-2"><Skeleton.Table rows={6} cols={6} /></div>
       ) : shown.length === 0 ? (
         <div className="card p-10 text-center"><CreditCard size={28} className="text-gray-300 mx-auto mb-3" /><p className="text-sm text-gray-500">{isPaid ? 'No payments recorded yet.' : 'Nothing here. All caught up. 🎉'}</p></div>
+      ) : isMobile ? (
+        /* Mobile card list (<768px). The select checkbox drives the same bulk
+           bar as desktop; quick actions mirror the row buttons. */
+        <div className="space-y-2">
+          {shown.map(r => (
+            <div key={r.id} className={`card p-3 ${r.on_hold ? 'opacity-60' : ''}`}>
+              <div className="flex items-start gap-2.5">
+                <input type="checkbox" checked={sel.has(r.id)} onChange={() => toggle(r.id)} className="mt-1 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-semibold text-ink truncate flex items-center gap-1.5">
+                      {r.payee}
+                      {r.rush && <Zap size={12} className="text-amber-600 flex-shrink-0" />}
+                      {r.on_hold && <Pause size={12} className="text-gray-500 flex-shrink-0" />}
+                    </p>
+                    <span className="text-sm font-semibold text-ink tabular-nums flex-shrink-0">{r.currency} {fmt(r.amount)}</span>
+                  </div>
+                  <p className="text-[11px] text-gray-400 truncate mt-0.5">
+                    {isPaid
+                      ? `${r.payment_method || '—'} · paid ${formatDate(r.payment_date)}`
+                      : `${[r.category, r.artist].filter(Boolean).join(' · ') || '—'}${r.scheduled_payment_date ? ` · due ${formatDate(r.scheduled_payment_date)}` : ''}`}
+                  </p>
+                  <div className="flex items-center gap-1 mt-2 justify-end">
+                    {isPaid ? (
+                      r.vendor_email
+                        ? <button onClick={() => sendConfirm(r)} className="inline-flex items-center gap-1 text-xs text-brand-600 px-1"><Send size={14} /> {r.payment_notified ? 'Resend' : 'Send confirmation'}</button>
+                        : <span className="text-[11px] text-gray-300">no email</span>
+                    ) : (
+                      <>
+                        <button onClick={() => toggleRush(r)} className={`p-1.5 ${r.rush ? 'text-amber-600' : 'text-gray-400'}`} title="Rush"><Zap size={16} /></button>
+                        <button onClick={() => toggleHold(r)} className={`p-1.5 ${r.on_hold ? 'text-gray-700' : 'text-gray-400'}`} title="Hold"><Pause size={16} /></button>
+                        <button onClick={() => setSchedModal({ id: r.id, terms: r.payment_terms || 'Net 30' })} className="text-gray-500 p-1.5" title="Schedule"><CalendarClock size={16} /></button>
+                        <button onClick={() => setPayModal({ ids: [r.id] })} className="text-emerald-600 p-1.5" title="Mark paid"><Check size={17} /></button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm">
