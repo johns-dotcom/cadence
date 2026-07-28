@@ -9,6 +9,7 @@ const { uniqueSlug } = require('../lib/slug');
 const { signToken, publicUser } = require('../lib/token');
 const { getSignedFileUrl, uploadFile, deleteFile } = require('../lib/r2');
 const { sendEmail, inviteEmail } = require('../lib/email');
+const { deleteUserWithSweep } = require('../lib/userDelete');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -442,6 +443,119 @@ router.post('/workspaces/:id/reset-owner', requirePlatformOwner, async (req, res
     res.json({ success: true, data: { owner: { name: owner.name, email: owner.email }, label: label.rows[0], password: newPassword } });
   } catch (error) {
     console.error('Reset owner error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Member & owner management ──────────────────────────────────────────────
+// Operators (admin or owner) can staff any workspace from the console.
+const MEMBER_ROLES = ['Superadmin', 'Admin', 'Approver', 'User'];
+const HIER_FOR = { Superadmin: 1, Admin: 2, Approver: 3, User: 4 };
+
+// A single non-operator member of a label (operator ghost rows are excluded).
+async function memberOf(labelId, userId) {
+  const { rows } = await pool.query(
+    `SELECT id, name, email, role FROM users
+      WHERE id = $1 AND label_id = $2 AND (is_platform_admin = false OR is_platform_admin IS NULL)`,
+    [userId, labelId]
+  );
+  return rows[0] || null;
+}
+async function superadminCount(labelId) {
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM users
+      WHERE label_id = $1 AND role = 'Superadmin' AND (is_platform_admin = false OR is_platform_admin IS NULL)`,
+    [labelId]
+  );
+  return rows[0].n;
+}
+
+// POST /workspaces/:id/members — invite a member (role Superadmin = owner). The
+// user activates via an invite link + sets their own password (team-invite flow).
+router.post('/workspaces/:id/members', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const name = (req.body.name || '').trim();
+    const email = (req.body.email || '').trim().toLowerCase();
+    const role = MEMBER_ROLES.includes(req.body.role) ? req.body.role : 'User';
+    if (!name || !email) return res.status(400).json({ success: false, error: 'Name and email are required' });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ success: false, error: 'Please enter a valid email' });
+    const lbl = await pool.query('SELECT id, name FROM labels WHERE id = $1', [id]);
+    if (!lbl.rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const { rows } = await pool.query(
+      `INSERT INTO users (label_id, name, email, role, department, hierarchy_level,
+         invite_token, invite_expires, invited_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() + ($8 || ' days')::interval, NOW(), NOW())
+       RETURNING id, name, email, role`,
+      [id, name, email, role, role === 'Superadmin' ? 'Executive' : 'Operations', HIER_FOR[role], token, String(INVITE_DAYS)]
+    );
+    const link = inviteLink(req, token);
+    const msg = inviteEmail({ inviteeName: name, workspaceName: lbl.rows[0].name, inviterName: req.user.name, link, expiresDays: INVITE_DAYS });
+    const mail = await sendEmail({ to: email, subject: msg.subject, html: msg.html, text: msg.text });
+    res.status(201).json({ success: true, data: { user: rows[0], invite_link: link, email_sent: mail.sent } });
+  } catch (error) {
+    if (error.code === '23505') return res.status(400).json({ success: false, error: 'A user with that email already exists in this workspace' });
+    console.error('Invite member error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PATCH /workspaces/:id/members/:userId — change a member's role.
+router.patch('/workspaces/:id/members/:userId', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const userId = parseInt(req.params.userId, 10);
+    const role = req.body.role;
+    if (!MEMBER_ROLES.includes(role)) return res.status(400).json({ success: false, error: 'Invalid role' });
+    const m = await memberOf(id, userId);
+    if (!m) return res.status(404).json({ success: false, error: 'Member not found' });
+    if (m.role === 'Superadmin' && role !== 'Superadmin' && (await superadminCount(id)) <= 1) {
+      return res.status(400).json({ success: false, error: 'Assign another owner before demoting the only Superadmin' });
+    }
+    await pool.query('UPDATE users SET role = $1, hierarchy_level = $2 WHERE id = $3 AND label_id = $4', [role, HIER_FOR[role], userId, id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Change member role error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /workspaces/:id/members/:userId/make-owner — promote a member to owner
+// (Superadmin, top of hierarchy) and demote the previous owner to Admin.
+router.post('/workspaces/:id/members/:userId/make-owner', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const userId = parseInt(req.params.userId, 10);
+    const m = await memberOf(id, userId);
+    if (!m) return res.status(404).json({ success: false, error: 'Member not found' });
+    const current = await ownerOf(id);
+    await pool.query("UPDATE users SET role = 'Superadmin', department = 'Executive', hierarchy_level = 1 WHERE id = $1 AND label_id = $2", [userId, id]);
+    if (current && current.id !== userId) {
+      await pool.query("UPDATE users SET role = 'Admin', hierarchy_level = 2 WHERE id = $1 AND label_id = $2", [current.id, id]);
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Make owner error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /workspaces/:id/members/:userId — remove a member (FK-swept).
+router.delete('/workspaces/:id/members/:userId', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const userId = parseInt(req.params.userId, 10);
+    const m = await memberOf(id, userId);
+    if (!m) return res.status(404).json({ success: false, error: 'Member not found' });
+    if (m.role === 'Superadmin' && (await superadminCount(id)) <= 1) {
+      return res.status(400).json({ success: false, error: 'Cannot remove the only owner — assign another owner first' });
+    }
+    await deleteUserWithSweep(id, userId);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Remove member error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

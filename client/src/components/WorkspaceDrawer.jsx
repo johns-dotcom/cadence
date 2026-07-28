@@ -2,10 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import {
   X, LogIn, Users, Music, Disc3, TrendingUp, FileText, BookOpen, Receipt,
   CheckSquare, Clock, Upload, Trash2, KeyRound, Ban, RotateCcw, Copy, Check, Palette,
+  UserPlus, Crown,
 } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
 import { ACCENT_PRESETS, isValidHex } from '../utils/branding'
+
+const MEMBER_ROLES = ['Superadmin', 'Admin', 'Approver', 'User']
 
 const fmtAgo = (d) => {
   if (!d) return 'never'
@@ -42,6 +45,13 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
   const [handoff, setHandoff] = useState(null)
   const [copied, setCopied] = useState(false)
   const [confirmName, setConfirmName] = useState('')
+
+  // Members-tab state
+  const [showInvite, setShowInvite] = useState(false)
+  const [invite, setInvite] = useState({ name: '', email: '', role: 'User' })
+  const [inviteResult, setInviteResult] = useState(null)
+  const [inviteBusy, setInviteBusy] = useState(false)
+  const [inviteCopied, setInviteCopied] = useState(false)
 
   const load = () => {
     setLoading(true)
@@ -82,6 +92,38 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
   const del = async () => {
     try { await api.delete(`/platform/workspaces/${workspaceId}`, { data: { confirm: confirmName } }); toast('Workspace deleted'); onChanged?.(); onClose() }
     catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+
+  // ── Member & owner management ──
+  const inviteMember = async () => {
+    if (!invite.name.trim() || !invite.email.trim()) { toast('Name and email are required', 'error'); return }
+    setInviteBusy(true)
+    try {
+      const { data: d } = await api.post(`/platform/workspaces/${workspaceId}/members`, invite)
+      setInviteResult(d.data)
+      setInvite({ name: '', email: '', role: 'User' })
+      toast(d.data.email_sent ? 'Invite emailed' : 'Member added — share the invite link')
+      load(); onChanged?.()
+    } catch (err) { toast(err.response?.data?.error || 'Failed to invite', 'error') }
+    finally { setInviteBusy(false) }
+  }
+  const changeRole = async (m, role) => {
+    try { await api.patch(`/platform/workspaces/${workspaceId}/members/${m.id}`, { role }); toast('Role updated'); load(); onChanged?.() }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+  const makeOwner = async (m) => {
+    if (!window.confirm(`Make ${m.name} the owner of this workspace? The current owner becomes an Admin.`)) return
+    try { await api.post(`/platform/workspaces/${workspaceId}/members/${m.id}/make-owner`); toast(`${m.name} is now the owner`); load(); onChanged?.() }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+  const removeMember = async (m) => {
+    if (!window.confirm(`Remove ${m.name} from this workspace? This permanently deletes their account and reassigns their records.`)) return
+    try { await api.delete(`/platform/workspaces/${workspaceId}/members/${m.id}`); toast('Member removed'); load(); onChanged?.() }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+  const copyInvite = () => {
+    if (!inviteResult) return
+    navigator.clipboard.writeText(inviteResult.invite_link).then(() => { setInviteCopied(true); setTimeout(() => setInviteCopied(false), 2000) })
   }
 
   const TABS = [
@@ -161,14 +203,58 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
               )}
 
               {tab === 'members' && (
-                <div className="space-y-1.5">
-                  {data.members.length ? data.members.map(m => (
-                    <div key={m.id} className="flex items-center gap-3 py-2 border-b border-divider last:border-0">
-                      <div className="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0"><span className="text-xs font-bold text-brand-700">{m.name?.charAt(0)?.toUpperCase()}</span></div>
-                      <div className="flex-1 min-w-0"><p className="text-sm font-medium text-ink truncate">{m.name}</p><p className="text-[11px] text-gray-400 truncate">{m.email}</p></div>
-                      <span className="text-[10px] font-semibold text-gray-500 uppercase">{m.role}</span>
-                    </div>
-                  )) : <p className="text-sm text-gray-400">No members.</p>}
+                <div className="space-y-4">
+                  {/* Invite */}
+                  <div>
+                    {!showInvite ? (
+                      <button onClick={() => { setShowInvite(true); setInviteResult(null) }} className="btn-secondary !py-1.5 text-xs"><UserPlus size={13} /> Invite member</button>
+                    ) : (
+                      <div className="card p-3 space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <input className="input !py-1.5 text-sm" placeholder="Name" value={invite.name} onChange={e => setInvite(v => ({ ...v, name: e.target.value }))} />
+                          <select className="input !py-1.5 text-sm" value={invite.role} onChange={e => setInvite(v => ({ ...v, role: e.target.value }))}>
+                            {MEMBER_ROLES.map(r => <option key={r} value={r}>{r === 'Superadmin' ? 'Superadmin (owner)' : r}</option>)}
+                          </select>
+                          <input className="input !py-1.5 text-sm col-span-2" placeholder="Email" value={invite.email} onChange={e => setInvite(v => ({ ...v, email: e.target.value }))} />
+                        </div>
+                        <div className="flex items-center justify-end gap-2">
+                          <button onClick={() => { setShowInvite(false); setInviteResult(null) }} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+                          <button onClick={inviteMember} disabled={inviteBusy} className="btn-primary !py-1.5 text-xs">{inviteBusy ? 'Sending…' : 'Send invite'}</button>
+                        </div>
+                        {inviteResult && (
+                          <div className="card p-2.5 bg-brand-50/40 border-brand-200 flex items-start justify-between gap-2">
+                            <div className="text-[11px] min-w-0">
+                              <p className="font-medium text-ink">{inviteResult.user.email}</p>
+                              <p className="text-gray-500 truncate">{inviteResult.email_sent ? 'Invite emailed.' : 'Email not configured — share this link:'} </p>
+                              {!inviteResult.email_sent && <p className="font-mono text-[10px] text-gray-500 truncate">{inviteResult.invite_link}</p>}
+                            </div>
+                            <button onClick={copyInvite} className="btn-secondary !py-1 text-[11px] flex-shrink-0">{inviteCopied ? <><Check size={12} /> Copied</> : <><Copy size={12} /> Link</>}</button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Roster */}
+                  <div className="space-y-1.5">
+                    {data.members.length ? data.members.map(m => {
+                      const isOwnerRow = data.owner && m.id === data.owner.id
+                      return (
+                        <div key={m.id} className="flex items-center gap-3 py-2 border-b border-divider last:border-0 group">
+                          <div className="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0"><span className="text-xs font-bold text-brand-700">{m.name?.charAt(0)?.toUpperCase()}</span></div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-ink truncate flex items-center gap-1.5">{m.name}{isOwnerRow && <Crown size={12} className="text-amber-500 flex-shrink-0" title="Owner" />}</p>
+                            <p className="text-[11px] text-gray-400 truncate">{m.email}</p>
+                          </div>
+                          <select value={m.role} onChange={e => changeRole(m, e.target.value)} className="text-[11px] font-medium border border-rule rounded-md px-1.5 py-1 bg-card text-gray-600 cursor-pointer flex-shrink-0">
+                            {MEMBER_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                          </select>
+                          {!isOwnerRow && <button onClick={() => makeOwner(m)} title="Make owner" className="text-gray-300 hover:text-amber-500 p-1 flex-shrink-0"><Crown size={14} /></button>}
+                          <button onClick={() => removeMember(m)} title="Remove" className="text-gray-300 hover:text-red-600 p-1 flex-shrink-0"><Trash2 size={14} /></button>
+                        </div>
+                      )
+                    }) : <p className="text-sm text-gray-400">No members yet. Invite someone to get started.</p>}
+                  </div>
                 </div>
               )}
 
