@@ -5,8 +5,8 @@ import {
   LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
-  FileClock, Shield, Lock, Sparkles, FileSignature, FileSpreadsheet, Archive, Layers, Upload, PiggyBank, FilePlus2,
-  BarChart3, MessageSquarePlus,
+  FileClock, Shield, Lock, FileSignature, FileSpreadsheet, Archive, Layers, Upload, PiggyBank, FilePlus2,
+  MessageSquarePlus,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
@@ -36,7 +36,6 @@ export const PAGE_LABELS = {
   '/label-waivers': 'Label Waivers',
   '/clearances': 'Clearances',
   '/admin-docs': 'Admin Docs',
-  '/data-quality': 'Data quality',
   '/releases':   'Releases',
   '/catalog':    'Catalog',
   '/artists':    'Artists',
@@ -56,7 +55,6 @@ export const PAGE_LABELS = {
   '/invoices/new': 'Create invoice',
   '/team':       'Team',
   '/activity':   'Activity',
-  '/usage':      'Usage analytics',
   '/requests':   'Requests & feedback',
   '/settings':   'Settings',
   '/workspaces': 'Workspaces',
@@ -190,12 +188,6 @@ export default function Layout() {
 
   useEffect(() => { if (isMobile) setSidebarOpen(false) }, [location.pathname, isMobile])
 
-  // Usage analytics — fire-and-forget route-view ping. Never blocks nav.
-  useEffect(() => {
-    if (!user) return
-    api.post('/analytics/ping', { path: location.pathname }).catch(() => {})
-  }, [location.pathname, user?.id])
-
   // Platform announcements — dismissible banner stack.
   const [announcements, setAnnouncements] = useState([])
   useEffect(() => {
@@ -287,8 +279,6 @@ export default function Layout() {
       items: [
         ...(isAdmin ? [{ path: '/team', label: 'Team', icon: UserCheck }] : []),
         ...(isAdmin ? [{ path: '/activity', label: 'Activity', icon: ScrollText }] : []),
-        ...(isApprover ? [{ path: '/usage', label: 'Usage analytics', icon: BarChart3 }] : []),
-        ...(isAdmin ? [{ path: '/data-quality', label: 'Data quality', icon: Sparkles }] : []),
         { path: '/requests', label: 'Requests & feedback', icon: MessageSquarePlus },
         { path: '/settings', label: 'Settings', icon: Settings },
       ],

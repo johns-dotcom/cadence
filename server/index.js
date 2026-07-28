@@ -37,7 +37,6 @@ const campaignsRoutes = require('./routes/campaigns');
 const pendingContractsRoutes = require('./routes/pending-contracts');
 const ndasRoutes = require('./routes/ndas');
 const ndaDocumentsRoutes = require('./routes/nda-documents');
-const analyticsRoutes = require('./routes/analytics');
 const internalRequestsRoutes = require('./routes/internal-requests');
 const announcementsRoutes = require('./routes/announcements');
 const manualRoutes = require('./routes/manual');
@@ -158,7 +157,6 @@ app.use('/api/campaigns', campaignsRoutes);
 app.use('/api/pending-contracts', pendingContractsRoutes);
 app.use('/api/ndas', ndasRoutes);
 app.use('/api/nda-documents', ndaDocumentsRoutes);
-app.use('/api/analytics', analyticsRoutes);
 app.use('/api/internal-requests', internalRequestsRoutes);
 app.use('/api/announcements', announcementsRoutes);
 app.use('/api/manual', manualRoutes);
@@ -732,21 +730,6 @@ const runMigrations = async () => {
       user_agent TEXT
     );
   `);
-
-  // Usage analytics — one row per (deduped) route view. Dynamic path segments
-  // are collapsed server-side (e.g. /releases/42 → /releases/:id). 180-day
-  // retention swept on boot.
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS page_views (
-      id SERIAL PRIMARY KEY,
-      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
-      user_id INT REFERENCES users(id) ON DELETE SET NULL,
-      path VARCHAR(160) NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_page_views_label ON page_views (label_id, created_at DESC)`);
-  await pool.query(`DELETE FROM page_views WHERE created_at < NOW() - INTERVAL '180 days'`);
 
   // Internal requests — in-app "request a feature / report a bug" to the
   // platform team, with page context.

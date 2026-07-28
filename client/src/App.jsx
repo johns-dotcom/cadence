@@ -49,10 +49,8 @@ import AcceptInvite from './pages/AcceptInvite'
 import Team from './pages/Team'
 import Settings from './pages/Settings'
 import Activity from './pages/Activity'
-import UsageAnalytics from './pages/UsageAnalytics'
 import InternalRequests from './pages/InternalRequests'
 import Workspaces from './pages/Workspaces'
-import Duplicates from './pages/Duplicates'
 import Privacy from './pages/Privacy'
 import EULA from './pages/EULA'
 
@@ -155,9 +153,7 @@ function AppContent() {
         <Route path="/invoices/new" element={<AdminRoute><CreateInvoice /></AdminRoute>} />
         <Route path="/team"         element={<AdminRoute><Team /></AdminRoute>} />
         <Route path="/activity"     element={<AdminRoute><Activity /></AdminRoute>} />
-        <Route path="/usage"        element={<AdminRoute><UsageAnalytics /></AdminRoute>} />
         <Route path="/requests"     element={<InternalRequests />} />
-        <Route path="/data-quality" element={<AdminRoute><Duplicates /></AdminRoute>} />
         <Route path="/settings"     element={<Settings />} />
       </Route>
       )}
