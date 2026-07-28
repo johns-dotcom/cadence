@@ -148,8 +148,6 @@ export default function VendorSubmit() {
     </Center>
   )
 
-  const Field = ({ label, children }) => <div><label className="label">{label}</label>{children}</div>
-
   return (
     <div className="min-h-screen bg-page py-10 px-4">
       <div className="max-w-2xl mx-auto">
@@ -250,6 +248,12 @@ export default function VendorSubmit() {
       </div>
     </div>
   )
+}
+
+// Module-scope so its identity is stable across renders — defining it inside
+// the component remounts every input on each keystroke and drops focus.
+function Field({ label, children }) {
+  return <div><label className="label">{label}</label>{children}</div>
 }
 
 function Center({ children }) {
