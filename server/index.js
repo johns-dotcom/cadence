@@ -40,6 +40,7 @@ const ndaDocumentsRoutes = require('./routes/nda-documents');
 const analyticsRoutes = require('./routes/analytics');
 const internalRequestsRoutes = require('./routes/internal-requests');
 const announcementsRoutes = require('./routes/announcements');
+const featureFlagsRoutes = require('./routes/feature-flags');
 const adminDocsRoutes = require('./routes/admin-docs');
 const flagsRoutes = require('./routes/flags');
 const labelWaiversRoutes = require('./routes/label-waivers');
@@ -160,6 +161,7 @@ app.use('/api/nda-documents', ndaDocumentsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/internal-requests', internalRequestsRoutes);
 app.use('/api/announcements', announcementsRoutes);
+app.use('/api/feature-flags', featureFlagsRoutes);
 app.use('/api/admin-docs', adminDocsRoutes);
 app.use('/api/flags', flagsRoutes);
 app.use('/api/label-waivers', labelWaiversRoutes);
@@ -817,6 +819,21 @@ const runMigrations = async () => {
       PRIMARY KEY (announcement_id, user_id)
     );
   `);
+
+  // Feature flags — flag keys live in code (lib/featureFlags.js); this table
+  // stores only overrides. label_id NULL = the global default override; a row
+  // with a label_id overrides that one workspace. Partial unique indexes keep
+  // one global + one per-workspace row per flag.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS feature_flags (
+      flag_key VARCHAR(60) NOT NULL,
+      label_id INT REFERENCES labels(id) ON DELETE CASCADE,
+      enabled BOOLEAN NOT NULL,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_flag_global ON feature_flags (flag_key) WHERE label_id IS NULL`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_flag_label ON feature_flags (flag_key, label_id) WHERE label_id IS NOT NULL`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_page_permissions (

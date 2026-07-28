@@ -61,6 +61,15 @@ export const PAGE_LABELS = {
   '/workspaces': 'Workspaces',
 }
 
+// Nav paths gated behind a platform feature flag (default on; hidden when an
+// operator turns the flag off for this workspace).
+const PATH_FLAG = {
+  '/artist-campaigns': 'artist_campaigns',
+  '/recording-budgets': 'recording_budgets',
+  '/bulk-upload': 'bulk_upload',
+  '/create-nda': 'nda_builder',
+}
+
 // "View as" dropdown — Superadmin-only impersonation within the workspace.
 function ViewAsDropdown() {
   const { user, impersonate, impersonating, exitImpersonation, adminUser } = useAuth()
@@ -147,7 +156,7 @@ function ViewAsDropdown() {
 }
 
 export default function Layout() {
-  const { user, label, adminUser, logout, impersonating, exitImpersonation, canView } = useAuth()
+  const { user, label, adminUser, logout, impersonating, exitImpersonation, canView, hasFeature } = useAuth()
   const { theme, toggleTheme } = useTheme()
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -292,7 +301,7 @@ export default function Layout() {
       ],
     },
   ]
-    .map(g => ({ ...g, items: g.items.filter(i => canView(i.path)) }))
+    .map(g => ({ ...g, items: g.items.filter(i => canView(i.path) && (!PATH_FLAG[i.path] || hasFeature(PATH_FLAG[i.path]))) }))
     .filter(g => g.items.length > 0)
 
   return (

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Outlet, Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Building2, BarChart3, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users, ShieldCheck, Megaphone } from 'lucide-react'
+import { LayoutDashboard, Building2, BarChart3, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users, ShieldCheck, Megaphone, Flag } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
 import ErrorBoundary from './ErrorBoundary'
@@ -15,6 +15,7 @@ const NAV = [
   { path: '/activity', label: 'Activity', icon: ScrollText },
   { path: '/security', label: 'Security', icon: ShieldCheck },
   { path: '/announcements', label: 'Announcements', icon: Megaphone },
+  { path: '/feature-flags', label: 'Feature flags', icon: Flag },
   { path: '/operators', label: 'Operators', icon: Users, ownerOnly: true },
   { path: '/account', label: 'Account', icon: UserCog },
 ]
@@ -25,6 +26,7 @@ const META = {
   '/activity': { title: 'Activity', sub: 'Cross-tenant audit feed' },
   '/security': { title: 'Security', sub: 'Login audit and operator access' },
   '/announcements': { title: 'Announcements', sub: 'Broadcast banners to workspaces' },
+  '/feature-flags': { title: 'Feature flags', sub: 'Toggle capabilities per workspace' },
   '/operators': { title: 'Operators', sub: 'Platform administrators' },
   '/account': { title: 'Account', sub: 'Your operator profile' },
 }

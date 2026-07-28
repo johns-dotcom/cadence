@@ -200,6 +200,80 @@ router.get('/activity', async (req, res) => {
   }
 });
 
+// ── Feature flags ───────────────────────────────────────────────────────────
+const { FLAGS, KEYS } = require('../lib/featureFlags');
+
+// GET /api/platform/feature-flags — registry + all overrides + workspace names.
+router.get('/feature-flags', async (req, res) => {
+  try {
+    const [overrides, ws] = await Promise.all([
+      pool.query('SELECT flag_key, label_id, enabled FROM feature_flags'),
+      pool.query(`SELECT id, name FROM labels WHERE (is_system = false OR is_system IS NULL) ORDER BY name`),
+    ]);
+    res.json({ success: true, data: { registry: FLAGS, overrides: overrides.rows, workspaces: ws.rows } });
+  } catch (error) {
+    console.error('List feature flags error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// Upsert a flag override. labelId null → global default; otherwise per-workspace.
+async function setFlag(flagKey, labelId, enabled) {
+  if (labelId === null) {
+    await pool.query(
+      `INSERT INTO feature_flags (flag_key, label_id, enabled, updated_at) VALUES ($1, NULL, $2, NOW())
+       ON CONFLICT (flag_key) WHERE label_id IS NULL DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = NOW()`,
+      [flagKey, enabled]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO feature_flags (flag_key, label_id, enabled, updated_at) VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (flag_key, label_id) WHERE label_id IS NOT NULL DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = NOW()`,
+      [flagKey, labelId, enabled]
+    );
+  }
+}
+
+// PATCH /api/platform/feature-flags — set global default { key, enabled }.
+router.patch('/feature-flags', requirePlatformOwner, async (req, res) => {
+  try {
+    const { key, enabled } = req.body;
+    if (!KEYS.has(key) || typeof enabled !== 'boolean') return res.status(400).json({ success: false, error: 'Invalid flag' });
+    await setFlag(key, null, enabled);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Set global flag error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PATCH /api/platform/feature-flags/workspace — per-workspace override.
+router.patch('/feature-flags/workspace', requirePlatformOwner, async (req, res) => {
+  try {
+    const { key, label_id, enabled } = req.body;
+    const labelId = parseInt(label_id, 10);
+    if (!KEYS.has(key) || !labelId || typeof enabled !== 'boolean') return res.status(400).json({ success: false, error: 'Invalid override' });
+    await setFlag(key, labelId, enabled);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Set workspace flag error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/platform/feature-flags/workspace?key=&label_id= — revert to global.
+router.delete('/feature-flags/workspace', requirePlatformOwner, async (req, res) => {
+  try {
+    const labelId = parseInt(req.query.label_id, 10);
+    if (!req.query.key || !labelId) return res.status(400).json({ success: false, error: 'Invalid override' });
+    await pool.query('DELETE FROM feature_flags WHERE flag_key = $1 AND label_id = $2', [req.query.key, labelId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete workspace flag error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // ── Announcements (operator-authored broadcasts) ───────────────────────────
 const ANN_LEVELS = ['info', 'warning', 'critical'];
 
