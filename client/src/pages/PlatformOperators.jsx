@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Plus, Trash2, ShieldCheck, Copy, Check, Mail, Send } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
+import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 
@@ -88,7 +89,7 @@ export default function PlatformOperators() {
       )}
 
       {loading ? (
-        <p className="text-sm text-gray-400">Loading…</p>
+        <div className="card p-2"><Skeleton.Table rows={4} cols={3} /></div>
       ) : (
         <div className="card overflow-hidden">
           <table className="w-full text-sm">
@@ -103,12 +104,19 @@ export default function PlatformOperators() {
               {operators.map(op => (
                 <tr key={op.email} className="hover:bg-gray-50">
                   <td className="px-4 py-3">
-                    <p className="font-medium text-ink flex items-center gap-2">
-                      {op.name}
-                      {op.pending && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">Invite pending</span>}
-                      {op.email === user?.email && <span className="text-[10px] text-gray-400">(you)</span>}
-                    </p>
-                    <p className="text-xs text-gray-400">{op.email}</p>
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: op.platform_role === 'owner' ? 'linear-gradient(135deg,#111827,rgb(var(--color-brand-600)))' : 'rgb(var(--color-gray-200))' }}>
+                        <span className={`text-xs font-bold ${op.platform_role === 'owner' ? 'text-white' : 'text-gray-500'}`}>{(op.name || op.email)?.charAt(0)?.toUpperCase()}</span>
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-medium text-ink flex items-center gap-2">
+                          {op.name}
+                          {op.pending && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">Invite pending</span>}
+                          {op.email === user?.email && <span className="text-[10px] text-gray-400">(you)</span>}
+                        </p>
+                        <p className="text-xs text-gray-400">{op.email}</p>
+                      </div>
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${op.platform_role === 'owner' ? 'bg-brand-100 text-brand-700' : 'bg-indigo-100 text-indigo-700'}`}>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Search, ScrollText } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
+import Skeleton from '../components/Skeleton'
 
 const fmt = (d) => new Date(d).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 
@@ -37,8 +38,10 @@ export default function PlatformActivity() {
         </select>
       </div>
 
+      {!loading && rows.length > 0 && <p className="text-[11px] text-gray-400 mb-2">{rows.length} event{rows.length === 1 ? '' : 's'}</p>}
+
       {loading ? (
-        <p className="text-sm text-gray-400">Loading…</p>
+        <div className="card p-2"><Skeleton.Table rows={8} cols={4} /></div>
       ) : rows.length === 0 ? (
         <div className="card p-10 text-center"><ScrollText size={26} className="text-gray-300 mx-auto mb-3" /><p className="text-sm text-gray-500">No activity.</p></div>
       ) : (

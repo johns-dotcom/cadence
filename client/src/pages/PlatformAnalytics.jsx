@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
+import Skeleton from '../components/Skeleton'
 
 export default function PlatformAnalytics() {
   const [data, setData] = useState(null)
@@ -11,7 +12,12 @@ export default function PlatformAnalytics() {
     api.get('/platform/analytics').then(r => setData(r.data.data)).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
-  if (loading) return <p className="text-sm text-gray-400">Loading…</p>
+  if (loading) return (
+    <div>
+      <PageHeader title="Analytics" subtitle="Platform growth and the most active workspaces" />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">{Array.from({ length: 4 }).map((_, i) => <Skeleton.Block key={i} h="h-56" />)}</div>
+    </div>
+  )
 
   const maxAct = Math.max(1, ...(data?.topByActivity || []).map(w => w.events))
   const maxRel = Math.max(1, ...(data?.topByReleases || []).map(w => w.releases))
@@ -25,11 +31,11 @@ export default function PlatformAnalytics() {
           <h2 className="text-sm font-bold text-ink mb-4">New workspaces / month</h2>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={data?.workspacesByMonth || []}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-rule, #e5e7eb)" />
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgb(var(--color-gray-200))" />
               <XAxis dataKey="month" tick={{ fontSize: 11 }} />
               <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
               <Tooltip />
-              <Bar dataKey="n" fill="var(--color-brand-500, #6366f1)" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="n" fill="rgb(var(--color-brand-500))" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -37,11 +43,11 @@ export default function PlatformAnalytics() {
           <h2 className="text-sm font-bold text-ink mb-4">New members / month</h2>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={data?.usersByMonth || []}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-rule, #e5e7eb)" />
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgb(var(--color-gray-200))" />
               <XAxis dataKey="month" tick={{ fontSize: 11 }} />
               <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
               <Tooltip />
-              <Bar dataKey="n" fill="var(--color-brand-500, #6366f1)" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="n" fill="rgb(var(--color-brand-500))" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>

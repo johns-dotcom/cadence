@@ -25,16 +25,30 @@ export default function PlatformAccount() {
     catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
 
+  const roleLabel = user?.platform_role === 'owner' ? 'Platform owner' : 'Workspace Admin'
+
   return (
     <div>
       <PageHeader title="Account" subtitle="Your platform operator profile" />
+
+      <div className="card p-5 mb-6 max-w-4xl flex items-center gap-4">
+        <div className="w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 shadow-sm" style={{ background: 'linear-gradient(135deg,#111827,rgb(var(--color-brand-600)))' }}>
+          <span className="text-white font-bold text-xl">{user?.name?.charAt(0)?.toUpperCase()}</span>
+        </div>
+        <div className="min-w-0">
+          <p className="text-base font-bold text-ink truncate">{user?.name}</p>
+          <p className="text-xs text-gray-400 truncate">{user?.email}</p>
+          <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full mt-1.5 ${user?.platform_role === 'owner' ? 'bg-brand-100 text-brand-700' : 'bg-indigo-100 text-indigo-700'}`}>{roleLabel}</span>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
         <form onSubmit={saveProfile} className="card p-5">
           <h2 className="text-sm font-bold text-ink mb-4">Profile</h2>
           <div className="space-y-3">
             <div><label className="label">Display name</label><input className="input" value={name} onChange={e => setName(e.target.value)} /></div>
             <div><label className="label">Email</label><input className="input bg-gray-50" value={user?.email || ''} disabled /></div>
-            <p className="text-xs text-gray-400">Role: <span className="font-semibold text-gray-600">Platform admin</span></p>
+            <p className="text-xs text-gray-400">Role: <span className="font-semibold text-gray-600">{roleLabel}</span></p>
             <button className="btn-primary">Save profile</button>
           </div>
         </form>
