@@ -11,9 +11,9 @@ behavior is ambiguous.
 Overall completion at the 2026-07-27 audit: Foundation ~80% · Finance core ~55% ·
 Finance depth ~25% · Label ops ~60% · Cross-cutting ~60% · Mobile ~15%.
 
-## Status — updated 2026-07-27 (post M1–M4 build)
+## Status — updated 2026-07-27 (post M1–M5 build — spec feature-complete)
 
-**Milestones 1–4 are complete** (finance-first half + label-ops depth):
+**Milestones 1–5 are complete** — the full spec build:
 
 - **M1 Foundation** ✅ — `components/ui/` kit, `Skeleton`, `utils/dates.js` +
   `utils/darkColors.js`; permission templates + presets + `PermissionsManager`;
@@ -56,9 +56,20 @@ by user id (never pinned to a token's `label_id`); workspace-delete MOVES
 operators (id preserved) instead of cascading; boot self-heal + break-glass
 `RECOVER_ADMIN_*` recovery; client only logs out on real 401s.
 
-**Remaining:** M5 only — usage analytics, internal requests, and the
-**mobile kit** + notifications/persisted mentions + `useHotkeys` (the biggest
-gap). New deps added in M4: `jspdf` + `docx` (both dynamically imported).
+- **M5 Collaboration & polish** ✅ — **Usage analytics** (`page_views` route-ping
+  from `Layout`, dedup + 180-day sweep; `/usage` page with range picker, stat
+  cards, daily area chart, most-used pages, most-active users via
+  `/api/analytics`); **Internal requests** (`/requests`, compose→preview→send to
+  platform team, `internal_requests` table + email); **Mobile kit**
+  (`hooks/useIsMobile`, permission-filtered `BottomNav` + `Fab`, `viewport-fit=
+  cover`, safe-area/touch-target CSS; **Ledger + Payments card lists <768px**);
+  `hooks/useHotkeys` (Deals `n`, release `1–7`); **persisted @mentions**
+  (`user_mentions` table, parsed from release + campaign comments, surfaced in
+  the bell + per-item mark-read via `/api/notifications/mentions/read`).
+
+**Nothing spec-level remains.** Optional polish only: the `/manual` page, deeper
+mobile "lighter passes" on secondary pages, AI rate-limit buckets, MIME sniff on
+upload. New deps: `jspdf` + `docx` (dynamically imported).
 
 ---
 
