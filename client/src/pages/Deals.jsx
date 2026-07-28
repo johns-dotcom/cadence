@@ -6,6 +6,7 @@ import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 import { DEAL_STAGES, DEAL_TYPES, PRIORITIES } from '../constants'
 import { formatDate } from '../utils/dates'
+import useHotkeys from '../hooks/useHotkeys'
 
 const PRIORITY_DOT = { High: 'bg-red-500', Medium: 'bg-amber-500', Low: 'bg-gray-400' }
 const BLANK = { artist_name: '', genre: '', stage: 'Scouting', ar_rep: '', source: '', deal_type: '', offer_amount: '', priority: 'Medium', next_followup_date: '', contact: '', links: '', notes: '' }
@@ -28,16 +29,10 @@ export default function Deals() {
   }
   useEffect(load, [])
 
-  // "n" opens the new-deal form (ignored while typing / drawer open).
-  useEffect(() => {
-    const onKey = (e) => {
-      const t = e.target.tagName
-      if (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || e.metaKey || e.ctrlKey) return
-      if (e.key === 'n' && !active) { setShowForm(true); e.preventDefault() }
-      else if (e.key === 'Escape') { setActive(null); setShowForm(false) }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+  // "n" opens the new-deal form; Esc closes the drawer / form.
+  useHotkeys({
+    n: () => { if (!active) setShowForm(true) },
+    Escape: () => { setActive(null); setShowForm(false) },
   }, [active])
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))

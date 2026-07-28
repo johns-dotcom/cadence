@@ -8,6 +8,7 @@ import { RELEASE_TYPES, RELEASE_STATUSES, RELEASE_CHECKLIST, RELEASE_CHECKLIST_G
 import DspTracker from '../components/DspTracker'
 import ReleaseExtras from '../components/ReleaseExtras'
 import { formatDate } from '../utils/dates'
+import useHotkeys from '../hooks/useHotkeys'
 
 const LABELS = Object.fromEntries(RELEASE_CHECKLIST.map(c => [c.key, c.label]))
 const TABS = ['Checklist', 'Metadata', 'DSP', 'Budget', 'Activity', 'Comments', 'Details']
@@ -33,17 +34,10 @@ export default function ReleaseDetail() {
   }, [id])
   useEffect(() => { if (isAdmin) api.get('/team').then(r => setMembers(r.data.data || [])).catch(() => {}) }, [isAdmin])
 
-  // Hotkeys: 1–7 jump to a tab; Esc goes back to the list. Ignored while typing.
-  useEffect(() => {
-    const onKey = (e) => {
-      const t = e.target.tagName
-      if (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || e.metaKey || e.ctrlKey) return
-      const n = parseInt(e.key, 10)
-      if (n >= 1 && n <= TABS.length) { setTab(TABS[n - 1]); e.preventDefault() }
-      else if (e.key === 'Escape') navigate('/releases')
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+  // Hotkeys: 1–7 jump to a tab; Esc goes back to the list.
+  useHotkeys({
+    ...Object.fromEntries(TABS.map((t, i) => [String(i + 1), () => setTab(t)])),
+    Escape: () => navigate('/releases'),
   }, [navigate])
 
   const patch = async (fields) => {

@@ -10,6 +10,8 @@ const SHORTCUTS = [
   { keys: ['G', 'A'], desc: 'Go to Artists' },
   { keys: ['G', 'C'], desc: 'Go to Calendar' },
   { keys: ['G', 'W'], desc: 'Go to My Work' },
+  { keys: ['N'], desc: 'New deal (Deal pipeline)' },
+  { keys: ['1', '–', '7'], desc: 'Switch tabs (Release detail)' },
 ]
 
 export default function KeyboardShortcutsHelp({ open, onClose }) {
