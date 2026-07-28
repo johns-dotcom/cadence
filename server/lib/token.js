@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 
 // Sign a session JWT. The label_id is the tenant boundary — it's baked into
 // every token and re-checked on every request by authMiddleware.
-function signToken(user, expiresIn = '8h') {
+function signToken(user, expiresIn = '16h') {
   return jwt.sign(
     {
       id: user.id,
