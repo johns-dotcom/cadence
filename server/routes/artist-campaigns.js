@@ -8,6 +8,7 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { toUSD } = require('../lib/fx');
+const { recordMentions } = require('../lib/mentions');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant, requireApprover);
@@ -122,10 +123,12 @@ router.post('/entries/:id/comments', async (req, res) => {
   try {
     const body = String(req.body.body || '').trim();
     if (!body) return res.status(400).json({ success: false, error: 'Comment is empty' });
+    const expenseId = parseInt(req.params.id, 10);
     const { rows } = await pool.query(
       'INSERT INTO expense_comments (label_id, expense_id, author, body) VALUES ($1,$2,$3,$4) RETURNING id, author, body, created_at',
-      [req.labelId, parseInt(req.params.id, 10), req.user.name, body]
+      [req.labelId, expenseId, req.user.name, body]
     );
+    try { await recordMentions({ labelId: req.labelId, actorId: req.user.id, body, source: 'expense_comment', sourceId: expenseId, link: '/artist-campaigns' }); } catch (e) { /* best-effort */ }
     res.status(201).json({ success: true, data: rows[0] });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });

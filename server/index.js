@@ -756,6 +756,24 @@ const runMigrations = async () => {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_internal_requests_label ON internal_requests (label_id, created_at DESC)`);
 
+  // Persisted @mentions — one row per (mentioned user, comment). Surfaced in
+  // the notification bell and marked read per-item.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_mentions (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      mentioned_user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      actor_id INT REFERENCES users(id) ON DELETE SET NULL,
+      source VARCHAR(40),
+      source_id INT,
+      snippet TEXT,
+      link VARCHAR(255),
+      read_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_mentions_unread ON user_mentions (mentioned_user_id, read_at)`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_page_permissions (
       id SERIAL PRIMARY KEY,

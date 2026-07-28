@@ -3,6 +3,7 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
+const { recordMentions } = require('../lib/mentions');
 const spotify = require('../lib/spotify');
 
 const router = express.Router();
@@ -220,6 +221,7 @@ router.post('/:id/comments', async (req, res) => {
       `INSERT INTO release_comments (label_id, release_id, user_id, body) VALUES ($1,$2,$3,$4) RETURNING id, body, created_at`,
       [req.labelId, id, req.user.id, body]
     );
+    try { await recordMentions({ labelId: req.labelId, actorId: req.user.id, body, source: 'release_comment', sourceId: id, link: `/releases/${id}` }); } catch (e) { /* mentions are best-effort */ }
     res.status(201).json({ success: true, data: { ...rows[0], author: req.user.name } });
   } catch (error) {
     console.error('Create comment error:', error);

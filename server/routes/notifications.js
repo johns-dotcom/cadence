@@ -61,12 +61,22 @@ router.get('/', async (req, res) => {
       ));
     }
 
+    // Unread persisted @mentions for the caller (everyone).
+    queries.push(pool.query(
+      `SELECT m.id, m.snippet, m.link, m.created_at, u.name AS actor_name
+         FROM user_mentions m LEFT JOIN users u ON u.id = m.actor_id AND u.label_id = m.label_id
+        WHERE m.label_id = $1 AND m.mentioned_user_id = $2 AND m.read_at IS NULL
+        ORDER BY m.created_at DESC LIMIT 25`,
+      [req.labelId, req.user.id]
+    ));
+
     const results = await Promise.all(queries);
     const releases = results[0].rows;
     const tasks = results[1].rows;
     let idx = 2;
     const contracts = isAdmin ? results[idx++].rows : [];
     const approvals = isApprover ? results[idx++].rows : [];
+    const mentions = results[idx++].rows;
 
     const fmt = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString()}`;
     const items = [];
@@ -83,10 +93,35 @@ router.get('/', async (req, res) => {
     for (const e of approvals) {
       items.push({ type: 'approval', key: `approval-${e.id}`, title: `${e.payee || 'Vendor'} · ${fmt(e.amount, e.currency)}`, detail: e.vendor_submitted ? 'Vendor submission' : 'Awaiting approval', date: null, link: '/ledger', severity: 'info' });
     }
+    // Mentions first — they're the most personal signal.
+    for (const m of mentions) {
+      items.unshift({ type: 'mention', key: `mention-${m.id}`, mentionId: m.id, title: `${m.actor_name || 'Someone'} mentioned you`, detail: m.snippet, date: m.created_at, link: m.link || '/', severity: 'info' });
+    }
 
     res.json({ success: true, data: { count: items.length, items } });
   } catch (error) {
     console.error('Notifications error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/notifications/mentions/read — mark one (by id) or all read.
+router.post('/mentions/read', async (req, res) => {
+  try {
+    if (req.body.id) {
+      await pool.query(
+        'UPDATE user_mentions SET read_at = NOW() WHERE id = $1 AND mentioned_user_id = $2 AND label_id = $3',
+        [parseInt(req.body.id, 10), req.user.id, req.labelId]
+      );
+    } else {
+      await pool.query(
+        'UPDATE user_mentions SET read_at = NOW() WHERE mentioned_user_id = $1 AND label_id = $2 AND read_at IS NULL',
+        [req.user.id, req.labelId]
+      );
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Mark mention read error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

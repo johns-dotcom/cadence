@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, Music, FileText, CheckSquare, Receipt } from 'lucide-react'
+import { Bell, Music, FileText, CheckSquare, Receipt, AtSign } from 'lucide-react'
 import api from '../api'
 
 // Smart-alert bell. Polls /api/notifications (computed live, label-scoped) and
 // shows a badge + dropdown. Each alert deep-links to the relevant page.
-const ICONS = { release: Music, task: CheckSquare, contract: FileText, approval: Receipt }
+const ICONS = { release: Music, task: CheckSquare, contract: FileText, approval: Receipt, mention: AtSign }
 const SEVERITY = {
   danger:  'text-red-600 bg-red-50',
   warning: 'text-amber-600 bg-amber-50',
@@ -40,7 +40,15 @@ export default function NotificationBell() {
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''
 
   const open_ = () => { setOpen(v => !v); if (!open) load() }
-  const goTo = (link) => { setOpen(false); navigate(link) }
+  const goTo = (item) => {
+    setOpen(false)
+    // Clicking a mention marks it read so it won't re-appear.
+    if (item.type === 'mention' && item.mentionId) {
+      api.post('/notifications/mentions/read', { id: item.mentionId }).catch(() => {})
+      setCount(c => Math.max(0, c - 1))
+    }
+    navigate(item.link)
+  }
 
   return (
     <div className="relative" ref={ref}>
@@ -75,7 +83,7 @@ export default function NotificationBell() {
                 return (
                   <button
                     key={item.key}
-                    onClick={() => goTo(item.link)}
+                    onClick={() => goTo(item)}
                     className="w-full flex items-start gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors text-left border-b border-divider last:border-0"
                   >
                     <span className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${SEVERITY[item.severity] || SEVERITY.info}`}>
