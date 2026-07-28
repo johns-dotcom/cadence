@@ -6,6 +6,7 @@ import {
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
   FileClock, Shield, Lock, Sparkles, FileSignature, FileSpreadsheet, Archive, Layers, Upload, PiggyBank, FilePlus2,
+  BarChart3, MessageSquarePlus,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
@@ -16,7 +17,7 @@ import BottomNav from './BottomNav'
 import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
 import ErrorBoundary from './ErrorBoundary'
 
-const PAGE_LABELS = {
+export const PAGE_LABELS = {
   '/':           'Dashboard',
   '/my-work':    'My Work',
   '/calendar':   'Calendar',
@@ -53,6 +54,8 @@ const PAGE_LABELS = {
   '/invoices/new': 'Create invoice',
   '/team':       'Team',
   '/activity':   'Activity',
+  '/usage':      'Usage analytics',
+  '/requests':   'Requests & feedback',
   '/settings':   'Settings',
   '/workspaces': 'Workspaces',
 }
@@ -184,6 +187,12 @@ export default function Layout() {
 
   useEffect(() => { if (isMobile) setSidebarOpen(false) }, [location.pathname, isMobile])
 
+  // Usage analytics — fire-and-forget route-view ping. Never blocks nav.
+  useEffect(() => {
+    if (!user) return
+    api.post('/analytics/ping', { path: location.pathname }).catch(() => {})
+  }, [location.pathname, user?.id])
+
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
 
@@ -267,7 +276,9 @@ export default function Layout() {
       items: [
         ...(isAdmin ? [{ path: '/team', label: 'Team', icon: UserCheck }] : []),
         ...(isAdmin ? [{ path: '/activity', label: 'Activity', icon: ScrollText }] : []),
+        ...(isApprover ? [{ path: '/usage', label: 'Usage analytics', icon: BarChart3 }] : []),
         ...(isAdmin ? [{ path: '/data-quality', label: 'Data quality', icon: Sparkles }] : []),
+        { path: '/requests', label: 'Requests & feedback', icon: MessageSquarePlus },
         { path: '/settings', label: 'Settings', icon: Settings },
       ],
     },

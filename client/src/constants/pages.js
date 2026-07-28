@@ -37,7 +37,9 @@ export const PAGE_GROUPS = [
   { group: 'Workspace', pages: [
     { path: '/team', label: 'Team' },
     { path: '/activity', label: 'Activity' },
+    { path: '/usage', label: 'Usage analytics' },
     { path: '/data-quality', label: 'Data quality' },
+    { path: '/requests', label: 'Requests & feedback' },
   ] },
 ]
 
