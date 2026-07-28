@@ -200,6 +200,43 @@ router.get('/activity', async (req, res) => {
   }
 });
 
+// GET /api/platform/security — cross-tenant login audit: headline counts,
+// recent logins, and dormant workspaces (no login in 30 days).
+router.get('/security', async (req, res) => {
+  try {
+    const [stats, logins, dormant] = await Promise.all([
+      pool.query(
+        `SELECT
+           (SELECT COUNT(*) FROM user_login_logs WHERE logged_in_at >= NOW() - INTERVAL '24 hours')::int AS logins_24h,
+           (SELECT COUNT(*) FROM user_login_logs WHERE logged_in_at >= NOW() - INTERVAL '7 days')::int AS logins_7d,
+           (SELECT COUNT(DISTINCT user_id) FROM user_login_logs WHERE logged_in_at >= NOW() - INTERVAL '7 days')::int AS active_users_7d,
+           (SELECT COUNT(*) FROM operator_sessions WHERE created_at >= NOW() - INTERVAL '7 days')::int AS operator_entries_7d`
+      ),
+      pool.query(
+        `SELECT ull.logged_in_at, ull.ip_address, u.name, u.email, u.role,
+                (u.is_platform_admin = true) AS is_operator, l.name AS workspace, l.id AS label_id
+           FROM user_login_logs ull
+           JOIN users u ON u.id = ull.user_id
+           LEFT JOIN labels l ON l.id = ull.label_id
+          ORDER BY ull.logged_in_at DESC LIMIT 100`
+      ),
+      pool.query(
+        `SELECT l.id, l.name, COALESCE(l.status,'active') AS status, ll.last_login,
+                (SELECT COUNT(*) FROM users u WHERE u.label_id = l.id AND (u.is_platform_admin = false OR u.is_platform_admin IS NULL))::int AS members
+           FROM labels l
+           LEFT JOIN LATERAL (SELECT MAX(logged_in_at) AS last_login FROM user_login_logs ull WHERE ull.label_id = l.id) ll ON true
+          WHERE (l.is_system = false OR l.is_system IS NULL)
+            AND (ll.last_login IS NULL OR ll.last_login < NOW() - INTERVAL '30 days')
+          ORDER BY ll.last_login ASC NULLS FIRST LIMIT 20`
+      ),
+    ]);
+    res.json({ success: true, data: { stats: stats.rows[0], recentLogins: logins.rows, dormant: dormant.rows } });
+  } catch (error) {
+    console.error('Security audit error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // GET /api/platform/enter-sessions — recent operator enter-workspace events.
 // Optional ?label_id, ?limit (default 100, max 300).
 router.get('/enter-sessions', async (req, res) => {
