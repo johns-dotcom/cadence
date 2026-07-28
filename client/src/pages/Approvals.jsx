@@ -44,9 +44,10 @@ export default function Approvals() {
 
   const approve = async (en) => {
     try {
-      await api.post(`/ledger/entries/${en.id}/approve`, { notify: false })
+      const { data } = await api.post(`/ledger/entries/${en.id}/approve`, { notify: false })
+      const parts = data?.data?.split_parts
       if (willNotify(en)) setEmailItems([{ kind: 'vendor_approved', label: en.payee, ctx: { to: en.vendor_email, vendorName: en.vendor_name || en.payee, invoiceNumber: en.invoice_number, amount: en.amount, currency: en.currency } }])
-      else toast('Approved — now in the ledger')
+      else toast(parts ? `Approved & split across ${parts} artists` : 'Approved — now in the ledger')
       load()
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
@@ -264,6 +265,7 @@ export default function Approvals() {
                             {(l.socials || []).length > 0 && <p className="text-[11px] text-gray-400 pl-3">{l.socials.map(s => `${s.handle}${s.amount ? ` (${money(s.amount, en.currency)})` : ''}`).join(' · ')}</p>}
                           </div>
                         ))}
+                        {breakdown.length > 1 && <p className="text-[11px] text-emerald-600 mt-1.5 inline-flex items-center gap-1"><Check size={11} /> Created as ledger splits automatically when you approve.</p>}
                       </div>
                     ) : <p className="text-sm text-gray-400">No split was provided with this submission.</p>}
                   </div>

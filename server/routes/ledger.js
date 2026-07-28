@@ -239,6 +239,44 @@ function bkAudit(req, expenseId, action, detail) {
   ).catch(() => {});
 }
 
+// When a vendor submission carries a multi-artist allocation (artist_breakdown),
+// turn it into real ledger child splits on approval — the parent becomes the
+// container and each line becomes a child row (mirrors the manual /split flow).
+// No-op for a single line, a missing breakdown, or an already-split parent.
+async function applyBreakdownSplits(labelId, parent, actorName) {
+  const bd = Array.isArray(parent.artist_breakdown) ? parent.artist_breakdown : null;
+  if (!bd || bd.length < 2 || parent.parent_id) return 0;
+  const existing = await pool.query('SELECT 1 FROM expenses WHERE parent_id = $1 LIMIT 1', [parent.id]);
+  if (existing.rows.length) return 0; // already split
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let n = 0;
+    for (const line of bd) {
+      const amount = parseFloat(line.amount);
+      if (!amount || amount <= 0) continue;
+      const socials = Array.isArray(line.socials) ? line.socials.filter(s => s && s.handle) : [];
+      const socialNote = socials.length ? 'Socials: ' + socials.map(s => (s.amount ? `${s.handle} (${s.amount})` : s.handle)).join(', ') : '';
+      const notes = [parent.notes, socialNote].filter(Boolean).join(' · ') || null;
+      await client.query(
+        `INSERT INTO expenses (label_id, parent_id, invoice_date, payee, description, category, artist, song,
+           invoice_number, amount, currency, payment_method, status, payment_status, is_reimbursement, recoupable, rep, notes, created_by, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'approved',$13,$14,$15,$16,$17,$18,NOW())`,
+        [labelId, parent.id, parent.invoice_date, parent.payee, parent.description, parent.category,
+         line.artist || parent.artist, (line.song || parent.song) || null, parent.invoice_number, amount, parent.currency,
+         parent.payment_method, parent.payment_status || 'Unpaid', parent.is_reimbursement, parent.recoupable, parent.rep, notes, actorName]
+      );
+      n++;
+    }
+    await client.query('COMMIT');
+    return n;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Auto-split on approve failed:', e.message);
+    return 0;
+  } finally { client.release(); }
+}
+
 // POST /api/ledger/entries/:id/approve — pass notify:false to suppress the
 // auto-email (the Approvals page previews + sends via EmailPreviewModal instead).
 router.post('/entries/:id/approve', async (req, res) => {
@@ -251,8 +289,10 @@ router.post('/entries/:id/approve', async (req, res) => {
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
     await logActivity(req, 'Approved ledger entry', `${rows[0].payee} — ${rows[0].amount}`);
     bkAudit(req, rows[0].id, 'approved', `${rows[0].payee} — ${rows[0].currency} ${rows[0].amount}`);
+    const parts = await applyBreakdownSplits(req.labelId, rows[0], req.user.name);
+    if (parts) { await logActivity(req, 'Applied vendor split on approve', `${rows[0].payee} → ${parts} artists`); bkAudit(req, rows[0].id, 'split', `auto-split into ${parts} artists on approve`); }
     if (req.body.notify !== false && rows[0].vendor_submitted) notifyVendor(req.labelId, rows[0], 'approved');
-    res.json({ success: true, data: rows[0] });
+    res.json({ success: true, data: { ...rows[0], split_parts: parts } });
   } catch (error) {
     console.error('Approve error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -766,10 +806,15 @@ router.post('/bulk-approve', async (req, res) => {
     const { rows } = await pool.query(
       `UPDATE expenses SET status = 'approved', approved_by = $1, approved_at = NOW()
        WHERE label_id = $2 AND status = 'pending' AND id = ANY($3::int[])
-       RETURNING id, payee, vendor_name, vendor_email, invoice_number, amount, currency, vendor_submitted`,
+       RETURNING *`,
       [req.user.name, req.labelId, ids]
     );
     rows.forEach(r => bkAudit(req, r.id, 'approved', `bulk — ${r.payee} ${r.currency} ${r.amount}`));
+    // Apply any vendor-provided multi-artist allocation as real splits.
+    for (const r of rows) {
+      const parts = await applyBreakdownSplits(req.labelId, r, req.user.name);
+      if (parts) bkAudit(req, r.id, 'split', `auto-split into ${parts} artists on approve`);
+    }
     await logActivity(req, 'Bulk approved', `${rows.length} entries`);
     // Return the approved rows so the client can queue per-vendor emails.
     res.json({ success: true, data: { approved: rows.length, rows } });
