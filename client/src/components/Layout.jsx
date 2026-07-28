@@ -14,6 +14,7 @@ import api from '../api'
 import GlobalSearch from './GlobalSearch'
 import NotificationBell from './NotificationBell'
 import BottomNav from './BottomNav'
+import Fab from './Fab'
 import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
 import ErrorBoundary from './ErrorBoundary'
 
@@ -455,7 +456,8 @@ export default function Layout() {
 
       <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
       <KeyboardShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
-      {isMobile && <BottomNav onSearch={() => setSearchOpen(true)} onMenu={() => setSidebarOpen(true)} />}
+      {isMobile && <BottomNav onMenu={() => setSidebarOpen(true)} />}
+      {isMobile && <Fab />}
     </div>
   )
 }

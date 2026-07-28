@@ -63,3 +63,19 @@
   to   { transform: translateY(0); }
 }
 .animate-sheet-up { animation: sheet-up 0.22s ease-out; }
+
+/* ── Mobile (§10) ────────────────────────────────────────────────────────── */
+/* Safe-area padding for the BottomNav / FAB against the home indicator. */
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+.safe-top    { padding-top: env(safe-area-inset-top); }
+/* Horizontal snap for kanban / tab strips that scroll on small screens. */
+.snap-x-mandatory { scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; }
+.snap-start { scroll-snap-align: start; }
+
+@media (max-width: 767px) {
+  /* Comfortable thumb targets for interactive controls. */
+  .btn-primary, .btn-secondary { min-height: 40px; }
+  .input { min-height: 40px; }
+  /* Keep inline inputs from overflowing their container on phones. */
+  input[type="date"], input[type="number"] { max-width: 100%; }
+}
