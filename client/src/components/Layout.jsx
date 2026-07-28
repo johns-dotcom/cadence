@@ -13,6 +13,7 @@ import { useTheme } from '../context/ThemeContext'
 import api from '../api'
 import GlobalSearch from './GlobalSearch'
 import NotificationBell from './NotificationBell'
+import UserManual from './UserManual'
 import BottomNav from './BottomNav'
 import Fab from './Fab'
 import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
@@ -155,6 +156,7 @@ export default function Layout() {
   const [vendorLinkCopied, setVendorLinkCopied] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  const [manualOpen, setManualOpen] = useState(false)
   const navigate = useNavigate()
 
   // Keyboard shortcuts: ⌘K search, ? help, and "g"-prefixed quick navigation
@@ -442,6 +444,13 @@ export default function Layout() {
             <span className="hidden md:inline">Search</span>
             <kbd className="hidden md:inline text-[10px] border border-rule rounded px-1 leading-tight">⌘K</kbd>
           </button>
+          <button
+            onClick={() => setManualOpen(true)}
+            title="User manual"
+            className="inline-flex items-center text-xs font-semibold p-1.5 rounded-lg border border-rule text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-all"
+          >
+            <BookOpen size={15} />
+          </button>
           <NotificationBell />
           <span className="hidden sm:block"><ViewAsDropdown /></span>
           <button
@@ -480,6 +489,7 @@ export default function Layout() {
 
       <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
       <KeyboardShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <UserManual open={manualOpen} onClose={() => setManualOpen(false)} />
       {isMobile && <BottomNav onMenu={() => setSidebarOpen(true)} />}
       {isMobile && <Fab />}
     </div>
