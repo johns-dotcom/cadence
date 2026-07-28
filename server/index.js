@@ -261,6 +261,11 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS billing_status VARCHAR(20) DEFAULT 'active'`);
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS mrr_override NUMERIC(10,2)`);
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS plan_since TIMESTAMP`);
+  // Explicit owner pointer — lets the platform owner designate ANY user
+  // (including a console operator) as a workspace's owner. When set it wins
+  // over the "most-senior Superadmin member" heuristic; SET NULL on delete
+  // falls back to that heuristic.
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS owner_user_id INT REFERENCES users(id) ON DELETE SET NULL`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (

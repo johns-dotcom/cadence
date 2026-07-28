@@ -21,8 +21,17 @@ function inviteLink(req, token) {
   return `${origin.replace(/\/$/, '')}/accept-invite?token=${token}`;
 }
 
-// Resolve a label's primary owner (its non-operator Superadmin / most senior).
+// Resolve a label's primary owner. An explicit owner_user_id pointer (which may
+// reference a console operator) wins; otherwise fall back to the most-senior
+// non-operator Superadmin member.
 async function ownerOf(labelId) {
+  const ptr = await pool.query(
+    `SELECT u.id, u.name, u.email, u.role, u.is_platform_admin
+       FROM labels l JOIN users u ON u.id = l.owner_user_id
+      WHERE l.id = $1`,
+    [labelId]
+  );
+  if (ptr.rows.length) return ptr.rows[0];
   const { rows } = await pool.query(
     `SELECT id, name, email, role FROM users
      WHERE label_id = $1 AND (is_platform_admin = false OR is_platform_admin IS NULL)
@@ -53,9 +62,12 @@ router.get('/workspaces', async (req, res) => {
               (SELECT COUNT(*) FROM expenses WHERE label_id = l.id AND (deleted = false OR deleted IS NULL))::int AS ledger_entries,
               (SELECT COUNT(*) FROM invoices WHERE label_id = l.id)::int AS invoices,
               (SELECT MAX(created_at) FROM activity_log WHERE label_id = l.id) AS last_active,
-              (SELECT json_build_object('name', name, 'email', email)
-                 FROM users WHERE label_id = l.id AND (is_platform_admin = false OR is_platform_admin IS NULL)
-                 ORDER BY (role = 'Superadmin') DESC, hierarchy_level ASC, id ASC LIMIT 1) AS owner
+              COALESCE(
+                (SELECT json_build_object('name', name, 'email', email) FROM users WHERE id = l.owner_user_id),
+                (SELECT json_build_object('name', name, 'email', email)
+                   FROM users WHERE label_id = l.id AND (is_platform_admin = false OR is_platform_admin IS NULL)
+                   ORDER BY (role = 'Superadmin') DESC, hierarchy_level ASC, id ASC LIMIT 1)
+              ) AS owner
        FROM labels l
        WHERE (l.is_system = false OR l.is_system IS NULL)
        ORDER BY l.created_at DESC`
@@ -79,7 +91,7 @@ router.get('/workspaces/:id', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const labelRes = await pool.query(
       `SELECT id, name, slug, accent_color, logo_r2_key, COALESCE(status,'active') AS status, suspended_at, created_at,
-              COALESCE(plan,'free') AS plan, COALESCE(billing_status,'active') AS billing_status, mrr_override, plan_since
+              COALESCE(plan,'free') AS plan, COALESCE(billing_status,'active') AS billing_status, mrr_override, plan_since, owner_user_id
          FROM labels WHERE id = $1`,
       [id]
     );
@@ -747,12 +759,38 @@ router.post('/workspaces/:id/members/:userId/make-owner', async (req, res) => {
     if (!m) return res.status(404).json({ success: false, error: 'Member not found' });
     const current = await ownerOf(id);
     await pool.query("UPDATE users SET role = 'Superadmin', department = 'Executive', hierarchy_level = 1 WHERE id = $1 AND label_id = $2", [userId, id]);
-    if (current && current.id !== userId) {
+    if (current && current.id !== userId && !current.is_platform_admin) {
       await pool.query("UPDATE users SET role = 'Admin', hierarchy_level = 2 WHERE id = $1 AND label_id = $2", [current.id, id]);
     }
+    // A member promotion hands ownership to that member — drop any operator pointer.
+    await pool.query('UPDATE labels SET owner_user_id = NULL WHERE id = $1', [id]);
     res.json({ success: true });
   } catch (error) {
     console.error('Make owner error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /workspaces/:id/owner — designate a CONSOLE OPERATOR as the workspace's
+// owner (or clear back to the member heuristic). Owner-only. body { operator_id }.
+router.post('/workspaces/:id/owner', requirePlatformOwner, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const lbl = await pool.query('SELECT id, is_system FROM labels WHERE id = $1', [id]);
+    if (!lbl.rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
+    if (lbl.rows[0].is_system) return res.status(400).json({ success: false, error: 'The platform system workspace cannot be reassigned' });
+
+    if (req.body.operator_id == null || req.body.operator_id === '') {
+      await pool.query('UPDATE labels SET owner_user_id = NULL WHERE id = $1', [id]);
+      return res.json({ success: true, data: await ownerOf(id) });
+    }
+    const opId = parseInt(req.body.operator_id, 10);
+    const { rows: op } = await pool.query('SELECT id FROM users WHERE id = $1 AND is_platform_admin = TRUE', [opId]);
+    if (!op.length) return res.status(400).json({ success: false, error: 'Not a platform operator' });
+    await pool.query('UPDATE labels SET owner_user_id = $1 WHERE id = $2', [opId, id]);
+    res.json({ success: true, data: await ownerOf(id) });
+  } catch (error) {
+    console.error('Set operator owner error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

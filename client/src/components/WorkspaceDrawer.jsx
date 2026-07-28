@@ -58,6 +58,14 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
   const [billing, setBilling] = useState({ plan: 'free', billing_status: 'active', mrr_override: '' })
   const [billingSaving, setBillingSaving] = useState(false)
 
+  // Console operators (for assigning one as workspace owner) — owner-only.
+  const [operators, setOperators] = useState([])
+  const [opOwnerId, setOpOwnerId] = useState('')
+  useEffect(() => {
+    if (!isOwner) return
+    api.get('/platform/operators').then(r => setOperators(r.data.data || [])).catch(() => {})
+  }, [isOwner])
+
   const load = () => {
     setLoading(true)
     api.get(`/platform/workspaces/${workspaceId}`)
@@ -133,6 +141,13 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
   const copyInvite = () => {
     if (!inviteResult) return
     navigator.clipboard.writeText(inviteResult.invite_link).then(() => { setInviteCopied(true); setTimeout(() => setInviteCopied(false), 2000) })
+  }
+  const setOperatorOwner = async (operatorId) => {
+    try {
+      await api.post(`/platform/workspaces/${workspaceId}/owner`, { operator_id: operatorId })
+      toast(operatorId ? 'Operator set as workspace owner' : 'Reverted to member owner')
+      setOpOwnerId(''); load(); onChanged?.()
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
   const saveBilling = async () => {
     setBillingSaving(true)
@@ -225,6 +240,26 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
 
               {tab === 'members' && (
                 <div className="space-y-4">
+                  {/* Workspace owner — assign a console operator (owner-only) */}
+                  {isOwner && (
+                    <div className="card p-3">
+                      <div className="flex items-center gap-1.5 mb-1.5"><Crown size={14} className="text-amber-500" /><h3 className="text-sm font-bold text-ink">Workspace owner</h3></div>
+                      <p className="text-xs text-gray-500 mb-2">
+                        {data.owner
+                          ? <>Currently <span className="font-medium text-ink">{data.owner.name}</span>{data.owner.is_platform_admin ? <span className="text-[10px] font-semibold bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded ml-1">Operator</span> : ` · ${data.owner.email}`}</>
+                          : 'No owner set.'}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <select value={opOwnerId} onChange={e => setOpOwnerId(e.target.value)} className="input !py-1.5 text-sm">
+                          <option value="">Assign a console operator…</option>
+                          {operators.map(op => <option key={op.id} value={op.id}>{op.name}{op.platform_role === 'owner' ? ' (owner)' : ''} · {op.email}</option>)}
+                        </select>
+                        <button onClick={() => opOwnerId && setOperatorOwner(Number(opOwnerId))} disabled={!opOwnerId} className="btn-primary !py-1.5 text-xs flex-shrink-0">Set</button>
+                      </div>
+                      {data.label.owner_user_id && <button onClick={() => setOperatorOwner(null)} className="text-[11px] text-gray-400 hover:text-gray-600 mt-1.5">Clear operator owner (revert to a member)</button>}
+                    </div>
+                  )}
+
                   {/* Invite */}
                   <div>
                     {!showInvite ? (
