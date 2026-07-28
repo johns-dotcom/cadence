@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2, ShieldCheck, Copy, Check, Mail, Send } from 'lucide-react'
+import { Plus, Trash2, ShieldCheck, Copy, Check, Mail, Send, SlidersHorizontal, X } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
+
+const PAGE_NAMES = { '/workspaces': 'Workspaces', '/analytics': 'Analytics', '/activity': 'Activity', '/security': 'Security', '/announcements': 'Announcements', '/feature-flags': 'Feature flags' }
 
 // Owner-only: manage platform operators. Owners have full powers; Workspace
 // Admins can enter/manage any workspace but not provision/suspend/delete or
@@ -53,6 +55,8 @@ export default function PlatformOperators() {
   }
 
   const copyInvite = (link) => navigator.clipboard.writeText(link).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
+
+  const [accessOp, setAccessOp] = useState(null)
 
   return (
     <div>
@@ -127,6 +131,7 @@ export default function PlatformOperators() {
                     {op.platform_role === 'admin' && (
                       <>
                         {op.pending && <button onClick={() => resend(op)} className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700 mr-3"><Send size={13} /> Resend</button>}
+                        <button onClick={() => setAccessOp(op)} className="text-gray-400 hover:text-brand-600 mr-2" title="Manage access"><SlidersHorizontal size={15} /></button>
                         <button onClick={() => revoke(op)} className="text-gray-400 hover:text-danger" title="Revoke"><Trash2 size={15} /></button>
                       </>
                     )}
@@ -137,6 +142,105 @@ export default function PlatformOperators() {
           </table>
         </div>
       )}
+
+      {accessOp && <AccessModal op={accessOp} onClose={() => setAccessOp(null)} onSaved={() => { setAccessOp(null); toast('Access updated') }} />}
+    </div>
+  )
+}
+
+// Owner-managed access modal: which workspaces the admin operator may enter and
+// which console pages they may view. Empty selection = unrestricted.
+function AccessModal({ op, onClose, onSaved }) {
+  const { toast } = useToast()
+  const [workspaces, setWorkspaces] = useState([])
+  const [restrictablePages, setRestrictablePages] = useState([])
+  const [wsMode, setWsMode] = useState('all')   // 'all' | 'specific'
+  const [pageMode, setPageMode] = useState('all')
+  const [wsSel, setWsSel] = useState([])
+  const [pageSel, setPageSel] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    Promise.all([
+      api.get('/platform/workspaces').then(r => setWorkspaces(r.data.data || [])).catch(() => {}),
+      api.get(`/platform/operators/${encodeURIComponent(op.email)}/access`).then(r => {
+        const d = r.data.data
+        setRestrictablePages(d.restrictablePages || [])
+        if (d.workspaces) { setWsMode('specific'); setWsSel(d.workspaces) }
+        if (d.pages) { setPageMode('specific'); setPageSel(d.pages) }
+      }).catch(() => {}),
+    ]).finally(() => setLoading(false))
+  }, [op.email])
+
+  const toggle = (arr, set, v) => set(arr.includes(v) ? arr.filter(x => x !== v) : [...arr, v])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await api.put(`/platform/operators/${encodeURIComponent(op.email)}/access`, {
+        workspaces: wsMode === 'specific' ? wsSel : null,
+        pages: pageMode === 'specific' ? pageSel : null,
+      })
+      onSaved()
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center px-4 py-8 bg-overlay overflow-y-auto" onClick={onClose}>
+      <div className="w-full max-w-lg bg-card rounded-2xl border border-rule shadow-modal my-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-divider">
+          <div><h2 className="text-base font-semibold text-ink">Access · {op.name}</h2><p className="text-[11px] text-gray-400">{op.email}</p></div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+        </div>
+        {loading ? <div className="p-6"><Skeleton.TaskList count={4} /></div> : (
+          <div className="p-5 space-y-5 max-h-[65vh] overflow-y-auto">
+            {/* Workspaces */}
+            <div>
+              <h3 className="text-sm font-bold text-ink mb-2">Workspaces they can enter</h3>
+              <div className="flex gap-2 mb-2">
+                {['all', 'specific'].map(m => (
+                  <button key={m} onClick={() => setWsMode(m)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${wsMode === m ? 'bg-brand-50 border-brand-300 text-brand-700' : 'border-rule text-gray-500'}`}>{m === 'all' ? 'All workspaces' : 'Specific'}</button>
+                ))}
+              </div>
+              {wsMode === 'specific' && (
+                <div className="border border-rule rounded-lg p-2 max-h-40 overflow-y-auto space-y-0.5">
+                  {workspaces.map(w => (
+                    <label key={w.id} className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer px-1 py-0.5 rounded hover:bg-gray-50">
+                      <input type="checkbox" checked={wsSel.includes(w.id)} onChange={() => toggle(wsSel, setWsSel, w.id)} /> {w.name}
+                    </label>
+                  ))}
+                  {!workspaces.length && <p className="text-xs text-gray-400">No workspaces.</p>}
+                </div>
+              )}
+            </div>
+            {/* Pages */}
+            <div>
+              <h3 className="text-sm font-bold text-ink mb-2">Console pages they can view</h3>
+              <p className="text-[11px] text-gray-400 mb-2">Overview and Account are always available.</p>
+              <div className="flex gap-2 mb-2">
+                {['all', 'specific'].map(m => (
+                  <button key={m} onClick={() => setPageMode(m)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${pageMode === m ? 'bg-brand-50 border-brand-300 text-brand-700' : 'border-rule text-gray-500'}`}>{m === 'all' ? 'All pages' : 'Specific'}</button>
+                ))}
+              </div>
+              {pageMode === 'specific' && (
+                <div className="border border-rule rounded-lg p-2 space-y-0.5">
+                  {restrictablePages.map(p => (
+                    <label key={p} className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer px-1 py-0.5 rounded hover:bg-gray-50">
+                      <input type="checkbox" checked={pageSel.includes(p)} onChange={() => toggle(pageSel, setPageSel, p)} /> {PAGE_NAMES[p] || p}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        <div className="flex justify-end gap-2 px-5 py-3 border-t border-divider">
+          <button onClick={onClose} className="btn-secondary">Cancel</button>
+          <button onClick={save} disabled={saving || loading} className="btn-primary">{saving ? 'Saving…' : 'Save access'}</button>
+        </div>
+      </div>
     </div>
   )
 }

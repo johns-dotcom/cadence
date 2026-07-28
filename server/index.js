@@ -835,6 +835,25 @@ const runMigrations = async () => {
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_flag_global ON feature_flags (flag_key) WHERE label_id IS NULL`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_flag_label ON feature_flags (flag_key, label_id) WHERE label_id IS NOT NULL`);
 
+  // Operator permissions (owner-managed, keyed by operator EMAIL since an
+  // operator spans many per-label ghost rows). An operator with ANY rows is
+  // restricted to that allowlist; no rows = unrestricted. Owners are always
+  // unrestricted regardless of these tables.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS operator_workspace_access (
+      operator_email VARCHAR(255) NOT NULL,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      PRIMARY KEY (operator_email, label_id)
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS operator_page_access (
+      operator_email VARCHAR(255) NOT NULL,
+      page VARCHAR(60) NOT NULL,
+      PRIMARY KEY (operator_email, page)
+    );
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_page_permissions (
       id SERIAL PRIMARY KEY,

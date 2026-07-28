@@ -200,6 +200,73 @@ router.get('/activity', async (req, res) => {
   }
 });
 
+// ── Operator permissions ────────────────────────────────────────────────────
+// Console pages an admin operator can be restricted from. Overview ('/') and
+// Account are always allowed so an operator is never fully locked out;
+// Operators is owner-only anyway.
+const RESTRICTABLE_PAGES = ['/workspaces', '/analytics', '/activity', '/security', '/announcements', '/feature-flags'];
+
+async function operatorAccess(email) {
+  const e = (email || '').toLowerCase();
+  const [ws, pg] = await Promise.all([
+    pool.query('SELECT label_id FROM operator_workspace_access WHERE operator_email = $1', [e]),
+    pool.query('SELECT page FROM operator_page_access WHERE operator_email = $1', [e]),
+  ]);
+  return {
+    workspaces: ws.rows.length ? ws.rows.map(r => r.label_id) : null, // null = all
+    pages: pg.rows.length ? pg.rows.map(r => r.page) : null,          // null = all
+  };
+}
+
+// GET /api/platform/my-access — the caller operator's own restrictions. Owners
+// are unrestricted. Used by the console shell to filter nav + guard routes.
+router.get('/my-access', async (req, res) => {
+  try {
+    if (req.user.platform_role === 'owner') return res.json({ success: true, data: { workspaces: null, pages: null } });
+    res.json({ success: true, data: await operatorAccess(req.user.email) });
+  } catch (error) {
+    console.error('My-access error:', error);
+    res.json({ success: true, data: { workspaces: null, pages: null } }); // fail open
+  }
+});
+
+// GET /api/platform/operators/:email/access — owner view of one operator's access.
+router.get('/operators/:email/access', requirePlatformOwner, async (req, res) => {
+  try {
+    res.json({ success: true, data: { ...(await operatorAccess(req.params.email)), restrictablePages: RESTRICTABLE_PAGES } });
+  } catch (error) {
+    console.error('Operator access error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PUT /api/platform/operators/:email/access — replace an operator's allowlists.
+// Body { workspaces: [labelId]|null, pages: [path]|null }. null/empty = all.
+router.put('/operators/:email/access', requirePlatformOwner, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const email = (req.params.email || '').toLowerCase();
+    // Never restrict an owner-tier operator.
+    const { rows: who } = await client.query('SELECT platform_role FROM users WHERE LOWER(email) = $1 AND is_platform_admin = true LIMIT 1', [email]);
+    if (who[0]?.platform_role === 'owner') { client.release(); return res.status(400).json({ success: false, error: 'Owners cannot be restricted' }); }
+
+    const workspaces = Array.isArray(req.body.workspaces) ? req.body.workspaces.map(n => parseInt(n, 10)).filter(Boolean) : [];
+    const pages = Array.isArray(req.body.pages) ? req.body.pages.filter(p => RESTRICTABLE_PAGES.includes(p)) : [];
+
+    await client.query('BEGIN');
+    await client.query('DELETE FROM operator_workspace_access WHERE operator_email = $1', [email]);
+    await client.query('DELETE FROM operator_page_access WHERE operator_email = $1', [email]);
+    for (const id of workspaces) await client.query('INSERT INTO operator_workspace_access (operator_email, label_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [email, id]);
+    for (const p of pages) await client.query('INSERT INTO operator_page_access (operator_email, page) VALUES ($1, $2) ON CONFLICT DO NOTHING', [email, p]);
+    await client.query('COMMIT');
+    res.json({ success: true });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Set operator access error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  } finally { client.release(); }
+});
+
 // ── Feature flags ───────────────────────────────────────────────────────────
 const { FLAGS, KEYS } = require('../lib/featureFlags');
 
@@ -520,6 +587,14 @@ router.post('/workspaces/:labelId/enter', async (req, res) => {
   try {
     const labelId = parseInt(req.params.labelId, 10);
     if (isNaN(labelId)) return res.status(400).json({ success: false, error: 'Invalid workspace' });
+
+    // Admin-tier operators may be restricted to an allowlist of workspaces.
+    if (req.user.platform_role !== 'owner') {
+      const access = await operatorAccess(req.user.email);
+      if (access.workspaces && !access.workspaces.includes(labelId)) {
+        return res.status(403).json({ success: false, error: 'You do not have access to this workspace' });
+      }
+    }
 
     const labelRes = await pool.query('SELECT id, name, slug, accent_color, logo_r2_key FROM labels WHERE id = $1', [labelId]);
     if (!labelRes.rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });

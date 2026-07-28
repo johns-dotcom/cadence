@@ -3,6 +3,7 @@ import { Outlet, Link, useLocation } from 'react-router-dom'
 import { LayoutDashboard, Building2, BarChart3, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users, ShieldCheck, Megaphone, Flag } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
+import api from '../api'
 import ErrorBoundary from './ErrorBoundary'
 
 // Neutral operator shell shown to platform admins who are NOT inside a
@@ -37,6 +38,13 @@ export default function PlatformLayout() {
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
+  const [pageAccess, setPageAccess] = useState(null) // null = unrestricted (owner or no rows)
+
+  useEffect(() => {
+    api.get('/platform/my-access').then(r => setPageAccess(r.data.data?.pages ?? null)).catch(() => setPageAccess(null))
+  }, [])
+  // Overview + Account are always reachable so an operator is never locked out.
+  const canSee = (path) => path === '/' || path === '/account' || !pageAccess || pageAccess.includes(path)
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 1023px)')
@@ -71,7 +79,7 @@ export default function PlatformLayout() {
         </div>
 
         <nav className="flex-1 px-3 py-4 overflow-y-auto space-y-0.5">
-          {NAV.filter(n => !n.ownerOnly || user?.platform_role === 'owner').map(({ path, label, icon: Icon }) => {
+          {NAV.filter(n => (!n.ownerOnly || user?.platform_role === 'owner') && canSee(n.path)).map(({ path, label, icon: Icon }) => {
             const active = isActive(path)
             return (
               <Link key={path} to={path}
@@ -115,7 +123,13 @@ export default function PlatformLayout() {
         <main className="flex-1 overflow-auto">
           <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 sm:py-8">
             <ErrorBoundary key={location.pathname}>
-              <Outlet />
+              {canSee(location.pathname) ? <Outlet /> : (
+                <div className="card p-10 text-center">
+                  <ShieldCheck size={28} className="text-gray-300 mx-auto mb-3" />
+                  <p className="text-sm text-gray-500">You don't have access to this page.</p>
+                  <Link to="/" className="text-sm text-brand-600 mt-2 inline-block">← Back to overview</Link>
+                </div>
+              )}
             </ErrorBoundary>
           </div>
         </main>
