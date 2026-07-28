@@ -12,7 +12,7 @@ import useIsMobile from '../hooks/useIsMobile'
 import { EXPENSE_CATEGORIES, PAYMENT_METHODS } from '../constants'
 
 const STATUS_STYLES = { pending: 'bg-amber-100 text-amber-700', approved: 'bg-emerald-100 text-emerald-700', rejected: 'bg-red-100 text-red-700' }
-const STATUSES = ['all', 'pending', 'approved', 'rejected']
+const STATUSES = ['all', 'approved', 'rejected']
 const money = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
 const PAID_CYCLE = { Unpaid: 'Paid', Paid: 'Partial', Partial: 'Unpaid' }
 const PAID_STYLE = { Paid: 'text-emerald-600', Partial: 'text-amber-600', Unpaid: 'text-gray-400' }

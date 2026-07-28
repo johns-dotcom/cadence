@@ -62,7 +62,7 @@ const EDITABLE = [
   'invoice_date', 'payee', 'description', 'category', 'artist', 'song',
   'invoice_number', 'amount', 'currency', 'payment_method', 'payment_date',
   'is_reimbursement', 'recoupable', 'rep', 'notes', 'payment_status',
-  'payment_terms', 'scheduled_payment_date',
+  'payment_terms', 'scheduled_payment_date', 'cobrand', 'is_bulk_deal',
 ];
 
 // Rep visibility: Admins/Superadmins see all. An Approver with a configured
@@ -84,7 +84,11 @@ router.get('/entries', async (req, res) => {
     let where = 'label_id = $1 AND (deleted = false OR deleted IS NULL)';
     if (req.query.parent) { params.push(parseInt(req.query.parent, 10)); where += ` AND parent_id = $${params.length}`; }
     else where += ' AND parent_id IS NULL';
+    // Pending items live only in Approvals — they don't hit the ledger until
+    // approved. Callers that explicitly ask for status=pending (the Approvals
+    // page) still get them; every other ledger view excludes them.
     if (req.query.status) { params.push(req.query.status); where += ` AND status = $${params.length}`; }
+    else where += ` AND status <> 'pending'`;
     if (req.query.payment_status) { params.push(req.query.payment_status); where += ` AND payment_status = $${params.length}`; }
     if (req.query.category) { params.push(req.query.category); where += ` AND category = $${params.length}`; }
     if (req.query.artist) { params.push(`%${req.query.artist}%`); where += ` AND artist ILIKE $${params.length}`; }
