@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   X, LogIn, Users, Music, Disc3, TrendingUp, FileText, BookOpen, Receipt,
   CheckSquare, Clock, Upload, Trash2, KeyRound, Ban, RotateCcw, Copy, Check, Palette,
-  UserPlus, Crown,
+  UserPlus, Crown, Sparkles,
 } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
@@ -53,6 +53,10 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
   const [inviteBusy, setInviteBusy] = useState(false)
   const [inviteCopied, setInviteCopied] = useState(false)
 
+  // AI usage limit
+  const [aiLimit, setAiLimit] = useState('')
+  const [aiSaving, setAiSaving] = useState(false)
+
   // Console operators (for assigning one as workspace owner) — owner-only.
   const [operators, setOperators] = useState([])
   const [opOwnerId, setOpOwnerId] = useState('')
@@ -67,6 +71,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
       .then(r => {
         const d = r.data.data
         setData(d); setName(d.label.name); setAccent(d.label.accent_color || '')
+        setAiLimit(d.ai && d.ai.limit !== d.ai.default ? String(d.ai.limit) : '')
       })
       .catch(() => toast('Failed to load workspace', 'error'))
       .finally(() => setLoading(false))
@@ -136,6 +141,15 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
     if (!inviteResult) return
     navigator.clipboard.writeText(inviteResult.invite_link).then(() => { setInviteCopied(true); setTimeout(() => setInviteCopied(false), 2000) })
   }
+  const saveAiLimit = async () => {
+    setAiSaving(true)
+    try {
+      await api.post(`/platform/workspaces/${workspaceId}/ai-limit`, { monthly_limit: aiLimit === '' ? null : aiLimit })
+      toast('AI limit saved'); load(); onChanged?.()
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+    finally { setAiSaving(false) }
+  }
+
   const setOperatorOwner = async (operatorId) => {
     try {
       await api.post(`/platform/workspaces/${workspaceId}/owner`, { operator_id: operatorId })
@@ -352,6 +366,34 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
                       </div>
                     )}
                   </div>
+
+                  {/* AI usage & limit */}
+                  {data.ai && (
+                    <div>
+                      <h3 className="text-sm font-bold text-ink mb-2 flex items-center gap-1.5"><Sparkles size={14} /> AI usage</h3>
+                      {(() => {
+                        const { used, limit, month, default: def } = data.ai
+                        const unlimited = limit < 0
+                        const pct = unlimited || !limit ? 0 : Math.min(100, Math.round((used / limit) * 100))
+                        const over = !unlimited && used >= limit
+                        return (
+                          <>
+                            <div className="flex items-center justify-between text-xs mb-1">
+                              <span className="text-gray-500">This month ({month})</span>
+                              <span className={over ? 'text-red-600 font-semibold' : 'text-gray-600'}>{used} / {unlimited ? '∞' : limit} requests</span>
+                            </div>
+                            {!unlimited && <div className="h-1.5 rounded-full bg-gray-200 overflow-hidden mb-3"><div className={`h-full rounded-full ${over ? 'bg-red-500' : 'bg-brand-500'}`} style={{ width: `${pct}%` }} /></div>}
+                            <label className="label">Monthly request limit</label>
+                            <div className="flex items-center gap-2">
+                              <input type="number" className="input !w-40" value={aiLimit} onChange={e => setAiLimit(e.target.value)} placeholder={`Default ${def}`} />
+                              <button onClick={saveAiLimit} disabled={aiSaving} className="btn-secondary !py-1.5 text-xs flex-shrink-0">{aiSaving ? 'Saving…' : 'Save'}</button>
+                            </div>
+                            <p className="text-[11px] text-gray-400 mt-1">Blank uses the platform default ({def}). Enter -1 for unlimited. Resets on the 1st.</p>
+                          </>
+                        )
+                      })()}
+                    </div>
+                  )}
 
                   {/* Danger zone */}
                   <div className="border border-red-200 rounded-xl p-4 bg-red-50/30">

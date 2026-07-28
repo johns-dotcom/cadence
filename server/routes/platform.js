@@ -10,6 +10,7 @@ const { signToken, publicUser } = require('../lib/token');
 const { getSignedFileUrl, uploadFile, deleteFile, isConfigured } = require('../lib/r2');
 const { sendEmail, inviteEmail } = require('../lib/email');
 const { deleteUserWithSweep } = require('../lib/userDelete');
+const aiUsage = require('../lib/aiUsage');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -143,6 +144,7 @@ router.get('/workspaces/:id', async (req, res) => {
         membersByRole: Object.fromEntries(byRole.rows.map(r => [r.role, r.n])),
         recentActivity: recent.rows,
         lastLogin: lastLogin.rows[0]?.t || null,
+        ai: { limit: await aiUsage.limitFor(id), used: (await aiUsage.usageFor(id)).calls, month: aiUsage.ym(), default: aiUsage.DEFAULT_LIMIT },
       },
     });
   } catch (error) {
@@ -796,6 +798,31 @@ router.post('/workspaces/:id/reactivate', requirePlatformOwner, async (req, res)
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Reactivate workspace error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/platform/workspaces/:id/ai-limit — set the monthly AI request cap.
+// body { monthly_limit }: a number (0+), -1 for unlimited, or null/'' to use
+// the platform default.
+router.post('/workspaces/:id/ai-limit', requirePlatformOwner, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const raw = req.body.monthly_limit;
+    if (raw == null || raw === '') {
+      await pool.query('DELETE FROM ai_limits WHERE label_id = $1', [id]);
+      return res.json({ success: true, data: { limit: aiUsage.DEFAULT_LIMIT } });
+    }
+    const n = parseInt(raw, 10);
+    if (isNaN(n) || n < -1) return res.status(400).json({ success: false, error: 'Limit must be 0 or more (or -1 for unlimited)' });
+    await pool.query(
+      `INSERT INTO ai_limits (label_id, monthly_limit) VALUES ($1, $2)
+       ON CONFLICT (label_id) DO UPDATE SET monthly_limit = EXCLUDED.monthly_limit`,
+      [id, n]
+    );
+    res.json({ success: true, data: { limit: n } });
+  } catch (error) {
+    console.error('Set AI limit error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

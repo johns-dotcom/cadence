@@ -17,12 +17,16 @@
 // Exposes req.labelId as a convenience and hard-fails if it's somehow absent
 // (authMiddleware already guarantees it, but this is a cheap belt-and-braces
 // guard against an endpoint that forgets to mount authMiddleware first).
+const { runWithLabel } = require('../lib/aiUsage');
+
 function withTenant(req, res, next) {
   if (!req.user?.label_id) {
     return res.status(401).json({ success: false, error: 'No workspace context' });
   }
   req.labelId = req.user.label_id;
-  next();
+  // Run the rest of the request inside an async-local context carrying the
+  // workspace id, so AI metering can attribute + limit usage per workspace.
+  runWithLabel(req.labelId, () => next());
 }
 
 // Role gate factory. Roles are scoped within a label — a Superadmin owns their

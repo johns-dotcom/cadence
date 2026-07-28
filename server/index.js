@@ -794,6 +794,26 @@ const runMigrations = async () => {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_brand_assets_label ON brand_assets (label_id, created_at DESC)`);
 
+  // Per-workspace AI usage metering + limits. usage is bucketed by calendar
+  // month (ym = 'YYYY-MM'); a per-label monthly_limit overrides the default
+  // (NULL = default; -1 = unlimited).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ai_usage (
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      ym VARCHAR(7) NOT NULL,
+      calls INT NOT NULL DEFAULT 0,
+      in_tokens BIGINT NOT NULL DEFAULT 0,
+      out_tokens BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (label_id, ym)
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ai_limits (
+      label_id INT PRIMARY KEY REFERENCES labels(id) ON DELETE CASCADE,
+      monthly_limit INT
+    );
+  `);
+
   // Operator enter-workspace sessions — a platform-level audit of every time an
   // operator dropped into a tenant. Attributed to the operator's REAL user id
   // (not the per-label ghost membership) so it survives ghost churn.

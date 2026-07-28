@@ -7,6 +7,8 @@
 // cost-sensitive high-volume document parsing an operator may set
 // ANTHROPIC_MODEL=claude-sonnet-4-6.
 
+const aiUsage = require('./aiUsage');
+
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-4-8';
 const API = 'https://api.anthropic.com/v1/messages';
 
@@ -37,6 +39,18 @@ function fileBlock(buffer, mimeType) {
 // Returns { ok, data?, text?, error?, disabled? }.
 async function callClaude({ system, content, schema, maxTokens = 2048 }) {
   if (!isEnabled()) return { ok: false, disabled: true, error: 'AI not configured' };
+
+  // Per-workspace monthly usage cap (labelId comes from the async-local
+  // request context set by withTenant; null when unattributable, e.g. public
+  // vendor form — those are already IP rate-limited).
+  const labelId = aiUsage.currentLabelId();
+  if (labelId) {
+    const q = await aiUsage.check(labelId);
+    if (!q.ok) {
+      return { ok: false, limitReached: true, error: `This workspace has reached its monthly AI limit (${q.limit} requests). It resets at the start of next month, or an operator can raise it.` };
+    }
+  }
+
   try {
     const body = {
       model: MODEL,
@@ -60,6 +74,8 @@ async function callClaude({ system, content, schema, maxTokens = 2048 }) {
       return { ok: false, error: `Claude ${res.status}: ${detail.slice(0, 200)}` };
     }
     const json = await res.json();
+    // Meter usage (best-effort; never blocks the response).
+    if (labelId) aiUsage.record(labelId, { input: json.usage?.input_tokens, output: json.usage?.output_tokens });
     const text = (json.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
     if (schema) {
       try { return { ok: true, data: JSON.parse(text), text }; }
