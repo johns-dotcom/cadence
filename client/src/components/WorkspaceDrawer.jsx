@@ -55,6 +55,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
 
   // AI usage limit
   const [aiLimit, setAiLimit] = useState('')
+  const [aiType, setAiType] = useState('requests')
   const [aiSaving, setAiSaving] = useState(false)
 
   // Console operators (for assigning one as workspace owner) — owner-only.
@@ -71,7 +72,8 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
       .then(r => {
         const d = r.data.data
         setData(d); setName(d.label.name); setAccent(d.label.accent_color || '')
-        setAiLimit(d.ai && d.ai.limit !== d.ai.default ? String(d.ai.limit) : '')
+        setAiType(d.ai?.type || 'requests')
+        setAiLimit(d.ai && (d.ai.limit !== d.ai.default || d.ai.type !== 'requests') ? String(d.ai.limit) : '')
       })
       .catch(() => toast('Failed to load workspace', 'error'))
       .finally(() => setLoading(false))
@@ -144,7 +146,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
   const saveAiLimit = async () => {
     setAiSaving(true)
     try {
-      await api.post(`/platform/workspaces/${workspaceId}/ai-limit`, { monthly_limit: aiLimit === '' ? null : aiLimit })
+      await api.post(`/platform/workspaces/${workspaceId}/ai-limit`, { monthly_limit: aiLimit === '' ? null : aiLimit, limit_type: aiType })
       toast('AI limit saved'); load(); onChanged?.()
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
     finally { setAiSaving(false) }
@@ -372,23 +374,30 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
                     <div>
                       <h3 className="text-sm font-bold text-ink mb-2 flex items-center gap-1.5"><Sparkles size={14} /> AI usage</h3>
                       {(() => {
-                        const { used, limit, month, default: def } = data.ai
+                        const { used, limit, month, default: def, type, usedCalls, usedTokens } = data.ai
                         const unlimited = limit < 0
+                        const unit = type === 'tokens' ? 'tokens' : 'requests'
                         const pct = unlimited || !limit ? 0 : Math.min(100, Math.round((used / limit) * 100))
                         const over = !unlimited && used >= limit
+                        const fmt = (n) => Number(n || 0).toLocaleString()
                         return (
                           <>
                             <div className="flex items-center justify-between text-xs mb-1">
                               <span className="text-gray-500">This month ({month})</span>
-                              <span className={over ? 'text-red-600 font-semibold' : 'text-gray-600'}>{used} / {unlimited ? '∞' : limit} requests</span>
+                              <span className={over ? 'text-red-600 font-semibold' : 'text-gray-600'}>{fmt(used)} / {unlimited ? '∞' : fmt(limit)} {unit}</span>
                             </div>
-                            {!unlimited && <div className="h-1.5 rounded-full bg-gray-200 overflow-hidden mb-3"><div className={`h-full rounded-full ${over ? 'bg-red-500' : 'bg-brand-500'}`} style={{ width: `${pct}%` }} /></div>}
-                            <label className="label">Monthly request limit</label>
+                            {!unlimited && <div className="h-1.5 rounded-full bg-gray-200 overflow-hidden mb-1.5"><div className={`h-full rounded-full ${over ? 'bg-red-500' : 'bg-brand-500'}`} style={{ width: `${pct}%` }} /></div>}
+                            <p className="text-[11px] text-gray-400 mb-3">{fmt(usedCalls)} requests · {fmt(usedTokens)} tokens used</p>
+                            <label className="label">Monthly limit</label>
                             <div className="flex items-center gap-2">
-                              <input type="number" className="input !w-40" value={aiLimit} onChange={e => setAiLimit(e.target.value)} placeholder={`Default ${def}`} />
+                              <input type="number" className="input !w-32" value={aiLimit} onChange={e => setAiLimit(e.target.value)} placeholder={`Default ${def}`} />
+                              <select className="input !w-auto" value={aiType} onChange={e => setAiType(e.target.value)}>
+                                <option value="requests">requests</option>
+                                <option value="tokens">tokens</option>
+                              </select>
                               <button onClick={saveAiLimit} disabled={aiSaving} className="btn-secondary !py-1.5 text-xs flex-shrink-0">{aiSaving ? 'Saving…' : 'Save'}</button>
                             </div>
-                            <p className="text-[11px] text-gray-400 mt-1">Blank uses the platform default ({def}). Enter -1 for unlimited. Resets on the 1st.</p>
+                            <p className="text-[11px] text-gray-400 mt-1">Blank = platform default ({def} requests). -1 = unlimited. Tokens count input + output. Resets on the 1st.</p>
                           </>
                         )
                       })()}

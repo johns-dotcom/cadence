@@ -17,12 +17,15 @@ function ym(d = new Date()) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
+// Returns { limit, type } where type is 'requests' or 'tokens'.
 async function limitFor(labelId) {
   try {
-    const { rows } = await pool.query('SELECT monthly_limit FROM ai_limits WHERE label_id = $1', [labelId]);
-    if (rows.length && rows[0].monthly_limit != null) return rows[0].monthly_limit;
+    const { rows } = await pool.query('SELECT monthly_limit, limit_type FROM ai_limits WHERE label_id = $1', [labelId]);
+    if (rows.length && rows[0].monthly_limit != null) {
+      return { limit: rows[0].monthly_limit, type: rows[0].limit_type === 'tokens' ? 'tokens' : 'requests' };
+    }
   } catch { /* table may not exist yet */ }
-  return DEFAULT_LIMIT;
+  return { limit: DEFAULT_LIMIT, type: 'requests' };
 }
 
 async function usageFor(labelId, month = ym()) {
@@ -33,13 +36,15 @@ async function usageFor(labelId, month = ym()) {
   return { calls: 0, in_tokens: 0, out_tokens: 0 };
 }
 
-// { ok, limit, used, remaining } — ok=false when the workspace is over quota.
+// { ok, limit, type, used, remaining } — ok=false when the workspace is over
+// quota. `used` is measured in the limit's unit (requests or tokens).
 async function check(labelId) {
   if (!labelId) return { ok: true };
-  const limit = await limitFor(labelId);
-  if (limit < 0) return { ok: true, limit: -1, used: 0, remaining: Infinity };
-  const { calls } = await usageFor(labelId);
-  return { ok: calls < limit, limit, used: calls, remaining: Math.max(0, limit - calls) };
+  const { limit, type } = await limitFor(labelId);
+  if (limit < 0) return { ok: true, limit: -1, type, used: 0, remaining: Infinity };
+  const u = await usageFor(labelId);
+  const used = type === 'tokens' ? (u.in_tokens + u.out_tokens) : u.calls;
+  return { ok: used < limit, limit, type, used, remaining: Math.max(0, limit - used) };
 }
 
 // Increment the workspace's usage for the current month (best-effort).

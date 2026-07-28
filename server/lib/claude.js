@@ -47,7 +47,8 @@ async function callClaude({ system, content, schema, maxTokens = 2048 }) {
   if (labelId) {
     const q = await aiUsage.check(labelId);
     if (!q.ok) {
-      return { ok: false, limitReached: true, error: `This workspace has reached its monthly AI limit (${q.limit} requests). It resets at the start of next month, or an operator can raise it.` };
+      const unit = q.type === 'tokens' ? 'tokens' : 'requests';
+      return { ok: false, limitReached: true, error: `This workspace has reached its monthly AI limit (${Number(q.limit).toLocaleString()} ${unit}). It resets at the start of next month, or an operator can raise it.` };
     }
   }
 

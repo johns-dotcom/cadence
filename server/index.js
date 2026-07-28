@@ -813,6 +813,8 @@ const runMigrations = async () => {
       monthly_limit INT
     );
   `);
+  // Whether monthly_limit counts requests or total tokens (in + out).
+  await pool.query(`ALTER TABLE ai_limits ADD COLUMN IF NOT EXISTS limit_type VARCHAR(10) DEFAULT 'requests'`);
 
   // Operator enter-workspace sessions — a platform-level audit of every time an
   // operator dropped into a tenant. Attributed to the operator's REAL user id

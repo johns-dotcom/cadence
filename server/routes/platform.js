@@ -144,7 +144,11 @@ router.get('/workspaces/:id', async (req, res) => {
         membersByRole: Object.fromEntries(byRole.rows.map(r => [r.role, r.n])),
         recentActivity: recent.rows,
         lastLogin: lastLogin.rows[0]?.t || null,
-        ai: { limit: await aiUsage.limitFor(id), used: (await aiUsage.usageFor(id)).calls, month: aiUsage.ym(), default: aiUsage.DEFAULT_LIMIT },
+        ai: await (async () => {
+          const lim = await aiUsage.limitFor(id);
+          const u = await aiUsage.usageFor(id);
+          return { limit: lim.limit, type: lim.type, usedCalls: u.calls, usedTokens: u.in_tokens + u.out_tokens, used: lim.type === 'tokens' ? u.in_tokens + u.out_tokens : u.calls, month: aiUsage.ym(), default: aiUsage.DEFAULT_LIMIT };
+        })(),
       },
     });
   } catch (error) {
@@ -809,18 +813,19 @@ router.post('/workspaces/:id/ai-limit', requirePlatformOwner, async (req, res) =
   try {
     const id = parseInt(req.params.id, 10);
     const raw = req.body.monthly_limit;
+    const type = req.body.limit_type === 'tokens' ? 'tokens' : 'requests';
     if (raw == null || raw === '') {
       await pool.query('DELETE FROM ai_limits WHERE label_id = $1', [id]);
-      return res.json({ success: true, data: { limit: aiUsage.DEFAULT_LIMIT } });
+      return res.json({ success: true, data: { limit: aiUsage.DEFAULT_LIMIT, type: 'requests' } });
     }
     const n = parseInt(raw, 10);
     if (isNaN(n) || n < -1) return res.status(400).json({ success: false, error: 'Limit must be 0 or more (or -1 for unlimited)' });
     await pool.query(
-      `INSERT INTO ai_limits (label_id, monthly_limit) VALUES ($1, $2)
-       ON CONFLICT (label_id) DO UPDATE SET monthly_limit = EXCLUDED.monthly_limit`,
-      [id, n]
+      `INSERT INTO ai_limits (label_id, monthly_limit, limit_type) VALUES ($1, $2, $3)
+       ON CONFLICT (label_id) DO UPDATE SET monthly_limit = EXCLUDED.monthly_limit, limit_type = EXCLUDED.limit_type`,
+      [id, n, type]
     );
-    res.json({ success: true, data: { limit: n } });
+    res.json({ success: true, data: { limit: n, type } });
   } catch (error) {
     console.error('Set AI limit error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
