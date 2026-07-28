@@ -10,6 +10,7 @@ export const PAGE_GROUPS = [
   { group: 'Catalog', pages: [
     { path: '/releases', label: 'Releases' },
     { path: '/artists', label: 'Artists' },
+    { path: '/brand', label: 'Brand' },
   ] },
   { group: 'A&R', pages: [
     { path: '/deals', label: 'Deal Pipeline' },

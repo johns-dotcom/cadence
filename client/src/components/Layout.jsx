@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Music, Users, UserCheck, Settings, ScrollText,
-  LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2,
+  LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2, Image as ImageIcon,
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
   FileClock, Shield, Lock, FileSignature, FileSpreadsheet, Archive, Layers, Upload, PiggyBank, FilePlus2,
@@ -38,6 +38,7 @@ export const PAGE_LABELS = {
   '/admin-docs': 'Admin Docs',
   '/releases':   'Releases',
   '/catalog':    'Catalog',
+  '/brand':      'Brand',
   '/artists':    'Artists',
   '/deals':      'Deal Pipeline',
   '/contracts':  'Contracts',
@@ -233,6 +234,7 @@ export default function Layout() {
         { path: '/releases', label: 'Releases', icon: Music },
         { path: '/catalog',  label: 'Catalog',  icon: Disc3 },
         { path: '/artists',  label: 'Artists',  icon: Users },
+        { path: '/brand',    label: 'Brand',    icon: ImageIcon },
       ],
     },
     {

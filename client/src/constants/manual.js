@@ -43,6 +43,13 @@ export const MANUAL_SECTIONS = [
   { path: '/catalog', group: 'Artists & releases', title: 'Catalog', depts: ['Operations', 'Marketing'],
     summary: 'Your released back-catalog, grouped by year with artwork and identifiers.',
     steps: ['Filter by genre, type, or date range and search by title / UPC / ISRC.', 'Use "Sync artwork" to pull covers from Spotify in bulk.'] },
+  { path: '/brand', group: 'Artists & releases', title: 'Brand', depts: ['Marketing', 'Operations', 'A&R', 'Executive'],
+    summary: "Your team's shared library of logos and images — upload once, grab them anywhere.",
+    steps: [
+      'Upload an image, give it a name, and tag it (Logo, Icon, Cover art, Photo, Graphic).',
+      'Filter by category or search, then download or copy an asset\'s link.',
+      'Anyone on the team can add assets; you can delete your own (admins can delete any).',
+    ] },
   { path: '/artists', group: 'Artists & releases', title: 'Artists', depts: ['A&R'],
     summary: 'Your roster — open an artist for their profile, releases, contracts, and dev log.',
     steps: ['Search or filter the roster, then click through to a profile.', 'The profile\'s color-coded development log tracks meetings, demos, and offers.'] },

@@ -40,6 +40,7 @@ const ndaDocumentsRoutes = require('./routes/nda-documents');
 const internalRequestsRoutes = require('./routes/internal-requests');
 const announcementsRoutes = require('./routes/announcements');
 const manualRoutes = require('./routes/manual');
+const brandAssetsRoutes = require('./routes/brand-assets');
 const adminDocsRoutes = require('./routes/admin-docs');
 const flagsRoutes = require('./routes/flags');
 const labelWaiversRoutes = require('./routes/label-waivers');
@@ -160,6 +161,7 @@ app.use('/api/nda-documents', ndaDocumentsRoutes);
 app.use('/api/internal-requests', internalRequestsRoutes);
 app.use('/api/announcements', announcementsRoutes);
 app.use('/api/manual', manualRoutes);
+app.use('/api/brand-assets', brandAssetsRoutes);
 app.use('/api/admin-docs', adminDocsRoutes);
 app.use('/api/flags', flagsRoutes);
 app.use('/api/label-waivers', labelWaiversRoutes);
@@ -772,6 +774,25 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_mentions_unread ON user_mentions (mentioned_user_id, read_at)`);
+
+  // Brand assets — a per-workspace library of team logos and images. Stored in
+  // R2 when configured, otherwise inline as a data: URL (same fallback as the
+  // workspace logo).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS brand_assets (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      name VARCHAR(200) NOT NULL,
+      category VARCHAR(40) DEFAULT 'Other',
+      mime_type VARCHAR(100),
+      r2_key TEXT,
+      data TEXT,
+      size_bytes INT,
+      uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_brand_assets_label ON brand_assets (label_id, created_at DESC)`);
 
   // Operator enter-workspace sessions — a platform-level audit of every time an
   // operator dropped into a tenant. Attributed to the operator's REAL user id
