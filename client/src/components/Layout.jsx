@@ -312,7 +312,7 @@ export default function Layout() {
             )}
             <div className="min-w-0">
               <p className="text-sm font-bold text-ink tracking-tight leading-none truncate">{label?.name || 'Workspace'}</p>
-              <p className="text-[11px] text-gray-400 mt-0.5">Label Operations</p>
+              <p className="text-[11px] text-gray-400 mt-0.5 truncate">{label?.settings?.tagline || 'Label Operations'}</p>
             </div>
           </div>
           {isMobile && (

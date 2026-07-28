@@ -23,6 +23,7 @@ router.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT id, name, slug, accent_color, logo_r2_key, invoice_settings, vendor_form_token, created_at,
+              COALESCE(settings, '{}'::jsonb) AS settings,
               (SELECT COUNT(*) FROM users WHERE label_id = labels.id) AS member_count
        FROM labels WHERE id = $1`,
       [req.labelId]
@@ -41,7 +42,7 @@ router.get('/', async (req, res) => {
 // PATCH /api/label — rename + set accent color (admin only). Slug is immutable.
 router.patch('/', requireAdmin, async (req, res) => {
   try {
-    const { name, accent_color, invoice_settings } = req.body;
+    const { name, accent_color, invoice_settings, settings } = req.body;
 
     if (accent_color !== undefined && accent_color !== null && accent_color !== '' && !HEX_RE.test(accent_color)) {
       return res.status(400).json({ success: false, error: 'Accent color must be a hex value like #4F46E5' });
@@ -49,19 +50,26 @@ router.patch('/', requireAdmin, async (req, res) => {
     if (name !== undefined && !String(name).trim()) {
       return res.status(400).json({ success: false, error: 'Name cannot be empty' });
     }
+    if (settings !== undefined && (typeof settings !== 'object' || Array.isArray(settings) || settings === null)) {
+      return res.status(400).json({ success: false, error: 'Settings must be an object' });
+    }
 
     // Empty string clears the accent (back to Cadence default).
     const accentValue = accent_color === '' ? null : accent_color;
 
+    // settings is shallow-merged (jsonb ||) so each Settings sub-section saves
+    // independently without clobbering the others.
     const { rows } = await pool.query(
       `UPDATE labels SET
          name = COALESCE($1, name),
          accent_color = CASE WHEN $2::boolean THEN $3 ELSE accent_color END,
-         invoice_settings = CASE WHEN $4::boolean THEN $5::jsonb ELSE invoice_settings END
-       WHERE id = $6
-       RETURNING id, name, slug, accent_color, invoice_settings`,
+         invoice_settings = CASE WHEN $4::boolean THEN $5::jsonb ELSE invoice_settings END,
+         settings = CASE WHEN $6::boolean THEN COALESCE(settings, '{}'::jsonb) || $7::jsonb ELSE settings END
+       WHERE id = $8
+       RETURNING id, name, slug, accent_color, invoice_settings, COALESCE(settings, '{}'::jsonb) AS settings`,
       [name ?? null, accent_color !== undefined, accentValue,
        invoice_settings !== undefined, invoice_settings ? JSON.stringify(invoice_settings) : null,
+       settings !== undefined, settings ? JSON.stringify(settings) : '{}',
        req.labelId]
     );
     await logActivity(req, 'Updated workspace branding', rows[0].name);

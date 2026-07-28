@@ -260,6 +260,10 @@ const runMigrations = async () => {
   // over the "most-senior Superadmin member" heuristic; SET NULL on delete
   // falls back to that heuristic.
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS owner_user_id INT REFERENCES users(id) ON DELETE SET NULL`);
+  // Owner-customizable workspace settings (tagline, dashboard welcome, home
+  // widget config + pinned links). Shallow-merged on PATCH so each Settings
+  // sub-section saves independently.
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{}'::jsonb`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (

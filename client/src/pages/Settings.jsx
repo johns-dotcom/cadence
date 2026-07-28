@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Upload, Trash2, Check, Link2, Copy, RefreshCw } from 'lucide-react'
+import { Upload, Trash2, Check, Link2, Copy, RefreshCw, Plus, X, LayoutDashboard } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
@@ -8,6 +8,16 @@ import { applyAccent, resetAccent, isValidHex, ACCENT_PRESETS } from '../utils/b
 import RepsManager from '../components/RepsManager'
 import PermissionsManager from '../components/PermissionsManager'
 import DataTools from '../components/DataTools'
+
+// Home-dashboard widgets an owner can show/hide (all default on).
+const DASH_WIDGETS = [
+  { key: 'tasks', label: 'My tasks summary' },
+  { key: 'bookkeeping', label: 'Bookkeeping widget (finance roles)' },
+  { key: 'releases_chart', label: 'Releases-by-month chart' },
+  { key: 'genre_pie', label: 'Genre-mix chart' },
+  { key: 'upcoming', label: 'Upcoming releases' },
+  { key: 'activity', label: 'Recent activity' },
+]
 
 export default function Settings() {
   const { user, label, updateLabel } = useAuth()
@@ -22,6 +32,13 @@ export default function Settings() {
   const [savingInv, setSavingInv] = useState(false)
   const [pw, setPw] = useState({ current_password: '', new_password: '' })
 
+  // Identity + home-dashboard customization
+  const [tagline, setTagline] = useState('')
+  const [welcome, setWelcome] = useState('')
+  const [dashWidgets, setDashWidgets] = useState({})
+  const [pinned, setPinned] = useState([])
+  const [savingDash, setSavingDash] = useState(false)
+
   useEffect(() => {
     if (isAdmin) api.get('/label').then(res => {
       const d = res.data.data || {}
@@ -29,6 +46,11 @@ export default function Settings() {
       setAccent(d.accent_color || '')
       setLogoUrl(d.logo_url || null)
       setInv(d.invoice_settings || {})
+      const s = d.settings || {}
+      setTagline(s.tagline || '')
+      setWelcome(s.welcome || '')
+      setDashWidgets(s.dashboard?.widgets || {})
+      setPinned(Array.isArray(s.dashboard?.pinned) ? s.dashboard.pinned : [])
     }).catch(() => {})
   }, [isAdmin])
 
@@ -60,12 +82,28 @@ export default function Settings() {
     e.preventDefault()
     if (accent && !isValidHex(accent)) { toast('Accent must be a hex value like #4F46E5', 'error'); return }
     try {
-      const { data } = await api.patch('/label', { name: labelName, accent_color: accent || '' })
+      const settings = { tagline: tagline.trim(), welcome: welcome.trim() }
+      const { data } = await api.patch('/label', { name: labelName, accent_color: accent || '', settings })
       // Re-theme immediately + keep the rest of the app in sync.
       if (accent) applyAccent(accent); else resetAccent()
-      updateLabel({ name: data.data.name, accent_color: data.data.accent_color })
-      toast('Workspace branding saved')
+      updateLabel({ name: data.data.name, accent_color: data.data.accent_color, settings: data.data.settings })
+      toast('Workspace identity saved')
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+
+  const toggleWidget = (k) => setDashWidgets(w => ({ ...w, [k]: w[k] === false ? true : false }))
+  const setPin = (i, field) => (e) => setPinned(ps => ps.map((p, idx) => idx === i ? { ...p, [field]: e.target.value } : p))
+  const addPin = () => setPinned(ps => [...ps, { label: '', url: '' }])
+  const removePin = (i) => setPinned(ps => ps.filter((_, idx) => idx !== i))
+  const saveDashboard = async () => {
+    setSavingDash(true)
+    try {
+      const dashboard = { widgets: dashWidgets, pinned: pinned.filter(p => p.label.trim() && p.url.trim()) }
+      const { data } = await api.patch('/label', { settings: { dashboard } })
+      updateLabel({ settings: data.data.settings })
+      toast('Home dashboard saved')
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+    finally { setSavingDash(false) }
   }
 
   // Live preview while picking — persist=false so it won't survive a reload
@@ -127,14 +165,25 @@ export default function Settings() {
         {/* Workspace branding (admins only) */}
         {isAdmin && (
           <form onSubmit={saveLabel} className="card p-5">
-            <h2 className="text-sm font-bold text-ink mb-1">Workspace branding</h2>
-            <p className="text-xs text-gray-400 mb-4">Customize how this workspace looks for your team.</p>
+            <h2 className="text-sm font-bold text-ink mb-1">Workspace identity &amp; branding</h2>
+            <p className="text-xs text-gray-400 mb-4">Make this workspace feel like your team's own.</p>
 
             <div className="space-y-5">
               <div>
                 <label className="label">Label name</label>
                 <input className="input" value={labelName} onChange={e => setLabelName(e.target.value)} />
                 <p className="text-xs text-gray-400 mt-1">URL slug (<code className="text-gray-500">{label?.slug}</code>) is fixed so sign-in links keep working.</p>
+              </div>
+
+              <div>
+                <label className="label">Tagline</label>
+                <input className="input" value={tagline} onChange={e => setTagline(e.target.value)} placeholder="Label Operations" maxLength={60} />
+                <p className="text-xs text-gray-400 mt-1">Shown under the workspace name in the sidebar.</p>
+              </div>
+
+              <div>
+                <label className="label">Dashboard welcome message</label>
+                <textarea className="input min-h-[64px]" value={welcome} onChange={e => setWelcome(e.target.value)} placeholder="A note your team sees at the top of the dashboard — priorities, links, a hello." maxLength={400} />
               </div>
 
               {/* Logo */}
@@ -198,9 +247,40 @@ export default function Settings() {
                 <p className="text-xs text-gray-400 mt-1">Changes preview live. Click Save to apply for everyone in the workspace.</p>
               </div>
 
-              <button className="btn-primary">Save branding</button>
+              <button className="btn-primary">Save identity &amp; branding</button>
             </div>
           </form>
+        )}
+
+        {/* Home dashboard (admins only) */}
+        {isAdmin && (
+          <div className="card p-5">
+            <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><LayoutDashboard size={15} /> Home dashboard</h2>
+            <p className="text-xs text-gray-400 mb-4">Choose which widgets your team sees on the dashboard, and pin quick links.</p>
+
+            <div className="space-y-1.5 mb-5">
+              {DASH_WIDGETS.map(wd => (
+                <label key={wd.key} className="flex items-center justify-between gap-3 px-2 py-1.5 rounded-lg hover:bg-gray-50 cursor-pointer">
+                  <span className="text-sm text-gray-700">{wd.label}</span>
+                  <input type="checkbox" checked={dashWidgets[wd.key] !== false} onChange={() => toggleWidget(wd.key)} />
+                </label>
+              ))}
+            </div>
+
+            <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-2">Pinned links</p>
+            <div className="space-y-2 mb-3">
+              {pinned.map((p, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input className="input !py-1.5 text-sm w-40" value={p.label} onChange={setPin(i, 'label')} placeholder="Label" />
+                  <input className="input !py-1.5 text-sm flex-1" value={p.url} onChange={setPin(i, 'url')} placeholder="https://…  or  /releases" />
+                  <button type="button" onClick={() => removePin(i)} className="text-gray-300 hover:text-red-600 flex-shrink-0"><X size={15} /></button>
+                </div>
+              ))}
+              <button type="button" onClick={addPin} className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700"><Plus size={13} /> Add link</button>
+            </div>
+
+            <button onClick={saveDashboard} disabled={savingDash} className="btn-primary">{savingDash ? 'Saving…' : 'Save home dashboard'}</button>
+          </div>
         )}
 
         {/* Vendor form link — public submission URL (admins only) */}

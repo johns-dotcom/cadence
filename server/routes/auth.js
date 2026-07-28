@@ -196,7 +196,8 @@ router.get('/me', authMiddleware, async (req, res) => {
               u.is_platform_admin, u.platform_role, u.created_at,
               l.name AS label_name, l.slug AS label_slug,
               l.accent_color AS label_accent_color, l.logo_r2_key,
-              l.vendor_form_token AS label_vendor_form_token
+              l.vendor_form_token AS label_vendor_form_token,
+              COALESCE(l.settings, '{}'::jsonb) AS label_settings
        FROM users u JOIN labels l ON l.id = u.label_id
        WHERE u.id = $1 ${isOp ? '' : 'AND u.label_id = $2'}`,
       isOp ? [req.user.id] : [req.user.id, req.user.label_id]
