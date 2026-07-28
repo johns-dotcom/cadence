@@ -7,7 +7,7 @@ const authMiddleware = require('../middleware/auth');
 const { requirePlatformAdmin, requirePlatformOwner } = require('../middleware/tenant');
 const { uniqueSlug } = require('../lib/slug');
 const { signToken, publicUser } = require('../lib/token');
-const { getSignedFileUrl, uploadFile, deleteFile } = require('../lib/r2');
+const { getSignedFileUrl, uploadFile, deleteFile, isConfigured } = require('../lib/r2');
 const { sendEmail, inviteEmail } = require('../lib/email');
 const { deleteUserWithSweep } = require('../lib/userDelete');
 
@@ -51,7 +51,7 @@ router.use(authMiddleware, requirePlatformAdmin);
 router.get('/workspaces', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT l.id, l.name, l.slug, l.accent_color, l.logo_r2_key,
+      `SELECT l.id, l.name, l.slug, l.accent_color, l.logo_r2_key, l.logo_data,
               COALESCE(l.status, 'active') AS status, l.suspended_at, l.created_at,
               (SELECT COUNT(*) FROM users u WHERE u.label_id = l.id AND (u.is_platform_admin = false OR u.is_platform_admin IS NULL))::int AS members,
               (SELECT COUNT(*) FROM artists WHERE label_id = l.id)::int AS artists,
@@ -73,8 +73,9 @@ router.get('/workspaces', async (req, res) => {
     );
     // Sign logo URLs (best-effort) for branding previews.
     for (const r of rows) {
-      r.logo_url = r.logo_r2_key ? await getSignedFileUrl(r.logo_r2_key, 6 * 3600).catch(() => null) : null;
+      r.logo_url = r.logo_r2_key ? await getSignedFileUrl(r.logo_r2_key, 6 * 3600).catch(() => null) : (r.logo_data || null);
       delete r.logo_r2_key;
+      delete r.logo_data;
     }
     res.json({ success: true, data: rows });
   } catch (error) {
@@ -89,14 +90,15 @@ router.get('/workspaces/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const labelRes = await pool.query(
-      `SELECT id, name, slug, accent_color, logo_r2_key, COALESCE(status,'active') AS status, suspended_at, created_at, owner_user_id
+      `SELECT id, name, slug, accent_color, logo_r2_key, logo_data, COALESCE(status,'active') AS status, suspended_at, created_at, owner_user_id
          FROM labels WHERE id = $1`,
       [id]
     );
     if (!labelRes.rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
     const label = labelRes.rows[0];
-    label.logo_url = label.logo_r2_key ? await getSignedFileUrl(label.logo_r2_key, 6 * 3600).catch(() => null) : null;
+    label.logo_url = label.logo_r2_key ? await getSignedFileUrl(label.logo_r2_key, 6 * 3600).catch(() => null) : (label.logo_data || null);
     delete label.logo_r2_key;
+    delete label.logo_data;
 
     const [counts, members, byRole, recent, lastLogin] = await Promise.all([
       pool.query(
@@ -475,11 +477,12 @@ router.post('/workspaces/:labelId/enter', async (req, res) => {
       }
     }
 
-    const labelRes = await pool.query('SELECT id, name, slug, accent_color, logo_r2_key FROM labels WHERE id = $1', [labelId]);
+    const labelRes = await pool.query('SELECT id, name, slug, accent_color, logo_r2_key, logo_data FROM labels WHERE id = $1', [labelId]);
     if (!labelRes.rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
     const label = labelRes.rows[0];
-    label.logo_url = label.logo_r2_key ? await getSignedFileUrl(label.logo_r2_key, 6 * 3600).catch(() => null) : null;
+    label.logo_url = label.logo_r2_key ? await getSignedFileUrl(label.logo_r2_key, 6 * 3600).catch(() => null) : (label.logo_data || null);
     delete label.logo_r2_key;
+    delete label.logo_data;
 
     const email = (req.user.email || '').toLowerCase();
     const cols = 'id, label_id, name, email, role, department, hierarchy_level, is_platform_admin, platform_role, token_version';
@@ -561,16 +564,31 @@ router.patch('/workspaces/:id', requirePlatformOwner, async (req, res) => {
 router.post('/workspaces/:id/logo', requirePlatformOwner, upload.single('logo'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
+    if (!req.file.mimetype.startsWith('image/')) return res.status(400).json({ success: false, error: 'Logo must be an image' });
     const id = parseInt(req.params.id, 10);
     const existing = await pool.query('SELECT logo_r2_key FROM labels WHERE id = $1', [id]);
     if (!existing.rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
-    const safe = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const key = `label-${id}/branding/logo-${Date.now()}-${safe}`;
-    await uploadFile(key, req.file.buffer, req.file.mimetype);
-    if (existing.rows[0].logo_r2_key) deleteFile(existing.rows[0].logo_r2_key).catch(() => {});
-    await pool.query('UPDATE labels SET logo_r2_key = $1 WHERE id = $2', [key, id]);
-    const logo_url = await getSignedFileUrl(key, 6 * 3600).catch(() => null);
-    res.json({ success: true, data: { logo_url } });
+    const oldKey = existing.rows[0].logo_r2_key;
+
+    if (isConfigured()) {
+      try {
+        const safe = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const key = `label-${id}/branding/logo-${Date.now()}-${safe}`;
+        await uploadFile(key, req.file.buffer, req.file.mimetype);
+        if (oldKey) deleteFile(oldKey).catch(() => {});
+        await pool.query('UPDATE labels SET logo_r2_key = $1, logo_data = NULL WHERE id = $2', [key, id]);
+        return res.json({ success: true, data: { logo_url: await getSignedFileUrl(key, 6 * 3600).catch(() => null) } });
+      } catch (e) {
+        console.error('R2 workspace logo upload failed, falling back to inline:', e.message);
+      }
+    }
+    if (req.file.buffer.length > 512 * 1024) {
+      return res.status(400).json({ success: false, error: 'Logo must be under 512 KB (larger files need object storage to be configured).' });
+    }
+    const dataUrl = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+    if (oldKey) deleteFile(oldKey).catch(() => {});
+    await pool.query('UPDATE labels SET logo_data = $1, logo_r2_key = NULL WHERE id = $2', [dataUrl, id]);
+    res.json({ success: true, data: { logo_url: dataUrl } });
   } catch (error) {
     console.error('Workspace logo error:', error);
     res.status(500).json({ success: false, error: 'Upload failed' });
@@ -583,7 +601,7 @@ router.delete('/workspaces/:id/logo', requirePlatformOwner, async (req, res) => 
     const id = parseInt(req.params.id, 10);
     const { rows } = await pool.query('SELECT logo_r2_key FROM labels WHERE id = $1', [id]);
     if (!rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
-    await pool.query('UPDATE labels SET logo_r2_key = NULL WHERE id = $1', [id]);
+    await pool.query('UPDATE labels SET logo_r2_key = NULL, logo_data = NULL WHERE id = $1', [id]);
     if (rows[0].logo_r2_key) deleteFile(rows[0].logo_r2_key).catch(() => {});
     res.json({ success: true });
   } catch (error) {

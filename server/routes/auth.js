@@ -195,7 +195,7 @@ router.get('/me', authMiddleware, async (req, res) => {
       `SELECT u.id, u.label_id, u.name, u.email, u.role, u.department, u.hierarchy_level,
               u.is_platform_admin, u.platform_role, u.created_at,
               l.name AS label_name, l.slug AS label_slug,
-              l.accent_color AS label_accent_color, l.logo_r2_key,
+              l.accent_color AS label_accent_color, l.logo_r2_key, l.logo_data AS label_logo_data,
               l.vendor_form_token AS label_vendor_form_token,
               COALESCE(l.settings, '{}'::jsonb) AS label_settings
        FROM users u JOIN labels l ON l.id = u.label_id
@@ -209,11 +209,12 @@ router.get('/me', authMiddleware, async (req, res) => {
     // Resolve a signed URL for the workspace logo, then drop the raw key.
     const me = result.rows[0];
     if (me.logo_r2_key) {
-      try { me.label_logo_url = await getSignedFileUrl(me.logo_r2_key, 6 * 3600); } catch { me.label_logo_url = null; }
+      try { me.label_logo_url = await getSignedFileUrl(me.logo_r2_key, 6 * 3600); } catch { me.label_logo_url = me.label_logo_data || null; }
     } else {
-      me.label_logo_url = null;
+      me.label_logo_url = me.label_logo_data || null;
     }
     delete me.logo_r2_key;
+    delete me.label_logo_data;
 
     const permsResult = await pool.query(
       'SELECT page FROM user_page_permissions WHERE user_id = $1 AND label_id = $2 ORDER BY page',

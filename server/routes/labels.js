@@ -4,7 +4,7 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
-const { uploadFile, getSignedFileUrl, deleteFile } = require('../lib/r2');
+const { uploadFile, getSignedFileUrl, deleteFile, isConfigured } = require('../lib/r2');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -22,7 +22,7 @@ async function logoUrl(r2Key) {
 router.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id, name, slug, accent_color, logo_r2_key, invoice_settings, vendor_form_token, created_at,
+      `SELECT id, name, slug, accent_color, logo_r2_key, logo_data, invoice_settings, vendor_form_token, created_at,
               COALESCE(settings, '{}'::jsonb) AS settings,
               (SELECT COUNT(*) FROM users WHERE label_id = labels.id) AS member_count
        FROM labels WHERE id = $1`,
@@ -30,8 +30,9 @@ router.get('/', async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
     const label = rows[0];
-    label.logo_url = await logoUrl(label.logo_r2_key);
+    label.logo_url = label.logo_r2_key ? await logoUrl(label.logo_r2_key) : (label.logo_data || null);
     delete label.logo_r2_key;
+    delete label.logo_data;
     res.json({ success: true, data: label });
   } catch (error) {
     console.error('Get label error:', error);
@@ -97,23 +98,43 @@ router.post('/vendor-form-token/rotate', requireAdmin, async (req, res) => {
   }
 });
 
-// POST /api/label/logo — upload/replace the workspace logo (admin only)
+// POST /api/label/logo — upload/replace the workspace logo (admin only).
+// Uses R2 when configured; otherwise falls back to storing a small logo inline
+// as a data: URL so branding works without object storage.
 router.post('/logo', requireAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
     if (!req.file.mimetype.startsWith('image/')) {
       return res.status(400).json({ success: false, error: 'Logo must be an image' });
     }
-
     const { rows: existing } = await pool.query('SELECT logo_r2_key FROM labels WHERE id = $1', [req.labelId]);
-    const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const key = `label-${req.labelId}/branding/logo-${Date.now()}-${safeName}`;
-    await uploadFile(key, req.file.buffer, req.file.mimetype);
-    if (existing[0]?.logo_r2_key) deleteFile(existing[0].logo_r2_key).catch(() => {});
+    const oldKey = existing[0]?.logo_r2_key;
 
-    await pool.query('UPDATE labels SET logo_r2_key = $1 WHERE id = $2', [key, req.labelId]);
+    // Preferred path: object storage.
+    if (isConfigured()) {
+      try {
+        const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const key = `label-${req.labelId}/branding/logo-${Date.now()}-${safeName}`;
+        await uploadFile(key, req.file.buffer, req.file.mimetype);
+        if (oldKey) deleteFile(oldKey).catch(() => {});
+        await pool.query('UPDATE labels SET logo_r2_key = $1, logo_data = NULL WHERE id = $2', [key, req.labelId]);
+        await logActivity(req, 'Updated workspace logo', null);
+        return res.json({ success: true, data: { logo_url: await logoUrl(key) } });
+      } catch (e) {
+        console.error('R2 logo upload failed, falling back to inline:', e.message);
+        // fall through to inline
+      }
+    }
+
+    // Inline fallback — keep it small (rows + /auth/me payload).
+    if (req.file.buffer.length > 512 * 1024) {
+      return res.status(400).json({ success: false, error: 'Logo must be under 512 KB (larger files need object storage to be configured).' });
+    }
+    const dataUrl = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+    if (oldKey) deleteFile(oldKey).catch(() => {});
+    await pool.query('UPDATE labels SET logo_data = $1, logo_r2_key = NULL WHERE id = $2', [dataUrl, req.labelId]);
     await logActivity(req, 'Updated workspace logo', null);
-    res.json({ success: true, data: { logo_url: await logoUrl(key) } });
+    res.json({ success: true, data: { logo_url: dataUrl } });
   } catch (error) {
     console.error('Logo upload error:', error);
     res.status(500).json({ success: false, error: 'Logo upload failed' });
@@ -125,7 +146,7 @@ router.delete('/logo', requireAdmin, async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT logo_r2_key FROM labels WHERE id = $1', [req.labelId]);
     if (rows[0]?.logo_r2_key) deleteFile(rows[0].logo_r2_key).catch(() => {});
-    await pool.query('UPDATE labels SET logo_r2_key = NULL WHERE id = $1', [req.labelId]);
+    await pool.query('UPDATE labels SET logo_r2_key = NULL, logo_data = NULL WHERE id = $1', [req.labelId]);
     res.json({ success: true });
   } catch (error) {
     console.error('Logo delete error:', error);

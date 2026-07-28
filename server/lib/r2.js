@@ -80,4 +80,10 @@ async function deleteFile(key) {
   }
 }
 
-module.exports = { uploadFile, getSignedFileUrl, downloadFile, loadFileBase64, loadFileBuffer, deleteFile };
+// True only when all R2 credentials are present. Callers can fall back to an
+// inline/DB path when this is false so features degrade gracefully.
+function isConfigured() {
+  return !!(process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY && process.env.R2_BUCKET_NAME);
+}
+
+module.exports = { uploadFile, getSignedFileUrl, downloadFile, loadFileBase64, loadFileBuffer, deleteFile, isConfigured };
