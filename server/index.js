@@ -1336,6 +1336,11 @@ const autoBootstrap = async () => {
 // ── Boot ────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`Cadence API listening on :${PORT} (${process.env.NODE_ENV || 'development'})`);
+  try {
+    const r2 = require('./lib/r2');
+    console.log('R2 storage:', r2.isConfigured() ? 'configured ✓' : 'NOT configured (using inline fallback)', JSON.stringify(r2.configReport()));
+    console.log('AI (Claude):', require('./lib/claude').isEnabled() ? 'configured ✓' : 'NOT configured');
+  } catch (e) { /* diagnostics only */ }
   runMigrations()
     .then(autoBootstrap)
     .then(ensurePlatformHome)
