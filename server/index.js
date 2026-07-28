@@ -1334,7 +1334,7 @@ const autoBootstrap = async () => {
 };
 
 // ── Boot ────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Cadence API listening on :${PORT} (${process.env.NODE_ENV || 'development'})`);
   try {
     const r2 = require('./lib/r2');
@@ -1348,3 +1348,14 @@ app.listen(PORT, () => {
     .then(() => require('./lib/fxStamp').backfillPaidRows().catch(e => console.warn('fx backfill:', e.message)))
     .catch(err => console.error('Migration error:', err.message));
 });
+
+// Graceful shutdown — Railway sends SIGTERM to retire an old container during a
+// rolling deploy. Exit cleanly (code 0) so it doesn't surface as an npm error.
+function shutdown(signal) {
+  console.log(`${signal} received — shutting down gracefully.`);
+  server.close(() => process.exit(0));
+  // Don't hang forever if a connection is slow to drain.
+  setTimeout(() => process.exit(0), 8000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
