@@ -953,6 +953,25 @@ router.post('/operators', requirePlatformOwner, async (req, res) => {
   }
 });
 
+// PATCH /api/platform/operators/:email — rename an operator across all of their
+// rows (home + per-label ghosts share an email).
+router.patch('/operators/:email', requirePlatformOwner, async (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email).toLowerCase();
+    const name = String(req.body.name || '').trim();
+    if (!name) return res.status(400).json({ success: false, error: 'Name cannot be empty' });
+    const { rowCount } = await pool.query(
+      'UPDATE users SET name = $1 WHERE LOWER(email) = $2 AND is_platform_admin = TRUE',
+      [name.slice(0, 120), email]
+    );
+    if (!rowCount) return res.status(404).json({ success: false, error: 'Operator not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Rename operator error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // DELETE /api/platform/operators/:email — revoke a Workspace Admin entirely
 // (home row + all ghost rows). Owners can't be revoked here.
 router.delete('/operators/:email', requirePlatformOwner, async (req, res) => {

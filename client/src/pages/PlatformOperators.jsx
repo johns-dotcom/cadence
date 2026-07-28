@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2, ShieldCheck, Copy, Check, Mail, Send, SlidersHorizontal, X } from 'lucide-react'
+import { Plus, Trash2, ShieldCheck, Copy, Check, Mail, Send, SlidersHorizontal, X, Pencil } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
@@ -57,6 +57,15 @@ export default function PlatformOperators() {
   const copyInvite = (link) => navigator.clipboard.writeText(link).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
 
   const [accessOp, setAccessOp] = useState(null)
+  const [renameEmail, setRenameEmail] = useState(null)
+  const [renameVal, setRenameVal] = useState('')
+
+  const startRename = (op) => { setRenameEmail(op.email); setRenameVal(op.name || '') }
+  const saveRename = async () => {
+    if (!renameVal.trim()) { toast('Name cannot be empty', 'error'); return }
+    try { await api.patch(`/platform/operators/${encodeURIComponent(renameEmail)}`, { name: renameVal.trim() }); setRenameEmail(null); toast('Name updated'); load() }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
 
   return (
     <div>
@@ -113,11 +122,20 @@ export default function PlatformOperators() {
                         <span className={`text-xs font-bold ${op.platform_role === 'owner' ? 'text-white' : 'text-gray-500'}`}>{(op.name || op.email)?.charAt(0)?.toUpperCase()}</span>
                       </div>
                       <div className="min-w-0">
-                        <p className="font-medium text-ink flex items-center gap-2">
-                          {op.name}
-                          {op.pending && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">Invite pending</span>}
-                          {op.email === user?.email && <span className="text-[10px] text-gray-400">(you)</span>}
-                        </p>
+                        {renameEmail === op.email ? (
+                          <div className="flex items-center gap-1.5">
+                            <input autoFocus value={renameVal} onChange={e => setRenameVal(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') saveRename(); if (e.key === 'Escape') setRenameEmail(null) }} className="input !py-1 text-sm !w-48" />
+                            <button onClick={saveRename} className="text-emerald-600 hover:text-emerald-700" title="Save"><Check size={15} /></button>
+                            <button onClick={() => setRenameEmail(null)} className="text-gray-300 hover:text-gray-500" title="Cancel"><X size={15} /></button>
+                          </div>
+                        ) : (
+                          <p className="font-medium text-ink flex items-center gap-2 group">
+                            {op.name}
+                            <button onClick={() => startRename(op)} className="text-gray-300 hover:text-brand-600 opacity-0 group-hover:opacity-100 transition" title="Rename"><Pencil size={12} /></button>
+                            {op.pending && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">Invite pending</span>}
+                            {op.email === user?.email && <span className="text-[10px] text-gray-400">(you)</span>}
+                          </p>
+                        )}
                         <p className="text-xs text-gray-400">{op.email}</p>
                       </div>
                     </div>
