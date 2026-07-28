@@ -155,7 +155,7 @@ export default function VendorSubmit() {
       <div className="max-w-2xl mx-auto">
         <div className="text-center mb-6">
           <div className="inline-flex items-center gap-2.5 mb-2">
-            {ctx.logo_url ? <img src={ctx.logo_url} alt="" className="w-10 h-10 rounded-xl object-cover bg-gray-100" />
+            {ctx.logo_url ? <img src={ctx.logo_url} alt="" className="w-10 h-10 rounded-xl object-contain bg-gray-100 p-0.5" />
               : <div className="w-10 h-10 bg-brand-600 rounded-xl flex items-center justify-center"><span className="text-white font-bold">{ctx.name?.charAt(0)?.toUpperCase()}</span></div>}
             <span className="text-2xl font-bold text-ink tracking-tight">{ctx.name}</span>
           </div>

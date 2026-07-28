@@ -191,7 +191,7 @@ export default function Settings() {
                 <label className="label">Logo</label>
                 <div className="flex items-center gap-3">
                   {logoUrl ? (
-                    <img src={logoUrl} alt="Logo" className="w-12 h-12 rounded-lg object-cover bg-gray-100 border border-rule" />
+                    <img src={logoUrl} alt="Logo" className="w-12 h-12 rounded-lg object-contain bg-gray-100 border border-rule p-0.5" />
                   ) : (
                     <div className="w-12 h-12 rounded-lg bg-brand-600 flex items-center justify-center">
                       <span className="text-white font-bold">{labelName?.charAt(0)?.toUpperCase() || 'C'}</span>
@@ -205,7 +205,7 @@ export default function Settings() {
                     <button type="button" onClick={removeLogo} className="text-gray-400 hover:text-danger" title="Remove logo"><Trash2 size={16} /></button>
                   )}
                 </div>
-                <p className="text-xs text-gray-400 mt-1">Square image works best. Requires object storage (R2) to be configured.</p>
+                <p className="text-xs text-gray-400 mt-1">Any shape works — a square image looks best. Keep it under 512 KB.</p>
               </div>
 
               {/* Accent color */}

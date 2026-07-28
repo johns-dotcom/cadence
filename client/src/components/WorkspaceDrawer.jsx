@@ -162,7 +162,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
             {/* Header */}
             <div className="flex items-start gap-3 px-5 py-4 border-b border-divider">
               {data.label.logo_url ? (
-                <img src={data.label.logo_url} alt="" className="w-12 h-12 rounded-xl object-cover bg-gray-100 flex-shrink-0" />
+                <img src={data.label.logo_url} alt="" className="w-12 h-12 rounded-xl object-contain bg-gray-100 flex-shrink-0 p-0.5" />
               ) : (
                 <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: data.label.accent_color || '#4F46E5' }}>
                   <span className="text-white font-bold text-lg">{data.label.name?.charAt(0)?.toUpperCase()}</span>

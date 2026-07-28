@@ -203,7 +203,7 @@ export default function Workspaces() {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       {w.logo_url ? (
-                        <img src={w.logo_url} alt="" className="w-9 h-9 rounded-xl object-cover bg-gray-100 flex-shrink-0 ring-1 ring-black/5" />
+                        <img src={w.logo_url} alt="" className="w-9 h-9 rounded-xl object-contain bg-gray-100 flex-shrink-0 ring-1 ring-black/5 p-0.5" />
                       ) : (
                         <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ring-1 ring-black/5" style={{ background: w.accent_color || '#4F46E5' }}>
                           <span className="text-white font-bold text-sm">{w.name?.charAt(0)?.toUpperCase()}</span>

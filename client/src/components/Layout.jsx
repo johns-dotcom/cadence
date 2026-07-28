@@ -304,7 +304,7 @@ export default function Layout() {
         <div className="h-16 flex items-center justify-between px-5 border-b border-divider">
           <div className="flex items-center gap-2.5 min-w-0">
             {label?.logo_url ? (
-              <img src={label.logo_url} alt="" className="w-8 h-8 rounded-lg object-cover flex-shrink-0 bg-gray-100" />
+              <img src={label.logo_url} alt="" className="w-8 h-8 rounded-lg object-contain flex-shrink-0 bg-gray-100" />
             ) : (
               <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center flex-shrink-0">
                 <span className="text-white font-bold text-sm">{label?.name?.charAt(0)?.toUpperCase() || 'C'}</span>
