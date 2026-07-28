@@ -62,9 +62,8 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
   const [operators, setOperators] = useState([])
   const [opOwnerId, setOpOwnerId] = useState('')
   useEffect(() => {
-    if (!isOwner) return
     api.get('/platform/operators').then(r => setOperators(r.data.data || [])).catch(() => {})
-  }, [isOwner])
+  }, [])
 
   const load = () => {
     setLoading(true)
@@ -238,8 +237,8 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
 
               {tab === 'members' && (
                 <div className="space-y-4">
-                  {/* Workspace owner — assign a console operator (owner-only) */}
-                  {isOwner && (
+                  {/* Workspace owner — assign a console operator (any operator) */}
+                  {(
                     <div className="card p-3">
                       <div className="flex items-center gap-1.5 mb-1.5"><Crown size={14} className="text-amber-500" /><h3 className="text-sm font-bold text-ink">Workspace owner</h3></div>
                       <p className="text-xs text-gray-500 mb-2">

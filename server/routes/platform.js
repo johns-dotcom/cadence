@@ -736,8 +736,8 @@ router.post('/workspaces/:id/members/:userId/make-owner', async (req, res) => {
 });
 
 // POST /workspaces/:id/owner — designate a CONSOLE OPERATOR as the workspace's
-// owner (or clear back to the member heuristic). Owner-only. body { operator_id }.
-router.post('/workspaces/:id/owner', requirePlatformOwner, async (req, res) => {
+// owner (or clear back to the member heuristic). Any operator. body { operator_id }.
+router.post('/workspaces/:id/owner', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const lbl = await pool.query('SELECT id, is_system FROM labels WHERE id = $1', [id]);
@@ -890,8 +890,10 @@ router.delete('/workspaces/:id', requirePlatformOwner, async (req, res) => {
 // membership is minted. Owners manage them here.
 
 // GET /api/platform/operators — list every operator (owner + workspace admins),
-// de-duplicated by email (an operator has one home row + ghost rows).
-router.get('/operators', requirePlatformOwner, async (req, res) => {
+// de-duplicated by email (an operator has one home row + ghost rows). Readable
+// by any operator (used by the workspace-owner picker); operator *management*
+// mutations remain owner-only.
+router.get('/operators', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT DISTINCT ON (LOWER(email)) id, email, name, platform_role,

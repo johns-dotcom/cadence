@@ -239,31 +239,53 @@ function bkAudit(req, expenseId, action, detail) {
   ).catch(() => {});
 }
 
-// When a vendor submission carries a multi-artist allocation (artist_breakdown),
-// turn it into real ledger child splits on approval — the parent becomes the
-// container and each line becomes a child row (mirrors the manual /split flow).
-// No-op for a single line, a missing breakdown, or an already-split parent.
+// Expand a vendor allocation (artist_breakdown) into concrete child lines.
+// Each artist line becomes one child; socials WITH amounts become their own
+// child lines (honoring the vendor's per-social allocation), with any
+// unallocated remainder kept as the artist's own line so children always
+// reconcile to the artist amount (and thus the invoice total). Socials without
+// amounts are folded into the artist line's notes.
+function breakdownChildLines(bd) {
+  const out = [];
+  for (const line of (Array.isArray(bd) ? bd : [])) {
+    const lineAmt = parseFloat(line.amount) || 0;
+    const socials = Array.isArray(line.socials) ? line.socials.filter(s => s && s.handle) : [];
+    const withAmt = socials.filter(s => (parseFloat(s.amount) || 0) > 0);
+    const socialSum = withAmt.reduce((a, s) => a + (parseFloat(s.amount) || 0), 0);
+    if (withAmt.length && socialSum > 0) {
+      for (const s of withAmt) out.push({ artist: line.artist, song: line.song, amount: parseFloat(s.amount), social: s.handle });
+      const remainder = Math.round((lineAmt - socialSum) * 100) / 100;
+      if (remainder > 0.01) out.push({ artist: line.artist, song: line.song, amount: remainder, socialsNote: socials.filter(x => !(parseFloat(x.amount) > 0)).map(x => x.handle) });
+    } else if (lineAmt > 0) {
+      out.push({ artist: line.artist, song: line.song, amount: lineAmt, socialsNote: socials.map(s => s.handle) });
+    }
+  }
+  return out;
+}
+
+// Turn a vendor allocation into real ledger child splits on approval — the
+// parent becomes the container. No-op when it resolves to <2 lines, there's no
+// breakdown, or the parent is already split.
 async function applyBreakdownSplits(labelId, parent, actorName) {
-  const bd = Array.isArray(parent.artist_breakdown) ? parent.artist_breakdown : null;
-  if (!bd || bd.length < 2 || parent.parent_id) return 0;
+  if (parent.parent_id) return 0;
+  const children = breakdownChildLines(parent.artist_breakdown);
+  if (children.length < 2) return 0;
   const existing = await pool.query('SELECT 1 FROM expenses WHERE parent_id = $1 LIMIT 1', [parent.id]);
   if (existing.rows.length) return 0; // already split
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     let n = 0;
-    for (const line of bd) {
-      const amount = parseFloat(line.amount);
-      if (!amount || amount <= 0) continue;
-      const socials = Array.isArray(line.socials) ? line.socials.filter(s => s && s.handle) : [];
-      const socialNote = socials.length ? 'Socials: ' + socials.map(s => (s.amount ? `${s.handle} (${s.amount})` : s.handle)).join(', ') : '';
-      const notes = [parent.notes, socialNote].filter(Boolean).join(' · ') || null;
+    for (const c of children) {
+      const tag = c.social ? `Social: ${c.social}` : (c.socialsNote && c.socialsNote.length ? `Socials: ${c.socialsNote.join(', ')}` : '');
+      const notes = [parent.notes, tag].filter(Boolean).join(' · ') || null;
       await client.query(
         `INSERT INTO expenses (label_id, parent_id, invoice_date, payee, description, category, artist, song,
            invoice_number, amount, currency, payment_method, status, payment_status, is_reimbursement, recoupable, rep, notes, created_by, created_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'approved',$13,$14,$15,$16,$17,$18,NOW())`,
-        [labelId, parent.id, parent.invoice_date, parent.payee, parent.description, parent.category,
-         line.artist || parent.artist, (line.song || parent.song) || null, parent.invoice_number, amount, parent.currency,
+        [labelId, parent.id, parent.invoice_date, parent.payee, parent.description,
+         c.social ? 'Marketing' : parent.category,
+         c.artist || parent.artist, (c.song || parent.song) || null, parent.invoice_number, c.amount, parent.currency,
          parent.payment_method, parent.payment_status || 'Unpaid', parent.is_reimbursement, parent.recoupable, parent.rep, notes, actorName]
       );
       n++;
