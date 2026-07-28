@@ -6,7 +6,6 @@ import PlatformLayout from './components/PlatformLayout'
 import PlatformOverview from './pages/PlatformOverview'
 import PlatformActivity from './pages/PlatformActivity'
 import PlatformAnnouncements from './pages/PlatformAnnouncements'
-import PlatformBilling from './pages/PlatformBilling'
 import PlatformOperators from './pages/PlatformOperators'
 // Lazy — pulls recharts into its own chunk instead of the main bundle.
 const PlatformAnalytics = lazy(() => import('./pages/PlatformAnalytics'))
@@ -109,7 +108,6 @@ function AppContent() {
           <Route path="/"           element={<PlatformOverview />} />
           <Route path="/workspaces" element={<Workspaces />} />
           <Route path="/analytics"  element={<Suspense fallback={<p className="text-sm text-gray-400">Loading…</p>}><PlatformAnalytics /></Suspense>} />
-          <Route path="/billing"    element={<PlatformBilling />} />
           <Route path="/activity"   element={<PlatformActivity />} />
           <Route path="/announcements" element={<PlatformAnnouncements />} />
           {user?.platform_role === 'owner' && <Route path="/operators" element={<PlatformOperators />} />}

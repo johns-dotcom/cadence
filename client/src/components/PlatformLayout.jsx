@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Outlet, Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Building2, BarChart3, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users, ShieldCheck, Megaphone, CreditCard } from 'lucide-react'
+import { LayoutDashboard, Building2, BarChart3, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users, ShieldCheck, Megaphone } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
 import api from '../api'
@@ -13,7 +13,6 @@ const NAV = [
   { path: '/', label: 'Overview', icon: LayoutDashboard },
   { path: '/workspaces', label: 'Workspaces', icon: Building2 },
   { path: '/analytics', label: 'Analytics', icon: BarChart3 },
-  { path: '/billing', label: 'Billing', icon: CreditCard },
   { path: '/activity', label: 'Activity', icon: ScrollText },
   { path: '/announcements', label: 'Announcements', icon: Megaphone },
   { path: '/operators', label: 'Operators', icon: Users, ownerOnly: true },
@@ -23,7 +22,6 @@ const META = {
   '/': { title: 'Overview', sub: 'Everything across the platform at a glance' },
   '/workspaces': { title: 'Workspaces', sub: 'Provision, monitor and manage label accounts' },
   '/analytics': { title: 'Analytics', sub: 'Growth and engagement across tenants' },
-  '/billing': { title: 'Billing & plans', sub: 'Revenue and per-workspace subscriptions' },
   '/activity': { title: 'Activity', sub: 'Cross-tenant audit feed' },
   '/announcements': { title: 'Announcements', sub: 'Broadcast banners to workspaces' },
   '/operators': { title: 'Operators', sub: 'Platform administrators' },
