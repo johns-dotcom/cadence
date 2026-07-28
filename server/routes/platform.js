@@ -200,6 +200,29 @@ router.get('/activity', async (req, res) => {
   }
 });
 
+// GET /api/platform/enter-sessions — recent operator enter-workspace events.
+// Optional ?label_id, ?limit (default 100, max 300).
+router.get('/enter-sessions', async (req, res) => {
+  try {
+    const params = [];
+    let where = '1=1';
+    if (req.query.label_id) { params.push(parseInt(req.query.label_id, 10)); where += ` AND os.label_id = $${params.length}`; }
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 300);
+    params.push(limit);
+    const { rows } = await pool.query(
+      `SELECT os.id, os.operator_name, os.operator_email, os.ip_address, os.created_at, l.name AS workspace, l.id AS label_id
+         FROM operator_sessions os LEFT JOIN labels l ON l.id = os.label_id
+        WHERE ${where}
+        ORDER BY os.created_at DESC LIMIT $${params.length}`,
+      params
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Enter sessions error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // GET /api/platform/analytics — growth over time + top workspaces by activity.
 router.get('/analytics', async (req, res) => {
   try {
@@ -358,6 +381,13 @@ router.post('/workspaces/:labelId/enter', async (req, res) => {
       `INSERT INTO activity_log (label_id, user_id, action, detail, method, endpoint, created_at)
        VALUES ($1, $2, $3, $4, 'POST', $5, NOW())`,
       [labelId, target.id, 'Workspace entered by platform admin', req.user.email, req.originalUrl?.split('?')[0] || null]
+    ).catch(() => {});
+
+    // Platform-level enter-session audit (attributed to the REAL operator id).
+    pool.query(
+      `INSERT INTO operator_sessions (operator_id, operator_email, operator_name, label_id, ip_address)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [req.user.id, req.user.email, req.user.name || null, labelId, req.ip || req.headers['x-forwarded-for'] || null]
     ).catch(() => {});
 
     const token = signToken(target, '2h');

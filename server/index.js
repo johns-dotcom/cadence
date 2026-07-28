@@ -774,6 +774,22 @@ const runMigrations = async () => {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_mentions_unread ON user_mentions (mentioned_user_id, read_at)`);
 
+  // Operator enter-workspace sessions — a platform-level audit of every time an
+  // operator dropped into a tenant. Attributed to the operator's REAL user id
+  // (not the per-label ghost membership) so it survives ghost churn.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS operator_sessions (
+      id SERIAL PRIMARY KEY,
+      operator_id INT REFERENCES users(id) ON DELETE SET NULL,
+      operator_email VARCHAR(255),
+      operator_name VARCHAR(255),
+      label_id INT REFERENCES labels(id) ON DELETE CASCADE,
+      ip_address VARCHAR(100),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_operator_sessions_recent ON operator_sessions (created_at DESC)`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_page_permissions (
       id SERIAL PRIMARY KEY,
