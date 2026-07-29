@@ -5,6 +5,7 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const rt = require('../lib/realtime');
 const { recordMentions } = require('../lib/mentions');
+const { ensureActivityChannel } = require('../lib/activityBot');
 const { uploadFile, getSignedFileUrl, loadFileBuffer, deleteFile, isConfigured } = require('../lib/r2');
 
 const router = express.Router();
@@ -31,6 +32,7 @@ async function membership(channelId, userId, labelId) {
 // Shape a message row with author, reactions, and thread reply count.
 const MSG_SELECT = `
   SELECT m.id, m.channel_id, m.body, m.user_id, m.thread_root_id, m.edited_at, m.created_at,
+         m.is_system, m.meta,
          u.name AS author_name,
          (SELECT COUNT(*)::int FROM chat_messages r WHERE r.thread_root_id = m.id AND r.deleted = false) AS reply_count,
          COALESCE((
@@ -77,6 +79,16 @@ router.get('/channels', async (req, res) => {
        ON CONFLICT (channel_id, user_id) DO NOTHING`,
       [lid, generalId, uid]
     );
+
+    // Ensure the #activity feed exists + this user is a member (covers new hires
+    // added after the channel was first created).
+    try {
+      const activityId = await ensureActivityChannel(lid);
+      await pool.query(
+        `INSERT INTO chat_members (label_id, channel_id, user_id) VALUES ($1, $2, $3) ON CONFLICT (channel_id, user_id) DO NOTHING`,
+        [lid, activityId, uid]
+      );
+    } catch { /* non-fatal */ }
 
     const { rows } = await pool.query(
       `SELECT c.id, c.name, c.topic, c.type, c.is_private, c.created_by, c.created_at,
@@ -474,6 +486,18 @@ router.get('/attachments/:id', async (req, res) => {
     console.error('chat attachment:', err.message);
     res.status(500).send('Error');
   }
+});
+
+// POST /api/chat/channels/:id/mute — mute/unmute (muted channels don't count
+// toward the nav unread badge). { muted }
+router.post('/channels/:id/mute', async (req, res) => {
+  try {
+    await pool.query(
+      `UPDATE chat_members SET muted = $1 WHERE channel_id = $2 AND user_id = $3 AND label_id = $4`,
+      [!!req.body.muted, req.params.id, req.user.id, req.labelId]
+    );
+    res.json({ success: true, data: { muted: !!req.body.muted } });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 
 // GET /api/chat/unread — total unread across all the caller's channels (nav badge).

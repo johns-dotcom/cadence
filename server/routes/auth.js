@@ -309,6 +309,12 @@ router.post('/accept-invite', async (req, res) => {
     const fresh = updated.rows[0];
     const sessionToken = signToken(fresh);
     recordLogin(fresh, req, 'Invite acceptance');
+    if (!fresh.is_platform_admin) {
+      require('../lib/activityBot').postEvent(fresh.label_id, {
+        text: `👋 *${fresh.name}* joined the workspace${fresh.role ? ` as ${fresh.role}` : ''}`,
+        icon: 'user', link: '/team',
+      });
+    }
     res.json({ success: true, data: { token: sessionToken, user: publicUser(fresh) } });
   } catch (error) {
     console.error('Accept invite error:', error);

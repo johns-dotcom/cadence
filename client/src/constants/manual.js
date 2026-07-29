@@ -35,6 +35,7 @@ export const MANUAL_SECTIONS = [
       'Reply in a thread to keep side-conversations tidy, react with an emoji on hover, and edit or delete your own messages.',
       'Attach files or images with the paperclip — or just drag-and-drop or paste them into the composer. Images preview inline.',
       'Type @ to mention a teammate (pick from the popup); they get a notification in the bell. Use @channel or @here to ping everyone in the channel.',
+      'The #activity channel is an automatic feed of what\'s happening in Cadence — new invoices to approve, approvals, deal moves, new releases, new teammates. Each item deep-links to the record; mute it from the channel header (bell icon) if it\'s too chatty.',
       'Unread counts show next to each channel and on the Messages nav item; opening a channel marks it read.',
     ] },
   { path: '/add-invoice', group: 'Getting started', title: 'Add Invoice', depts: ['Finance', 'Operations', 'A&R', 'Marketing', 'Executive'],

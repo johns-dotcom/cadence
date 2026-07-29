@@ -1299,6 +1299,11 @@ const runMigrations = async () => {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_attachments_msg ON chat_attachments (message_id)`);
 
+  // Activity-stream bot: system messages authored by "Cadence" (user_id NULL),
+  // meta carries an icon + deep-link for the client to render.
+  await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS meta JSONB`);
+
   // Helpful indexes for the hot tenant-scoped lookups.
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_releases_label ON releases (label_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_artists_label ON artists (label_id)`);

@@ -7,6 +7,7 @@ const { upsertVendor } = require('../lib/vendors');
 const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
 const aiScan = require('../lib/aiScan');
 const claude = require('../lib/claude');
+const activityBot = require('../lib/activityBot');
 
 const router = express.Router();
 
@@ -303,6 +304,12 @@ router.post('/:slug/submit', submitLimiter, fileFields, async (req, res) => {
        VALUES ($1, 'Vendor submission received', $2, 'POST', $3, NOW())`,
       [labelId, `${vendorName} — ${invoiceNum}`, `/api/vendor/${label.slug}/submit`]
     ).catch(() => {});
+
+    // Activity-stream: a vendor invoice landed and needs approval.
+    activityBot.postEvent(labelId, {
+      text: `🧾 New invoice from *${vendorName}* · ${(b.currency || 'USD')} ${Number(amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })} — needs approval`,
+      icon: 'receipt', link: '/approvals',
+    });
 
     res.status(201).json({ success: true, data: { id: rows[0].id } });
   } catch (error) {

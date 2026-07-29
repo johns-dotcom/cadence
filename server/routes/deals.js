@@ -3,6 +3,7 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
+const activityBot = require('../lib/activityBot');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -61,6 +62,13 @@ router.patch('/:id', async (req, res) => {
     const keys = Object.keys(req.body).filter(k => UPDATABLE.includes(k));
     if (keys.length === 0) return res.status(400).json({ success: false, error: 'No updatable fields provided' });
 
+    // Note the prior stage so we only announce genuine stage moves.
+    let oldStage = null;
+    if (keys.includes('stage')) {
+      const cur = await pool.query('SELECT stage FROM deals WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId]);
+      oldStage = cur.rows[0]?.stage;
+    }
+
     const setClauses = keys.map((k, i) => `${k} = $${i + 1}`);
     const values = keys.map(k => req.body[k]);
     values.push(parseInt(req.params.id, 10), req.labelId);
@@ -71,6 +79,13 @@ router.patch('/:id', async (req, res) => {
       values
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Deal not found' });
+    if (keys.includes('stage') && rows[0].stage && rows[0].stage !== oldStage) {
+      const signed = /sign|closed|won/i.test(rows[0].stage);
+      activityBot.postEvent(req.labelId, {
+        text: `${signed ? '🎉' : '🤝'} Deal *${rows[0].artist_name}* moved to *${rows[0].stage}*`,
+        icon: 'handshake', link: '/deals',
+      });
+    }
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Update deal error:', error);

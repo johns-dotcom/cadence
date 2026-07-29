@@ -14,9 +14,12 @@ const { stampFxRateAsync } = require('../lib/fxStamp');
 const { toUSD } = require('../lib/fx');
 const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
 const aiScan = require('../lib/aiScan');
+const activityBot = require('../lib/activityBot');
 const ExcelJS = require('exceljs');
 const XLSX = require('xlsx');
 const { buildZip, toCsv } = require('../lib/zip');
+
+const money = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
 
 // Canonical invoice-number key — shared with vendor-submit, bulk-zip, dup-check.
 const normInv = normalizeInvoiceNum;
@@ -341,6 +344,10 @@ router.post('/entries/:id/approve', async (req, res) => {
     const parts = await applyBreakdownSplits(req.labelId, rows[0], req.user.name);
     if (parts) { await logActivity(req, 'Applied vendor split on approve', `${rows[0].payee} → ${parts} artists`); bkAudit(req, rows[0].id, 'split', `auto-split into ${parts} artists on approve`); }
     if (req.body.notify !== false && rows[0].vendor_submitted) notifyVendor(req.labelId, rows[0], 'approved');
+    activityBot.postEvent(req.labelId, {
+      text: `✅ Invoice approved: *${rows[0].payee}* · ${money(rows[0].amount, rows[0].currency)} — by ${req.user.name}`,
+      icon: 'check', link: '/ledger',
+    });
     res.json({ success: true, data: { ...rows[0], split_parts: parts } });
   } catch (error) {
     console.error('Approve error:', error);
@@ -865,6 +872,13 @@ router.post('/bulk-approve', async (req, res) => {
       if (parts) bkAudit(req, r.id, 'split', `auto-split into ${parts} artists on approve`);
     }
     await logActivity(req, 'Bulk approved', `${rows.length} entries`);
+    if (rows.length) {
+      const sum = rows.reduce((a, r) => a + Number(r.amount || 0), 0);
+      activityBot.postEvent(req.labelId, {
+        text: `✅ ${rows.length} invoice${rows.length === 1 ? '' : 's'} approved (${money(sum, rows[0].currency)}) — by ${req.user.name}`,
+        icon: 'check', link: '/ledger',
+      });
+    }
     // Return the approved rows so the client can queue per-vendor emails.
     res.json({ success: true, data: { approved: rows.length, rows } });
   } catch (error) {

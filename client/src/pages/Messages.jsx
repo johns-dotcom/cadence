@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { Hash, Lock, Plus, Send, Smile, MessageSquare, X, Search, Users, Trash2, Pencil, ChevronLeft, Paperclip, FileText } from 'lucide-react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
+import { Hash, Lock, Plus, Send, Smile, MessageSquare, X, Search, Users, Trash2, Pencil, ChevronLeft, Paperclip, FileText, Zap, Bell, BellOff } from 'lucide-react'
 import api from '../api'
 import { useAuth } from '../context/AuthContext'
 import { useSocket } from '../context/SocketContext'
@@ -90,6 +90,14 @@ function renderMentions(text, myHandles) {
   return out
 }
 
+// System (bot) messages use lightweight *bold* markers.
+function renderSystemText(text) {
+  return String(text).split(/(\*[^*]+\*)/g).map((p, i) =>
+    p.startsWith('*') && p.endsWith('*') && p.length > 2
+      ? <strong key={i} className="font-semibold text-ink">{p.slice(1, -1)}</strong>
+      : p)
+}
+
 function Avatar({ name, online, size = 36 }) {
   return (
     <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
@@ -123,22 +131,30 @@ function ReactionChips({ reactions, myId, onToggle }) {
 function MessageRow({ m, prev, myId, myHandles, onReact, onReply, onEdit, onDelete, showThread = true }) {
   const [hover, setHover] = useState(false)
   const [picker, setPicker] = useState(false)
-  const grouped = prev && prev.user_id === m.user_id && (new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000) && !m.thread_root_id
+  const isSystem = m.is_system
+  const grouped = prev && prev.user_id === m.user_id && (new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000) && !m.thread_root_id && !isSystem
   const mine = Number(m.user_id) === Number(myId)
   return (
     <div className="relative group px-3 hover:bg-page/60" onMouseEnter={() => setHover(true)} onMouseLeave={() => { setHover(false); setPicker(false) }}>
       <div className="flex gap-3">
         {grouped ? <div className="w-9 flex-shrink-0 text-[10px] text-transparent group-hover:text-gray-400 text-right pt-1">{fmtTime(m.created_at).replace(/ ?[AP]M/, '')}</div>
+          : isSystem ? <div className="w-9 h-9 rounded-lg bg-violet-100 text-violet-600 flex items-center justify-center flex-shrink-0"><Zap size={18} /></div>
           : <Avatar name={m.author_name} />}
         <div className="min-w-0 flex-1">
           {!grouped && (
             <div className="flex items-baseline gap-2">
-              <span className="font-semibold text-ink text-sm">{m.author_name || 'Unknown'}</span>
+              <span className="font-semibold text-ink text-sm">{isSystem ? 'Cadence' : (m.author_name || 'Unknown')}</span>
+              {isSystem && <span className="text-[9px] font-bold uppercase tracking-wide bg-violet-100 text-violet-600 px-1 py-0.5 rounded">Bot</span>}
               <span className="text-[11px] text-gray-400">{fmtTime(m.created_at)}</span>
             </div>
           )}
           {m.deleted
             ? <p className="text-sm text-gray-400 italic">message deleted</p>
+            : isSystem
+            ? <p className="text-sm text-ink break-words">
+                {renderSystemText(m.body)}
+                {m.meta?.link && <Link to={m.meta.link} className="ml-2 text-brand-600 font-medium hover:underline whitespace-nowrap">View →</Link>}
+              </p>
             : <>
                 {m.body && <p className="text-sm text-ink whitespace-pre-wrap break-words">{renderMentions(m.body, myHandles)}{m.edited_at && <span className="text-[10px] text-gray-400 ml-1">(edited)</span>}</p>}
                 <Attachments items={m.attachments} />
@@ -380,6 +396,12 @@ export default function Messages() {
   const react = async (id, emoji) => {
     try { await api.post(`/chat/messages/${id}/react`, { emoji }) } catch { toast('Failed', 'error') }
   }
+  const toggleMute = async () => {
+    if (!active) return
+    const muted = !active.muted
+    setChannels(cs => cs.map(c => c.id === active.id ? { ...c, muted } : c))
+    try { await api.post(`/chat/channels/${active.id}/mute`, { muted }) } catch { toast('Failed', 'error') }
+  }
   const openThread = async (m) => {
     setThread(m); setThreadMsgs([])
     try { const { data } = await api.get(`/chat/channels/${activeId}/messages?thread=${m.id}`); setThreadMsgs(data.data || []) } catch { /* */ }
@@ -431,7 +453,12 @@ export default function Messages() {
                 <p className="font-bold text-ink truncate leading-tight">{active.display_name || active.name}</p>
                 {active.topic && <p className="text-xs text-gray-400 truncate">{active.topic}</p>}
               </div>
-              {active.type === 'channel' && <span className="ml-auto text-xs text-gray-400 flex items-center gap-1"><Users size={13} /> {active.members?.length || 0}</span>}
+              <div className="ml-auto flex items-center gap-3">
+                {active.type === 'channel' && <span className="text-xs text-gray-400 flex items-center gap-1"><Users size={13} /> {active.members?.length || 0}</span>}
+                <button onClick={toggleMute} title={active.muted ? 'Unmute (count in badge again)' : 'Mute (hide from unread badge)'} className={`${active.muted ? 'text-amber-500' : 'text-gray-400'} hover:text-brand-600`}>
+                  {active.muted ? <BellOff size={16} /> : <Bell size={16} />}
+                </button>
+              </div>
             </header>
 
             <div ref={scrollRef} className={`flex-1 overflow-y-auto relative ${dragOver ? 'ring-2 ring-brand-400 ring-inset' : ''}`}

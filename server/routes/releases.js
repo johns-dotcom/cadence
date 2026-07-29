@@ -4,6 +4,7 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { recordMentions } = require('../lib/mentions');
+const activityBot = require('../lib/activityBot');
 const spotify = require('../lib/spotify');
 
 const router = express.Router();
@@ -98,6 +99,15 @@ router.post('/', async (req, res) => {
       [req.labelId, artist_id || null, project_name.trim(), release_date || null, release_type || null, genre || null, status]
     );
     await logActivity(req, 'Created release', project_name.trim());
+    let artistName = null;
+    if (rows[0].artist_id) {
+      const a = await pool.query('SELECT name FROM artists WHERE id = $1 AND label_id = $2', [rows[0].artist_id, req.labelId]).catch(() => null);
+      artistName = a?.rows[0]?.name || null;
+    }
+    activityBot.postEvent(req.labelId, {
+      text: `💿 New release added: ${artistName ? `*${artistName}* — ` : ''}*${rows[0].project_name}*`,
+      icon: 'disc', link: `/releases/${rows[0].id}`,
+    });
     res.status(201).json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Create release error:', error);

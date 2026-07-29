@@ -96,9 +96,18 @@ notify all channel members; server emits a live `mention` socket event and
 `NotificationBell` refreshes on it (no waiting for the 2-min poll); client
 highlights @mentions in rendered messages (stronger highlight when it's you)
 and offers an `@`-autocomplete popup in the composer (first-name handle if
-unique, else flattened full name). Follow-ups (not built): object-anchored
-threads (release/deal/invoice), external-guest channels, native activity-stream
-bot, huddles, Slack import, message search.
+unique, else flattened full name). **Activity-stream bot** ✅ — `lib/activityBot.js`
+`postEvent(labelId,{text,icon,link})` posts a system message (chat_messages
+`is_system`+`meta` cols, `user_id` NULL) to a per-workspace `#activity` channel
+(auto-created + all members added, ensured on GET /channels) and broadcasts it
+live. Wired events: vendor submission → needs-approval (vendor.js), invoice
+approved + bulk-approved (ledger.js), deal stage change incl. 🎉 on signed
+(deals.js), new release added (releases.js), new teammate joined (auth.js
+accept-invite). Client renders bot messages with a violet Zap avatar + "Cadence
+· Bot" + `*bold*` + a "View →" deep-link; per-channel **mute** toggle
+(`chat_members.muted`, `POST /channels/:id/mute`, excluded from the nav unread
+badge) in the channel header. Follow-ups (not built): object-anchored threads
+(release/deal/invoice), external-guest channels, huddles, Slack import, search.
 
 **Nothing spec-level remains.** Optional polish only: the `/manual` page, deeper
 mobile "lighter passes" on secondary pages, AI rate-limit buckets, MIME sniff on
