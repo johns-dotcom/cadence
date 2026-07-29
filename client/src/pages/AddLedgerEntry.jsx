@@ -5,6 +5,7 @@ import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Dropzone from '../components/Dropzone'
 import { useToast } from '../context/ToastContext'
+import { useAuth } from '../context/AuthContext'
 import { EXPENSE_CATEGORIES, PAYMENT_METHODS, CURRENCIES } from '../constants'
 
 const SOCIAL_PLATFORMS = ['Instagram', 'TikTok', 'YouTube', 'X/Twitter', 'Facebook', 'Spotify', 'Other']
@@ -18,7 +19,9 @@ const BLANK_SPLIT = () => ({ artist: '', song: '', amount: '', socials: [] })
 // entries are created approved (they don't route through Approvals).
 export default function AddLedgerEntry({ mode = 'invoice' }) {
   const { toast } = useToast()
+  const { user } = useAuth()
   const navigate = useNavigate()
+  const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
   const [isReimb, setIsReimb] = useState(mode === 'reimbursement')
   const [saving, setSaving] = useState(false)
   const [scanning, setScanning] = useState(false)
@@ -121,16 +124,17 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
       for (const key of ['invoice_file', 'w9_file', 'proof_file', 'receipt_file']) if (files[key]) fd.append(key, files[key])
 
       const { data } = await api.post('/ledger/entries', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
-      toast(data.data?.split_parts ? `Added & split across ${data.data.split_parts} lines` : (isReimb ? 'Reimbursement added' : 'Invoice added'))
-      navigate('/ledger')
+      if (data.data?.pending) toast('Submitted for approval — a bookkeeper will review it')
+      else toast(data.data?.split_parts ? `Added & split across ${data.data.split_parts} lines` : (isReimb ? 'Reimbursement added' : 'Invoice added'))
+      navigate(isApprover ? '/ledger' : '/')
     } catch (err) { toast(err.response?.data?.error || err.message || 'Failed to save', 'error') }
     finally { setSaving(false) }
   }
 
   return (
     <div className="max-w-3xl">
-      <button onClick={() => navigate('/ledger')} className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 mb-3"><ArrowLeft size={15} /> Ledger</button>
-      <PageHeader title={isReimb ? 'Add reimbursement' : 'Add invoice'} subtitle="Upload and parse an invoice, then review before saving" />
+      <button onClick={() => navigate(isApprover ? '/ledger' : '/')} className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 mb-3"><ArrowLeft size={15} /> {isApprover ? 'Ledger' : 'Back'}</button>
+      <PageHeader title={isReimb ? 'Add reimbursement' : 'Add invoice'} subtitle={isApprover ? 'Upload and parse an invoice, then review before saving' : 'Upload an invoice — it goes to your bookkeeper for approval'} />
 
       <form onSubmit={create} className="space-y-5">
         {/* Invoice upload */}

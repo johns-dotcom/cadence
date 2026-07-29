@@ -137,6 +137,7 @@ function AppContent() {
         <Route path="/artist-campaigns" element={<AdminRoute><ArtistCampaigns /></AdminRoute>} />
         <Route path="/approvals"    element={<AdminRoute><Approvals /></AdminRoute>} />
         <Route path="/ledger"       element={<AdminRoute><Ledger /></AdminRoute>} />
+        <Route path="/add-invoice"  element={<AddLedgerEntry mode="invoice" />} />
         <Route path="/ledger/new-invoice"       element={<AdminRoute><AddLedgerEntry mode="invoice" /></AdminRoute>} />
         <Route path="/ledger/new-reimbursement" element={<AdminRoute><AddLedgerEntry mode="reimbursement" /></AdminRoute>} />
         <Route path="/payments"     element={<AdminRoute><Payments /></AdminRoute>} />

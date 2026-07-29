@@ -27,6 +27,13 @@ export const MANUAL_SECTIONS = [
       'Move tasks across To do / In progress / Done with the status dropdown on each card.',
       'The "Waiting on you" rail surfaces overdue tasks, pending approvals, and campaigns to review.',
     ] },
+  { path: '/add-invoice', group: 'Getting started', title: 'Add Invoice', depts: ['Finance', 'Operations', 'A&R', 'Marketing', 'Executive'],
+    summary: 'Upload an invoice or reimbursement for the books — anyone on the team can submit one.',
+    steps: [
+      'Drop the invoice file in and the details auto-parse; review and fill the rest.',
+      'Optionally split the amount across artists and attach socials (with amounts).',
+      'Submit — finance staff post it straight to the ledger; everyone else\'s goes to Approvals for review.',
+    ] },
   { path: '/calendar', group: 'Getting started', title: 'Calendar', depts: ['Operations', 'Marketing'],
     summary: 'A month view of releases, meetings, and deadlines across the workspace.',
     steps: ['Filter by event type using the legend toggles.', 'Click a day to add a manual event.'] },

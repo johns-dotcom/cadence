@@ -40,9 +40,6 @@ async function notifyVendor(labelId, entry, kind, extra = {}) {
 const router = express.Router();
 router.use(authMiddleware, withTenant);
 
-// The ledger handles money out — finance surface, so Approver+ only.
-router.use(requireApprover);
-
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const fileFields = upload.fields([
   { name: 'invoice_file', maxCount: 1 },
@@ -50,6 +47,14 @@ const fileFields = upload.fields([
   { name: 'receipt_file', maxCount: 1 },
   { name: 'proof_file', maxCount: 1 },
 ]);
+
+// Creating an entry is open to ANY workspace member (the Add Invoice page):
+// approvers create it approved (straight to the ledger); everyone else creates
+// it pending so it routes through Approvals. Registered before the gate below.
+router.post('/entries', fileFields, createEntry);
+
+// Everything else on the ledger handles money out — finance surface, Approver+.
+router.use(requireApprover);
 
 // Map a multipart file → R2 and return { filename, r2_key }. Tenant-namespaced.
 async function storeFile(labelId, file, kind) {
@@ -123,26 +128,30 @@ router.get('/pending-count', async (req, res) => {
   }
 });
 
-// POST /api/ledger/entries — create an entry (optionally with files). Staff-
-// created entries default to approved; vendor submissions come in as pending
-// through the public route.
-router.post('/entries', fileFields, async (req, res) => {
+// Create an entry (optionally with files). Approvers create approved (into the
+// ledger); other members create pending → Approvals. Vendor submissions come
+// in as pending through the public route.
+async function createEntry(req, res) {
   try {
     const b = req.body;
     if (!b.payee || !b.amount) {
       return res.status(400).json({ success: false, error: 'Payee and amount are required' });
     }
+    const canApprove = ['Superadmin', 'Admin', 'Approver'].includes(req.user.role);
 
     const files = {};
     for (const [field, kind] of [['invoice_file', 'invoice'], ['w9_file', 'w9'], ['receipt_file', 'receipt']]) {
       const f = req.files?.[field]?.[0];
       if (f) files[kind] = await storeFile(req.labelId, f, kind);
     }
-    // Proof of payment → store (in the receipt slot if free) and auto-mark paid.
+    // Proof of payment → store (in the receipt slot if free) and auto-mark paid
+    // — but only approvers can mark something paid on creation.
     const proofF = req.files?.proof_file?.[0];
     if (proofF) { if (!files.receipt) files.receipt = await storeFile(req.labelId, proofF, 'proof'); }
-    const paymentStatus = proofF ? 'Paid' : b.payment_status;
-    const paymentDate = proofF ? (b.payment_date || new Date().toISOString().slice(0, 10)) : (b.payment_date || null);
+    const markPaid = proofF && canApprove;
+    const status = canApprove ? (b.status || 'approved') : 'pending';
+    const paymentStatus = markPaid ? 'Paid' : (b.payment_status || 'Unpaid');
+    const paymentDate = markPaid ? (b.payment_date || new Date().toISOString().slice(0, 10)) : (b.payment_date || null);
 
     const { rows } = await pool.query(
       `INSERT INTO expenses (
@@ -159,7 +168,7 @@ router.post('/entries', fileFields, async (req, res) => {
       [
         req.labelId, b.invoice_date || null, b.payee, b.description || null, b.category || null,
         b.artist || null, b.song || null, b.invoice_number || null, b.amount, b.currency,
-        b.payment_method || null, paymentDate, b.status, paymentStatus,
+        b.payment_method || null, paymentDate, status, paymentStatus,
         b.is_reimbursement === 'true' || b.is_reimbursement === true,
         b.recoupable === undefined ? true : (b.recoupable === 'true' || b.recoupable === true),
         b.rep || null, b.notes || null,
@@ -176,25 +185,25 @@ router.post('/entries', fileFields, async (req, res) => {
       w9_r2_key: files.w9?.key || null, w9_filename: files.w9?.filename || null,
     }).catch(() => {});
 
-    // Optional multi-artist / social allocation → store + apply as splits now
-    // (staff entries are created approved, so the children are approved too).
+    // Multi-artist / social allocation → store it, and apply as splits NOW only
+    // if this entry is already approved. Pending entries get split on approval.
     let splitParts = 0;
     try {
       const arr = JSON.parse(b.splits || '[]');
       if (Array.isArray(arr) && arr.length) {
         await pool.query('UPDATE expenses SET artist_breakdown = $1::jsonb WHERE id = $2 AND label_id = $3', [JSON.stringify(arr), rows[0].id, req.labelId]);
         rows[0].artist_breakdown = arr;
-        splitParts = await applyBreakdownSplits(req.labelId, rows[0], req.user.name);
+        if (rows[0].status === 'approved') splitParts = await applyBreakdownSplits(req.labelId, rows[0], req.user.name);
       }
     } catch { /* no/invalid split — single entry stands */ }
 
-    await logActivity(req, 'Added ledger entry', `${b.payee} — ${b.amount}`);
-    res.status(201).json({ success: true, data: { ...rows[0], split_parts: splitParts } });
+    await logActivity(req, status === 'approved' ? 'Added ledger entry' : 'Submitted invoice for approval', `${b.payee} — ${b.amount}`);
+    res.status(201).json({ success: true, data: { ...rows[0], split_parts: splitParts, pending: status !== 'approved' } });
   } catch (error) {
     console.error('Create ledger entry error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
-});
+}
 
 // PATCH /api/ledger/entries/:id — update + record field-level history.
 router.patch('/entries/:id', async (req, res) => {

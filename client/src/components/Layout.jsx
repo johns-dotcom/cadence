@@ -50,6 +50,7 @@ export const PAGE_LABELS = {
   '/payments':   'Payments',
   '/vendors':    'Vendors',
   '/invoices':   'Create Invoice',
+  '/add-invoice': 'Add Invoice',
   '/invoices/new': 'Create invoice',
   '/team':       'Team',
   '/activity':   'Activity',
@@ -223,6 +224,7 @@ export default function Layout() {
         { path: '/',         label: 'Dashboard', icon: LayoutDashboard },
         { path: '/my-work',  label: 'My Work',   icon: Briefcase },
         { path: '/calendar', label: 'Calendar',  icon: CalendarDays },
+        { path: '/add-invoice', label: 'Add Invoice', icon: Receipt },
       ],
     },
     {
