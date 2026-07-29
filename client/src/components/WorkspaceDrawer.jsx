@@ -61,6 +61,9 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
   // Console operators (for assigning one as workspace owner) — owner-only.
   const [operators, setOperators] = useState([])
   const [opOwnerId, setOpOwnerId] = useState('')
+  const [newOwner, setNewOwner] = useState({ name: '', email: '' })
+  const [ownerInvite, setOwnerInvite] = useState(null)
+  const [ownerInviteBusy, setOwnerInviteBusy] = useState(false)
   useEffect(() => {
     api.get('/platform/operators').then(r => setOperators(r.data.data || [])).catch(() => {})
   }, [])
@@ -149,6 +152,20 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
       toast('AI limit saved'); load(); onChanged?.()
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
     finally { setAiSaving(false) }
+  }
+
+  const inviteAsOwner = async () => {
+    if (!newOwner.name.trim() || !newOwner.email.trim()) { toast('Owner name and email are required', 'error'); return }
+    setOwnerInviteBusy(true)
+    try {
+      const { data } = await api.post(`/platform/workspaces/${workspaceId}/members`, { name: newOwner.name.trim(), email: newOwner.email.trim(), role: 'Superadmin' })
+      // Clear any operator-owner pointer so the invited Superadmin resolves as owner.
+      await api.post(`/platform/workspaces/${workspaceId}/owner`, { operator_id: null }).catch(() => {})
+      setOwnerInvite(data.data)
+      toast(data.data?.email_sent ? 'Owner invite emailed' : 'Owner invited — share the link')
+      setNewOwner({ name: '', email: '' }); load(); onChanged?.()
+    } catch (err) { toast(err.response?.data?.error || 'Failed to invite', 'error') }
+    finally { setOwnerInviteBusy(false) }
   }
 
   const setOperatorOwner = async (operatorId) => {
@@ -248,12 +265,21 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
                       </p>
                       <div className="flex items-center gap-2">
                         <select value={opOwnerId} onChange={e => setOpOwnerId(e.target.value)} className="input !py-1.5 text-sm">
-                          <option value="">Assign a console operator…</option>
-                          {operators.map(op => <option key={op.id} value={op.id}>{op.name}{op.platform_role === 'owner' ? ' (owner)' : ''} · {op.email}</option>)}
+                          <option value="">Assign an owner…</option>
+                          <option value="__new__">✉ Invite a new person…</option>
+                          {operators.length > 0 && <optgroup label="Console operators">{operators.map(op => <option key={op.id} value={op.id}>{op.name}{op.platform_role === 'owner' ? ' (owner)' : ''} · {op.email}</option>)}</optgroup>}
                         </select>
-                        <button onClick={() => opOwnerId && setOperatorOwner(Number(opOwnerId))} disabled={!opOwnerId} className="btn-primary !py-1.5 text-xs flex-shrink-0">Set</button>
+                        {opOwnerId !== '__new__' && <button onClick={() => opOwnerId && setOperatorOwner(Number(opOwnerId))} disabled={!opOwnerId} className="btn-primary !py-1.5 text-xs flex-shrink-0">Set</button>}
                       </div>
-                      {data.label.owner_user_id && <button onClick={() => setOperatorOwner(null)} className="text-[11px] text-gray-400 hover:text-gray-600 mt-1.5">Clear operator owner (revert to a member)</button>}
+                      {opOwnerId === '__new__' && (
+                        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <input className="input !py-1.5 text-sm" placeholder="Owner name" value={newOwner.name} onChange={e => setNewOwner(o => ({ ...o, name: e.target.value }))} />
+                          <input className="input !py-1.5 text-sm" placeholder="Owner email" value={newOwner.email} onChange={e => setNewOwner(o => ({ ...o, email: e.target.value }))} />
+                          <div className="sm:col-span-2 flex justify-end"><button onClick={inviteAsOwner} disabled={ownerInviteBusy} className="btn-primary !py-1.5 text-xs">{ownerInviteBusy ? 'Inviting…' : 'Invite as owner'}</button></div>
+                          {ownerInvite && <div className="sm:col-span-2 card p-2 bg-brand-50/40 border-brand-200 text-[11px]"><p className="font-medium text-ink">{ownerInvite.user.email}</p><p className="text-gray-500">{ownerInvite.email_sent ? 'Invite emailed.' : 'Email not configured — share this link:'}</p>{!ownerInvite.email_sent && <p className="font-mono text-[10px] text-gray-500 break-all">{ownerInvite.invite_link}</p>}</div>}
+                        </div>
+                      )}
+                      {data.label.owner_user_id && opOwnerId !== '__new__' && <button onClick={() => setOperatorOwner(null)} className="text-[11px] text-gray-400 hover:text-gray-600 mt-1.5">Clear operator owner (revert to a member)</button>}
                     </div>
                   )}
 
