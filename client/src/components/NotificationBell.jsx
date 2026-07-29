@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Bell, Music, FileText, CheckSquare, Receipt, AtSign } from 'lucide-react'
 import api from '../api'
+import { useSocket } from '../context/SocketContext'
 
 // Smart-alert bell. Polls /api/notifications (computed live, label-scoped) and
 // shows a badge + dropdown. Each alert deep-links to the relevant page.
@@ -18,6 +19,7 @@ export default function NotificationBell() {
   const [count, setCount] = useState(0)
   const ref = useRef(null)
   const navigate = useNavigate()
+  const { on: onSocket } = useSocket()
 
   const load = () => {
     api.get('/notifications')
@@ -30,6 +32,9 @@ export default function NotificationBell() {
     const t = setInterval(load, 120000) // refresh every 2 min
     return () => clearInterval(t)
   }, [])
+
+  // A chat @mention lands instantly — refresh the bell without waiting for the poll.
+  useEffect(() => onSocket('mention', () => load()), [onSocket])
 
   useEffect(() => {
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }

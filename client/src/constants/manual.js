@@ -34,6 +34,7 @@ export const MANUAL_SECTIONS = [
       'Start a direct message from the + next to Direct Messages; a green dot means someone is online now.',
       'Reply in a thread to keep side-conversations tidy, react with an emoji on hover, and edit or delete your own messages.',
       'Attach files or images with the paperclip — or just drag-and-drop or paste them into the composer. Images preview inline.',
+      'Type @ to mention a teammate (pick from the popup); they get a notification in the bell. Use @channel or @here to ping everyone in the channel.',
       'Unread counts show next to each channel and on the Messages nav item; opening a channel marks it read.',
     ] },
   { path: '/add-invoice', group: 'Getting started', title: 'Add Invoice', depts: ['Finance', 'Operations', 'A&R', 'Marketing', 'Executive'],

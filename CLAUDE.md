@@ -89,9 +89,16 @@ brand assets); send route is multipart (`upload.array('files',10)`, up to 25 MB,
 attachment-only messages allowed); `GET /api/chat/attachments/:id` streams
 (membership-gated, `?token=` auth, R2→signed redirect); client renders images
 inline + non-images as download chips, with paperclip + drag-drop + paste in
-both the main and thread composers. Follow-ups (not built): @mention
-notifications, object-anchored threads (release/deal/invoice), external-guest
-channels, native activity-stream bot, huddles, Slack import, message search.
+both the main and thread composers. **@mentions** ✅ — reuses `lib/mentions.js`
+`recordMentions` (source='chat', link=`/messages/:id`) so chat mentions land in
+the existing notification bell + mark-read; `@channel`/`@here`/`@everyone`
+notify all channel members; server emits a live `mention` socket event and
+`NotificationBell` refreshes on it (no waiting for the 2-min poll); client
+highlights @mentions in rendered messages (stronger highlight when it's you)
+and offers an `@`-autocomplete popup in the composer (first-name handle if
+unique, else flattened full name). Follow-ups (not built): object-anchored
+threads (release/deal/invoice), external-guest channels, native activity-stream
+bot, huddles, Slack import, message search.
 
 **Nothing spec-level remains.** Optional polish only: the `/manual` page, deeper
 mobile "lighter passes" on secondary pages, AI rate-limit buckets, MIME sniff on

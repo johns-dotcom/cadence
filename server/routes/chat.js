@@ -4,6 +4,7 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const rt = require('../lib/realtime');
+const { recordMentions } = require('../lib/mentions');
 const { uploadFile, getSignedFileUrl, loadFileBuffer, deleteFile, isConfigured } = require('../lib/r2');
 
 const router = express.Router();
@@ -332,6 +333,31 @@ router.post('/channels/:id/messages', upload.array('files', 10), async (req, res
     await pool.query(`UPDATE chat_members SET last_read_at = CURRENT_TIMESTAMP WHERE channel_id = $1 AND user_id = $2`, [req.params.id, req.user.id]);
 
     rt.emitToChannel(req.params.id, 'message:new', msg);
+
+    // @mentions → persist to the notification bell + push a live 'mention'
+    // signal. @channel / @here / @everyone notify all channel members.
+    if (body) {
+      try {
+        const link = `/messages/${req.params.id}`;
+        const named = await recordMentions({ labelId: req.labelId, actorId: req.user.id, body, source: 'chat', sourceId: Number(req.params.id), link });
+        const notify = new Set(named);
+        if (/@(channel|here|everyone)\b/i.test(body)) {
+          const mem = await pool.query(`SELECT user_id FROM chat_members WHERE channel_id = $1 AND user_id <> $2 AND label_id = $3`, [req.params.id, req.user.id, req.labelId]);
+          const snippet = body.slice(0, 240);
+          for (const r of mem.rows) {
+            if (notify.has(r.user_id)) continue;
+            await pool.query(
+              `INSERT INTO user_mentions (label_id, mentioned_user_id, actor_id, source, source_id, snippet, link)
+               VALUES ($1, $2, $3, 'chat', $4, $5, $6)`,
+              [req.labelId, r.user_id, req.user.id, Number(req.params.id), snippet, link]
+            );
+            notify.add(r.user_id);
+          }
+        }
+        notify.forEach(uid => rt.emitToUser(uid, 'mention', { channelId: Number(req.params.id) }));
+      } catch (e) { console.error('chat mentions:', e.message); }
+    }
+
     res.json({ success: true, data: msg });
   } catch (err) {
     console.error('send message:', err.message);

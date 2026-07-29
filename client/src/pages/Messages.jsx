@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Hash, Lock, Plus, Send, Smile, MessageSquare, X, Search, Users, Trash2, Pencil, ChevronLeft, Paperclip, FileText } from 'lucide-react'
 import api from '../api'
@@ -72,6 +72,23 @@ function dayLabel(ts) {
   return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
 }
 const initials = name => (name || '?').split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase()
+const MENTION_ALL = new Set(['channel', 'here', 'everyone'])
+
+// Render body text with @mentions highlighted; a mention of the current user
+// (or @channel/@here) gets a stronger highlight.
+function renderMentions(text, myHandles) {
+  const re = /@([\w][\w.'-]*)/g
+  const out = []; let last = 0, m, i = 0
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index))
+    const h = m[1].toLowerCase()
+    const me = myHandles?.has(h) || MENTION_ALL.has(h)
+    out.push(<span key={i++} className={me ? 'bg-brand-100 text-brand-700 font-semibold rounded px-0.5' : 'text-brand-600 font-medium'}>{m[0]}</span>)
+    last = m.index + m[0].length
+  }
+  if (last < text.length) out.push(text.slice(last))
+  return out
+}
 
 function Avatar({ name, online, size = 36 }) {
   return (
@@ -103,7 +120,7 @@ function ReactionChips({ reactions, myId, onToggle }) {
   )
 }
 
-function MessageRow({ m, prev, myId, onReact, onReply, onEdit, onDelete, showThread = true }) {
+function MessageRow({ m, prev, myId, myHandles, onReact, onReply, onEdit, onDelete, showThread = true }) {
   const [hover, setHover] = useState(false)
   const [picker, setPicker] = useState(false)
   const grouped = prev && prev.user_id === m.user_id && (new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000) && !m.thread_root_id
@@ -123,7 +140,7 @@ function MessageRow({ m, prev, myId, onReact, onReply, onEdit, onDelete, showThr
           {m.deleted
             ? <p className="text-sm text-gray-400 italic">message deleted</p>
             : <>
-                {m.body && <p className="text-sm text-ink whitespace-pre-wrap break-words">{m.body}{m.edited_at && <span className="text-[10px] text-gray-400 ml-1">(edited)</span>}</p>}
+                {m.body && <p className="text-sm text-ink whitespace-pre-wrap break-words">{renderMentions(m.body, myHandles)}{m.edited_at && <span className="text-[10px] text-gray-400 ml-1">(edited)</span>}</p>}
                 <Attachments items={m.attachments} />
               </>}
           <ReactionChips reactions={m.reactions} myId={myId} onToggle={e => onReact(m.id, e)} />
@@ -155,7 +172,7 @@ function MessageRow({ m, prev, myId, onReact, onReply, onEdit, onDelete, showThr
 }
 
 // Renders a list of messages with day separators.
-function MessageList({ messages, myId, onReact, onReply, onEdit, onDelete, showThread }) {
+function MessageList({ messages, myId, myHandles, onReact, onReply, onEdit, onDelete, showThread }) {
   const out = []
   let lastDay = null
   messages.forEach((m, i) => {
@@ -164,7 +181,7 @@ function MessageList({ messages, myId, onReact, onReply, onEdit, onDelete, showT
       out.push(<div key={`d-${m.id}`} className="flex items-center gap-3 px-4 my-3"><div className="flex-1 h-px bg-rule" /><span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">{day}</span><div className="flex-1 h-px bg-rule" /></div>)
       lastDay = day
     }
-    out.push(<MessageRow key={m.id} m={m} prev={i > 0 ? messages[i - 1] : null} myId={myId} onReact={onReact} onReply={onReply} onEdit={onEdit} onDelete={onDelete} showThread={showThread} />)
+    out.push(<MessageRow key={m.id} m={m} prev={i > 0 ? messages[i - 1] : null} myId={myId} myHandles={myHandles} onReact={onReact} onReply={onReply} onEdit={onEdit} onDelete={onDelete} showThread={showThread} />)
   })
   return <div className="py-2">{out}</div>
 }
@@ -192,6 +209,15 @@ export default function Messages() {
   const [newModal, setNewModal] = useState(null) // 'channel' | 'dm' | 'browse'
   const fileInputRef = useRef(null)
   const threadFileRef = useRef(null)
+  const mainTextRef = useRef(null)
+  const [roster, setRoster] = useState([])
+  const [mention, setMention] = useState(null) // { query, start } for @-autocomplete
+
+  // The current user's own handles — used to highlight mentions of "you".
+  const myHandles = useMemo(() => {
+    const n = (user.name || '').toLowerCase()
+    return new Set([n.replace(/\s+/g, ''), n.split(/\s+/)[0], (user.email || '').split('@')[0].toLowerCase()].filter(Boolean))
+  }, [user])
 
   const activeIdRef = useRef(activeId)
   activeIdRef.current = activeId
@@ -206,6 +232,7 @@ export default function Messages() {
   }, [])
 
   useEffect(() => { loadChannels() }, [loadChannels])
+  useEffect(() => { api.get('/chat/users').then(({ data }) => setRoster(data.data || [])).catch(() => {}) }, [])
 
   // Pick an initial channel once loaded.
   useEffect(() => {
@@ -216,6 +243,9 @@ export default function Messages() {
 
   // Keep the URL in sync.
   useEffect(() => { if (activeId && String(activeId) !== channelId) navigate(`/messages/${activeId}`, { replace: true }) }, [activeId]) // eslint-disable-line
+  // Follow deep-links (e.g. clicking a @mention in the notification bell while
+  // already on the Messages page) — the URL param drives the active channel.
+  useEffect(() => { if (channelId && Number(channelId) !== activeId) setActiveId(Number(channelId)) }, [channelId]) // eslint-disable-line
 
   // Load messages + mark read when the active channel changes.
   useEffect(() => {
@@ -290,9 +320,34 @@ export default function Messages() {
   // ── Actions ─────────────────────────────────────────────────────────────
   const lastTyping = useRef(0)
   const onType = (e) => {
-    setText(e.target.value)
+    const val = e.target.value
+    setText(val)
     const now = Date.now()
     if (now - lastTyping.current > 2000) { emit('typing', { channelId: activeId }); lastTyping.current = now }
+    // @-autocomplete: an @token at the caret, at word start.
+    const upto = val.slice(0, e.target.selectionStart)
+    const mm = upto.match(/(?:^|\s)@([\w.'-]*)$/)
+    setMention(mm ? { query: mm[1].toLowerCase(), start: e.target.selectionStart - mm[1].length - 1 } : null)
+  }
+
+  // Unique first-name handle if unambiguous, else the flattened full name (both
+  // match server-side mention resolution).
+  const handleFor = (u) => {
+    const first = (u.name || '').split(/\s+/)[0]
+    const dupe = roster.filter(x => (x.name || '').split(/\s+/)[0].toLowerCase() === first.toLowerCase()).length > 1
+    return dupe ? (u.name || '').replace(/\s+/g, '') : first
+  }
+  const mentionOptions = mention ? [
+    ...['channel', 'here'].filter(s => s.startsWith(mention.query)).map(s => ({ key: '@' + s, label: '@' + s, sub: 'Notify everyone in this channel', handle: s })),
+    ...roster.filter(u => u.name?.toLowerCase().includes(mention.query) || u.email?.toLowerCase().includes(mention.query)).slice(0, 6)
+      .map(u => ({ key: u.id, label: u.name, sub: u.role, handle: handleFor(u), name: u.name })),
+  ] : []
+  const insertMention = (handle) => {
+    const before = text.slice(0, mention.start)
+    const after = text.slice(mention.start + 1 + mention.query.length)
+    const next = `${before}@${handle} ${after}`
+    setText(next); setMention(null)
+    setTimeout(() => { const ta = mainTextRef.current; if (ta) { ta.focus(); const pos = before.length + handle.length + 2; ta.setSelectionRange(pos, pos) } }, 0)
   }
 
   const send = async () => {
@@ -386,20 +441,35 @@ export default function Messages() {
               {dragOver && <div className="absolute inset-0 z-10 flex items-center justify-center bg-brand-50/80 text-brand-700 font-medium text-sm pointer-events-none">Drop files to attach</div>}
               {loadingMsgs ? <div className="p-6 text-sm text-gray-400">Loading…</div>
                 : messages.length === 0 ? <div className="p-6 text-sm text-gray-400">This is the beginning of {active.display_name ? `your conversation with ${active.display_name}` : `#${active.name}`}.</div>
-                : <MessageList messages={messages} myId={user.id} onReact={react} onReply={openThread} onEdit={startEdit} onDelete={del} showThread />}
+                : <MessageList messages={messages} myId={user.id} myHandles={myHandles} onReact={react} onReply={openThread} onEdit={startEdit} onDelete={del} showThread />}
             </div>
 
             <div className="px-4 pb-3 flex-shrink-0">
               {typingNames.length > 0 && <p className="text-xs text-gray-400 mb-1 h-4">{typingNames.join(', ')} {typingNames.length === 1 ? 'is' : 'are'} typing…</p>}
               {editing && <div className="text-xs text-amber-600 mb-1 flex items-center gap-2">Editing message <button onClick={() => { setEditing(null); setText('') }} className="underline">cancel</button></div>}
-              <div className="border border-rule rounded-xl bg-card p-2">
+              <div className="relative border border-rule rounded-xl bg-card p-2">
+                {mention && mentionOptions.length > 0 && (
+                  <div className="absolute bottom-full left-2 mb-2 w-64 bg-card border border-rule rounded-lg shadow-modal overflow-hidden z-20">
+                    {mentionOptions.map((o, i) => (
+                      <button key={o.key} onMouseDown={e => { e.preventDefault(); insertMention(o.handle) }}
+                        className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-page ${i === 0 ? 'bg-page/60' : ''}`}>
+                        {o.name ? <Avatar name={o.name} size={22} /> : <span className="w-[22px] text-center text-brand-600 font-bold">@</span>}
+                        <span className="min-w-0"><span className="block text-sm text-ink truncate">{o.label}</span><span className="block text-[11px] text-gray-400 truncate">{o.sub}</span></span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <FileChips files={mainFiles} onRemove={i => setMainFiles(fs => fs.filter((_, idx) => idx !== i))} />
                 <div className="flex items-end gap-1">
                   <input ref={fileInputRef} type="file" multiple hidden onChange={e => { addFiles(setMainFiles)(e.target.files); e.target.value = '' }} />
                   <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-400 hover:text-brand-600" title="Attach files"><Paperclip size={17} /></button>
                   <textarea
-                    value={text} onChange={onType} rows={1}
-                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+                    ref={mainTextRef} value={text} onChange={onType} rows={1}
+                    onKeyDown={e => {
+                      if (mention && mentionOptions.length && (e.key === 'Enter' || e.key === 'Tab')) { e.preventDefault(); insertMention(mentionOptions[0].handle); return }
+                      if (e.key === 'Escape' && mention) { setMention(null); return }
+                      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
+                    }}
                     onPaste={e => { const fs = [...e.clipboardData.files]; if (fs.length) { e.preventDefault(); addFiles(setMainFiles)(fs) } }}
                     placeholder={`Message ${active.type === 'dm' ? active.display_name : '#' + active.name}`}
                     className="flex-1 resize-none bg-transparent outline-none text-sm text-ink max-h-40 py-1.5 px-1"
@@ -421,9 +491,9 @@ export default function Messages() {
           </header>
           <div className="flex-1 overflow-y-auto">
             <div className="border-b border-rule pb-2">
-              <MessageRow m={thread} myId={user.id} onReact={react} onReply={() => {}} onEdit={startEdit} onDelete={del} showThread={false} />
+              <MessageRow m={thread} myId={user.id} myHandles={myHandles} onReact={react} onReply={() => {}} onEdit={startEdit} onDelete={del} showThread={false} />
             </div>
-            <MessageList messages={threadMsgs} myId={user.id} onReact={react} onReply={() => {}} onEdit={startEdit} onDelete={del} showThread={false} />
+            <MessageList messages={threadMsgs} myId={user.id} myHandles={myHandles} onReact={react} onReply={() => {}} onEdit={startEdit} onDelete={del} showThread={false} />
           </div>
           <div className="p-3 flex-shrink-0">
             <div className="border border-rule rounded-xl bg-card p-2">
