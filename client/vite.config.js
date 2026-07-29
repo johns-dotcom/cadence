@@ -11,6 +11,8 @@ export default defineConfig({
       // In dev, proxy API calls to the Express server so the client can use
       // relative /api paths (matching production same-origin behaviour).
       '/api': 'http://localhost:3001',
+      // Realtime chat socket — must proxy the WS upgrade too.
+      '/socket.io': { target: 'http://localhost:3001', ws: true },
     },
   },
 })

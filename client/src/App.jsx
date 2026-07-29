@@ -1,5 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
+import { SocketProvider } from './context/SocketContext'
+import Messages from './pages/Messages'
 import Layout from './components/Layout'
 import PlatformLayout from './components/PlatformLayout'
 import PlatformOverview from './pages/PlatformOverview'
@@ -111,6 +113,8 @@ function AppContent() {
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route path="/"             element={<Dashboard />} />
         <Route path="/my-work"      element={<MyWork />} />
+        <Route path="/messages"     element={<Messages />} />
+        <Route path="/messages/:channelId" element={<Messages />} />
         <Route path="/calendar"     element={<Calendar />} />
         <Route path="/releases"     element={<Releases />} />
         <Route path="/releases/:id" element={<ReleaseDetail />} />
@@ -159,7 +163,9 @@ function AppContent() {
 export default function App() {
   return (
     <AuthProvider>
-      <AppContent />
+      <SocketProvider>
+        <AppContent />
+      </SocketProvider>
     </AuthProvider>
   )
 }

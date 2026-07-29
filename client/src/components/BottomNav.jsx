@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Briefcase, Disc3, Wallet, Menu } from 'lucide-react'
+import { LayoutDashboard, Briefcase, MessageSquare, Wallet, Menu } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 
 // Mobile-only bottom tab bar (<1024px). Home / My Work / Releases / Finance /
@@ -12,8 +12,8 @@ export default function BottomNav({ onMenu }) {
   const financePath = ['/ledger', '/payments', '/financials', '/approvals'].find(p => canView(p))
   const tabs = [
     { path: '/', label: 'Home', icon: LayoutDashboard },
+    { path: '/messages', label: 'Chat', icon: MessageSquare },
     canView('/my-work') && { path: '/my-work', label: 'Work', icon: Briefcase },
-    canView('/releases') && { path: '/releases', label: 'Releases', icon: Disc3 },
     financePath && { path: financePath, label: 'Finance', icon: Wallet },
   ].filter(Boolean)
 

@@ -1,0 +1,474 @@
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { Hash, Lock, Plus, Send, Smile, MessageSquare, X, Search, Users, Trash2, Pencil, ChevronLeft } from 'lucide-react'
+import api from '../api'
+import { useAuth } from '../context/AuthContext'
+import { useSocket } from '../context/SocketContext'
+import { useToast } from '../context/ToastContext'
+
+const QUICK_EMOJI = ['👍', '❤️', '😂', '🎉', '🔥', '👀', '✅', '🙏']
+
+const pad = n => String(n).padStart(2, '0')
+function fmtTime(ts) { const d = new Date(ts); return `${((d.getHours() + 11) % 12) + 1}:${pad(d.getMinutes())} ${d.getHours() < 12 ? 'AM' : 'PM'}` }
+function dayLabel(ts) {
+  const d = new Date(ts), now = new Date()
+  const same = (a, b) => a.toDateString() === b.toDateString()
+  const yst = new Date(now); yst.setDate(now.getDate() - 1)
+  if (same(d, now)) return 'Today'
+  if (same(d, yst)) return 'Yesterday'
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+}
+const initials = name => (name || '?').split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase()
+
+function Avatar({ name, online, size = 36 }) {
+  return (
+    <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
+      <div className="w-full h-full rounded-lg bg-brand-600 text-white flex items-center justify-center font-semibold" style={{ fontSize: size * 0.36 }}>
+        {initials(name)}
+      </div>
+      {online != null && (
+        <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-card ${online ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+      )}
+    </div>
+  )
+}
+
+function ReactionChips({ reactions, myId, onToggle }) {
+  if (!reactions?.length) return null
+  return (
+    <div className="flex flex-wrap gap-1 mt-1">
+      {reactions.map(r => {
+        const mine = (r.users || []).map(Number).includes(Number(myId))
+        return (
+          <button key={r.emoji} onClick={() => onToggle(r.emoji)}
+            className={`text-xs px-1.5 py-0.5 rounded-full border ${mine ? 'bg-brand-50 border-brand-300 text-brand-700' : 'bg-card border-rule text-gray-600'} hover:border-brand-300`}>
+            {r.emoji} {r.count}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function MessageRow({ m, prev, myId, onReact, onReply, onEdit, onDelete, showThread = true }) {
+  const [hover, setHover] = useState(false)
+  const [picker, setPicker] = useState(false)
+  const grouped = prev && prev.user_id === m.user_id && (new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000) && !m.thread_root_id
+  const mine = Number(m.user_id) === Number(myId)
+  return (
+    <div className="relative group px-3 hover:bg-page/60" onMouseEnter={() => setHover(true)} onMouseLeave={() => { setHover(false); setPicker(false) }}>
+      <div className="flex gap-3">
+        {grouped ? <div className="w-9 flex-shrink-0 text-[10px] text-transparent group-hover:text-gray-400 text-right pt-1">{fmtTime(m.created_at).replace(/ ?[AP]M/, '')}</div>
+          : <Avatar name={m.author_name} />}
+        <div className="min-w-0 flex-1">
+          {!grouped && (
+            <div className="flex items-baseline gap-2">
+              <span className="font-semibold text-ink text-sm">{m.author_name || 'Unknown'}</span>
+              <span className="text-[11px] text-gray-400">{fmtTime(m.created_at)}</span>
+            </div>
+          )}
+          {m.deleted
+            ? <p className="text-sm text-gray-400 italic">message deleted</p>
+            : <p className="text-sm text-ink whitespace-pre-wrap break-words">{m.body}{m.edited_at && <span className="text-[10px] text-gray-400 ml-1">(edited)</span>}</p>}
+          <ReactionChips reactions={m.reactions} myId={myId} onToggle={e => onReact(m.id, e)} />
+          {showThread && m.reply_count > 0 && (
+            <button onClick={() => onReply(m)} className="mt-1 text-xs text-brand-600 font-medium hover:underline flex items-center gap-1">
+              <MessageSquare size={12} /> {m.reply_count} {m.reply_count === 1 ? 'reply' : 'replies'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {hover && !m.deleted && (
+        <div className="absolute -top-3 right-3 flex items-center gap-0.5 bg-card border border-rule rounded-lg shadow-sm px-1 py-0.5">
+          <div className="relative">
+            <button onClick={() => setPicker(p => !p)} className="p-1 text-gray-500 hover:text-brand-600" title="React"><Smile size={15} /></button>
+            {picker && (
+              <div className="absolute right-0 top-7 z-10 bg-card border border-rule rounded-lg shadow-lg p-1 flex gap-0.5">
+                {QUICK_EMOJI.map(e => <button key={e} onClick={() => { onReact(m.id, e); setPicker(false) }} className="text-lg hover:scale-125 transition-transform">{e}</button>)}
+              </div>
+            )}
+          </div>
+          {showThread && <button onClick={() => onReply(m)} className="p-1 text-gray-500 hover:text-brand-600" title="Reply in thread"><MessageSquare size={15} /></button>}
+          {mine && <button onClick={() => onEdit(m)} className="p-1 text-gray-500 hover:text-brand-600" title="Edit"><Pencil size={14} /></button>}
+          {mine && <button onClick={() => onDelete(m)} className="p-1 text-gray-500 hover:text-danger" title="Delete"><Trash2 size={14} /></button>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Renders a list of messages with day separators.
+function MessageList({ messages, myId, onReact, onReply, onEdit, onDelete, showThread }) {
+  const out = []
+  let lastDay = null
+  messages.forEach((m, i) => {
+    const day = dayLabel(m.created_at)
+    if (day !== lastDay) {
+      out.push(<div key={`d-${m.id}`} className="flex items-center gap-3 px-4 my-3"><div className="flex-1 h-px bg-rule" /><span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">{day}</span><div className="flex-1 h-px bg-rule" /></div>)
+      lastDay = day
+    }
+    out.push(<MessageRow key={m.id} m={m} prev={i > 0 ? messages[i - 1] : null} myId={myId} onReact={onReact} onReply={onReply} onEdit={onEdit} onDelete={onDelete} showThread={showThread} />)
+  })
+  return <div className="py-2">{out}</div>
+}
+
+export default function Messages() {
+  const { user } = useAuth()
+  const { on, emit, online } = useSocket()
+  const { toast } = useToast()
+  const { channelId } = useParams()
+  const navigate = useNavigate()
+
+  const [channels, setChannels] = useState([])
+  const [activeId, setActiveId] = useState(channelId ? Number(channelId) : null)
+  const [messages, setMessages] = useState([])
+  const [loadingMsgs, setLoadingMsgs] = useState(false)
+  const [text, setText] = useState('')
+  const [typing, setTyping] = useState({})   // { userId: name }
+  const [editing, setEditing] = useState(null)
+  const [thread, setThread] = useState(null) // root message
+  const [threadMsgs, setThreadMsgs] = useState([])
+  const [threadText, setThreadText] = useState('')
+  const [newModal, setNewModal] = useState(null) // 'channel' | 'dm' | 'browse'
+
+  const activeIdRef = useRef(activeId)
+  activeIdRef.current = activeId
+  const scrollRef = useRef(null)
+  const typingTimers = useRef({})
+
+  const active = channels.find(c => c.id === activeId) || null
+
+  const loadChannels = useCallback(async () => {
+    try { const { data } = await api.get('/chat/channels'); setChannels(data.data || []) }
+    catch { /* keep prior */ }
+  }, [])
+
+  useEffect(() => { loadChannels() }, [loadChannels])
+
+  // Pick an initial channel once loaded.
+  useEffect(() => {
+    if (activeId || !channels.length) return
+    const first = channels.find(c => c.type === 'channel') || channels[0]
+    if (first) setActiveId(first.id)
+  }, [channels, activeId])
+
+  // Keep the URL in sync.
+  useEffect(() => { if (activeId && String(activeId) !== channelId) navigate(`/messages/${activeId}`, { replace: true }) }, [activeId]) // eslint-disable-line
+
+  // Load messages + mark read when the active channel changes.
+  useEffect(() => {
+    if (!activeId) return
+    let cancelled = false
+    setLoadingMsgs(true); setThread(null)
+    emit('channel:subscribe', { channelId: activeId })
+    api.get(`/chat/channels/${activeId}/messages`).then(({ data }) => {
+      if (cancelled) return
+      setMessages(data.data || [])
+      setLoadingMsgs(false)
+    }).catch(() => { if (!cancelled) setLoadingMsgs(false) })
+    api.post(`/chat/channels/${activeId}/read`).then(() => {
+      setChannels(cs => cs.map(c => c.id === activeId ? { ...c, unread: 0 } : c))
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [activeId, emit])
+
+  // Auto-scroll to the newest message.
+  useEffect(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight }, [messages, loadingMsgs])
+
+  // ── Socket wiring ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    const offs = [
+      on('message:new', (m) => {
+        if (m.thread_root_id) {
+          setThread(t => { if (t && t.id === m.thread_root_id) setThreadMsgs(tm => tm.some(x => x.id === m.id) ? tm : [...tm, m]); return t })
+          setMessages(ms => ms.map(x => x.id === m.thread_root_id ? { ...x, reply_count: (x.reply_count || 0) + 1 } : x))
+          return
+        }
+        if (m.channel_id === activeIdRef.current) {
+          setMessages(ms => ms.some(x => x.id === m.id) ? ms : [...ms, m])
+          api.post(`/chat/channels/${m.channel_id}/read`).catch(() => {})
+        } else {
+          setChannels(cs => cs.map(c => c.id === m.channel_id
+            ? { ...c, unread: (c.unread || 0) + 1, last_message: { body: m.body, created_at: m.created_at, author_name: m.author_name } }
+            : c))
+        }
+        // Bump last_message preview + reorder for the active channel too.
+        setChannels(cs => {
+          const idx = cs.findIndex(c => c.id === m.channel_id)
+          if (idx < 0) return cs
+          const c = { ...cs[idx], last_message: { body: m.body, created_at: m.created_at, author_name: m.author_name } }
+          const rest = cs.filter((_, i) => i !== idx)
+          return [c, ...rest]
+        })
+      }),
+      on('message:update', (m) => {
+        setMessages(ms => ms.map(x => x.id === m.id ? m : x))
+        setThreadMsgs(tm => tm.map(x => x.id === m.id ? m : x))
+      }),
+      on('message:delete', ({ id }) => {
+        setMessages(ms => ms.map(x => x.id === id ? { ...x, deleted: true } : x))
+        setThreadMsgs(tm => tm.map(x => x.id === id ? { ...x, deleted: true } : x))
+      }),
+      on('reaction:update', ({ id, reactions }) => {
+        setMessages(ms => ms.map(x => x.id === id ? { ...x, reactions } : x))
+        setThreadMsgs(tm => tm.map(x => x.id === id ? { ...x, reactions } : x))
+      }),
+      on('channel:new', () => loadChannels()),
+      on('typing', ({ channelId, userId, name }) => {
+        if (channelId !== activeIdRef.current || Number(userId) === Number(user.id)) return
+        setTyping(t => ({ ...t, [userId]: name }))
+        clearTimeout(typingTimers.current[userId])
+        typingTimers.current[userId] = setTimeout(() => setTyping(t => { const n = { ...t }; delete n[userId]; return n }), 4000)
+      }),
+      on('typing:stop', ({ userId }) => setTyping(t => { const n = { ...t }; delete n[userId]; return n })),
+    ]
+    return () => offs.forEach(off => off())
+  }, [on, loadChannels, user.id])
+
+  // ── Actions ─────────────────────────────────────────────────────────────
+  const lastTyping = useRef(0)
+  const onType = (e) => {
+    setText(e.target.value)
+    const now = Date.now()
+    if (now - lastTyping.current > 2000) { emit('typing', { channelId: activeId }); lastTyping.current = now }
+  }
+
+  const send = async () => {
+    const body = text.trim()
+    if (!body || !activeId) return
+    setText('')
+    emit('typing:stop', { channelId: activeId })
+    if (editing) {
+      const id = editing.id; setEditing(null)
+      try { const { data } = await api.patch(`/chat/messages/${id}`, { body }); setMessages(ms => ms.map(x => x.id === id ? data.data : x)) }
+      catch { toast('Edit failed', 'error') }
+      return
+    }
+    try { const { data } = await api.post(`/chat/channels/${activeId}/messages`, { body }); setMessages(ms => ms.some(x => x.id === data.data.id) ? ms : [...ms, data.data]) }
+    catch { toast('Send failed', 'error'); setText(body) }
+  }
+
+  const sendThread = async () => {
+    const body = threadText.trim()
+    if (!body || !thread) return
+    setThreadText('')
+    try { const { data } = await api.post(`/chat/channels/${activeId}/messages`, { body, thread_root_id: thread.id }); setThreadMsgs(tm => tm.some(x => x.id === data.data.id) ? tm : [...tm, data.data]) }
+    catch { toast('Reply failed', 'error') }
+  }
+
+  const react = async (id, emoji) => {
+    try { await api.post(`/chat/messages/${id}/react`, { emoji }) } catch { toast('Failed', 'error') }
+  }
+  const openThread = async (m) => {
+    setThread(m); setThreadMsgs([])
+    try { const { data } = await api.get(`/chat/channels/${activeId}/messages?thread=${m.id}`); setThreadMsgs(data.data || []) } catch { /* */ }
+  }
+  const startEdit = (m) => { setEditing(m); setText(m.body) }
+  const del = async (m) => {
+    if (!confirm('Delete this message?')) return
+    try { await api.delete(`/chat/messages/${m.id}`) } catch { toast('Failed', 'error') }
+  }
+
+  const typingNames = Object.values(typing)
+
+  return (
+    <div className="flex h-[calc(100vh-9rem)] rounded-xl border border-rule overflow-hidden bg-card">
+      {/* ── Sidebar ── */}
+      <aside className={`w-64 border-r border-rule flex flex-col bg-page/40 ${active && 'hidden md:flex'}`}>
+        <div className="p-3 border-b border-rule flex items-center justify-between">
+          <h2 className="font-bold text-ink">Messages</h2>
+          <div className="flex gap-1">
+            <button onClick={() => setNewModal('browse')} className="p-1.5 text-gray-500 hover:text-brand-600" title="Browse channels"><Search size={16} /></button>
+            <button onClick={() => setNewModal('channel')} className="p-1.5 text-gray-500 hover:text-brand-600" title="New channel"><Plus size={18} /></button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-4">
+          <ChannelGroup title="Channels" items={channels.filter(c => c.type === 'channel')} activeId={activeId} onPick={setActiveId} online={online} />
+          <div>
+            <div className="flex items-center justify-between px-2 mb-1">
+              <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Direct Messages</span>
+              <button onClick={() => setNewModal('dm')} className="text-gray-400 hover:text-brand-600" title="New DM"><Plus size={14} /></button>
+            </div>
+            {channels.filter(c => c.type === 'dm').map(c => (
+              <ChannelButton key={c.id} c={c} active={c.id === activeId} onPick={setActiveId} online={online} />
+            ))}
+          </div>
+        </div>
+      </aside>
+
+      {/* ── Main pane ── */}
+      <main className={`flex-1 flex flex-col min-w-0 ${!active && 'hidden md:flex'}`}>
+        {!active ? (
+          <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Select a conversation</div>
+        ) : (
+          <>
+            <header className="h-14 px-4 border-b border-rule flex items-center gap-2 flex-shrink-0">
+              <button onClick={() => setActiveId(null)} className="md:hidden p-1 text-gray-500"><ChevronLeft size={20} /></button>
+              {active.type === 'dm' ? <Avatar name={active.display_name} online={active.peer ? online.has(Number(active.peer.id)) : null} size={28} />
+                : (active.is_private ? <Lock size={16} className="text-gray-400" /> : <Hash size={18} className="text-gray-400" />)}
+              <div className="min-w-0">
+                <p className="font-bold text-ink truncate leading-tight">{active.display_name || active.name}</p>
+                {active.topic && <p className="text-xs text-gray-400 truncate">{active.topic}</p>}
+              </div>
+              {active.type === 'channel' && <span className="ml-auto text-xs text-gray-400 flex items-center gap-1"><Users size={13} /> {active.members?.length || 0}</span>}
+            </header>
+
+            <div ref={scrollRef} className="flex-1 overflow-y-auto">
+              {loadingMsgs ? <div className="p-6 text-sm text-gray-400">Loading…</div>
+                : messages.length === 0 ? <div className="p-6 text-sm text-gray-400">This is the beginning of {active.display_name ? `your conversation with ${active.display_name}` : `#${active.name}`}.</div>
+                : <MessageList messages={messages} myId={user.id} onReact={react} onReply={openThread} onEdit={startEdit} onDelete={del} showThread />}
+            </div>
+
+            <div className="px-4 pb-3 flex-shrink-0">
+              {typingNames.length > 0 && <p className="text-xs text-gray-400 mb-1 h-4">{typingNames.join(', ')} {typingNames.length === 1 ? 'is' : 'are'} typing…</p>}
+              {editing && <div className="text-xs text-amber-600 mb-1 flex items-center gap-2">Editing message <button onClick={() => { setEditing(null); setText('') }} className="underline">cancel</button></div>}
+              <div className="flex items-end gap-2 border border-rule rounded-xl bg-card p-2">
+                <textarea
+                  value={text} onChange={onType} rows={1}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+                  placeholder={`Message ${active.type === 'dm' ? active.display_name : '#' + active.name}`}
+                  className="flex-1 resize-none bg-transparent outline-none text-sm text-ink max-h-40 py-1.5 px-1"
+                />
+                <button onClick={send} disabled={!text.trim()} className="p-2 rounded-lg bg-brand-600 text-white disabled:opacity-40 hover:bg-brand-700"><Send size={16} /></button>
+              </div>
+            </div>
+          </>
+        )}
+      </main>
+
+      {/* ── Thread panel ── */}
+      {thread && (
+        <aside className="w-96 border-l border-rule flex flex-col bg-card hidden lg:flex">
+          <header className="h-14 px-4 border-b border-rule flex items-center justify-between flex-shrink-0">
+            <span className="font-bold text-ink">Thread</span>
+            <button onClick={() => setThread(null)} className="text-gray-400 hover:text-ink"><X size={18} /></button>
+          </header>
+          <div className="flex-1 overflow-y-auto">
+            <div className="border-b border-rule pb-2">
+              <MessageRow m={thread} myId={user.id} onReact={react} onReply={() => {}} onEdit={startEdit} onDelete={del} showThread={false} />
+            </div>
+            <MessageList messages={threadMsgs} myId={user.id} onReact={react} onReply={() => {}} onEdit={startEdit} onDelete={del} showThread={false} />
+          </div>
+          <div className="p-3 flex-shrink-0">
+            <div className="flex items-end gap-2 border border-rule rounded-xl bg-card p-2">
+              <textarea value={threadText} onChange={e => setThreadText(e.target.value)} rows={1}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendThread() } }}
+                placeholder="Reply…" className="flex-1 resize-none bg-transparent outline-none text-sm text-ink max-h-40 py-1.5 px-1" />
+              <button onClick={sendThread} disabled={!threadText.trim()} className="p-2 rounded-lg bg-brand-600 text-white disabled:opacity-40 hover:bg-brand-700"><Send size={16} /></button>
+            </div>
+          </div>
+        </aside>
+      )}
+
+      {newModal && <NewConversationModal mode={newModal} onClose={() => setNewModal(null)} onDone={(id) => { setNewModal(null); loadChannels().then(() => id && setActiveId(id)) }} toast={toast} />}
+    </div>
+  )
+}
+
+function ChannelGroup({ title, items, activeId, onPick, online }) {
+  return (
+    <div>
+      <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide px-2">{title}</span>
+      <div className="mt-1">
+        {items.map(c => <ChannelButton key={c.id} c={c} active={c.id === activeId} onPick={onPick} online={online} />)}
+      </div>
+    </div>
+  )
+}
+
+function ChannelButton({ c, active, onPick, online }) {
+  const peerOnline = c.type === 'dm' && c.peer ? online.has(Number(c.peer.id)) : null
+  return (
+    <button onClick={() => onPick(c.id)}
+      className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm ${active ? 'bg-brand-600 text-white' : 'text-gray-600 hover:bg-page'}`}>
+      {c.type === 'dm'
+        ? <span className={`w-2 h-2 rounded-full flex-shrink-0 ${peerOnline ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+        : (c.is_private ? <Lock size={14} className="flex-shrink-0" /> : <Hash size={15} className="flex-shrink-0" />)}
+      <span className={`truncate flex-1 text-left ${c.unread ? 'font-bold text-ink' : ''} ${active && c.unread ? 'text-white' : ''}`}>{c.display_name || c.name}</span>
+      {c.unread > 0 && <span className={`text-[10px] font-bold rounded-full px-1.5 py-0.5 ${active ? 'bg-white text-brand-700' : 'bg-brand-600 text-white'}`}>{c.unread}</span>}
+    </button>
+  )
+}
+
+function NewConversationModal({ mode, onClose, onDone, toast }) {
+  const [name, setName] = useState('')
+  const [topic, setTopic] = useState('')
+  const [priv, setPriv] = useState(false)
+  const [users, setUsers] = useState([])
+  const [publics, setPublics] = useState([])
+  const [q, setQ] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (mode === 'dm' || mode === 'channel') api.get('/chat/users').then(({ data }) => setUsers(data.data || [])).catch(() => {})
+    if (mode === 'browse') api.get('/chat/channels/public').then(({ data }) => setPublics(data.data || [])).catch(() => {})
+  }, [mode])
+
+  const createChannel = async () => {
+    if (!name.trim()) return
+    setBusy(true)
+    try { const { data } = await api.post('/chat/channels', { name, topic, is_private: priv }); onDone(data.data.id) }
+    catch (e) { toast(e.response?.data?.error || 'Failed', 'error'); setBusy(false) }
+  }
+  const startDm = async (uid) => {
+    setBusy(true)
+    try { const { data } = await api.post('/chat/dm', { user_id: uid }); onDone(data.data.id) }
+    catch { toast('Failed', 'error'); setBusy(false) }
+  }
+  const join = async (id) => {
+    setBusy(true)
+    try { await api.post(`/chat/channels/${id}/join`); onDone(id) }
+    catch { toast('Failed', 'error'); setBusy(false) }
+  }
+
+  const filtered = users.filter(u => u.name?.toLowerCase().includes(q.toLowerCase()) || u.email?.toLowerCase().includes(q.toLowerCase()))
+
+  return (
+    <div className="fixed inset-0 z-50 bg-overlay flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-bold text-ink">{mode === 'channel' ? 'Create a channel' : mode === 'dm' ? 'Start a direct message' : 'Browse channels'}</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
+        </div>
+
+        {mode === 'channel' && (
+          <div className="space-y-3">
+            <div><label className="label">Name</label>
+              <div className="flex items-center gap-1"><Hash size={16} className="text-gray-400" /><input autoFocus value={name} onChange={e => setName(e.target.value)} className="input" placeholder="marketing" /></div></div>
+            <div><label className="label">Topic (optional)</label><input value={topic} onChange={e => setTopic(e.target.value)} className="input" placeholder="What's this channel about?" /></div>
+            <label className="flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" checked={priv} onChange={e => setPriv(e.target.checked)} /> Private — only invited members</label>
+            <button onClick={createChannel} disabled={busy || !name.trim()} className="btn-primary w-full">Create channel</button>
+          </div>
+        )}
+
+        {mode === 'dm' && (
+          <div>
+            <input autoFocus value={q} onChange={e => setQ(e.target.value)} className="input mb-2" placeholder="Search people…" />
+            <div className="max-h-72 overflow-y-auto space-y-1">
+              {filtered.map(u => (
+                <button key={u.id} onClick={() => startDm(u.id)} disabled={busy} className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-page text-left">
+                  <Avatar name={u.name} size={30} /><div className="min-w-0"><p className="text-sm font-medium text-ink truncate">{u.name}</p><p className="text-xs text-gray-400 truncate">{u.role}</p></div>
+                </button>
+              ))}
+              {filtered.length === 0 && <p className="text-sm text-gray-400 p-2">No people found.</p>}
+            </div>
+          </div>
+        )}
+
+        {mode === 'browse' && (
+          <div className="max-h-80 overflow-y-auto space-y-1">
+            {publics.map(c => (
+              <div key={c.id} className="flex items-center gap-2 p-2 rounded-lg hover:bg-page">
+                <Hash size={15} className="text-gray-400" />
+                <div className="min-w-0 flex-1"><p className="text-sm font-medium text-ink truncate">{c.name}</p>{c.topic && <p className="text-xs text-gray-400 truncate">{c.topic}</p>}</div>
+                <button onClick={() => join(c.id)} disabled={busy} className="btn-secondary !py-1 !px-3 text-xs">Join</button>
+              </div>
+            ))}
+            {publics.length === 0 && <p className="text-sm text-gray-400 p-2">No channels to join — create one instead.</p>}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

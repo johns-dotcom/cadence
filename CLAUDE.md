@@ -67,9 +67,30 @@ operators (id preserved) instead of cascading; boot self-heal + break-glass
   (`user_mentions` table, parsed from release + campaign comments, surfaced in
   the bell + per-item mark-read via `/api/notifications/mentions/read`).
 
+**M6 Messaging (Slack-replacement core)** ✅ — real-time team chat. New deps
+`socket.io` (server) + `socket.io-client` (client). `server/lib/realtime.js`
+attaches a JWT-authed socket.io server to the same http server (per-user +
+per-channel + per-label rooms, presence tracking, typing relay,
+`emitToChannel/emitToUser/emitToLabel/addUsersToChannelRoom` helpers).
+`server/routes/chat.js` (`/api/chat`) — channels list/create/join, DM
+find-or-create, message history/send/edit/delete, emoji reactions, mark-read,
+unread count, roster picker; all label-scoped + membership-gated, mutations
+broadcast via the realtime helpers. Schema: `chat_channels` (channel|dm),
+`chat_members` (last_read_at/muted), `chat_messages` (threads via
+`thread_root_id`, soft delete), `chat_reactions`. Client `SocketContext`
+(one shared socket, presence Set, `on`/`emit`), `pages/Messages.jsx` (channel +
+DM sidebar w/ unread + presence dots, message pane w/ reactions + threads,
+composer w/ typing, create-channel/start-DM/browse modals). Nav "Messages" item
+(General group) + mobile BottomNav "Chat" tab, both with a live unread badge
+(`/api/chat/unread`, refetched on nav + socket `message:new`). Everyone can use
+it (`canView` always-allows `/messages`). Dev Vite proxy adds `/socket.io`
+(ws:true). Follow-ups (not built): chat file/image attachments, @mention
+notifications, object-anchored threads (release/deal/invoice), external-guest
+channels, native activity-stream bot, huddles, Slack import, message search.
+
 **Nothing spec-level remains.** Optional polish only: the `/manual` page, deeper
 mobile "lighter passes" on secondary pages, AI rate-limit buckets, MIME sniff on
-upload. New deps: `jspdf` + `docx` (dynamically imported).
+upload. New deps: `jspdf` + `docx` (dynamically imported), `socket.io`(-client).
 
 ---
 

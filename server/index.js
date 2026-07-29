@@ -47,6 +47,7 @@ const labelWaiversRoutes = require('./routes/label-waivers');
 const fullExportRoutes = require('./routes/full-export');
 const importRoutes = require('./routes/import');
 const clearancesRoutes = require('./routes/clearances');
+const chatRoutes = require('./routes/chat');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -168,6 +169,7 @@ app.use('/api/label-waivers', labelWaiversRoutes);
 app.use('/api/full-export', fullExportRoutes);
 app.use('/api/import', importRoutes);
 app.use('/api/clearances', clearancesRoutes);
+app.use('/api/chat', chatRoutes);
 
 // Unknown API route → JSON 404 (don't fall through to the SPA).
 app.use('/api', (req, res) => res.status(404).json({ success: false, error: 'Not found' }));
@@ -1219,6 +1221,66 @@ const runMigrations = async () => {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_calendar_events_label ON calendar_events (label_id, event_date)`);
 
+  // ── Chat / messaging (the Slack-replacement core) ───────────────────────
+  // Channels are either named group channels ('channel') or 1:1/group direct
+  // messages ('dm'). Membership lives in chat_members; a message can be a
+  // top-level post or a threaded reply (thread_root_id → the parent message).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_channels (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      name VARCHAR(120),
+      topic TEXT,
+      type VARCHAR(20) NOT NULL DEFAULT 'channel',
+      is_private BOOLEAN DEFAULT FALSE,
+      archived BOOLEAN DEFAULT FALSE,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_channels_label ON chat_channels (label_id, type)`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_members (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      channel_id INT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      last_read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      muted BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (channel_id, user_id)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_members_user ON chat_members (user_id, label_id)`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      channel_id INT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+      user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      body TEXT NOT NULL,
+      thread_root_id INT REFERENCES chat_messages(id) ON DELETE CASCADE,
+      edited_at TIMESTAMP,
+      deleted BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_messages_channel ON chat_messages (channel_id, id DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages (thread_root_id)`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_reactions (
+      id SERIAL PRIMARY KEY,
+      message_id INT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      emoji VARCHAR(16) NOT NULL,
+      UNIQUE (message_id, user_id, emoji)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_reactions_msg ON chat_reactions (message_id)`);
+
   // Helpful indexes for the hot tenant-scoped lookups.
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_releases_label ON releases (label_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_artists_label ON artists (label_id)`);
@@ -1343,6 +1405,9 @@ const server = app.listen(PORT, () => {
     console.log('R2 storage:', r2.isConfigured() ? 'configured ✓' : 'NOT configured (using inline fallback)', JSON.stringify(r2.configReport()));
     console.log('AI (Claude):', require('./lib/claude').isEnabled() ? 'configured ✓' : 'NOT configured');
   } catch (e) { /* diagnostics only */ }
+  // Realtime chat transport shares the same http server + JWT auth.
+  try { require('./lib/realtime').init(server); console.log('Realtime (chat): attached ✓'); }
+  catch (e) { console.warn('Realtime init failed:', e.message); }
   runMigrations()
     .then(autoBootstrap)
     .then(ensurePlatformHome)
@@ -1355,6 +1420,7 @@ const server = app.listen(PORT, () => {
 // rolling deploy. Exit cleanly (code 0) so it doesn't surface as an npm error.
 function shutdown(signal) {
   console.log(`${signal} received — shutting down gracefully.`);
+  try { require('./lib/realtime').close(); } catch { /* not attached */ }
   server.close(() => process.exit(0));
   // Don't hang forever if a connection is slow to drain.
   setTimeout(() => process.exit(0), 8000).unref();

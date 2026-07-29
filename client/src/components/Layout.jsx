@@ -6,9 +6,10 @@ import {
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
   FileClock, Shield, Lock, FileSignature, FileSpreadsheet, Layers, PiggyBank, FilePlus2,
-  MessageSquarePlus,
+  MessageSquarePlus, MessageSquare,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
+import { useSocket } from '../context/SocketContext'
 import { useTheme } from '../context/ThemeContext'
 import api from '../api'
 import GlobalSearch from './GlobalSearch'
@@ -215,6 +216,14 @@ export default function Layout() {
     api.get('/ledger/pending-count').then(r => setPendingApprovals(r.data?.data?.count || 0)).catch(() => {})
   }, [isApprover, location.pathname])
 
+  // Live chat unread badge. Refetch on nav (covers read-clearing) and whenever a
+  // new message lands over the socket.
+  const { on: onSocket } = useSocket()
+  const [chatUnread, setChatUnread] = useState(0)
+  const refreshChatUnread = () => api.get('/chat/unread').then(r => setChatUnread(r.data?.data?.total || 0)).catch(() => {})
+  useEffect(() => { refreshChatUnread() }, [location.pathname])
+  useEffect(() => onSocket('message:new', () => refreshChatUnread()), [onSocket])
+
   // Sidebar information architecture — grouped the way a label team works.
   // Items are filtered by canView (role + per-user page permissions).
   const navGroups = [
@@ -223,6 +232,7 @@ export default function Layout() {
       items: [
         { path: '/',         label: 'Dashboard', icon: LayoutDashboard },
         { path: '/my-work',  label: 'My Work',   icon: Briefcase },
+        { path: '/messages', label: 'Messages',  icon: MessageSquare, badge: chatUnread },
         { path: '/calendar', label: 'Calendar',  icon: CalendarDays },
         { path: '/add-invoice', label: 'Add Invoice', icon: Receipt },
       ],

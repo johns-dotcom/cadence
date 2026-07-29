@@ -27,6 +27,14 @@ export const MANUAL_SECTIONS = [
       'Move tasks across To do / In progress / Done with the status dropdown on each card.',
       'The "Waiting on you" rail surfaces overdue tasks, pending approvals, and campaigns to review.',
     ] },
+  { path: '/messages', group: 'Getting started', title: 'Messages', depts: ['Executive', 'Operations', 'A&R', 'Marketing', 'Finance', 'Legal'],
+    summary: 'Real-time team chat — channels, direct messages, threads, reactions, and presence.',
+    steps: [
+      'Everyone starts in #general. Create channels with the + button, or browse and join public ones with the search icon.',
+      'Start a direct message from the + next to Direct Messages; a green dot means someone is online now.',
+      'Reply in a thread to keep side-conversations tidy, react with an emoji on hover, and edit or delete your own messages.',
+      'Unread counts show next to each channel and on the Messages nav item; opening a channel marks it read.',
+    ] },
   { path: '/add-invoice', group: 'Getting started', title: 'Add Invoice', depts: ['Finance', 'Operations', 'A&R', 'Marketing', 'Executive'],
     summary: 'Upload an invoice or reimbursement for the books — anyone on the team can submit one.',
     steps: [
