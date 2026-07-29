@@ -32,7 +32,7 @@ function VendorDrawer({ name, allNames, onClose, onChanged, onRenamed }) {
     }).catch(() => {}).finally(() => setLoading(false))
     loadAliases(); loadEmails()
   }
-  useEffect(load, [name])
+  useEffect(() => { load() }, [name])
 
   const addEmail = async () => {
     if (!newEmail.trim()) return
@@ -201,7 +201,7 @@ export default function Vendors() {
     setLoading(true)
     api.get('/ledger/vendors').then(res => setVendors(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const scanAllW9s = async () => {
     setScanning(true)

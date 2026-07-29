@@ -18,7 +18,7 @@ export default function Legal() {
   const [form, setForm] = useState(BLANK)
 
   const load = () => { setLoading(true); api.get('/ndas').then(r => setRows(r.data.data || [])).catch(() => {}).finally(() => setLoading(false)) }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const create = async (e) => {
     e.preventDefault()

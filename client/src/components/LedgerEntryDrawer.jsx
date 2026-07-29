@@ -30,7 +30,7 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
     api.get(`/ledger/entries/${id}/installments`).then(r => { setInstallments(r.data.data.installments || []); setPaidTotal(r.data.data.total || 0) }).catch(() => {})
     api.get(`/ledger/entries/${id}/bulk-items`).then(r => setItems(r.data.data || [])).catch(() => {})
   }
-  useEffect(load, [id])
+  useEffect(() => { load() }, [id])
   useEffect(() => { setCampaignId(entry?.campaign_id || ''); setScans({ invoice: entry?.ai_scan || null, w9: entry?.w9_scan || null }); api.get('/campaigns').then(r => setCampaigns(r.data.data || [])).catch(() => {}) }, [id])
 
   const rescan = async (type) => {

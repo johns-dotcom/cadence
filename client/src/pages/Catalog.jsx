@@ -29,7 +29,7 @@ export default function Catalog() {
   const [limit, setLimit] = useState(60)
 
   const load = () => { setLoading(true); api.get('/releases').then(r => setAll(r.data.data || [])).catch(() => {}).finally(() => setLoading(false)) }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const genres = useMemo(() => [...new Set(all.map(r => r.genre).filter(Boolean))].sort(), [all])
   const types = useMemo(() => [...new Set(all.map(r => r.release_type).filter(Boolean))].sort(), [all])

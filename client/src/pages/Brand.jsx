@@ -30,7 +30,7 @@ export default function Brand() {
   const [copied, setCopied] = useState(null)
 
   const load = () => { setLoading(true); api.get('/brand-assets').then(r => setAssets(r.data.data || [])).catch(() => {}).finally(() => setLoading(false)) }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const onPick = (e) => {
     const file = e.target.files?.[0]

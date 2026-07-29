@@ -28,7 +28,7 @@ export default function Team() {
     setLoading(true)
     api.get('/team').then(res => setMembers(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
 

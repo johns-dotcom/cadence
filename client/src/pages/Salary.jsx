@@ -29,7 +29,7 @@ export default function Salary() {
     setLoading(true)
     api.get('/salary', { params: { month, year } }).then(r => { setEmployees(r.data.data.employees || []) }).catch(() => {}).finally(() => setLoading(false))
   }
-  useEffect(load, [month, year])
+  useEffect(() => { load() }, [month, year])
 
   const prev = () => { if (month === 1) { setMonth(12); setYear(y => y - 1) } else setMonth(m => m - 1) }
   const next = () => { if (month === 12) { setMonth(1); setYear(y => y + 1) } else setMonth(m => m + 1) }

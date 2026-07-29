@@ -21,7 +21,7 @@ export default function PendingContracts() {
   const [form, setForm] = useState(BLANK)
 
   const load = () => { setLoading(true); api.get('/pending-contracts').then(r => setRows(r.data.data || [])).catch(() => {}).finally(() => setLoading(false)) }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const create = async (e) => {
     e.preventDefault()

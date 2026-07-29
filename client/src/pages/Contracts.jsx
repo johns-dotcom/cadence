@@ -51,7 +51,7 @@ export default function Contracts() {
       .catch(() => {})
       .finally(() => setLoading(false))
   }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
 

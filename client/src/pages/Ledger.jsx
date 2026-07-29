@@ -79,31 +79,23 @@ export default function Ledger() {
     })
   }
 
-  // Editable cell: click to edit; Enter/blur commits, Esc cancels.
-  const EditCell = ({ en, field, kind = 'text', options, display }) => {
-    if (editing?.id === en.id && editing?.key === field) {
-      const common = { autoFocus: true, className: 'input !py-1 !px-1.5 text-sm w-full', value: draft, onChange: e => setDraft(e.target.value), onBlur: () => commitEdit(en, field, draft), onKeyDown: e => { if (e.key === 'Enter') commitEdit(en, field, draft); if (e.key === 'Escape') setEditing(null) } }
-      if (kind === 'select') return <select {...common}><option value="">—</option>{options.map(o => <option key={o}>{o}</option>)}</select>
-      if (kind === 'number') return <input type="number" step="0.01" {...common} />
-      if (kind === 'datalist') return <><input list="ledger-artists" {...common} /><datalist id="ledger-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist></>
-      return <input {...common} />
-    }
-    return <span onClick={() => beginEdit(en, field)} className="cursor-text hover:bg-brand-50/60 rounded px-1 -mx-1 block min-h-[1.25rem]" title="Click to edit">{display}</span>
-  }
+  // Props bundle for the module-scope EditCell (keeps its identity stable so
+  // the <input> doesn't remount + lose focus/cursor on every keystroke).
+  const editProps = { editing, draft, setDraft, commitEdit, beginEdit, setEditing, artistNames }
 
   // ── Toggleable columns, persisted per user+workspace ──────────────────
   const COLS = [
     { key: 'invoice_date', label: 'Date', render: en => <span className="text-gray-500 whitespace-nowrap">{formatDate(en.invoice_date)}</span> },
     { key: 'payee', label: 'Payee', render: en => <PayeeCell en={en} onFlag={() => setDrawerEntry(en)} /> },
-    { key: 'artist', label: 'Artist', render: en => <EditCell en={en} field="artist" kind="datalist" display={<span className="text-gray-600">{en.artist || '—'}</span>} /> },
-    { key: 'song', label: 'Song', render: en => <EditCell en={en} field="song" display={<span className="text-gray-600">{en.song || '—'}</span>} /> },
-    { key: 'category', label: 'Category', render: en => <EditCell en={en} field="category" kind="select" options={EXPENSE_CATEGORIES} display={<span className="text-gray-600 whitespace-nowrap">{en.category || '—'}</span>} /> },
-    { key: 'invoice_number', label: 'Invoice #', render: en => <EditCell en={en} field="invoice_number" display={<span className="text-gray-500 whitespace-nowrap">{en.invoice_number || '—'}</span>} /> },
-    { key: 'amount', label: 'Amount', render: en => <EditCell en={en} field="amount" kind="number" display={<span className="text-ink font-medium whitespace-nowrap tabular-nums">{money(en.amount, en.currency)}</span>} /> },
+    { key: 'artist', label: 'Artist', render: en => <EditCell en={en} field="artist" kind="datalist" display={<span className="text-gray-600">{en.artist || '—'}</span>} {...editProps} /> },
+    { key: 'song', label: 'Song', render: en => <EditCell en={en} field="song" display={<span className="text-gray-600">{en.song || '—'}</span>} {...editProps} /> },
+    { key: 'category', label: 'Category', render: en => <EditCell en={en} field="category" kind="select" options={EXPENSE_CATEGORIES} display={<span className="text-gray-600 whitespace-nowrap">{en.category || '—'}</span>} {...editProps} /> },
+    { key: 'invoice_number', label: 'Invoice #', render: en => <EditCell en={en} field="invoice_number" display={<span className="text-gray-500 whitespace-nowrap">{en.invoice_number || '—'}</span>} {...editProps} /> },
+    { key: 'amount', label: 'Amount', render: en => <EditCell en={en} field="amount" kind="number" display={<span className="text-ink font-medium whitespace-nowrap tabular-nums">{money(en.amount, en.currency)}</span>} {...editProps} /> },
     { key: 'status', label: 'Status', render: en => <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium capitalize ${STATUS_STYLES[en.status] || ''}`}>{en.status}</span> },
     { key: 'payment', label: 'Payment', render: en => <button onClick={() => cyclePaid(en)} title="Click to cycle" className={`text-xs font-medium hover:underline ${PAID_STYLE[en.payment_status] || PAID_STYLE.Unpaid}`}>{en.payment_status || 'Unpaid'}</button> },
-    { key: 'payment_method', label: 'Method', render: en => <EditCell en={en} field="payment_method" kind="select" options={PAYMENT_METHODS} display={<span className="text-gray-500 whitespace-nowrap">{en.payment_method || '—'}</span>} /> },
-    { key: 'rep', label: 'Rep', render: en => <EditCell en={en} field="rep" display={<span className="text-gray-500">{en.rep || '—'}</span>} /> },
+    { key: 'payment_method', label: 'Method', render: en => <EditCell en={en} field="payment_method" kind="select" options={PAYMENT_METHODS} display={<span className="text-gray-500 whitespace-nowrap">{en.payment_method || '—'}</span>} {...editProps} /> },
+    { key: 'rep', label: 'Rep', render: en => <EditCell en={en} field="rep" display={<span className="text-gray-500">{en.rep || '—'}</span>} {...editProps} /> },
     { key: 'recoupable', label: 'Recoup', render: en => <button onClick={() => commitEdit(en, 'recoupable', !en.recoupable)} className="text-gray-500 hover:text-brand-600">{en.recoupable ? 'Yes' : 'No'}</button> },
     { key: 'type', label: 'Type', render: en => <span className="text-gray-500">{en.is_reimbursement ? 'Reimb.' : 'Invoice'}</span> },
     { key: 'files', label: 'Files', render: en => <FilesCell en={en} openFile={openFile} /> },
@@ -123,7 +115,7 @@ export default function Ledger() {
     setLoading(true)
     api.get('/ledger/entries').then(res => setEntries(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
   useEffect(() => { api.get('/artists').then(r => setArtistNames((r.data.data || []).map(a => a.name).filter(Boolean))).catch(() => {}) }, [])
 
   // Hotkey: z = undo last inline edit (ignored while typing).
@@ -412,6 +404,19 @@ export default function Ledger() {
       )}
     </div>
   )
+}
+
+// Editable cell: click to edit; Enter/blur commits, Esc cancels. Module-scope
+// (identity stable across renders) so the input keeps focus while typing.
+function EditCell({ en, field, kind = 'text', options, display, editing, draft, setDraft, commitEdit, beginEdit, setEditing, artistNames }) {
+  if (editing?.id === en.id && editing?.key === field) {
+    const common = { autoFocus: true, className: 'input !py-1 !px-1.5 text-sm w-full', value: draft, onChange: e => setDraft(e.target.value), onBlur: () => commitEdit(en, field, draft), onKeyDown: e => { if (e.key === 'Enter') commitEdit(en, field, draft); if (e.key === 'Escape') setEditing(null) } }
+    if (kind === 'select') return <select {...common}><option value="">—</option>{options.map(o => <option key={o}>{o}</option>)}</select>
+    if (kind === 'number') return <input type="number" step="0.01" {...common} />
+    if (kind === 'datalist') return <><input list="ledger-artists" {...common} /><datalist id="ledger-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist></>
+    return <input {...common} />
+  }
+  return <span onClick={() => beginEdit(en, field)} className="cursor-text hover:bg-brand-50/60 rounded px-1 -mx-1 block min-h-[1.25rem]" title="Click to edit">{display}</span>
 }
 
 function PayeeCell({ en, onFlag }) {

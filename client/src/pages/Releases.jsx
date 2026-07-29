@@ -42,7 +42,7 @@ export default function Releases() {
       .catch(() => {})
       .finally(() => setLoading(false))
   }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const create = async (e) => {
     e.preventDefault()

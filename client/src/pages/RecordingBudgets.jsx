@@ -21,7 +21,7 @@ export default function RecordingBudgets() {
   const [item, setItem] = useState({ section: 'Producers', description: '', category: '', amount: '' })
 
   const load = () => { setLoading(true); api.get('/recording-budgets').then(r => setRows(r.data.data || [])).catch(() => {}).finally(() => setLoading(false)) }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
   const loadDetail = (id) => api.get(`/recording-budgets/${id}`).then(r => setDetail(d => ({ ...d, [id]: r.data.data }))).catch(() => {})
   const toggle = (id) => { if (openId === id) { setOpenId(null); return } setOpenId(id); if (!detail[id]) loadDetail(id) }
 

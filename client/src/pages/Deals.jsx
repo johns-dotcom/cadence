@@ -27,7 +27,7 @@ export default function Deals() {
     setLoading(true)
     api.get('/deals').then(res => setDeals(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   // "n" opens the new-deal form; Esc closes the drawer / form.
   useHotkeys({

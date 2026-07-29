@@ -49,6 +49,22 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/artist-campaigns/review-inbox — entries assigned to the current user.
+// MUST be registered before '/:artist' or Express matches it as artist="review-inbox".
+router.get('/review-inbox', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT e.id, e.payee, e.artist, e.song, e.amount, e.currency,
+              (SELECT COUNT(*)::int FROM expense_comments c WHERE c.expense_id = e.id) AS comments
+         FROM review_assignments ra JOIN expenses e ON e.id = ra.expense_id
+        WHERE ra.label_id = $1 AND ra.assignee_id = $2 AND (e.deleted = false OR e.deleted IS NULL)
+        ORDER BY ra.created_at DESC`,
+      [req.labelId, req.user.id]
+    );
+    res.json({ success: true, data: rows });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
 // GET /api/artist-campaigns/:artist — one artist's campaign entries (song-
 // groupable) + category breakdown + cobrand rollup.
 router.get('/:artist', async (req, res) => {
@@ -166,21 +182,6 @@ router.post('/entries/:id/reviewers', async (req, res) => {
     await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ success: false, error: 'Internal server error' });
   } finally { client.release(); }
-});
-
-// GET /api/artist-campaigns/review-inbox — entries assigned to the current user.
-router.get('/review-inbox', async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `SELECT e.id, e.payee, e.artist, e.song, e.amount, e.currency,
-              (SELECT COUNT(*)::int FROM expense_comments c WHERE c.expense_id = e.id) AS comments
-         FROM review_assignments ra JOIN expenses e ON e.id = ra.expense_id
-        WHERE ra.label_id = $1 AND ra.assignee_id = $2 AND (e.deleted = false OR e.deleted IS NULL)
-        ORDER BY ra.created_at DESC`,
-      [req.labelId, req.user.id]
-    );
-    res.json({ success: true, data: rows });
-  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 
 module.exports = router;

@@ -23,7 +23,7 @@ export default function Recoupments() {
   const [tab, setTab] = useState('artists')
   const [statements, setStatements] = useState([])
   const load = () => { setLoading(true); api.get('/financials/recoupments').then(r => setRows(r.data.data || [])).catch(() => {}).finally(() => setLoading(false)) }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
   useEffect(() => { if (tab === 'statements') api.get('/financials/statements').then(r => setStatements(r.data.data || [])).catch(() => {}) }, [tab])
 
   const active = rows.filter(r => r.recoupable_spend > 0 || r.income > 0)

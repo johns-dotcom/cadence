@@ -31,7 +31,7 @@ export default function MyWork() {
     const url = scope === 'all' && isAdmin ? '/tasks?scope=all' : '/tasks'
     api.get(url).then(res => setTasks(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
-  useEffect(load, [scope])
+  useEffect(() => { load() }, [scope])
   useEffect(() => { if (isAdmin) api.get('/team').then(res => setMembers(res.data.data || [])).catch(() => {}) }, [isAdmin])
   useEffect(() => {
     if (!isApprover) return

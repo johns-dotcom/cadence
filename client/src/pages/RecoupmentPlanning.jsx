@@ -21,7 +21,7 @@ export default function RecoupmentPlanning() {
   const [committing, setCommitting] = useState(false)
 
   const load = () => { setLoading(true); setSel(new Set()); api.get('/financials/planning').then(r => setRows(r.data.data || [])).catch(() => {}).finally(() => setLoading(false)) }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const toggle = (id) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
 

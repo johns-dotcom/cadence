@@ -23,7 +23,7 @@ export default function AdminDocs() {
   const [filter, setFilter] = useState('All')
 
   const load = () => { setLoading(true); api.get('/admin-docs').then(r => setDocs(r.data.data || [])).catch(() => {}).finally(() => setLoading(false)) }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const create = async (e) => {
     e.preventDefault()

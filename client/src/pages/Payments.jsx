@@ -50,7 +50,7 @@ export default function Payments() {
     api.get(url).then(res => setRows(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
     api.get('/ledger/payment-stats').then(r => setStats(r.data.data)).catch(() => {})
   }
-  useEffect(load, [filter])
+  useEffect(() => { load() }, [filter])
   useEffect(() => { api.get('/reps').then(r => setReps(Object.fromEntries((r.data.data || []).filter(x => x.email).map(x => [String(x.name).toLowerCase(), x.email])))).catch(() => {}) }, [])
 
   // Client-side quick filter over the payables list (paid loads its own list).

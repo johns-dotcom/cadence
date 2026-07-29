@@ -28,7 +28,7 @@ export default function Calendar() {
   const [form, setForm] = useState({ title: '', description: '' })
 
   const load = () => { api.get('/calendar').then(r => setEvents(r.data.data || [])).catch(() => {}) }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   // Index events by ISO date for fast per-cell lookup.
   const byDate = useMemo(() => {

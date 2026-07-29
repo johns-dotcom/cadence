@@ -23,7 +23,7 @@ export default function PlatformOperators() {
   const [copied, setCopied] = useState(false)
 
   const load = () => { setLoading(true); api.get('/platform/operators').then(r => setOperators(r.data.data || [])).catch(() => {}).finally(() => setLoading(false)) }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const submit = async (e) => {
     e.preventDefault()

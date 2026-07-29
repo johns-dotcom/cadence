@@ -18,7 +18,7 @@ export default function Artists() {
     setLoading(true)
     api.get('/artists').then(res => setArtists(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
 
   const create = async (e) => {
     e.preventDefault()

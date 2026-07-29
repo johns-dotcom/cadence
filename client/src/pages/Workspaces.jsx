@@ -49,7 +49,7 @@ export default function Workspaces() {
     setLoading(true)
     api.get('/platform/workspaces').then(res => setWorkspaces(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
   useEffect(() => { if (isOwner) api.get('/platform/operators').then(r => setOperators(r.data.data || [])).catch(() => {}) }, [isOwner])
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))

@@ -35,7 +35,7 @@ export default function Approvals() {
     setLoading(true)
     api.get('/ledger/entries?status=pending').then(r => setList(r.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
-  useEffect(load, [])
+  useEffect(() => { load() }, [])
   useEffect(() => { api.get('/reps').then(r => setReps((r.data.data || []).map(x => x.name).filter(Boolean))).catch(() => {}) }, [])
 
   const willNotify = (en) => !!en.vendor_email && (notifyMap[en.id] ?? true)
