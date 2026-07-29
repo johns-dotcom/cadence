@@ -3,6 +3,7 @@ import { Plus, Trash2, TrendingUp, X, ExternalLink } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
+import ObjectDiscussion from '../components/ObjectDiscussion'
 import { useToast } from '../context/ToastContext'
 import { DEAL_STAGES, DEAL_TYPES, PRIORITIES } from '../constants'
 import { formatDate } from '../utils/dates'
@@ -200,6 +201,7 @@ function DealDrawer({ deal, onClose, onSave, onDelete }) {
             )}
           </div>
           <div><label className="label">Notes</label><textarea className="input" rows={4} value={d.notes || ''} onChange={f('notes')} /></div>
+          <ObjectDiscussion entityType="deal" entityId={deal.id} title={`Deal · ${d.artist_name || 'Untitled'}`} />
         </div>
         <div className="flex items-center justify-between px-5 py-4 border-t border-divider sticky bottom-0 bg-card">
           <button onClick={() => onDelete(deal.id)} className="btn-secondary text-danger"><Trash2 size={15} /> Delete</button>

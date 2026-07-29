@@ -106,8 +106,16 @@ approved + bulk-approved (ledger.js), deal stage change incl. 🎉 on signed
 accept-invite). Client renders bot messages with a violet Zap avatar + "Cadence
 · Bot" + `*bold*` + a "View →" deep-link; per-channel **mute** toggle
 (`chat_members.muted`, `POST /channels/:id/mute`, excluded from the nav unread
-badge) in the channel header. Follow-ups (not built): object-anchored threads
-(release/deal/invoice), external-guest channels, huddles, Slack import, search.
+badge) in the channel header. **Object-anchored threads** ✅ — `chat_channels`
+gains `entity_type`+`entity_id` (type='object', unique per entity per label);
+`POST /api/chat/object-thread {entity_type,entity_id,title}` find-or-creates the
+record's thread (entity validated against a whitelist map → its table) + joins
+the caller. Reusable `components/ObjectDiscussion.jsx` (imports MessageList /
+FileChips / postMessage from Messages.jsx) is an inline live thread — wired into
+the **Deals drawer** and the **ledger entry drawer** ("Discussion" tab); trivial
+to drop onto releases/artists/campaigns. These threads also appear in Messages
+under a **"Threads"** sidebar group (MessageSquare icon). Follow-ups (not built):
+external-guest channels, huddles, Slack import, message search.
 
 **Nothing spec-level remains.** Optional polish only: the `/manual` page, deeper
 mobile "lighter passes" on secondary pages, AI rate-limit buckets, MIME sniff on

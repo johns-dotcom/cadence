@@ -1239,6 +1239,11 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_channels_label ON chat_channels (label_id, type)`);
+  // Object-anchored threads: a channel bound to a specific record (release,
+  // deal, expense, artist, campaign). One thread per entity per workspace.
+  await pool.query(`ALTER TABLE chat_channels ADD COLUMN IF NOT EXISTS entity_type VARCHAR(40)`);
+  await pool.query(`ALTER TABLE chat_channels ADD COLUMN IF NOT EXISTS entity_id INT`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_object ON chat_channels (label_id, entity_type, entity_id) WHERE type = 'object'`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS chat_members (

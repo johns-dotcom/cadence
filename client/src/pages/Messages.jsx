@@ -14,7 +14,7 @@ const attUrl = (id) => `${API_BASE}/chat/attachments/${id}?token=${localStorage.
 const fmtSize = (b) => b == null ? '' : b < 1024 ? `${b} B` : b < 1024 * 1024 ? `${(b / 1024).toFixed(0)} KB` : `${(b / 1024 / 1024).toFixed(1)} MB`
 
 // Post a message with optional file attachments (multipart when files present).
-async function postMessage(channelId, body, files, threadRootId) {
+export async function postMessage(channelId, body, files, threadRootId) {
   if (files && files.length) {
     const fd = new FormData()
     fd.append('body', body || '')
@@ -27,7 +27,7 @@ async function postMessage(channelId, body, files, threadRootId) {
   return data.data
 }
 
-function FileChips({ files, onRemove }) {
+export function FileChips({ files, onRemove }) {
   if (!files.length) return null
   return (
     <div className="flex flex-wrap gap-2 mb-2">
@@ -98,7 +98,7 @@ function renderSystemText(text) {
       : p)
 }
 
-function Avatar({ name, online, size = 36 }) {
+export function Avatar({ name, online, size = 36 }) {
   return (
     <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
       <div className="w-full h-full rounded-lg bg-brand-600 text-white flex items-center justify-center font-semibold" style={{ fontSize: size * 0.36 }}>
@@ -188,7 +188,7 @@ function MessageRow({ m, prev, myId, myHandles, onReact, onReply, onEdit, onDele
 }
 
 // Renders a list of messages with day separators.
-function MessageList({ messages, myId, myHandles, onReact, onReply, onEdit, onDelete, showThread }) {
+export function MessageList({ messages, myId, myHandles, onReact, onReply, onEdit, onDelete, showThread }) {
   const out = []
   let lastDay = null
   messages.forEach((m, i) => {
@@ -436,6 +436,15 @@ export default function Messages() {
               <ChannelButton key={c.id} c={c} active={c.id === activeId} onPick={setActiveId} online={online} />
             ))}
           </div>
+          {channels.some(c => c.type === 'object') && (
+            <div>
+              <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide px-2">Threads</span>
+              <p className="text-[10px] text-gray-400 px-2 mb-1">Discussions on records you follow</p>
+              {channels.filter(c => c.type === 'object').map(c => (
+                <ChannelButton key={c.id} c={c} active={c.id === activeId} onPick={setActiveId} online={online} />
+              ))}
+            </div>
+          )}
         </div>
       </aside>
 
@@ -448,10 +457,12 @@ export default function Messages() {
             <header className="h-14 px-4 border-b border-rule flex items-center gap-2 flex-shrink-0">
               <button onClick={() => setActiveId(null)} className="md:hidden p-1 text-gray-500"><ChevronLeft size={20} /></button>
               {active.type === 'dm' ? <Avatar name={active.display_name} online={active.peer ? online.has(Number(active.peer.id)) : null} size={28} />
+                : active.type === 'object' ? <MessageSquare size={18} className="text-brand-600" />
                 : (active.is_private ? <Lock size={16} className="text-gray-400" /> : <Hash size={18} className="text-gray-400" />)}
               <div className="min-w-0">
-                <p className="font-bold text-ink truncate leading-tight">{active.display_name || active.name}</p>
-                {active.topic && <p className="text-xs text-gray-400 truncate">{active.topic}</p>}
+                <p className="font-bold text-ink truncate leading-tight">{active.display_name || active.name || 'Thread'}</p>
+                {active.topic ? <p className="text-xs text-gray-400 truncate">{active.topic}</p>
+                  : active.type === 'object' && <p className="text-xs text-gray-400 truncate">Record discussion</p>}
               </div>
               <div className="ml-auto flex items-center gap-3">
                 {active.type === 'channel' && <span className="text-xs text-gray-400 flex items-center gap-1"><Users size={13} /> {active.members?.length || 0}</span>}
@@ -498,7 +509,7 @@ export default function Messages() {
                       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
                     }}
                     onPaste={e => { const fs = [...e.clipboardData.files]; if (fs.length) { e.preventDefault(); addFiles(setMainFiles)(fs) } }}
-                    placeholder={`Message ${active.type === 'dm' ? active.display_name : '#' + active.name}`}
+                    placeholder={active.type === 'dm' ? `Message ${active.display_name}` : active.type === 'object' ? 'Message this thread' : `Message #${active.name}`}
                     className="flex-1 resize-none bg-transparent outline-none text-sm text-ink max-h-40 py-1.5 px-1"
                   />
                   <button onClick={send} disabled={!text.trim() && !mainFiles.length} className="p-2 rounded-lg bg-brand-600 text-white disabled:opacity-40 hover:bg-brand-700"><Send size={16} /></button>
@@ -562,8 +573,10 @@ function ChannelButton({ c, active, onPick, online }) {
       className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm ${active ? 'bg-brand-600 text-white' : 'text-gray-600 hover:bg-page'}`}>
       {c.type === 'dm'
         ? <span className={`w-2 h-2 rounded-full flex-shrink-0 ${peerOnline ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+        : c.type === 'object'
+        ? <MessageSquare size={14} className="flex-shrink-0" />
         : (c.is_private ? <Lock size={14} className="flex-shrink-0" /> : <Hash size={15} className="flex-shrink-0" />)}
-      <span className={`truncate flex-1 text-left ${c.unread ? 'font-bold text-ink' : ''} ${active && c.unread ? 'text-white' : ''}`}>{c.display_name || c.name}</span>
+      <span className={`truncate flex-1 text-left ${c.unread ? 'font-bold text-ink' : ''} ${active && c.unread ? 'text-white' : ''}`}>{c.display_name || c.name || 'Thread'}</span>
       {c.unread > 0 && <span className={`text-[10px] font-bold rounded-full px-1.5 py-0.5 ${active ? 'bg-white text-brand-700' : 'bg-brand-600 text-white'}`}>{c.unread}</span>}
     </button>
   )

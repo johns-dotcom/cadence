@@ -92,6 +92,7 @@ router.get('/channels', async (req, res) => {
 
     const { rows } = await pool.query(
       `SELECT c.id, c.name, c.topic, c.type, c.is_private, c.created_by, c.created_at,
+              c.entity_type, c.entity_id,
               m.last_read_at, m.muted,
               (SELECT COUNT(*)::int FROM chat_messages msg
                  WHERE msg.channel_id = c.id AND msg.deleted = false
@@ -220,6 +221,48 @@ router.post('/channels/:id/join', async (req, res) => {
     rt.addUsersToChannelRoom(req.params.id, [req.user.id]);
     res.json({ success: true, data: { id: Number(req.params.id) } });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// POST /api/chat/object-thread — find-or-create the discussion thread anchored
+// to a record. { entity_type, entity_id, title }. The caller is auto-joined.
+const OBJECT_TABLES = { release: 'releases', deal: 'deals', expense: 'expenses', artist: 'artists', campaign: 'campaigns' };
+router.post('/object-thread', async (req, res) => {
+  try {
+    const entityType = String(req.body.entity_type || '');
+    const entityId = Number(req.body.entity_id);
+    const table = OBJECT_TABLES[entityType]; // whitelist → safe to interpolate
+    if (!table || !entityId) return res.status(400).json({ success: false, error: 'Invalid entity' });
+
+    // The record must exist in this tenant.
+    const ent = await pool.query(`SELECT id FROM ${table} WHERE id = $1 AND label_id = $2`, [entityId, req.labelId]);
+    if (!ent.rows.length) return res.status(404).json({ success: false, error: 'Record not found' });
+
+    const title = String(req.body.title || '').slice(0, 120);
+    let found = await pool.query(
+      `SELECT id FROM chat_channels WHERE label_id = $1 AND type = 'object' AND entity_type = $2 AND entity_id = $3`,
+      [req.labelId, entityType, entityId]
+    );
+    let id = found.rows[0]?.id;
+    if (!id) {
+      const c = await pool.query(
+        `INSERT INTO chat_channels (label_id, name, type, entity_type, entity_id, created_by)
+         VALUES ($1, $2, 'object', $3, $4, $5) RETURNING id`,
+        [req.labelId, title || null, entityType, entityId, req.user.id]
+      );
+      id = c.rows[0].id;
+    } else if (title) {
+      await pool.query(`UPDATE chat_channels SET name = $1 WHERE id = $2 AND (name IS NULL OR name = '')`, [title, id]);
+    }
+    await pool.query(
+      `INSERT INTO chat_members (label_id, channel_id, user_id) VALUES ($1, $2, $3) ON CONFLICT (channel_id, user_id) DO NOTHING`,
+      [req.labelId, id, req.user.id]
+    );
+    rt.addUsersToChannelRoom(id, [req.user.id]);
+    res.json({ success: true, data: { id } });
+  } catch (err) {
+    console.error('object-thread:', err.message);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
 });
 
 // POST /api/chat/dm — find-or-create a 1:1 DM with { user_id }.

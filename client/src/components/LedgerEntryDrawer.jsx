@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { X, Plus, Trash2, Check, History, Layers, CreditCard, Ban, RotateCcw, Sparkles, AlertTriangle, Paperclip, Zap } from 'lucide-react'
+import { X, Plus, Trash2, Check, History, Layers, CreditCard, Ban, RotateCcw, Sparkles, AlertTriangle, Paperclip, Zap, MessageSquare } from 'lucide-react'
+import ObjectDiscussion from './ObjectDiscussion'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
 
@@ -101,6 +102,7 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
     { key: 'installments', label: 'Installments', icon: CreditCard },
     { key: 'items', label: 'Bulk items', icon: Layers },
     { key: 'scan', label: 'AI scan', icon: Sparkles, badge: scanFlags },
+    { key: 'discussion', label: 'Discussion', icon: MessageSquare },
   ]
 
   return (
@@ -140,6 +142,10 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
         </div>
 
         <div className="flex-1 overflow-y-auto p-5">
+          {tab === 'discussion' && (
+            <ObjectDiscussion entityType="expense" entityId={entry.id} title={`Invoice · ${entry.payee}`} />
+          )}
+
           {tab === 'history' && (
             history.length ? (
               <div className="space-y-2">
