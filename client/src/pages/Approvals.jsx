@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { Check, X, Sparkles, Zap, Pencil, FileText, Paperclip, Tag, History, ShieldAlert, Archive, Split, Mail, Search, Flag } from 'lucide-react'
+import { Check, X, Sparkles, Zap, Pencil, FileText, Paperclip, Tag, History, ShieldAlert, Split, Mail, Search, Flag } from 'lucide-react'
 import api from '../api'
 import Skeleton from '../components/Skeleton'
 import EmailPreviewModal from '../components/EmailPreviewModal'
@@ -150,7 +149,6 @@ export default function Approvals() {
           Pending Approvals
           {list.length > 0 && <span className="text-sm font-bold bg-emerald-100 text-emerald-700 rounded-full px-2 py-0.5">{list.length}</span>}
         </h1>
-        <Link to="/archive" className="btn-secondary !py-1.5 text-xs"><Archive size={14} /> Archive</Link>
       </div>
       <p className="text-sm text-gray-500 mb-5">Review vendor-submitted invoices before they appear in the ledger.</p>
 

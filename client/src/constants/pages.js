@@ -30,7 +30,7 @@ export const PAGE_GROUPS = [
     { path: '/ledger', label: 'Ledger' },
     { path: '/payments', label: 'Payments' },
     { path: '/vendors', label: 'Vendors' },
-    { path: '/invoices', label: 'Invoices' },
+    { path: '/invoices', label: 'Create Invoice' },
     { path: '/financials', label: 'Financials' },
     { path: '/recoupments', label: 'Recoupments' },
     { path: '/salary', label: 'Salary' },

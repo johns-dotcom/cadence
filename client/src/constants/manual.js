@@ -100,9 +100,6 @@ export const MANUAL_SECTIONS = [
   { path: '/recording-budgets', group: 'Finance', title: 'Recording Budgets', depts: ['Finance', 'A&R'],
     summary: 'Draft → approved → locked budgets with costs-to-date vs. plan.',
     steps: ['Build sections and line items, then move the budget through its lifecycle.', 'Actuals pull from the ledger by artist automatically.'] },
-  { path: '/bulk-upload', group: 'Finance', title: 'Bulk Upload', depts: ['Finance', 'Operations'],
-    summary: 'Import many ledger entries at once from a CSV / master sheet.',
-    steps: ['Map your columns, review the preview, then import.'] },
 
   // ── Contracts & legal ──
   { path: '/contracts', group: 'Contracts & legal', title: 'Contracts', depts: ['Legal', 'Executive'],
