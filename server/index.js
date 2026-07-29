@@ -1281,6 +1281,24 @@ const runMigrations = async () => {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_reactions_msg ON chat_reactions (message_id)`);
 
+  // File/image attachments on chat messages. Same R2-or-inline model as the
+  // rest of the app: r2_key when object storage is configured, else raw base64
+  // in `data` (served by streaming, never embedded in the message JSON).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_attachments (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      message_id INT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+      r2_key TEXT,
+      data TEXT,
+      mime_type VARCHAR(120),
+      original_name VARCHAR(255),
+      size_bytes INT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_attachments_msg ON chat_attachments (message_id)`);
+
   // Helpful indexes for the hot tenant-scoped lookups.
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_releases_label ON releases (label_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_artists_label ON artists (label_id)`);

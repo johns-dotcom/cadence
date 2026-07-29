@@ -84,7 +84,12 @@ composer w/ typing, create-channel/start-DM/browse modals). Nav "Messages" item
 (General group) + mobile BottomNav "Chat" tab, both with a live unread badge
 (`/api/chat/unread`, refetched on nav + socket `message:new`). Everyone can use
 it (`canView` always-allows `/messages`). Dev Vite proxy adds `/socket.io`
-(ws:true). Follow-ups (not built): chat file/image attachments, @mention
+(ws:true). **Attachments** ✅ — `chat_attachments` table (R2-or-inline, same as
+brand assets); send route is multipart (`upload.array('files',10)`, up to 25 MB,
+attachment-only messages allowed); `GET /api/chat/attachments/:id` streams
+(membership-gated, `?token=` auth, R2→signed redirect); client renders images
+inline + non-images as download chips, with paperclip + drag-drop + paste in
+both the main and thread composers. Follow-ups (not built): @mention
 notifications, object-anchored threads (release/deal/invoice), external-guest
 channels, native activity-stream bot, huddles, Slack import, message search.
 

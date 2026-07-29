@@ -1,11 +1,16 @@
 const express = require('express');
+const multer = require('multer');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const rt = require('../lib/realtime');
+const { uploadFile, getSignedFileUrl, loadFileBuffer, deleteFile, isConfigured } = require('../lib/r2');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+const INLINE_MAX = 2 * 1024 * 1024; // 2 MB cap for the DB fallback when R2 is off
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -31,7 +36,11 @@ const MSG_SELECT = `
            SELECT json_agg(json_build_object('emoji', e.emoji, 'count', e.cnt, 'users', e.users))
            FROM (SELECT emoji, COUNT(*)::int cnt, json_agg(user_id) users
                    FROM chat_reactions WHERE message_id = m.id GROUP BY emoji) e
-         ), '[]'::json) AS reactions
+         ), '[]'::json) AS reactions,
+         COALESCE((
+           SELECT json_agg(json_build_object('id', at.id, 'mime_type', at.mime_type, 'name', at.original_name, 'size', at.size_bytes) ORDER BY at.id)
+           FROM chat_attachments at WHERE at.message_id = m.id
+         ), '[]'::json) AS attachments
     FROM chat_messages m LEFT JOIN users u ON u.id = m.user_id`;
 
 async function fetchMessage(id) {
@@ -271,13 +280,15 @@ router.get('/channels/:id/messages', async (req, res) => {
   }
 });
 
-// POST /api/chat/channels/:id/messages — { body, thread_root_id }
-router.post('/channels/:id/messages', async (req, res) => {
+// POST /api/chat/channels/:id/messages — { body, thread_root_id } + optional
+// multipart file uploads (field 'files'). A message may be attachment-only.
+router.post('/channels/:id/messages', upload.array('files', 10), async (req, res) => {
   try {
     const mem = await membership(req.params.id, req.user.id, req.labelId);
     if (!mem) return res.status(403).json({ success: false, error: 'Not a member' });
     const body = String(req.body.body || '').trim();
-    if (!body) return res.status(400).json({ success: false, error: 'Empty message' });
+    const files = req.files || [];
+    if (!body && !files.length) return res.status(400).json({ success: false, error: 'Empty message' });
     if (body.length > 8000) return res.status(400).json({ success: false, error: 'Message too long' });
 
     let root = Number(req.body.thread_root_id) || null;
@@ -291,7 +302,31 @@ router.post('/channels/:id/messages', async (req, res) => {
        VALUES ($1, $2, $3, $4, $5) RETURNING id`,
       [req.labelId, req.params.id, req.user.id, body, root]
     );
-    const msg = await fetchMessage(ins.rows[0].id);
+    const messageId = ins.rows[0].id;
+
+    // Persist each attachment — R2 when configured, raw-base64 inline otherwise.
+    for (const f of files) {
+      let r2Key = null, data = null;
+      if (isConfigured()) {
+        try {
+          const safe = (f.originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+          const key = `label-${req.labelId}/chat/${messageId}-${Date.now()}-${safe}`;
+          await uploadFile(key, f.buffer, f.mimetype);
+          r2Key = key;
+        } catch (e) { console.error('R2 chat upload failed, inlining:', e.message); }
+      }
+      if (!r2Key) {
+        if (f.buffer.length > INLINE_MAX) continue; // skip oversized when no object storage
+        data = f.buffer.toString('base64');
+      }
+      await pool.query(
+        `INSERT INTO chat_attachments (label_id, message_id, r2_key, data, mime_type, original_name, size_bytes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [req.labelId, messageId, r2Key, data, f.mimetype, (f.originalname || 'file').slice(0, 255), f.buffer.length]
+      );
+    }
+
+    const msg = await fetchMessage(messageId);
 
     // Sender's own read pointer advances so their own message isn't "unread".
     await pool.query(`UPDATE chat_members SET last_read_at = CURRENT_TIMESTAMP WHERE channel_id = $1 AND user_id = $2`, [req.params.id, req.user.id]);
@@ -331,6 +366,10 @@ router.delete('/messages/:id', async (req, res) => {
       [req.params.id, req.labelId, isAdmin, req.user.id]
     );
     if (!upd.rows.length) return res.status(403).json({ success: false, error: 'Cannot delete this message' });
+    // Best-effort cleanup of attachment objects + rows.
+    const att = await pool.query(`SELECT id, r2_key FROM chat_attachments WHERE message_id = $1`, [req.params.id]);
+    for (const a of att.rows) if (a.r2_key) deleteFile(a.r2_key).catch(() => {});
+    if (att.rows.length) await pool.query(`DELETE FROM chat_attachments WHERE message_id = $1`, [req.params.id]);
     rt.emitToChannel(upd.rows[0].channel_id, 'message:delete', { id: Number(req.params.id), channel_id: upd.rows[0].channel_id });
     res.json({ success: true });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
@@ -375,6 +414,40 @@ router.post('/channels/:id/read', async (req, res) => {
     );
     res.json({ success: true });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// GET /api/chat/attachments/:id — stream/redirect an attachment. Membership-
+// gated; supports ?token= so it works as an <img> src. R2 → signed redirect,
+// inline → streamed bytes.
+router.get('/attachments/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT at.r2_key, at.data, at.mime_type, at.original_name
+         FROM chat_attachments at
+         JOIN chat_messages m ON m.id = at.message_id AND m.deleted = false
+         JOIN chat_members cm ON cm.channel_id = m.channel_id AND cm.user_id = $2
+        WHERE at.id = $1 AND at.label_id = $3`,
+      [req.params.id, req.user.id, req.labelId]
+    );
+    if (!rows.length) return res.status(404).send('Not found');
+    const a = rows[0];
+    if (a.r2_key) {
+      const url = await getSignedFileUrl(a.r2_key, 6 * 3600).catch(() => null);
+      if (url) return res.redirect(url);
+    }
+    const buffer = await loadFileBuffer(a.r2_key, a.data);
+    if (!buffer) return res.status(404).send('Not found');
+    if (a.mime_type) res.type(a.mime_type);
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    // Non-images download with their original name.
+    if (a.mime_type && !a.mime_type.startsWith('image/')) {
+      res.setHeader('Content-Disposition', `inline; filename="${(a.original_name || 'file').replace(/"/g, '')}"`);
+    }
+    res.send(buffer);
+  } catch (err) {
+    console.error('chat attachment:', err.message);
+    res.status(500).send('Error');
+  }
 });
 
 // GET /api/chat/unread — total unread across all the caller's channels (nav badge).
