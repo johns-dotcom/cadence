@@ -35,6 +35,7 @@ export default function Settings() {
   // Identity + home-dashboard customization
   const [tagline, setTagline] = useState('')
   const [welcome, setWelcome] = useState('')
+  const [logoInitials, setLogoInitials] = useState('')
   const [dashWidgets, setDashWidgets] = useState({})
   const [pinned, setPinned] = useState([])
   const [savingDash, setSavingDash] = useState(false)
@@ -49,6 +50,7 @@ export default function Settings() {
       const s = d.settings || {}
       setTagline(s.tagline || '')
       setWelcome(s.welcome || '')
+      setLogoInitials(s.logo_initials || '')
       setDashWidgets(s.dashboard?.widgets || {})
       setPinned(Array.isArray(s.dashboard?.pinned) ? s.dashboard.pinned : [])
     }).catch(() => {})
@@ -82,7 +84,7 @@ export default function Settings() {
     e.preventDefault()
     if (accent && !isValidHex(accent)) { toast('Accent must be a hex value like #4F46E5', 'error'); return }
     try {
-      const settings = { tagline: tagline.trim(), welcome: welcome.trim() }
+      const settings = { tagline: tagline.trim(), welcome: welcome.trim(), logo_initials: logoInitials.trim().toUpperCase().slice(0, 3) }
       const { data } = await api.patch('/label', { name: labelName, accent_color: accent || '', settings })
       // Re-theme immediately + keep the rest of the app in sync.
       if (accent) applyAccent(accent); else resetAccent()
@@ -193,14 +195,19 @@ export default function Settings() {
                   {logoUrl ? (
                     <img src={logoUrl} alt="Logo" className="w-12 h-12 rounded-lg object-contain bg-gray-100 border border-rule p-0.5" />
                   ) : (
-                    <div className="w-12 h-12 rounded-lg bg-brand-600 flex items-center justify-center">
-                      <span className="text-white font-bold">{labelName?.charAt(0)?.toUpperCase() || 'C'}</span>
+                    <div className="w-12 h-12 rounded-lg flex items-center justify-center" style={{ background: (isValidHex(accent) ? accent : 'rgb(var(--color-brand-600))') }}>
+                      <span className="text-white font-bold">{logoInitials.trim().toUpperCase() || labelName?.charAt(0)?.toUpperCase() || 'C'}</span>
                     </div>
                   )}
                   <label className="btn-secondary cursor-pointer">
                     <Upload size={15} /> {logoUrl ? 'Replace' : 'Upload'}
                     <input type="file" accept="image/*" className="hidden" onChange={e => uploadLogo(e.target.files[0])} />
                   </label>
+                  {!logoUrl && (
+                    <div>
+                      <input value={logoInitials} onChange={e => setLogoInitials(e.target.value)} maxLength={3} placeholder={labelName?.charAt(0)?.toUpperCase() || 'AB'} className="input !w-20 text-center font-bold uppercase" />
+                    </div>
+                  )}
                   {logoUrl && (
                     <button type="button" onClick={removeLogo} className="text-gray-400 hover:text-danger" title="Remove logo"><Trash2 size={16} /></button>
                   )}

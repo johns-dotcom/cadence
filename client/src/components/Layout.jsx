@@ -305,7 +305,7 @@ export default function Layout() {
               <img src={label.logo_url} alt="" className="w-8 h-8 rounded-lg object-contain flex-shrink-0 bg-gray-100" />
             ) : (
               <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center flex-shrink-0">
-                <span className="text-white font-bold text-sm">{label?.name?.charAt(0)?.toUpperCase() || 'C'}</span>
+                <span className="text-white font-bold text-sm">{label?.settings?.logo_initials || label?.name?.charAt(0)?.toUpperCase() || 'C'}</span>
               </div>
             )}
             <div className="min-w-0">

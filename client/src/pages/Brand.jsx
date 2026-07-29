@@ -81,7 +81,7 @@ export default function Brand() {
       {/* Workspace identity reference */}
       <div className="card p-4 mb-6 flex items-center gap-4">
         <div className="w-12 h-12 rounded-xl bg-gray-100 flex items-center justify-center flex-shrink-0 overflow-hidden">
-          {label?.logo_url ? <img src={label.logo_url} alt="" className="w-full h-full object-contain p-1" /> : <span className="text-lg font-bold text-gray-400">{label?.name?.charAt(0)?.toUpperCase()}</span>}
+          {label?.logo_url ? <img src={label.logo_url} alt="" className="w-full h-full object-contain p-1" /> : <span className="text-lg font-bold text-gray-400">{label?.settings?.logo_initials || label?.name?.charAt(0)?.toUpperCase()}</span>}
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-ink">{label?.name}</p>
