@@ -122,7 +122,12 @@ operators when the caller is a platform admin; PlatformLayout gets a Messages
 nav item + live unread badge and `/messages` routes in the platform shell.
 Operator `#activity` feed gets platform events via `activityBot.postOperatorEvent`
 (→ Platform HQ): workspace created / suspended / reactivated (platform.js).
-Follow-ups (not built): external-guest channels, huddles, Slack import, search.
+**Message search** ✅ — `GET /api/chat/search?q=` (ILIKE over `chat_messages`,
+membership-gated by join, label-scoped, 40 newest, returns channel context +
+dm_peer); sidebar search box (debounced) lists matches across channels/DMs/
+threads; clicking loads the window ending at that message (`?before=id+1`) and
+highlights it (`msg-<id>` anchor + amber ring). Works in the operator console
+too. Follow-ups (not built): external-guest channels, huddles, Slack import.
 
 **Nothing spec-level remains.** Optional polish only: the `/manual` page, deeper
 mobile "lighter passes" on secondary pages, AI rate-limit buckets, MIME sniff on

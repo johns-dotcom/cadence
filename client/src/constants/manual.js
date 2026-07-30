@@ -37,6 +37,7 @@ export const MANUAL_SECTIONS = [
       'Type @ to mention a teammate (pick from the popup); they get a notification in the bell. Use @channel or @here to ping everyone in the channel.',
       'The #activity channel is an automatic feed of what\'s happening in Cadence — new invoices to approve, approvals, deal moves, new releases, new teammates. Each item deep-links to the record; mute it from the channel header (bell icon) if it\'s too chatty.',
       'Records have their own Discussion: open a deal (drawer) or an invoice (ledger entry → Discussion tab) to chat right on that record. Those threads also show up in Messages under "Threads" so the conversation and the work stay together.',
+      'Search every conversation from the box at the top of the sidebar — results span all your channels, DMs, and threads. Click a result to jump straight to that message (it\'s highlighted).',
       'Unread counts show next to each channel and on the Messages nav item; opening a channel marks it read.',
     ] },
   { path: '/add-invoice', group: 'Getting started', title: 'Add Invoice', depts: ['Finance', 'Operations', 'A&R', 'Marketing', 'Executive'],

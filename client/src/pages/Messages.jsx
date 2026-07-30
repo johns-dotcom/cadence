@@ -128,14 +128,14 @@ function ReactionChips({ reactions, myId, onToggle }) {
   )
 }
 
-function MessageRow({ m, prev, myId, myHandles, onReact, onReply, onEdit, onDelete, showThread = true }) {
+function MessageRow({ m, prev, myId, myHandles, highlight, onReact, onReply, onEdit, onDelete, showThread = true }) {
   const [hover, setHover] = useState(false)
   const [picker, setPicker] = useState(false)
   const isSystem = m.is_system
   const grouped = prev && prev.user_id === m.user_id && (new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000) && !m.thread_root_id && !isSystem
   const mine = Number(m.user_id) === Number(myId)
   return (
-    <div className="relative group px-3 hover:bg-page/60" onMouseEnter={() => setHover(true)} onMouseLeave={() => { setHover(false); setPicker(false) }}>
+    <div id={`msg-${m.id}`} className={`relative group px-3 transition-colors ${highlight ? 'bg-amber-50 ring-1 ring-amber-300 rounded-lg' : 'hover:bg-page/60'}`} onMouseEnter={() => setHover(true)} onMouseLeave={() => { setHover(false); setPicker(false) }}>
       <div className="flex gap-3">
         {grouped ? <div className="w-9 flex-shrink-0 text-[10px] text-transparent group-hover:text-gray-400 text-right pt-1">{fmtTime(m.created_at).replace(/ ?[AP]M/, '')}</div>
           : isSystem ? <div className="w-9 h-9 rounded-lg bg-violet-100 text-violet-600 flex items-center justify-center flex-shrink-0"><Zap size={18} /></div>
@@ -188,7 +188,7 @@ function MessageRow({ m, prev, myId, myHandles, onReact, onReply, onEdit, onDele
 }
 
 // Renders a list of messages with day separators.
-export function MessageList({ messages, myId, myHandles, onReact, onReply, onEdit, onDelete, showThread }) {
+export function MessageList({ messages, myId, myHandles, highlightId, onReact, onReply, onEdit, onDelete, showThread }) {
   const out = []
   let lastDay = null
   messages.forEach((m, i) => {
@@ -197,7 +197,7 @@ export function MessageList({ messages, myId, myHandles, onReact, onReply, onEdi
       out.push(<div key={`d-${m.id}`} className="flex items-center gap-3 px-4 my-3"><div className="flex-1 h-px bg-rule" /><span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">{day}</span><div className="flex-1 h-px bg-rule" /></div>)
       lastDay = day
     }
-    out.push(<MessageRow key={m.id} m={m} prev={i > 0 ? messages[i - 1] : null} myId={myId} myHandles={myHandles} onReact={onReact} onReply={onReply} onEdit={onEdit} onDelete={onDelete} showThread={showThread} />)
+    out.push(<MessageRow key={m.id} m={m} prev={i > 0 ? messages[i - 1] : null} myId={myId} myHandles={myHandles} highlight={m.id === highlightId} onReact={onReact} onReply={onReply} onEdit={onEdit} onDelete={onDelete} showThread={showThread} />)
   })
   return <div className="py-2">{out}</div>
 }
@@ -228,6 +228,13 @@ export default function Messages() {
   const mainTextRef = useRef(null)
   const [roster, setRoster] = useState([])
   const [mention, setMention] = useState(null) // { query, start } for @-autocomplete
+  const [focusId, setFocusId] = useState(null)     // jump-to-message from search
+  const [highlightId, setHighlightId] = useState(null)
+  const [searchQ, setSearchQ] = useState('')
+  const [searchResults, setSearchResults] = useState(null) // null = not searching
+
+  // Open a channel, optionally jumping to a specific message (from search).
+  const openChannel = (id, focus = null) => { setFocusId(focus); setActiveId(id) }
 
   // The current user's own handles — used to highlight mentions of "you".
   const myHandles = useMemo(() => {
@@ -263,25 +270,43 @@ export default function Messages() {
   // already on the Messages page) — the URL param drives the active channel.
   useEffect(() => { if (channelId && Number(channelId) !== activeId) setActiveId(Number(channelId)) }, [channelId]) // eslint-disable-line
 
-  // Load messages + mark read when the active channel changes.
+  // Load messages + mark read when the active channel changes. When jumping to
+  // a searched message, load the window ending at it (so it's the newest shown
+  // and lands at the bottom) and briefly highlight it.
   useEffect(() => {
     if (!activeId) return
     let cancelled = false
     setLoadingMsgs(true); setThread(null)
     emit('channel:subscribe', { channelId: activeId })
-    api.get(`/chat/channels/${activeId}/messages`).then(({ data }) => {
+    const url = focusId ? `/chat/channels/${activeId}/messages?before=${focusId + 1}` : `/chat/channels/${activeId}/messages`
+    api.get(url).then(({ data }) => {
       if (cancelled) return
       setMessages(data.data || [])
       setLoadingMsgs(false)
+      if (focusId) {
+        setHighlightId(focusId)
+        setTimeout(() => { document.getElementById(`msg-${focusId}`)?.scrollIntoView({ block: 'center' }) }, 80)
+        setTimeout(() => setHighlightId(null), 2800)
+      }
     }).catch(() => { if (!cancelled) setLoadingMsgs(false) })
     api.post(`/chat/channels/${activeId}/read`).then(() => {
       setChannels(cs => cs.map(c => c.id === activeId ? { ...c, unread: 0 } : c))
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [activeId, emit])
+  }, [activeId, focusId, emit])
 
-  // Auto-scroll to the newest message.
-  useEffect(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight }, [messages, loadingMsgs])
+  // Auto-scroll to the newest message (skip while highlighting a jumped-to one).
+  useEffect(() => { if (highlightId) return; const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight }, [messages, loadingMsgs, highlightId])
+
+  // Debounced message search across all the caller's channels.
+  useEffect(() => {
+    const q = searchQ.trim()
+    if (q.length < 2) { setSearchResults(null); return }
+    const t = setTimeout(() => {
+      api.get(`/chat/search?q=${encodeURIComponent(q)}`).then(({ data }) => setSearchResults(data.data || [])).catch(() => setSearchResults([]))
+    }, 250)
+    return () => clearTimeout(t)
+  }, [searchQ])
 
   // ── Socket wiring ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -418,32 +443,65 @@ export default function Messages() {
     <div className="flex h-[calc(100vh-9rem)] rounded-xl border border-rule overflow-hidden bg-card">
       {/* ── Sidebar ── */}
       <aside className={`w-64 border-r border-rule flex flex-col bg-page/40 ${active && 'hidden md:flex'}`}>
-        <div className="p-3 border-b border-rule flex items-center justify-between">
-          <h2 className="font-bold text-ink">Messages</h2>
-          <div className="flex gap-1">
-            <button onClick={() => setNewModal('browse')} className="p-1.5 text-gray-500 hover:text-brand-600" title="Browse channels"><Search size={16} /></button>
-            <button onClick={() => setNewModal('channel')} className="p-1.5 text-gray-500 hover:text-brand-600" title="New channel"><Plus size={18} /></button>
+        <div className="p-3 border-b border-rule">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-bold text-ink">Messages</h2>
+            <div className="flex gap-1">
+              <button onClick={() => setNewModal('browse')} className="p-1.5 text-gray-500 hover:text-brand-600" title="Browse channels to join"><Hash size={16} /></button>
+              <button onClick={() => setNewModal('channel')} className="p-1.5 text-gray-500 hover:text-brand-600" title="New channel"><Plus size={18} /></button>
+            </div>
+          </div>
+          <div className="relative">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input value={searchQ} onChange={e => setSearchQ(e.target.value)} placeholder="Search messages…"
+              className="w-full text-sm pl-8 pr-7 py-1.5 rounded-lg bg-card border border-rule outline-none focus:border-brand-400 text-ink" />
+            {searchQ && <button onClick={() => setSearchQ('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-ink"><X size={14} /></button>}
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-4">
-          <ChannelGroup title="Channels" items={channels.filter(c => c.type === 'channel')} activeId={activeId} onPick={setActiveId} online={online} />
-          <div>
-            <div className="flex items-center justify-between px-2 mb-1">
-              <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Direct Messages</span>
-              <button onClick={() => setNewModal('dm')} className="text-gray-400 hover:text-brand-600" title="New DM"><Plus size={14} /></button>
-            </div>
-            {channels.filter(c => c.type === 'dm').map(c => (
-              <ChannelButton key={c.id} c={c} active={c.id === activeId} onPick={setActiveId} online={online} />
-            ))}
-          </div>
-          {channels.some(c => c.type === 'object') && (
+          {searchResults !== null ? (
             <div>
-              <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide px-2">Threads</span>
-              <p className="text-[10px] text-gray-400 px-2 mb-1">Discussions on records you follow</p>
-              {channels.filter(c => c.type === 'object').map(c => (
-                <ChannelButton key={c.id} c={c} active={c.id === activeId} onPick={setActiveId} online={online} />
-              ))}
+              <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide px-2 mb-1">
+                {searchResults.length ? `${searchResults.length} result${searchResults.length === 1 ? '' : 's'}` : 'No matches'}
+              </p>
+              {searchResults.map(r => {
+                const label = r.channel_type === 'dm' ? (r.dm_peer || 'Direct message')
+                  : r.channel_type === 'object' ? (r.channel_name || 'Thread')
+                  : `#${r.channel_name}`
+                return (
+                  <button key={r.id} onClick={() => { openChannel(r.channel_id, r.id); setSearchQ('') }}
+                    className="w-full text-left px-2 py-2 rounded-lg hover:bg-page">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-brand-600 truncate">{label}</span>
+                      <span className="text-[10px] text-gray-400 flex-shrink-0">{new Date(r.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                    </div>
+                    <p className="text-xs text-gray-600 truncate">{r.is_system ? '' : `${r.author_name || 'Unknown'}: `}{r.body}</p>
+                  </button>
+                )
+              })}
             </div>
+          ) : (
+            <>
+              <ChannelGroup title="Channels" items={channels.filter(c => c.type === 'channel')} activeId={activeId} onPick={openChannel} online={online} />
+              <div>
+                <div className="flex items-center justify-between px-2 mb-1">
+                  <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Direct Messages</span>
+                  <button onClick={() => setNewModal('dm')} className="text-gray-400 hover:text-brand-600" title="New DM"><Plus size={14} /></button>
+                </div>
+                {channels.filter(c => c.type === 'dm').map(c => (
+                  <ChannelButton key={c.id} c={c} active={c.id === activeId} onPick={openChannel} online={online} />
+                ))}
+              </div>
+              {channels.some(c => c.type === 'object') && (
+                <div>
+                  <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide px-2">Threads</span>
+                  <p className="text-[10px] text-gray-400 px-2 mb-1">Discussions on records you follow</p>
+                  {channels.filter(c => c.type === 'object').map(c => (
+                    <ChannelButton key={c.id} c={c} active={c.id === activeId} onPick={openChannel} online={online} />
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
       </aside>
@@ -479,7 +537,7 @@ export default function Messages() {
               {dragOver && <div className="absolute inset-0 z-10 flex items-center justify-center bg-brand-50/80 text-brand-700 font-medium text-sm pointer-events-none">Drop files to attach</div>}
               {loadingMsgs ? <div className="p-6 text-sm text-gray-400">Loading…</div>
                 : messages.length === 0 ? <div className="p-6 text-sm text-gray-400">This is the beginning of {active.display_name ? `your conversation with ${active.display_name}` : `#${active.name}`}.</div>
-                : <MessageList messages={messages} myId={user.id} myHandles={myHandles} onReact={react} onReply={openThread} onEdit={startEdit} onDelete={del} showThread />}
+                : <MessageList messages={messages} myId={user.id} myHandles={myHandles} highlightId={highlightId} onReact={react} onReply={openThread} onEdit={startEdit} onDelete={del} showThread />}
             </div>
 
             <div className="px-4 pb-3 flex-shrink-0">

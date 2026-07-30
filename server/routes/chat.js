@@ -543,6 +543,34 @@ router.post('/channels/:id/mute', async (req, res) => {
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 
+// GET /api/chat/search?q= — search messages across every channel the caller
+// belongs to (label-scoped, membership-gated by the join). Returns matches
+// newest-first with enough channel context for the client to label + jump.
+router.get('/search', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json({ success: true, data: [] });
+    const { rows } = await pool.query(
+      `SELECT m.id, m.channel_id, m.body, m.created_at, m.is_system,
+              u.name AS author_name,
+              c.type AS channel_type, c.name AS channel_name, c.entity_type,
+              (SELECT u2.name FROM chat_members cm2 JOIN users u2 ON u2.id = cm2.user_id
+                WHERE cm2.channel_id = c.id AND cm2.user_id <> $2 LIMIT 1) AS dm_peer
+         FROM chat_messages m
+         JOIN chat_members cm ON cm.channel_id = m.channel_id AND cm.user_id = $2
+         JOIN chat_channels c ON c.id = m.channel_id
+         LEFT JOIN users u ON u.id = m.user_id
+        WHERE m.label_id = $1 AND m.deleted = false AND m.body ILIKE $3
+        ORDER BY m.id DESC LIMIT 40`,
+      [req.labelId, req.user.id, `%${q}%`]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('chat search:', err.message);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // GET /api/chat/unread — total unread across all the caller's channels (nav badge).
 router.get('/unread', async (req, res) => {
   try {
