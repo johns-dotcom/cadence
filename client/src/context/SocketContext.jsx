@@ -17,8 +17,9 @@ export function SocketProvider({ children }) {
   const [online, setOnline] = useState(() => new Set())
 
   useEffect(() => {
-    // Operators in the platform shell (no workspace) don't get a chat socket.
-    if (!token || !user || user.is_platform_admin) {
+    // Connect whenever there's an authenticated session. Operators chat within
+    // their Platform HQ home label; workspace users within their tenant.
+    if (!token || !user) {
       if (socketRef.current) { socketRef.current.disconnect(); socketRef.current = null; setConnected(false); setOnline(new Set()) }
       return
     }

@@ -114,8 +114,15 @@ the caller. Reusable `components/ObjectDiscussion.jsx` (imports MessageList /
 FileChips / postMessage from Messages.jsx) is an inline live thread — wired into
 the **Deals drawer** and the **ledger entry drawer** ("Discussion" tab); trivial
 to drop onto releases/artists/campaigns. These threads also appear in Messages
-under a **"Threads"** sidebar group (MessageSquare icon). Follow-ups (not built):
-external-guest channels, huddles, Slack import, message search.
+under a **"Threads"** sidebar group (MessageSquare icon). **Operator chat** ✅ —
+the whole chat suite is available in the platform console too: scoped to the
+Platform HQ (`is_system`) label, so operators chat among themselves with no
+tenant leakage. SocketContext now connects for operators; `/chat/users` includes
+operators when the caller is a platform admin; PlatformLayout gets a Messages
+nav item + live unread badge and `/messages` routes in the platform shell.
+Operator `#activity` feed gets platform events via `activityBot.postOperatorEvent`
+(→ Platform HQ): workspace created / suspended / reactivated (platform.js).
+Follow-ups (not built): external-guest channels, huddles, Slack import, search.
 
 **Nothing spec-level remains.** Optional polish only: the `/manual` page, deeper
 mobile "lighter passes" on secondary pages, AI rate-limit buckets, MIME sniff on

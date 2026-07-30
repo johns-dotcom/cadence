@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Outlet, Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Building2, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users, ShieldCheck, Megaphone } from 'lucide-react'
+import { LayoutDashboard, Building2, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users, ShieldCheck, Megaphone, MessageSquare } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
+import { useSocket } from '../context/SocketContext'
 import { useTheme } from '../context/ThemeContext'
 import api from '../api'
 import ErrorBoundary from './ErrorBoundary'
@@ -11,6 +12,7 @@ import ErrorBoundary from './ErrorBoundary'
 // Operators (managing other admins) is owner-only.
 const NAV = [
   { path: '/', label: 'Overview', icon: LayoutDashboard },
+  { path: '/messages', label: 'Messages', icon: MessageSquare },
   { path: '/workspaces', label: 'Workspaces', icon: Building2 },
   { path: '/activity', label: 'Activity', icon: ScrollText },
   { path: '/announcements', label: 'Announcements', icon: Megaphone },
@@ -19,6 +21,7 @@ const NAV = [
 ]
 const META = {
   '/': { title: 'Overview', sub: 'Everything across the platform at a glance' },
+  '/messages': { title: 'Messages', sub: 'Operator team chat' },
   '/workspaces': { title: 'Workspaces', sub: 'Provision, monitor and manage label accounts' },
   '/activity': { title: 'Activity', sub: 'Cross-tenant audit feed' },
   '/announcements': { title: 'Announcements', sub: 'Broadcast banners to workspaces' },
@@ -37,8 +40,15 @@ export default function PlatformLayout() {
   useEffect(() => {
     api.get('/platform/my-access').then(r => setPageAccess(r.data.data?.pages ?? null)).catch(() => setPageAccess(null))
   }, [])
-  // Overview + Account are always reachable so an operator is never locked out.
-  const canSee = (path) => path === '/' || path === '/account' || !pageAccess || pageAccess.includes(path)
+  // Overview + Account + Messages are always reachable so an operator is never locked out.
+  const canSee = (path) => path === '/' || path === '/account' || path === '/messages' || !pageAccess || pageAccess.includes(path)
+
+  // Live operator-chat unread badge.
+  const { on: onSocket } = useSocket()
+  const [chatUnread, setChatUnread] = useState(0)
+  const refreshChatUnread = () => api.get('/chat/unread').then(r => setChatUnread(r.data?.data?.total || 0)).catch(() => {})
+  useEffect(() => { refreshChatUnread() }, [location.pathname])
+  useEffect(() => onSocket('message:new', () => refreshChatUnread()), [onSocket])
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 1023px)')
@@ -81,6 +91,9 @@ export default function PlatformLayout() {
                 {active && <span className="absolute left-0 top-1.5 bottom-1.5 w-1 rounded-full bg-brand-600" />}
                 <Icon size={17} strokeWidth={active ? 2.2 : 1.6} className={active ? 'text-brand-600' : 'text-gray-400 group-hover:text-gray-600'} />
                 <span>{label}</span>
+                {path === '/messages' && chatUnread > 0 && (
+                  <span className="ml-auto bg-brand-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">{chatUnread}</span>
+                )}
               </Link>
             )
           })}

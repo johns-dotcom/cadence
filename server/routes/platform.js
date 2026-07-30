@@ -11,6 +11,7 @@ const { getSignedFileUrl, uploadFile, deleteFile, isConfigured } = require('../l
 const { sendEmail, inviteEmail } = require('../lib/email');
 const { deleteUserWithSweep } = require('../lib/userDelete');
 const aiUsage = require('../lib/aiUsage');
+const activityBot = require('../lib/activityBot');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -420,6 +421,7 @@ router.post('/workspaces', requirePlatformOwner, async (req, res) => {
         'INSERT INTO labels (name, slug, owner_user_id, created_at) VALUES ($1, $2, $3, NOW()) RETURNING id, name, slug, created_at',
         [labelName.trim(), slug, ownerOperatorId]
       );
+      activityBot.postOperatorEvent({ text: `🏢 New workspace created: *${labelRes.rows[0].name}* — owner ${op[0].name}, by ${req.user.name}`, icon: 'building', link: '/workspaces' });
       return res.status(201).json({ success: true, data: { label: labelRes.rows[0], owner: op[0], assigned_operator: true } });
     }
 
@@ -464,6 +466,7 @@ router.post('/workspaces', requirePlatformOwner, async (req, res) => {
     });
     const mail = await sendEmail({ to: ownerRes.rows[0].email, subject: msg.subject, html: msg.html, text: msg.text });
 
+    activityBot.postOperatorEvent({ text: `🏢 New workspace created: *${label.name}* — owner invited (${ownerRes.rows[0].email}), by ${req.user.name}`, icon: 'building', link: '/workspaces' });
     res.status(201).json({
       success: true,
       data: { label, owner: ownerRes.rows[0], invite_link: link, email_sent: mail.sent },
@@ -799,10 +802,11 @@ router.delete('/workspaces/:id/members/:userId', async (req, res) => {
 router.post('/workspaces/:id/suspend', requirePlatformOwner, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      "UPDATE labels SET status = 'suspended', suspended_at = NOW() WHERE id = $1 RETURNING id, status",
+      "UPDATE labels SET status = 'suspended', suspended_at = NOW() WHERE id = $1 RETURNING id, name, status",
       [parseInt(req.params.id, 10)]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
+    activityBot.postOperatorEvent({ text: `⛔ Workspace suspended: *${rows[0].name}* — by ${req.user.name}`, icon: 'building', link: '/workspaces' });
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Suspend workspace error:', error);
@@ -813,10 +817,11 @@ router.post('/workspaces/:id/suspend', requirePlatformOwner, async (req, res) =>
 router.post('/workspaces/:id/reactivate', requirePlatformOwner, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      "UPDATE labels SET status = 'active', suspended_at = NULL WHERE id = $1 RETURNING id, status",
+      "UPDATE labels SET status = 'active', suspended_at = NULL WHERE id = $1 RETURNING id, name, status",
       [parseInt(req.params.id, 10)]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
+    activityBot.postOperatorEvent({ text: `✅ Workspace reactivated: *${rows[0].name}* — by ${req.user.name}`, icon: 'building', link: '/workspaces' });
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Reactivate workspace error:', error);

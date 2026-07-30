@@ -101,6 +101,8 @@ function AppContent() {
         /* ── Platform operator shell ── */
         <Route element={<ProtectedRoute><PlatformLayout /></ProtectedRoute>}>
           <Route path="/"           element={<PlatformOverview />} />
+          <Route path="/messages"   element={<Messages />} />
+          <Route path="/messages/:channelId" element={<Messages />} />
           <Route path="/workspaces" element={<Workspaces />} />
           <Route path="/activity"   element={<PlatformActivity />} />
           <Route path="/announcements" element={<PlatformAnnouncements />} />

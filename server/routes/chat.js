@@ -562,14 +562,17 @@ router.get('/unread', async (req, res) => {
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 
-// GET /api/chat/users — workspace roster for DM/member pickers.
+// GET /api/chat/users — roster for DM/member pickers. In a tenant workspace this
+// excludes operator "ghost" rows; in the operator's own Platform HQ context the
+// caller is a platform admin, so include operators (they ARE the members there).
 router.get('/users', async (req, res) => {
   try {
+    const includeOperators = !!req.user.is_platform_admin;
     const { rows } = await pool.query(
       `SELECT id, name, email, role FROM users
-        WHERE label_id = $1 AND (is_platform_admin = false OR is_platform_admin IS NULL)
+        WHERE label_id = $1 AND ($2 = true OR is_platform_admin = false OR is_platform_admin IS NULL)
         ORDER BY name`,
-      [req.labelId]
+      [req.labelId, includeOperators]
     );
     res.json({ success: true, data: rows });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }

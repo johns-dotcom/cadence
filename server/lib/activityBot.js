@@ -60,4 +60,15 @@ async function postEvent(labelId, { text, icon, link } = {}) {
   }
 }
 
-module.exports = { postEvent, ensureActivityChannel };
+// Post an event to the operators' own #activity feed (the Platform HQ label),
+// so platform-level happenings (new workspace, suspension) surface in operator
+// chat the same way tenant events do inside a workspace.
+async function postOperatorEvent({ text, icon, link } = {}) {
+  try {
+    const hq = await pool.query(`SELECT id FROM labels WHERE is_system = true ORDER BY id LIMIT 1`);
+    const id = hq.rows[0]?.id;
+    if (id) await postEvent(id, { text, icon, link });
+  } catch (e) { console.error('activityBot.postOperatorEvent:', e.message); }
+}
+
+module.exports = { postEvent, postOperatorEvent, ensureActivityChannel };
