@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Building2, Users, Music, Disc3, TrendingUp, FileText, BookOpen, Plus, ArrowRight, LogIn, Ban } from 'lucide-react'
+import { Building2, Disc3, TrendingUp, ArrowRight, LogIn, Ban } from 'lucide-react'
 import { AreaChart, Area, XAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import api from '../api'
 import Skeleton from '../components/Skeleton'
@@ -18,14 +18,9 @@ const fmtAgo = (d) => {
 }
 const num = (n) => Number(n || 0).toLocaleString()
 
-const CARDS = [
-  { key: 'members', label: 'Members', icon: Users },
-  { key: 'releases', label: 'Releases', icon: Music },
-  { key: 'artists', label: 'Artists', icon: Disc3 },
-  { key: 'deals', label: 'Deals', icon: TrendingUp },
-  { key: 'contracts', label: 'Contracts', icon: FileText },
-  { key: 'ledger_entries', label: 'Ledger entries', icon: BookOpen },
-]
+// The operator's own sign-ins / workspace entries are self-noise on the
+// at-a-glance overview — filtered out here (still visible on the full feed).
+const NOISE = /signed in|workspace entered/i
 
 export default function PlatformOverview() {
   const { toast } = useToast()
@@ -59,6 +54,7 @@ export default function PlatformOverview() {
   }
 
   const t = data?.totals || {}
+  const activity = (data?.recentActivity || []).filter(a => !NOISE.test(a.action || '')).slice(0, 7)
 
   return (
     <div className="space-y-6">
@@ -74,10 +70,14 @@ export default function PlatformOverview() {
             </div>
             <div className="h-9 w-px bg-white/15 hidden sm:block" />
             <div><p className="text-2xl font-semibold leading-none">{loading ? '—' : num(t.members)}</p><p className="text-xs text-white/60 mt-1.5">Members</p></div>
-            <div><p className="text-2xl font-semibold leading-none">{loading ? '—' : num(t.releases)}</p><p className="text-xs text-white/60 mt-1.5">Releases</p></div>
-            {t.suspended > 0 && (
-              <div className="inline-flex items-center gap-1.5 text-xs font-semibold bg-white/10 rounded-full px-2.5 py-1"><Ban size={12} /> {t.suspended} suspended</div>
-            )}
+            <div className="flex items-center gap-2">
+              {t.new_30d > 0 && (
+                <span className="inline-flex items-center gap-1 text-xs font-semibold bg-white/10 rounded-full px-2.5 py-1"><TrendingUp size={12} /> +{t.new_30d} this month</span>
+              )}
+              {t.suspended > 0 && (
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold bg-white/10 rounded-full px-2.5 py-1"><Ban size={12} /> {t.suspended} suspended</span>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-2 mt-5">
             <Link to="/workspaces" className="inline-flex items-center gap-1.5 text-sm font-semibold bg-white text-gray-900 px-3.5 py-2 rounded-lg hover:bg-white/90 transition"><Building2 size={15} /> Manage workspaces</Link>
@@ -85,50 +85,30 @@ export default function PlatformOverview() {
         </div>
       </div>
 
-      {/* KPI cards + growth chart */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {/* Workspaces card carries the 30-day growth signal */}
-          <div className="card p-4">
-            <div className="flex items-center gap-1.5 text-[11px] text-gray-400 mb-1"><Building2 size={12} /> Workspaces</div>
-            <p className="text-2xl font-bold text-ink">{loading ? '—' : num(t.workspaces)}</p>
-            {t.new_30d > 0 && <span className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-emerald-600 mt-1"><TrendingUp size={11} /> +{t.new_30d} this month</span>}
-          </div>
-          {CARDS.map(c => {
-            const Icon = c.icon
-            return (
-              <div key={c.key} className="card p-4">
-                <div className="flex items-center gap-1.5 text-[11px] text-gray-400 mb-1"><Icon size={12} /> {c.label}</div>
-                <p className="text-2xl font-bold text-ink">{loading ? '—' : num(t[c.key])}</p>
-              </div>
-            )
-          })}
+      {/* Workspace growth */}
+      <div className="card p-5">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-sm font-bold text-ink">Workspace growth</h2>
+          <span className="text-[11px] text-gray-400">New workspaces · 12 mo</span>
         </div>
-
-        <div className="card p-5">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-sm font-bold text-ink">Workspace growth</h2>
-            <span className="text-[11px] text-gray-400">12 mo</span>
+        {loading ? <Skeleton.Block h="h-40" /> : (
+          <div style={{ height: 168 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={series} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="pw" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="rgb(var(--color-brand-500))" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="rgb(var(--color-brand-500))" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--color-gray-200))" vertical={false} />
+                <XAxis dataKey="month" tick={{ fontSize: 10 }} interval={1} />
+                <Tooltip />
+                <Area type="monotone" dataKey="n" name="New workspaces" stroke="rgb(var(--color-brand-500))" fill="url(#pw)" strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
-          {loading ? <Skeleton.Block h="h-40" /> : (
-            <div style={{ height: 168 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={series} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="pw" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="rgb(var(--color-brand-500))" stopOpacity={0.35} />
-                      <stop offset="95%" stopColor="rgb(var(--color-brand-500))" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--color-gray-200))" vertical={false} />
-                  <XAxis dataKey="month" tick={{ fontSize: 10 }} interval={1} />
-                  <Tooltip />
-                  <Area type="monotone" dataKey="n" name="New workspaces" stroke="rgb(var(--color-brand-500))" fill="url(#pw)" strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </div>
+        )}
       </div>
 
       {/* Rails */}
@@ -160,13 +140,13 @@ export default function PlatformOverview() {
             <Link to="/activity" className="text-xs font-semibold text-brand-600 hover:text-brand-700 inline-flex items-center gap-1">All <ArrowRight size={12} /></Link>
           </div>
           <div className="card divide-y divide-divider">
-            {loading ? <div className="p-4"><Skeleton.TaskList count={6} /></div> : (data?.recentActivity || []).slice(0, 12).map((a, i) => (
+            {loading ? <div className="p-4"><Skeleton.TaskList count={6} /></div> : activity.map((a, i) => (
               <div key={i} className="px-4 py-2.5">
                 <p className="text-sm text-ink">{a.action}{a.detail ? <span className="text-gray-400"> — {a.detail}</span> : ''}</p>
                 <p className="text-[11px] text-gray-400"><span className="font-medium text-gray-500">{a.workspace}</span> · {a.user_name || 'System'} · {fmtAgo(a.created_at)}</p>
               </div>
             ))}
-            {!loading && !data?.recentActivity?.length && <div className="px-4 py-6 text-center"><p className="text-sm text-gray-400">No activity yet.</p></div>}
+            {!loading && !activity.length && <div className="px-4 py-6 text-center"><p className="text-sm text-gray-400">Nothing notable yet.</p></div>}
           </div>
         </div>
       </div>
