@@ -6,6 +6,7 @@ const { withTenant } = require('../middleware/tenant');
 const rt = require('../lib/realtime');
 const { recordMentions } = require('../lib/mentions');
 const { ensureActivityChannel } = require('../lib/activityBot');
+const { sendEmail, chatMentionEmail } = require('../lib/email');
 const { uploadFile, getSignedFileUrl, loadFileBuffer, deleteFile, isConfigured } = require('../lib/r2');
 
 const router = express.Router();
@@ -397,9 +398,9 @@ router.post('/channels/:id/messages', upload.array('files', 10), async (req, res
         const named = await recordMentions({ labelId: req.labelId, actorId: req.user.id, body, source: 'chat', sourceId: Number(req.params.id), link });
         const notify = new Set(named);
         if (/@(channel|here|everyone)\b/i.test(body)) {
-          const mem = await pool.query(`SELECT user_id FROM chat_members WHERE channel_id = $1 AND user_id <> $2 AND label_id = $3`, [req.params.id, req.user.id, req.labelId]);
+          const chMembers = await pool.query(`SELECT user_id FROM chat_members WHERE channel_id = $1 AND user_id <> $2 AND label_id = $3`, [req.params.id, req.user.id, req.labelId]);
           const snippet = body.slice(0, 240);
-          for (const r of mem.rows) {
+          for (const r of chMembers.rows) {
             if (notify.has(r.user_id)) continue;
             await pool.query(
               `INSERT INTO user_mentions (label_id, mentioned_user_id, actor_id, source, source_id, snippet, link)
@@ -410,6 +411,27 @@ router.post('/channels/:id/messages', upload.array('files', 10), async (req, res
           }
         }
         notify.forEach(uid => rt.emitToUser(uid, 'mention', { channelId: Number(req.params.id) }));
+
+        // Email the mentioned people who AREN'T currently online (online users
+        // already got the live in-app notification). Best-effort; degrades to a
+        // no-op if no email provider is configured.
+        const ids = [...notify];
+        if (ids.length) {
+          const onlineSet = new Set((rt.onlineUsers(req.labelId) || []).map(Number));
+          const offline = ids.filter(id => !onlineSet.has(Number(id)));
+          if (offline.length) {
+            const recips = await pool.query(`SELECT name, email FROM users WHERE id = ANY($1::int[]) AND email IS NOT NULL AND email <> ''`, [offline]);
+            const lab = await pool.query('SELECT name FROM labels WHERE id = $1', [req.labelId]);
+            const workspaceName = lab.rows[0]?.name || 'your workspace';
+            const origin = process.env.FRONTEND_URL || req.headers.origin || `${req.protocol}://${req.get('host')}`;
+            const channelLabel = mem?.type === 'object' ? (mem.name || 'a thread') : (mem?.name ? `#${mem.name}` : 'a conversation');
+            const snippet = body.slice(0, 280);
+            for (const r of recips.rows) {
+              const msg = chatMentionEmail({ recipientName: r.name, actorName: req.user.name, workspaceName, channelLabel, snippet, link: `${origin}/messages/${req.params.id}` });
+              sendEmail({ to: r.email, subject: msg.subject, html: msg.html, text: msg.text }).catch(() => {});
+            }
+          }
+        }
       } catch (e) { console.error('chat mentions:', e.message); }
     }
 

@@ -93,7 +93,10 @@ both the main and thread composers. **@mentions** ✅ — reuses `lib/mentions.j
 `recordMentions` (source='chat', link=`/messages/:id`) so chat mentions land in
 the existing notification bell + mark-read; `@channel`/`@here`/`@everyone`
 notify all channel members; server emits a live `mention` socket event and
-`NotificationBell` refreshes on it (no waiting for the 2-min poll); client
+`NotificationBell` refreshes on it (no waiting for the 2-min poll); **email
+fallback** — mentioned users NOT currently online (per `rt.onlineUsers`) also
+get a `chatMentionEmail` (email.js), best-effort, no-op without a provider;
+client
 highlights @mentions in rendered messages (stronger highlight when it's you)
 and offers an `@`-autocomplete popup in the composer (first-name handle if
 unique, else flattened full name). **Activity-stream bot** ✅ — `lib/activityBot.js`

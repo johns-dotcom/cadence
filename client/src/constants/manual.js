@@ -34,7 +34,7 @@ export const MANUAL_SECTIONS = [
       'Start a direct message from the + next to Direct Messages; a green dot means someone is online now.',
       'Reply in a thread to keep side-conversations tidy, react with an emoji on hover, and edit or delete your own messages.',
       'Attach files or images with the paperclip — or just drag-and-drop or paste them into the composer. Images preview inline.',
-      'Type @ to mention a teammate (pick from the popup); they get a notification in the bell. Use @channel or @here to ping everyone in the channel.',
+      'Type @ to mention a teammate (pick from the popup); they get a notification in the bell — and an email if they\'re not currently online. Use @channel or @here to ping everyone in the channel.',
       'The #activity channel is an automatic feed of what\'s happening in Cadence — new invoices to approve, approvals, deal moves, new releases, new teammates. Each item deep-links to the record; mute it from the channel header (bell icon) if it\'s too chatty.',
       'Records have their own Discussion: open a deal (drawer) or an invoice (ledger entry → Discussion tab) to chat right on that record. Those threads also show up in Messages under "Threads" so the conversation and the work stay together.',
       'Search every conversation from the box at the top of the sidebar — results span all your channels, DMs, and threads. Click a result to jump straight to that message (it\'s highlighted).',

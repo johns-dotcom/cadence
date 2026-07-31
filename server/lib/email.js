@@ -172,4 +172,14 @@ function approvalRequestEmail({ approverName, workspaceName, count, totalLine, n
   return { subject, html: shell('Invoices for approval', body), text: subject };
 }
 
-module.exports = { sendEmail, inviteEmail, vendorDecisionEmail, paymentConfirmationEmail, taskAssignmentEmail, internalRequestEmail, approvalRequestEmail };
+// Someone @-mentioned you in chat (sent when you're not currently online).
+function chatMentionEmail({ recipientName, actorName, workspaceName, channelLabel, snippet, link }) {
+  const subject = `${actorName || 'Someone'} mentioned you in ${workspaceName}`;
+  const body = `<p style="color:#444;font-size:14px;line-height:1.6">Hi ${esc(recipientName || 'there')},</p>
+    <p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(actorName || 'Someone')}</strong> mentioned you in <strong>${esc(channelLabel || 'a conversation')}</strong> on <strong>${esc(workspaceName)}</strong>:</p>
+    <p style="color:#111;font-size:14px;line-height:1.6;background:#f4f4f6;border-radius:8px;padding:12px;border-left:3px solid #4F46E5">${esc(snippet).replace(/\n/g, '<br>')}</p>
+    ${link ? `<p style="margin:18px 0"><a href="${link}" style="background:#4F46E5;color:#fff;text-decoration:none;font-weight:600;font-size:14px;padding:10px 18px;border-radius:8px;display:inline-block">Open in Cadence</a></p>` : ''}`;
+  return { subject, html: shell('You were mentioned', body), text: `${subject}: ${snippet}` };
+}
+
+module.exports = { sendEmail, inviteEmail, vendorDecisionEmail, paymentConfirmationEmail, taskAssignmentEmail, internalRequestEmail, approvalRequestEmail, chatMentionEmail };
