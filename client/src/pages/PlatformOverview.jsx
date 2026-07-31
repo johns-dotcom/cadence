@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Building2, Disc3, TrendingUp, ArrowRight, LogIn, Ban } from 'lucide-react'
-import { AreaChart, Area, XAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import api from '../api'
 import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
@@ -27,24 +26,10 @@ export default function PlatformOverview() {
   const { user, enterWorkspace } = useAuth()
   const navigate = useNavigate()
   const [data, setData] = useState(null)
-  const [series, setSeries] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    Promise.all([
-      api.get('/platform/overview').then(r => setData(r.data.data)).catch(() => {}),
-      api.get('/platform/analytics').then(r => {
-        const map = Object.fromEntries((r.data.data?.workspacesByMonth || []).map(m => [m.month, m.n]))
-        const out = []
-        const now = new Date()
-        for (let i = 11; i >= 0; i--) {
-          const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1))
-          const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
-          out.push({ month: key.slice(2), n: map[key] || 0 })
-        }
-        setSeries(out)
-      }).catch(() => {}),
-    ]).finally(() => setLoading(false))
+    api.get('/platform/overview').then(r => setData(r.data.data)).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
   const enter = async (id) => {
@@ -83,32 +68,6 @@ export default function PlatformOverview() {
             <Link to="/workspaces" className="inline-flex items-center gap-1.5 text-sm font-semibold bg-white text-gray-900 px-3.5 py-2 rounded-lg hover:bg-white/90 transition"><Building2 size={15} /> Manage workspaces</Link>
           </div>
         </div>
-      </div>
-
-      {/* Workspace growth */}
-      <div className="card p-5">
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-sm font-bold text-ink">Workspace growth</h2>
-          <span className="text-[11px] text-gray-400">New workspaces · 12 mo</span>
-        </div>
-        {loading ? <Skeleton.Block h="h-40" /> : (
-          <div style={{ height: 168 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={series} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="pw" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="rgb(var(--color-brand-500))" stopOpacity={0.35} />
-                    <stop offset="95%" stopColor="rgb(var(--color-brand-500))" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--color-gray-200))" vertical={false} />
-                <XAxis dataKey="month" tick={{ fontSize: 10 }} interval={1} />
-                <Tooltip />
-                <Area type="monotone" dataKey="n" name="New workspaces" stroke="rgb(var(--color-brand-500))" fill="url(#pw)" strokeWidth={2} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        )}
       </div>
 
       {/* Rails */}
