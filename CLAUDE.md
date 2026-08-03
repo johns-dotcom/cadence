@@ -236,6 +236,17 @@ upload. New deps: `jspdf` + `docx` (dynamically imported), `socket.io`(-client).
 - Audit: `activity_log` + `logActivity`; NO separate `bk_audit_log`. `ledger_history`
   gives per-field entry history.
 - Security: helmet (CSP off for SSO), sanitize middleware, auth + general rate limiters.
+  Hardening (2026 audit): user files served via `lib/safeFiles.js sendFileSafely`
+  (inline only for an image/PDF allowlist, else octet-stream + attachment +
+  `nosniff` — kills same-origin SVG/HTML XSS) on chat attachments + `/uploads/:filename`;
+  platform member/owner routes gated by `requireWorkspaceAccess` (admin-tier
+  operators confined to their `operator_workspace_access` allowlist, matching
+  `/enter`); email link builders (invite/mention) no longer fall back to the raw
+  Host header (`FRONTEND_URL || req.headers.origin` only). IDOR sweep of all
+  ~40 route files found tenant scoping clean. Set `FRONTEND_URL` in prod.
+  Known-remaining (lower priority): session JWT passed as `?token=` on file/socket
+  URLs (log exposure); vendor form still accepts the enumerable slug; multer
+  `memoryStorage` has no concurrency cap.
 - Keyboard: global help modal (`?`) + a handful of `g`-nav shortcuts in Layout; NO
   reusable `useHotkeys`, NO per-page hotkeys.
 

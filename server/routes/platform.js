@@ -18,7 +18,9 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 const INVITE_DAYS = 7;
 function inviteLink(req, token) {
-  const origin = process.env.FRONTEND_URL || req.headers.origin || `${req.protocol}://${req.get('host')}`;
+  // Never fall back to the raw Host header (attacker-controllable → poisoned
+  // invite links). Use the configured FRONTEND_URL, else the browser Origin.
+  const origin = process.env.FRONTEND_URL || req.headers.origin || '';
   return `${origin.replace(/\/$/, '')}/accept-invite?token=${token}`;
 }
 
@@ -238,6 +240,22 @@ async function operatorAccess(email) {
     workspaces: ws.rows.length ? ws.rows.map(r => r.label_id) : null, // null = all
     pages: pg.rows.length ? pg.rows.map(r => r.page) : null,          // null = all
   };
+}
+
+// Middleware: an admin-tier operator may only act on a workspace that's in
+// their allowlist (owners are unrestricted). Mirrors the /enter check — applied
+// to the member/owner mutation routes so a restricted admin can't manage a
+// workspace they've been denied. Expects the workspace id at req.params.id.
+async function requireWorkspaceAccess(req, res, next) {
+  try {
+    if (req.user.platform_role === 'owner') return next();
+    const labelId = parseInt(req.params.id, 10);
+    const access = await operatorAccess(req.user.email);
+    if (access.workspaces && !access.workspaces.includes(labelId)) {
+      return res.status(403).json({ success: false, error: 'You do not have access to this workspace' });
+    }
+    next();
+  } catch { return res.status(403).json({ success: false, error: 'Access check failed' }); }
 }
 
 // GET /api/platform/my-access — the caller operator's own restrictions. Owners
@@ -684,7 +702,7 @@ async function superadminCount(labelId) {
 
 // POST /workspaces/:id/members — invite a member (role Superadmin = owner). The
 // user activates via an invite link + sets their own password (team-invite flow).
-router.post('/workspaces/:id/members', async (req, res) => {
+router.post('/workspaces/:id/members', requireWorkspaceAccess, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const name = (req.body.name || '').trim();
@@ -715,7 +733,7 @@ router.post('/workspaces/:id/members', async (req, res) => {
 });
 
 // PATCH /workspaces/:id/members/:userId — change a member's role.
-router.patch('/workspaces/:id/members/:userId', async (req, res) => {
+router.patch('/workspaces/:id/members/:userId', requireWorkspaceAccess, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const userId = parseInt(req.params.userId, 10);
@@ -736,7 +754,7 @@ router.patch('/workspaces/:id/members/:userId', async (req, res) => {
 
 // POST /workspaces/:id/members/:userId/make-owner — promote a member to owner
 // (Superadmin, top of hierarchy) and demote the previous owner to Admin.
-router.post('/workspaces/:id/members/:userId/make-owner', async (req, res) => {
+router.post('/workspaces/:id/members/:userId/make-owner', requireWorkspaceAccess, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const userId = parseInt(req.params.userId, 10);
@@ -758,7 +776,7 @@ router.post('/workspaces/:id/members/:userId/make-owner', async (req, res) => {
 
 // POST /workspaces/:id/owner — designate a CONSOLE OPERATOR as the workspace's
 // owner (or clear back to the member heuristic). Any operator. body { operator_id }.
-router.post('/workspaces/:id/owner', async (req, res) => {
+router.post('/workspaces/:id/owner', requireWorkspaceAccess, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const lbl = await pool.query('SELECT id, is_system FROM labels WHERE id = $1', [id]);
@@ -781,7 +799,7 @@ router.post('/workspaces/:id/owner', async (req, res) => {
 });
 
 // DELETE /workspaces/:id/members/:userId — remove a member (FK-swept).
-router.delete('/workspaces/:id/members/:userId', async (req, res) => {
+router.delete('/workspaces/:id/members/:userId', requireWorkspaceAccess, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const userId = parseInt(req.params.userId, 10);

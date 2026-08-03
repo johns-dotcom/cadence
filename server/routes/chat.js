@@ -7,6 +7,7 @@ const rt = require('../lib/realtime');
 const { recordMentions } = require('../lib/mentions');
 const { ensureActivityChannel } = require('../lib/activityBot');
 const { sendEmail, chatMentionEmail } = require('../lib/email');
+const { sendFileSafely } = require('../lib/safeFiles');
 const { uploadFile, getSignedFileUrl, loadFileBuffer, deleteFile, isConfigured } = require('../lib/r2');
 
 const router = express.Router();
@@ -423,7 +424,7 @@ router.post('/channels/:id/messages', upload.array('files', 10), async (req, res
             const recips = await pool.query(`SELECT name, email FROM users WHERE id = ANY($1::int[]) AND email IS NOT NULL AND email <> ''`, [offline]);
             const lab = await pool.query('SELECT name FROM labels WHERE id = $1', [req.labelId]);
             const workspaceName = lab.rows[0]?.name || 'your workspace';
-            const origin = process.env.FRONTEND_URL || req.headers.origin || `${req.protocol}://${req.get('host')}`;
+            const origin = process.env.FRONTEND_URL || req.headers.origin || '';
             const channelLabel = mem?.type === 'object' ? (mem.name || 'a thread') : (mem?.name ? `#${mem.name}` : 'a conversation');
             const snippet = body.slice(0, 280);
             for (const r of recips.rows) {
@@ -540,13 +541,10 @@ router.get('/attachments/:id', async (req, res) => {
     }
     const buffer = await loadFileBuffer(a.r2_key, a.data);
     if (!buffer) return res.status(404).send('Not found');
-    if (a.mime_type) res.type(a.mime_type);
     res.setHeader('Cache-Control', 'private, max-age=86400');
-    // Non-images download with their original name.
-    if (a.mime_type && !a.mime_type.startsWith('image/')) {
-      res.setHeader('Content-Disposition', `inline; filename="${(a.original_name || 'file').replace(/"/g, '')}"`);
-    }
-    res.send(buffer);
+    // Only inert types render inline; anything else (SVG/HTML/etc.) is forced
+    // to download as octet-stream + nosniff so it can't run script in our origin.
+    sendFileSafely(res, { mime: a.mime_type, filename: a.original_name, buffer });
   } catch (err) {
     console.error('chat attachment:', err.message);
     res.status(500).send('Error');

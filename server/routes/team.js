@@ -12,12 +12,12 @@ const router = express.Router();
 const INVITE_DAYS = 7;
 const isValidEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 
-// Build the public accept-invite link. Prefer the request's own origin (so it
-// works on any deployed domain) and fall back to FRONTEND_URL.
+// Build the public accept-invite link. Uses the configured FRONTEND_URL, else
+// the browser Origin — never the raw Host header (attacker-controllable, which
+// would let a poisoned request send an invite link pointing at an attacker
+// domain with a live invite token).
 function inviteLink(req, token) {
-  const origin = process.env.FRONTEND_URL
-    || (req.headers.origin)
-    || `${req.protocol}://${req.get('host')}`;
+  const origin = process.env.FRONTEND_URL || req.headers.origin || '';
   return `${origin.replace(/\/$/, '')}/accept-invite?token=${token}`;
 }
 

@@ -117,8 +117,9 @@ app.get('/uploads/:filename', async (req, res) => {
     if (!rows.length) return res.status(404).send('Not found');
     const buffer = await loadFileBuffer(rows[0].r2_key, rows[0].file_data);
     if (!buffer) return res.status(404).send('Not found');
-    if (rows[0].mime_type) res.type(rows[0].mime_type);
-    res.send(buffer);
+    // Serve with a safe content-type + disposition (inline only for inert types)
+    // so an uploaded SVG/HTML can't execute script in the app origin.
+    require('./lib/safeFiles').sendFileSafely(res, { mime: rows[0].mime_type, filename: rows[0].original_name, buffer });
   } catch (err) {
     console.error('Upload fetch error:', err.message);
     res.status(500).send('Error');
