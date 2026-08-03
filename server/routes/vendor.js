@@ -32,13 +32,14 @@ const submitLimiter = rateLimit({
 
 const isValidEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 
-// Resolve a label from the public URL key. Accepts the unguessable
-// vendor_form_token (preferred) OR the legacy slug so old links keep working.
+// Resolve a label from the public URL key. Requires the unguessable
+// vendor_form_token — the enumerable slug is NOT accepted (an attacker could
+// guess label slugs to spam a tenant / probe via check-dup). Every label has a
+// token (backfilled + defaulted in migrations); rotate it to revoke old links.
 async function labelBySlug(key) {
+  if (!key) return null;
   const { rows } = await pool.query(
-    `SELECT id, name, slug, accent_color, logo_r2_key FROM labels
-       WHERE vendor_form_token = $1 OR slug = $1
-       ORDER BY (vendor_form_token = $1) DESC LIMIT 1`,
+    `SELECT id, name, slug, accent_color, logo_r2_key FROM labels WHERE vendor_form_token = $1 LIMIT 1`,
     [key]
   );
   return rows[0] || null;

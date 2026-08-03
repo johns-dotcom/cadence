@@ -84,6 +84,24 @@ const generalLimiter = rateLimit({
 });
 app.use('/api', generalLimiter);
 
+// Bound concurrent in-RAM multipart uploads. multer uses memoryStorage (whole
+// files buffered in RAM), so a burst of large uploads can OOM the process.
+// Non-multipart requests pass straight through.
+const MAX_CONCURRENT_UPLOADS = parseInt(process.env.MAX_CONCURRENT_UPLOADS, 10) || 8;
+let uploadsInFlight = 0;
+app.use('/api', (req, res, next) => {
+  if (!String(req.headers['content-type'] || '').startsWith('multipart/form-data')) return next();
+  if (uploadsInFlight >= MAX_CONCURRENT_UPLOADS) {
+    return res.status(503).json({ success: false, error: 'Server busy — please retry your upload in a moment.' });
+  }
+  uploadsInFlight++;
+  let released = false;
+  const release = () => { if (!released) { released = true; uploadsInFlight--; } };
+  res.on('finish', release);
+  res.on('close', release);
+  next();
+});
+
 // ── CORS ────────────────────────────────────────────────────────────────
 // In production the API and the built client are same-origin (Express serves
 // the Vite build), so CORS only matters in dev (Vite :5173 → Express :3001).
@@ -198,7 +216,7 @@ if (process.env.NODE_ENV === 'production') {
   app.get('/submit/:token', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     try {
-      const { rows } = await pool.query('SELECT name FROM labels WHERE vendor_form_token = $1 OR slug = $1 LIMIT 1', [req.params.token]);
+      const { rows } = await pool.query('SELECT name FROM labels WHERE vendor_form_token = $1 LIMIT 1', [req.params.token]);
       let html = fs.readFileSync(path.join(clientDist, 'index.html'), 'utf8');
       if (rows[0]) {
         const title = `Submit an invoice to ${rows[0].name}`;

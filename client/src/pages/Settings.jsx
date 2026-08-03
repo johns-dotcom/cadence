@@ -57,7 +57,7 @@ export default function Settings() {
   }, [isAdmin])
 
   const [vfCopied, setVfCopied] = useState(false)
-  const vendorFormUrl = `${window.location.origin}/submit/${label?.vendor_form_token || label?.slug}`
+  const vendorFormUrl = `${window.location.origin}/submit/${label?.vendor_form_token}`
   const copyVendorFormLink = () => navigator.clipboard.writeText(vendorFormUrl).then(() => { setVfCopied(true); setTimeout(() => setVfCopied(false), 2000) })
   const rotateVendorFormLink = async () => {
     if (!window.confirm('Rotate the vendor form link? The current link stops working immediately.')) return

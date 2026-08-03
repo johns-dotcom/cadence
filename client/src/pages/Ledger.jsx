@@ -151,7 +151,7 @@ export default function Ledger() {
   function openFile(id, type) { api.get(`/ledger/entries/${id}/file/${type}`).then(({ data }) => window.open(data.data.url, '_blank', 'noopener')).catch(() => toast('No file', 'error')) }
 
   const copyVendorLink = () => {
-    const url = `${window.location.origin}/submit/${label?.vendor_form_token || label?.slug}`
+    const url = `${window.location.origin}/submit/${label?.vendor_form_token}`
     navigator.clipboard.writeText(url).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
   }
 

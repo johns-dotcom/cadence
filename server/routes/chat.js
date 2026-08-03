@@ -9,8 +9,40 @@ const { ensureActivityChannel } = require('../lib/activityBot');
 const { sendEmail, chatMentionEmail } = require('../lib/email');
 const { sendFileSafely } = require('../lib/safeFiles');
 const { uploadFile, getSignedFileUrl, loadFileBuffer, deleteFile, isConfigured } = require('../lib/r2');
+const { attachmentUrl, verifyAttachmentSig } = require('../lib/mediaToken');
 
 const router = express.Router();
+
+// GET /api/chat/attachments/:id?exp=&sig= — served via a file-scoped, expiring
+// signed URL (NOT the session token) so it works as an <img> src without
+// leaking a full session in logs/Referer. Defined BEFORE the auth gate: the
+// signature is the capability (only issued for messages the requester could
+// see). Membership was enforced when the signed URL was minted.
+router.get('/attachments/:id', async (req, res) => {
+  try {
+    if (!verifyAttachmentSig(req.params.id, req.query.exp, req.query.sig)) {
+      return res.status(403).send('Forbidden');
+    }
+    const { rows } = await pool.query(
+      `SELECT r2_key, data, mime_type, original_name FROM chat_attachments WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).send('Not found');
+    const a = rows[0];
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    if (a.r2_key) {
+      const url = await getSignedFileUrl(a.r2_key, 6 * 3600).catch(() => null);
+      if (url) return res.redirect(url);
+    }
+    const buffer = await loadFileBuffer(a.r2_key, a.data);
+    if (!buffer) return res.status(404).send('Not found');
+    sendFileSafely(res, { mime: a.mime_type, filename: a.original_name, buffer });
+  } catch (err) {
+    console.error('chat attachment:', err.message);
+    res.status(500).send('Error');
+  }
+});
+
 router.use(authMiddleware, withTenant);
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -48,9 +80,19 @@ const MSG_SELECT = `
          ), '[]'::json) AS attachments
     FROM chat_messages m LEFT JOIN users u ON u.id = m.user_id`;
 
+// Attach a file-scoped signed URL to each attachment so the client never puts
+// the session token in an <img> src. Membership was already enforced to read
+// the message, so minting the capability here is safe.
+function signAttachments(msg) {
+  if (msg && Array.isArray(msg.attachments)) {
+    msg.attachments = msg.attachments.map(a => ({ ...a, url: attachmentUrl(a.id) }));
+  }
+  return msg;
+}
+
 async function fetchMessage(id) {
   const { rows } = await pool.query(`${MSG_SELECT} WHERE m.id = $1`, [id]);
-  return rows[0] || null;
+  return rows[0] ? signAttachments(rows[0]) : null;
 }
 
 // ── channels ────────────────────────────────────────────────────────────────
@@ -331,7 +373,7 @@ router.get('/channels/:id/messages', async (req, res) => {
       `${MSG_SELECT} WHERE ${where} ORDER BY m.id DESC LIMIT $${params.length}`,
       params
     );
-    res.json({ success: true, data: rows.reverse() }); // ascending for display
+    res.json({ success: true, data: rows.reverse().map(signAttachments) }); // ascending for display
   } catch (err) {
     console.error('messages:', err.message);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -518,37 +560,6 @@ router.post('/channels/:id/read', async (req, res) => {
     );
     res.json({ success: true });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
-});
-
-// GET /api/chat/attachments/:id — stream/redirect an attachment. Membership-
-// gated; supports ?token= so it works as an <img> src. R2 → signed redirect,
-// inline → streamed bytes.
-router.get('/attachments/:id', async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `SELECT at.r2_key, at.data, at.mime_type, at.original_name
-         FROM chat_attachments at
-         JOIN chat_messages m ON m.id = at.message_id AND m.deleted = false
-         JOIN chat_members cm ON cm.channel_id = m.channel_id AND cm.user_id = $2
-        WHERE at.id = $1 AND at.label_id = $3`,
-      [req.params.id, req.user.id, req.labelId]
-    );
-    if (!rows.length) return res.status(404).send('Not found');
-    const a = rows[0];
-    if (a.r2_key) {
-      const url = await getSignedFileUrl(a.r2_key, 6 * 3600).catch(() => null);
-      if (url) return res.redirect(url);
-    }
-    const buffer = await loadFileBuffer(a.r2_key, a.data);
-    if (!buffer) return res.status(404).send('Not found');
-    res.setHeader('Cache-Control', 'private, max-age=86400');
-    // Only inert types render inline; anything else (SVG/HTML/etc.) is forced
-    // to download as octet-stream + nosniff so it can't run script in our origin.
-    sendFileSafely(res, { mime: a.mime_type, filename: a.original_name, buffer });
-  } catch (err) {
-    console.error('chat attachment:', err.message);
-    res.status(500).send('Error');
-  }
 });
 
 // POST /api/chat/channels/:id/mute — mute/unmute (muted channels don't count

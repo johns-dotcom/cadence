@@ -7,10 +7,8 @@ import { useSocket } from '../context/SocketContext'
 import { useToast } from '../context/ToastContext'
 
 const QUICK_EMOJI = ['👍', '❤️', '😂', '🎉', '🔥', '👀', '✅', '🙏']
-const API_BASE = import.meta.env.VITE_API_URL || '/api'
-// Attachments are served by an authed endpoint; the token rides as a query
-// param so an <img> src / download link works without an Authorization header.
-const attUrl = (id) => `${API_BASE}/chat/attachments/${id}?token=${localStorage.getItem('token') || ''}`
+// Attachments are served via a file-scoped, expiring signed URL that the server
+// puts on each attachment (a.url) — no session token in the image URL.
 const fmtSize = (b) => b == null ? '' : b < 1024 ? `${b} B` : b < 1024 * 1024 ? `${(b / 1024).toFixed(0)} KB` : `${(b / 1024 / 1024).toFixed(1)} MB`
 
 // Post a message with optional file attachments (multipart when files present).
@@ -47,11 +45,11 @@ function Attachments({ items }) {
   return (
     <div className="mt-1.5 flex flex-wrap gap-2">
       {items.map(a => a.mime_type?.startsWith('image/') ? (
-        <a key={a.id} href={attUrl(a.id)} target="_blank" rel="noreferrer" className="block">
-          <img src={attUrl(a.id)} alt={a.name} className="max-h-56 max-w-xs rounded-lg border border-rule object-cover" />
+        <a key={a.id} href={a.url} target="_blank" rel="noreferrer" className="block">
+          <img src={a.url} alt={a.name} className="max-h-56 max-w-xs rounded-lg border border-rule object-cover" />
         </a>
       ) : (
-        <a key={a.id} href={attUrl(a.id)} target="_blank" rel="noreferrer"
+        <a key={a.id} href={a.url} target="_blank" rel="noreferrer"
           className="flex items-center gap-2 px-3 py-2 rounded-lg border border-rule bg-page hover:border-brand-300 max-w-xs">
           <FileText size={18} className="text-brand-600 flex-shrink-0" />
           <span className="min-w-0"><span className="block text-sm text-ink truncate">{a.name}</span><span className="text-[11px] text-gray-400">{fmtSize(a.size)}</span></span>

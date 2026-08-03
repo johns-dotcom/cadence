@@ -244,9 +244,16 @@ upload. New deps: `jspdf` + `docx` (dynamically imported), `socket.io`(-client).
   `/enter`); email link builders (invite/mention) no longer fall back to the raw
   Host header (`FRONTEND_URL || req.headers.origin` only). IDOR sweep of all
   ~40 route files found tenant scoping clean. Set `FRONTEND_URL` in prod.
-  Known-remaining (lower priority): session JWT passed as `?token=` on file/socket
-  URLs (log exposure); vendor form still accepts the enumerable slug; multer
-  `memoryStorage` has no concurrency cap.
+  Second pass: chat attachments now served via **file-scoped expiring signed
+  URLs** (`lib/mediaToken.js`, `?exp=&sig=` HMAC over the attachment id) instead
+  of the session JWT — the public `/chat/attachments/:id` route sits above the
+  auth gate and the sig is the capability (minted only into messages a member
+  can see; url added per-attachment in `signAttachments`). Vendor form is now
+  **token-only** (`labelBySlug` + `/submit/:token` OG route drop the enumerable
+  slug; client links use `vendor_form_token` only). Upload **concurrency guard**
+  in index.js caps concurrent multipart requests (`MAX_CONCURRENT_UPLOADS`, def 8)
+  to bound multer memoryStorage RAM. (Socket auth already uses the handshake
+  `auth` payload, not a URL query, so it wasn't log-exposed.)
 - Keyboard: global help modal (`?`) + a handful of `g`-nav shortcuts in Layout; NO
   reusable `useHotkeys`, NO per-page hotkeys.
 
