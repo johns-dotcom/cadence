@@ -98,7 +98,7 @@ export default function ObjectDiscussion({ entityType, entityId, title, classNam
           : messages.length === 0 ? <p className="p-4 text-sm text-gray-400">No messages yet. Start the discussion — <span className="text-brand-600">@mention</span> a teammate to loop them in.</p>
           : <MessageList messages={messages} myId={user.id} myHandles={myHandles} onReact={react} onReply={() => {}} onEdit={startEdit} onDelete={del} showThread={false} />}
       </div>
-      <div className="p-2 border-t border-rule flex-shrink-0">
+      <div className="p-2 border-t border-rule flex-shrink-0" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); addFiles(e.dataTransfer.files) }}>
         {editing && <div className="text-xs text-amber-600 mb-1 flex items-center gap-2">Editing message <button onClick={() => { setEditing(null); setText('') }} className="underline">cancel</button></div>}
         <FileChips files={files} onRemove={i => setFiles(fs => fs.filter((_, idx) => idx !== i))} />
         <div className="flex items-end gap-1">

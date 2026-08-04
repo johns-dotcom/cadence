@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { X, Plus, Trash2, Check, History, Layers, CreditCard, Ban, RotateCcw, Sparkles, AlertTriangle, Paperclip, Zap, MessageSquare } from 'lucide-react'
 import ObjectDiscussion from './ObjectDiscussion'
+import { dropTarget } from '../utils/drop'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
 
@@ -168,7 +169,7 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
                   <input placeholder="Method" className="input !py-1.5 text-sm" value={inst.method} onChange={e => setInst(s => ({ ...s, method: e.target.value }))} />
                   <input placeholder="Reference" className="input !py-1.5 text-sm" value={inst.reference} onChange={e => setInst(s => ({ ...s, reference: e.target.value }))} />
                 </div>
-                <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
+                <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer" {...dropTarget(f => setProofFile(f))}>
                   <Paperclip size={13} /> {proofFile ? proofFile.name : 'Attach proof of payment (optional)'}
                   <input type="file" className="hidden" onChange={e => setProofFile(e.target.files?.[0] || null)} />
                 </label>

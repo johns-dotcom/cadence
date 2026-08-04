@@ -4,6 +4,7 @@ import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
+import { dropTarget } from '../utils/drop'
 
 const SEV = { high: 'bg-red-100 text-red-700', medium: 'bg-amber-100 text-amber-700', low: 'bg-gray-100 text-gray-600' }
 
@@ -93,7 +94,7 @@ function VendorDrawer({ name, allNames, onClose, onChanged, onRenamed }) {
                 </div>
                 <div className="flex items-center gap-2">
                   {data.vendor.w9_url && <a href={data.vendor.w9_url} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:text-brand-700"><ExternalLink size={15} /></a>}
-                  <label className="btn-secondary cursor-pointer text-xs py-1.5">
+                  <label className="btn-secondary cursor-pointer text-xs py-1.5" {...dropTarget(uploadW9)}>
                     <Upload size={13} /> {data.vendor.w9_filename ? 'Replace' : 'Upload'}
                     <input type="file" className="hidden" onChange={e => uploadW9(e.target.files[0])} />
                   </label>

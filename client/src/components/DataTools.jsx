@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { Download, Upload, Database } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
+import { dropTarget } from '../utils/drop'
 
 // Workspace-level data tools (admin): full ZIP export + a master-sheet CSV
 // importer. The CSV's first column `type` routes each row to the right entity
@@ -39,8 +40,8 @@ export default function DataTools() {
     return rows.slice(1).filter(r => r.some(c => c.trim())).map(r => Object.fromEntries(headers.map((h, i) => [h, (r[i] || '').trim()])))
   }
 
-  const onImport = async (e) => {
-    const file = e.target.files?.[0]
+  const onImport = (e) => doImport(e.target.files?.[0])
+  const doImport = async (file) => {
     if (!file) return
     setBusy(true)
     try {
@@ -68,7 +69,7 @@ export default function DataTools() {
       <p className="text-xs text-gray-400 mb-4">Export everything in this workspace, or bulk-import from a master sheet.</p>
       <div className="flex flex-wrap gap-2">
         <button onClick={exportZip} disabled={busy} className="btn-secondary"><Download size={15} /> Export workspace (.zip)</button>
-        <button onClick={() => importRef.current?.click()} disabled={busy} className="btn-secondary"><Upload size={15} /> {busy ? 'Working…' : 'Master-sheet import'}</button>
+        <button onClick={() => importRef.current?.click()} disabled={busy} className="btn-secondary" {...dropTarget(doImport)}><Upload size={15} /> {busy ? 'Working…' : 'Master-sheet import'}</button>
         <input ref={importRef} type="file" accept=".csv" className="hidden" onChange={onImport} />
       </div>
       <p className="text-[11px] text-gray-400 mt-2">CSV needs a <code>type</code> column (artist · release · expense · income) plus the entity's fields as headers.</p>

@@ -9,6 +9,7 @@ import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { DEV_LOG_TYPES } from '../constants'
 import { formatDate } from '../utils/dates'
+import { dropTarget } from '../utils/drop'
 
 // Color-coding for development-log entry types (dot + label tint).
 const LOG_STYLE = {
@@ -70,13 +71,12 @@ export default function ArtistProfile() {
   }
   useEffect(() => { load() }, [id])
 
-  const uploadFile = async (e) => {
-    const file = e.target.files?.[0]
+  const uploadFile = (e) => { doUploadFile(e.target.files?.[0]); if (e.target) e.target.value = '' }
+  const doUploadFile = async (file) => {
     if (!file) return
     const fd = new FormData(); fd.append('file', file)
     try { await api.post(`/artists/${id}/files`, fd, { headers: { 'Content-Type': 'multipart/form-data' } }); toast('File uploaded'); loadFiles() }
     catch { toast('Upload failed', 'error') }
-    finally { e.target.value = '' }
   }
   const openFile = async (fid) => { try { const { data } = await api.get(`/artists/${id}/files/${fid}`); window.open(data.data.url, '_blank', 'noopener') } catch { toast('No file', 'error') } }
   const delFile = async (fid) => { try { await api.delete(`/artists/${id}/files/${fid}`); loadFiles() } catch { toast('Failed', 'error') } }
@@ -334,7 +334,7 @@ export default function ArtistProfile() {
         <div className="card p-4">
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-sm font-semibold text-ink">Files</h2>
-            <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-600 hover:underline cursor-pointer"><Paperclip size={13} /> Attach<input type="file" className="hidden" onChange={uploadFile} /></label>
+            <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-600 hover:underline cursor-pointer" {...dropTarget(doUploadFile)}><Paperclip size={13} /> Attach<input type="file" className="hidden" onChange={uploadFile} /></label>
           </div>
           {files.length ? (
             <div className="flex flex-wrap gap-2">

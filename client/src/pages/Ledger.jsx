@@ -10,6 +10,7 @@ import LedgerEntryDrawer from '../components/LedgerEntryDrawer'
 import { formatDate } from '../utils/dates'
 import useIsMobile from '../hooks/useIsMobile'
 import { EXPENSE_CATEGORIES, PAYMENT_METHODS, CURRENCIES } from '../constants'
+import { dropTarget } from '../utils/drop'
 
 const STATUS_STYLES = { pending: 'bg-amber-100 text-amber-700', approved: 'bg-emerald-100 text-emerald-700', rejected: 'bg-red-100 text-red-700' }
 const STATUSES = ['all', 'approved', 'rejected']
@@ -585,7 +586,7 @@ function FileCell({ en, type, r2key, openFile, onUploaded, toast }) {
     } catch { toast('Upload failed', 'error'); setBusy(false) }
   }
   return (
-    <span className="inline-flex items-center gap-1.5">
+    <span className="inline-flex items-center gap-1.5" {...dropTarget(upload)}>
       {r2key && <button onClick={() => openFile(en.id, type)} className="text-brand-600 hover:underline text-xs">Open</button>}
       <button onClick={() => ref.current?.click()} title={r2key ? 'Replace file' : 'Upload file'} className="text-gray-300 hover:text-brand-600">
         {busy ? <span className="text-[10px] text-gray-400">…</span> : <Upload size={13} />}

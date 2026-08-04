@@ -4,6 +4,7 @@ import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { CONTRACT_TYPES, CONTRACT_STATUSES } from '../constants'
+import { dropTarget } from '../utils/drop'
 
 const CLAUSE_KINDS = [
   'Recording royalty', 'Advance & recoupment', 'Term & option periods', 'Delivery commitment',
@@ -162,7 +163,7 @@ export default function Contracts() {
                     {c.file_name ? (
                       <button onClick={() => openDoc(c.id)} className="inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-700"><Download size={13} /> Open</button>
                     ) : (
-                      <label className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 cursor-pointer">
+                      <label className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 cursor-pointer" {...dropTarget(f => uploadDoc(c.id, f))}>
                         <Upload size={13} /> Upload
                         <input type="file" className="hidden" onChange={e => uploadDoc(c.id, e.target.files[0])} />
                       </label>

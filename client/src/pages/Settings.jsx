@@ -8,6 +8,7 @@ import { applyAccent, resetAccent, isValidHex, ACCENT_PRESETS } from '../utils/b
 import RepsManager from '../components/RepsManager'
 import PermissionsManager from '../components/PermissionsManager'
 import DataTools from '../components/DataTools'
+import { dropTarget } from '../utils/drop'
 
 // Home-dashboard widgets an owner can show/hide (all default on).
 const DASH_WIDGETS = [
@@ -232,7 +233,7 @@ export default function Settings() {
                       <span className="text-white font-bold">{logoInitials.trim().toUpperCase() || labelName?.charAt(0)?.toUpperCase() || 'C'}</span>
                     </div>
                   )}
-                  <label className="btn-secondary cursor-pointer">
+                  <label className="btn-secondary cursor-pointer" {...dropTarget(uploadLogo)}>
                     <Upload size={15} /> {logoUrl ? 'Replace' : 'Upload'}
                     <input type="file" accept="image/*" className="hidden" onChange={e => uploadLogo(e.target.files[0])} />
                   </label>

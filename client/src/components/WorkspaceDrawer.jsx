@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
+import { dropTarget } from '../utils/drop'
 import { ACCENT_PRESETS, isValidHex } from '../utils/branding'
 
 const MEMBER_ROLES = ['Superadmin', 'Admin', 'Approver', 'User']
@@ -86,11 +87,12 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
     try { await api.patch(`/platform/workspaces/${workspaceId}`, { name: name.trim(), accent_color: accent || null }); toast('Saved'); load(); onChanged?.() }
     catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
-  const uploadLogo = async (e) => {
-    const file = e.target.files?.[0]; if (!file) return
+  const uploadLogo = (e) => { doUploadLogo(e.target.files?.[0]); if (e.target) e.target.value = '' }
+  const doUploadLogo = async (file) => {
+    if (!file) return
     const fd = new FormData(); fd.append('logo', file)
     try { await api.post(`/platform/workspaces/${workspaceId}/logo`, fd, { headers: { 'Content-Type': 'multipart/form-data' } }); toast('Logo updated'); load(); onChanged?.() }
-    catch { toast('Upload failed', 'error') } finally { e.target.value = '' }
+    catch { toast('Upload failed', 'error') }
   }
   const removeLogo = async () => { try { await api.delete(`/platform/workspaces/${workspaceId}/logo`); load(); onChanged?.() } catch { toast('Failed', 'error') } }
   const resetOwner = async () => {
@@ -365,7 +367,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <button onClick={() => logoRef.current?.click()} className="btn-secondary !py-1.5 text-xs"><Upload size={13} /> {data.label.logo_url ? 'Replace logo' : 'Upload logo'}</button>
+                      <button onClick={() => logoRef.current?.click()} className="btn-secondary !py-1.5 text-xs" {...dropTarget(doUploadLogo)}><Upload size={13} /> {data.label.logo_url ? 'Replace logo' : 'Upload logo'}</button>
                       {data.label.logo_url && <button onClick={removeLogo} className="text-xs text-gray-400 hover:text-red-600">Remove</button>}
                       <input ref={logoRef} type="file" accept="image/*" className="hidden" onChange={uploadLogo} />
                       <button onClick={saveBranding} disabled={accent && !isValidHex(accent)} className="btn-primary !py-1.5 text-xs ml-auto">Save</button>

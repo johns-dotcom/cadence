@@ -6,6 +6,7 @@ import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import { formatDate } from '../utils/dates'
+import { dropTarget } from '../utils/drop'
 
 const CATEGORIES = ['Logo', 'Icon', 'Cover art', 'Photo', 'Graphic', 'Other']
 const fmtSize = (b) => {
@@ -32,12 +33,8 @@ export default function Brand() {
   const load = () => { setLoading(true); api.get('/brand-assets').then(r => setAssets(r.data.data || [])).catch(() => {}).finally(() => setLoading(false)) }
   useEffect(() => { load() }, [])
 
-  const onPick = (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setPending({ file, name: file.name.replace(/\.[^.]+$/, ''), category: 'Logo' })
-    e.target.value = ''
-  }
+  const takeFile = (file) => { if (file) setPending({ file, name: file.name.replace(/\.[^.]+$/, ''), category: 'Logo' }) }
+  const onPick = (e) => { takeFile(e.target.files?.[0]); e.target.value = '' }
   const upload = async () => {
     if (!pending) return
     setUploading(true)
@@ -70,7 +67,7 @@ export default function Brand() {
   const canDelete = (a) => canManage || a.uploaded_by === user?.id
 
   return (
-    <div>
+    <div {...dropTarget(takeFile)}>
       <PageHeader
         title="Brand"
         subtitle="Your team's logos and images — upload once, grab them anywhere"

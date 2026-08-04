@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { Paperclip, Download, Loader2 } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
+import { dropTarget } from '../utils/drop'
 
 // Attach / view a single document for a file-backed resource (NDAs, admin
 // docs, …). Uploads to `${base}/${id}/file`, opens via the signed-URL endpoint.
@@ -10,8 +11,8 @@ export default function FileAttach({ base, id, fileName, onChange }) {
   const inputRef = useRef(null)
   const [busy, setBusy] = useState(false)
 
-  const upload = async (e) => {
-    const file = e.target.files?.[0]
+  const upload = (e) => doUpload(e.target.files?.[0])
+  const doUpload = async (file) => {
     if (!file) return
     setBusy(true)
     try {
@@ -29,7 +30,7 @@ export default function FileAttach({ base, id, fileName, onChange }) {
   }
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex items-center gap-1.5" {...dropTarget(doUpload)}>
       {fileName && (
         <button onClick={open} title={fileName} className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline max-w-[140px] truncate">
           <Download size={12} /> <span className="truncate">{fileName}</span>
