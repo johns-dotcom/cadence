@@ -126,7 +126,9 @@ router.get('/entries', async (req, res) => {
     if (reps) { params.push(reps); where += ` AND (rep = ANY($${params.length}) OR rep IS NULL)`; }
 
     const { rows } = await pool.query(
-      `SELECT e.*, (SELECT COUNT(*)::int FROM expenses c WHERE c.parent_id = e.id) AS split_count
+      `SELECT e.*,
+         (SELECT COUNT(*)::int FROM expenses c WHERE c.parent_id = e.id) AS split_count,
+         (e.amount + COALESCE((SELECT SUM(c.amount) FROM expenses c WHERE c.parent_id = e.id AND (c.deleted = false OR c.deleted IS NULL)), 0)) AS family_amount
        FROM expenses e WHERE ${where} ORDER BY COALESCE(invoice_date, created_at::date) DESC, id DESC`,
       params
     );
@@ -474,13 +476,20 @@ router.post('/entries/:id/mark-paid', async (req, res) => {
 router.get('/payables', async (req, res) => {
   try {
     const params = [req.labelId];
-    let where = `label_id = $1 AND status = 'approved' AND payment_status IN ('Unpaid', 'Partial')
-       AND (deleted = false OR deleted IS NULL) AND (voided = false OR voided IS NULL)`;
+    // Only family HEADS (parent_id IS NULL). Split families collapse into their
+    // parent row here; `family_amount` sums the whole family (parent slice +
+    // children) since paying any member pays them all (item 1 cascade).
+    let where = `e.label_id = $1 AND e.status = 'approved' AND e.payment_status IN ('Unpaid', 'Partial')
+       AND (e.deleted = false OR e.deleted IS NULL) AND (e.voided = false OR e.voided IS NULL)
+       AND e.parent_id IS NULL`;
     const reps = await visibleReps(req);
-    if (reps) { params.push(reps); where += ` AND (rep = ANY($${params.length}) OR rep IS NULL)`; }
+    if (reps) { params.push(reps); where += ` AND (e.rep = ANY($${params.length}) OR e.rep IS NULL)`; }
     const { rows } = await pool.query(
-      `SELECT * FROM expenses WHERE ${where}
-       ORDER BY scheduled_payment_date ASC NULLS LAST, invoice_date ASC NULLS LAST, id ASC`,
+      `SELECT e.*,
+         (SELECT COUNT(*)::int FROM expenses c WHERE c.parent_id = e.id AND (c.deleted = false OR c.deleted IS NULL)) AS split_count,
+         (e.amount + COALESCE((SELECT SUM(c.amount) FROM expenses c WHERE c.parent_id = e.id AND (c.deleted = false OR c.deleted IS NULL)), 0)) AS family_amount
+       FROM expenses e WHERE ${where}
+       ORDER BY e.scheduled_payment_date ASC NULLS LAST, e.invoice_date ASC NULLS LAST, e.id ASC`,
       params
     );
     res.json({ success: true, data: rows });
@@ -999,37 +1008,66 @@ router.get('/archive', requireAdmin, async (req, res) => {
   }
 });
 
-// POST /api/ledger/entries/:id/split — divide a parent entry into child rows
-// (one per { artist, amount }). The parent is retained as the container and
-// excluded from totals (its children carry the real amounts).
+// POST /api/ledger/entries/:id/split — divide a parent entry into N slices of
+// { artist, song?, amount }. The parent KEEPS the first slice (its amount is
+// reduced) and the rest become children carrying parent_id. Family totals SUM
+// every leaf (parent + children), so the slices must sum to the original
+// amount. The pre-split state is snapshotted into artist_breakdown.origin so
+// unsplit can restore it exactly.
 router.post('/entries/:id/split', async (req, res) => {
   const client = await pool.connect();
   try {
     const id = parseInt(req.params.id, 10);
-    const splits = Array.isArray(req.body.splits) ? req.body.splits : [];
-    if (splits.length < 2) return res.status(400).json({ success: false, error: 'Provide at least two splits' });
+    const raw = Array.isArray(req.body.splits) ? req.body.splits : [];
+    const splits = raw
+      .map(s => ({ artist: (s.artist || '').trim(), song: (s.song || '').trim() || null, amount: parseFloat(s.amount) }))
+      .filter(s => s.amount && s.amount > 0);
+    if (splits.length < 2) return res.status(400).json({ success: false, error: 'Provide at least two slices with positive amounts' });
 
     await client.query('BEGIN');
     const { rows: prows } = await client.query('SELECT * FROM expenses WHERE id = $1 AND label_id = $2 AND parent_id IS NULL FOR UPDATE', [id, req.labelId]);
     if (!prows.length) { await client.query('ROLLBACK'); return res.status(404).json({ success: false, error: 'Entry not found or already a child' }); }
     const parent = prows[0];
+    const existing = await client.query('SELECT 1 FROM expenses WHERE parent_id = $1 LIMIT 1', [id]);
+    if (existing.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ success: false, error: 'This entry is already split — unsplit it first' }); }
 
-    for (const s of splits) {
-      const amount = parseFloat(s.amount);
-      if (!amount || amount <= 0) continue;
+    const total = splits.reduce((a, s) => a + s.amount, 0);
+    if (Math.abs(total - Number(parent.amount || 0)) > 0.01) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, error: `Slices (${total.toFixed(2)}) must sum to the entry amount (${Number(parent.amount).toFixed(2)})` });
+    }
+
+    // Snapshot the pre-split parent so unsplit restores it exactly.
+    const snapshot = { origin: { amount: Number(parent.amount), artist: parent.artist || null, song: parent.song || null }, splits };
+    const [head, ...rest] = splits;
+
+    // Parent takes the first slice; keep every other field intact.
+    await client.query(
+      `UPDATE expenses SET amount = $1, artist = COALESCE($2, artist), song = $3, artist_breakdown = $4::jsonb WHERE id = $5 AND label_id = $6`,
+      [head.amount, head.artist || null, head.song, JSON.stringify(snapshot), id, req.labelId]
+    );
+
+    // Children inherit every classification + payment field so the family stays
+    // coherent with item 1's cascade (a split of a Paid entry stays Paid).
+    for (const s of rest) {
       await client.query(
         `INSERT INTO expenses (label_id, parent_id, invoice_date, payee, description, category, artist, song,
-           invoice_number, amount, currency, payment_method, status, payment_status, is_reimbursement, recoupable, rep, notes, created_by, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())`,
+           invoice_number, amount, currency, payment_method, status, payment_status, is_reimbursement, recoupable,
+           rep, notes, entry_source, cobrand, is_bulk_deal, payment_date, paid_by, payment_ref, fx_rate_to_usd,
+           scheduled_payment_date, payment_terms, vendor_email, created_by, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,NOW())`,
         [req.labelId, id, parent.invoice_date, parent.payee, parent.description, parent.category,
-         s.artist || parent.artist, parent.song, parent.invoice_number, amount, parent.currency,
-         parent.payment_method, parent.status, parent.payment_status, parent.is_reimbursement,
-         parent.recoupable, parent.rep, parent.notes, req.user.name]
+         s.artist || parent.artist, s.song, parent.invoice_number, s.amount, parent.currency,
+         parent.payment_method, parent.status, parent.payment_status, parent.is_reimbursement, parent.recoupable,
+         parent.rep, parent.notes, parent.entry_source, parent.cobrand, parent.is_bulk_deal, parent.payment_date,
+         parent.paid_by, parent.payment_ref, parent.fx_rate_to_usd, parent.scheduled_payment_date, parent.payment_terms,
+         parent.vendor_email, req.user.name]
       );
     }
     await client.query('COMMIT');
-    await logActivity(req, 'Split ledger entry', `${parent.payee} → ${splits.length} parts`);
-    res.json({ success: true });
+    await logActivity(req, 'Split ledger entry', `${parent.payee} → ${splits.length} slices`);
+    bkAudit(req, id, 'split', `${splits.length} slices`);
+    res.json({ success: true, data: { slices: splits.length } });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('Split error:', error);
@@ -1040,13 +1078,45 @@ router.post('/entries/:id/split', async (req, res) => {
 });
 
 // DELETE /api/ledger/entries/:id/splits — merge children back into the parent.
+// Refuses if any child carries its own files or payment installments (those
+// would be orphaned). Restores the parent amount/artist/song from the snapshot.
 router.delete('/entries/:id/splits', async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { rowCount } = await pool.query('DELETE FROM expenses WHERE parent_id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId]);
-    res.json({ success: true, data: { removed: rowCount } });
+    const id = parseInt(req.params.id, 10);
+    await client.query('BEGIN');
+    const { rows: prows } = await client.query('SELECT * FROM expenses WHERE id = $1 AND label_id = $2 AND parent_id IS NULL FOR UPDATE', [id, req.labelId]);
+    if (!prows.length) { await client.query('ROLLBACK'); return res.status(404).json({ success: false, error: 'Entry not found' }); }
+    const parent = prows[0];
+    const { rows: kids } = await client.query('SELECT * FROM expenses WHERE parent_id = $1 AND label_id = $2', [id, req.labelId]);
+    if (!kids.length) { await client.query('ROLLBACK'); return res.status(400).json({ success: false, error: 'This entry is not split' }); }
+
+    // Refuse when a child carries its own attachments…
+    const withFiles = kids.filter(k => k.invoice_r2_key || k.receipt_r2_key || k.w9_r2_key);
+    if (withFiles.length) { await client.query('ROLLBACK'); return res.status(409).json({ success: false, error: 'A split has its own file attached — remove it before unsplitting' }); }
+    // …or its own recorded installments.
+    const kidIds = kids.map(k => k.id);
+    const inst = await client.query('SELECT 1 FROM payment_installments WHERE label_id = $1 AND expense_id = ANY($2::int[]) LIMIT 1', [req.labelId, kidIds]);
+    if (inst.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ success: false, error: 'A split has recorded payments — cannot unsplit' }); }
+
+    // Restore from the snapshot; fall back to summing the live rows for legacy splits.
+    const snap = parent.artist_breakdown && parent.artist_breakdown.origin ? parent.artist_breakdown.origin : null;
+    const restoredAmount = snap ? Number(snap.amount) : (Number(parent.amount || 0) + kids.reduce((a, k) => a + Number(k.amount || 0), 0));
+    await client.query(
+      `UPDATE expenses SET amount = $1, artist = $2, song = $3, artist_breakdown = NULL WHERE id = $4 AND label_id = $5`,
+      [restoredAmount, snap ? snap.artist : parent.artist, snap ? snap.song : parent.song, id, req.labelId]
+    );
+    await client.query('DELETE FROM expenses WHERE parent_id = $1 AND label_id = $2', [id, req.labelId]);
+    await client.query('COMMIT');
+    await logActivity(req, 'Unsplit ledger entry', parent.payee);
+    bkAudit(req, id, 'unsplit', `merged ${kids.length} slices`);
+    res.json({ success: true, data: { removed: kids.length } });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('Unsplit error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 

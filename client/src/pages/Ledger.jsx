@@ -1,12 +1,13 @@
-import { useEffect, useState, useRef, useMemo } from 'react'
+import { useEffect, useState, useRef, useMemo, Fragment } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart, Search, Pencil } from 'lucide-react'
+import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart, Search, Pencil, ChevronRight, ChevronDown, Scissors } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import LedgerEntryDrawer from '../components/LedgerEntryDrawer'
+import SplitModal from '../components/SplitModal'
 import { formatDate } from '../utils/dates'
 import useIsMobile from '../hooks/useIsMobile'
 import { EXPENSE_CATEGORIES, PAYMENT_METHODS, CURRENCIES } from '../constants'
@@ -97,6 +98,9 @@ export default function Ledger() {
   const [editEntry, setEditEntry] = useState(null)
   const [preview, setPreview] = useState(null) // { url, label } for the file pop-up
   const [report1099, setReport1099] = useState(null)
+  const [splitEntry, setSplitEntry] = useState(null)     // parent being split
+  const [expanded, setExpanded] = useState({})           // { [parentId]: true }
+  const [childrenMap, setChildrenMap] = useState({})     // { [parentId]: [rows] }
 
   // Inline edit + 20-deep undo.
   const [editing, setEditing] = useState(null) // { id, key }
@@ -109,6 +113,20 @@ export default function Ledger() {
     setEditing(null)
     const val = key === 'amount' ? (raw === '' ? null : Number(raw)) : (raw === '' ? null : raw)
     if (String(en[key] ?? '') === String(val ?? '')) return
+
+    // Auto-split on comma-separated songs: typing "Song A, Song B" into the
+    // song field of a childless entry splits it evenly across those songs.
+    if (key === 'song' && typeof val === 'string' && val.includes(',') && !en.split_count && Number(en.amount) > 0) {
+      const songs = val.split(',').map(s => s.trim()).filter(Boolean)
+      if (songs.length >= 2) {
+        const each = Math.floor((Number(en.amount) / songs.length) * 100) / 100
+        const splits = songs.map((song, i) => ({ artist: en.artist || '', song, amount: i === songs.length - 1 ? Math.round((Number(en.amount) - each * (songs.length - 1)) * 100) / 100 : each }))
+        try { await api.post(`/ledger/entries/${en.id}/split`, { splits }); toast(`Split across ${songs.length} songs`); load() }
+        catch (err) { toast(err.response?.data?.error || 'Could not auto-split', 'error'); load() }
+        return
+      }
+    }
+
     setEntries(list => list.map(e => e.id === en.id ? { ...e, [key]: val } : e))
     setUndoStack(s => [...s.slice(-19), { id: en.id, key, old: en[key], label: `${en.payee}: ${key}` }])
     try { await api.patch(`/ledger/entries/${en.id}`, { [key]: val }) } catch { toast('Save failed', 'error'); load() }
@@ -130,13 +148,15 @@ export default function Ledger() {
   // ── Toggleable columns, persisted per user+workspace ──────────────────
   const COLS = [
     { key: 'invoice_date', label: 'Date', render: en => <span className="text-gray-500 whitespace-nowrap">{formatDate(en.invoice_date)}</span> },
-    { key: 'payee', label: 'Payee', render: en => <PayeeCell en={en} onFlag={() => setDrawerEntry(en)} /> },
+    { key: 'payee', label: 'Payee', render: en => <PayeeCell en={en} onFlag={() => setDrawerEntry(en)} onToggleSplits={toggleExpand} isOpen={!!expanded[en.id]} /> },
     { key: 'artist', label: 'Artist', render: en => <EditCell en={en} field="artist" kind="datalist" display={<span className="text-gray-600">{en.artist || '—'}</span>} {...editProps} /> },
     { key: 'song', label: 'Song', render: en => <EditCell en={en} field="song" display={<span className="text-gray-600">{en.song || '—'}</span>} {...editProps} /> },
     { key: 'description', label: 'Description', render: en => <EditCell en={en} field="description" display={<span className="text-gray-600 truncate block max-w-[220px]">{en.description || '—'}</span>} {...editProps} /> },
     { key: 'category', label: 'Category', render: en => <EditCell en={en} field="category" kind="select" options={EXPENSE_CATEGORIES} display={<span className="text-gray-600 whitespace-nowrap">{en.category || '—'}</span>} {...editProps} /> },
     { key: 'invoice_number', label: 'Invoice #', render: en => <EditCell en={en} field="invoice_number" display={<span className="text-gray-500 whitespace-nowrap">{en.invoice_number || '—'}</span>} {...editProps} /> },
-    { key: 'amount', label: 'Amount', render: en => <EditCell en={en} field="amount" kind="number" display={<span className="text-ink font-medium whitespace-nowrap tabular-nums">{money(en.amount, en.currency)}</span>} {...editProps} /> },
+    { key: 'amount', label: 'Amount', render: en => en.split_count > 0
+      ? <span className="text-ink font-medium whitespace-nowrap tabular-nums">{money(en.family_amount ?? en.amount, en.currency)}<span className="block text-[10px] text-gray-400 font-normal">{money(en.amount, en.currency)} this slice</span></span>
+      : <EditCell en={en} field="amount" kind="number" display={<span className="text-ink font-medium whitespace-nowrap tabular-nums">{money(en.amount, en.currency)}</span>} {...editProps} /> },
     { key: 'currency', label: 'Currency', render: en => <span className="text-gray-500">{en.currency || 'USD'}</span> },
     { key: 'usd', label: '≈ USD', render: en => {
       const usd = (en.currency || 'USD') === 'USD' ? Number(en.amount || 0) : (en.fx_rate_to_usd ? Number(en.amount || 0) / Number(en.fx_rate_to_usd) : null)
@@ -220,6 +240,23 @@ export default function Ledger() {
   const reject = async (id) => { const reason = window.prompt('Reason for rejection (required):')?.trim(); if (!reason) return; act(id, 'reject', { reason }) }
   const remove = async (id) => { if (!window.confirm('Delete this entry?')) return; try { await api.delete(`/ledger/entries/${id}`); load() } catch { toast('Failed', 'error') } }
   function openFile(id, type) { api.get(`/ledger/entries/${id}/file/${type}`).then(({ data }) => setPreview({ url: data.data.url, label: type })).catch(() => toast('No file', 'error')) }
+
+  // Split families: lazily fetch children the first time a parent is expanded.
+  const fetchChildren = async (parentId) => {
+    try { const { data } = await api.get('/ledger/entries', { params: { parent: parentId } }); setChildrenMap(m => ({ ...m, [parentId]: data.data || [] })) }
+    catch { toast('Could not load splits', 'error') }
+  }
+  const toggleExpand = (en) => {
+    const open = !expanded[en.id]
+    setExpanded(m => ({ ...m, [en.id]: open }))
+    if (open && !childrenMap[en.id]) fetchChildren(en.id)
+  }
+  const unsplit = async (en) => {
+    if (!window.confirm(`Merge the ${en.split_count} slices back into ${en.payee}?`)) return
+    try { await api.delete(`/ledger/entries/${en.id}/splits`); toast('Unsplit'); setExpanded(m => ({ ...m, [en.id]: false })); setChildrenMap(m => { const n = { ...m }; delete n[en.id]; return n }); load() }
+    catch (err) { toast(err.response?.data?.error || 'Could not unsplit', 'error') }
+  }
+  const afterSplit = () => { const id = splitEntry?.id; setSplitEntry(null); if (id) { setChildrenMap(m => { const n = { ...m }; delete n[id]; return n }); setExpanded(m => ({ ...m, [id]: true })) } load() }
 
   const copyVendorLink = () => {
     const url = `${window.location.origin}/submit/${label?.vendor_form_token}`
@@ -306,7 +343,9 @@ export default function Ledger() {
 
   const totals = useMemo(() => {
     const t = {}
-    filtered.filter(e => !e.voided).forEach(e => { t[e.currency || 'USD'] = (t[e.currency || 'USD'] || 0) + (Number(e.amount) || 0) })
+    // Use family_amount so a split parent contributes its whole family (its
+    // slice + hidden children), never just the parent's slice.
+    filtered.filter(e => !e.voided).forEach(e => { t[e.currency || 'USD'] = (t[e.currency || 'USD'] || 0) + (Number(e.family_amount ?? e.amount) || 0) })
     return t
   }, [filtered])
 
@@ -440,7 +479,8 @@ export default function Ledger() {
             </thead>
             <tbody className="divide-y divide-divider">
               {filtered.map(en => (
-                <tr key={en.id} ref={el => (rowRefs.current[en.id] = el)} className={`group align-top transition-shadow ${en.voided ? 'opacity-50' : ''} ${en.entry_source === 'expense' ? 'bg-sky-50/70 hover:bg-sky-100/70' : 'hover:bg-gray-50'}`}>
+                <Fragment key={en.id}>
+                <tr ref={el => (rowRefs.current[en.id] = el)} className={`group align-top transition-shadow ${en.voided ? 'opacity-50' : ''} ${en.entry_source === 'expense' ? 'bg-sky-50/70 hover:bg-sky-100/70' : 'hover:bg-gray-50'}`}>
                   {shownCols.map((c, ci) => <td key={c.key} className={`px-3 py-3 ${ci === 0 ? `sticky left-0 z-10 ${en.entry_source === 'expense' ? 'bg-sky-50' : 'bg-card'} group-hover:bg-gray-50` : ''}`}>{c.render(en)}</td>)}
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1.5 justify-end whitespace-nowrap">
@@ -453,12 +493,34 @@ export default function Ledger() {
                       {en.status === 'approved' && en.payment_status !== 'Paid' && (
                         <button onClick={() => act(en.id, 'mark-paid')} title="Mark paid" className="text-gray-500 hover:text-emerald-600 p-1 rounded"><DollarSign size={15} /></button>
                       )}
+                      {en.split_count > 0
+                        ? <button onClick={() => unsplit(en)} title="Unsplit" className="text-gray-400 hover:text-amber-600 p-1 rounded"><Scissors size={14} /></button>
+                        : <button onClick={() => setSplitEntry(en)} title="Split across artists" className="text-gray-400 hover:text-brand-600 p-1 rounded"><Scissors size={14} /></button>}
                       <button onClick={() => setEditEntry(en)} title="Edit" className="text-gray-400 hover:text-brand-600 p-1 rounded"><Pencil size={14} /></button>
                       <button onClick={() => setDrawerEntry(en)} title="Details" className="text-gray-400 hover:text-brand-600 p-1 rounded"><SlidersHorizontal size={14} /></button>
                       <button onClick={() => remove(en.id)} title="Delete" className="text-gray-300 hover:text-danger p-1 rounded"><Trash2 size={14} /></button>
                     </div>
                   </td>
                 </tr>
+                {expanded[en.id] && (childrenMap[en.id] || []).map(kid => (
+                  <tr key={`k-${kid.id}`} className="bg-page/40 text-[13px]">
+                    {shownCols.map((c, ci) => (
+                      <td key={c.key} className={`px-3 py-2 ${ci === 0 ? 'sticky left-0 z-10 bg-page/60' : ''}`}>
+                        {ci === 0 ? <span className="flex items-center gap-1.5 text-gray-500 pl-4"><span className="text-gray-300">↳</span>{c.render(kid)}</span> : c.render(kid)}
+                      </td>
+                    ))}
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-1.5 justify-end">
+                        <button onClick={() => setEditEntry(kid)} title="Edit slice" className="text-gray-400 hover:text-brand-600 p-1 rounded"><Pencil size={13} /></button>
+                        <button onClick={() => setDrawerEntry(kid)} title="Details" className="text-gray-400 hover:text-brand-600 p-1 rounded"><SlidersHorizontal size={13} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {expanded[en.id] && !childrenMap[en.id] && (
+                  <tr className="bg-page/40"><td colSpan={shownCols.length + 1} className="px-3 py-2 text-xs text-gray-400 pl-8">Loading splits…</td></tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
             <tfoot>
@@ -483,6 +545,7 @@ export default function Ledger() {
       {drawerEntry && <LedgerEntryDrawer entry={drawerEntry} onClose={() => setDrawerEntry(null)} onChanged={load} />}
       {quickOpen && <QuickExpenseModal artistNames={artistNames} toast={toast} onClose={() => setQuickOpen(false)} onCreated={() => { setQuickOpen(false); load() }} />}
       {editEntry && <EditEntryModal entry={editEntry} artistNames={artistNames} toast={toast} onClose={() => setEditEntry(null)} onSaved={() => { setEditEntry(null); load() }} />}
+      {splitEntry && <SplitModal entry={splitEntry} artistNames={artistNames} toast={toast} onClose={() => setSplitEntry(null)} onDone={afterSplit} />}
       {preview && (
         <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={() => setPreview(null)}>
           <div className="bg-card rounded-xl shadow-modal w-full max-w-4xl h-[88vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -545,14 +608,19 @@ function EditCell({ en, field, kind = 'text', options, display, editing, draft, 
   return <span onClick={() => beginEdit(en, field)} className="cursor-text hover:bg-brand-50/60 rounded px-1 -mx-1 block min-h-[1.25rem]" title="Click to edit">{display}</span>
 }
 
-function PayeeCell({ en, onFlag }) {
+function PayeeCell({ en, onFlag, onToggleSplits, isOpen }) {
   const flags = (en.ai_scan?.discrepancies?.length || 0) + (en.w9_scan?.discrepancies?.length || 0)
   return (
     <div>
       <p className={`font-medium text-ink ${en.voided ? 'line-through' : ''}`}>{en.payee}</p>
       {en.vendor_submitted && <span className="text-[10px] text-brand-600 font-semibold uppercase">Vendor</span>}
       {en.voided && <span className="text-[10px] text-red-500 font-semibold uppercase ml-1">Voided</span>}
-      {en.split_count > 0 && <span className="text-[10px] text-gray-400 font-semibold uppercase ml-1">{en.split_count} splits</span>}
+      {en.split_count > 0 && (
+        <button onClick={(e) => { e.stopPropagation(); onToggleSplits?.(en) }} title="Show/hide splits"
+          className="inline-flex items-center gap-0.5 text-[10px] text-brand-600 font-semibold uppercase ml-1 hover:underline align-middle">
+          {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}{en.split_count} splits
+        </button>
+      )}
       {en.is_bulk_deal && <span className="text-[10px] text-violet-500 font-semibold uppercase ml-1">Bulk</span>}
       {en.rush && <span className="text-[10px] text-amber-600 font-semibold uppercase ml-1">⚡ Rush</span>}
       {flags > 0 && <button onClick={onFlag} className="text-[10px] text-red-600 font-semibold uppercase ml-1 hover:underline">⚠ {flags} flag(s)</button>}
@@ -748,3 +816,4 @@ function EditEntryModal({ entry, artistNames, toast, onClose, onSaved }) {
     </div>
   )
 }
+

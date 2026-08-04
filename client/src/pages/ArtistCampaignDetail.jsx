@@ -2,11 +2,12 @@ import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Download, Plus, Flag, Check, FolderCheck, Eye, Link2, Ban, EyeOff,
-  ExternalLink, MessageSquare, X, CheckCircle2, Circle, DollarSign, AtSign,
+  ExternalLink, MessageSquare, X, CheckCircle2, Circle, DollarSign, AtSign, Scissors,
 } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
 import CampaignChat from '../components/CampaignChat'
+import SplitModal from '../components/SplitModal'
 import { formatDate } from '../utils/dates'
 import { EXPENSE_CATEGORIES, CURRENCIES } from '../constants'
 
@@ -35,6 +36,7 @@ export default function ArtistCampaignDetail() {
   const [preview, setPreview] = useState(null)
   const [thread, setThread] = useState(null) // { id, comments, body }
   const [socials, setSocials] = useState(null) // entry being edited
+  const [splitEntry, setSplitEntry] = useState(null)
   const [sel, setSel] = useState(new Set())
 
   const load = useCallback(() => {
@@ -181,6 +183,7 @@ export default function ArtistCampaignDetail() {
                           <div className="flex items-center gap-1 justify-end whitespace-nowrap text-gray-400">
                             {en.has_invoice && <button onClick={() => openFile(en.id)} title="View invoice" className="hover:text-brand-600 p-1"><Eye size={14} /></button>}
                             <button onClick={() => setSocials(en)} title="Edit socials" className="p-1 hover:text-brand-600"><AtSign size={14} /></button>
+                            {!en.parent_id && !en.split_count && <button onClick={() => setSplitEntry(en)} title="Split across artists/songs" className="p-1 hover:text-brand-600"><Scissors size={14} /></button>}
                             <button onClick={() => setRow(en.id, { cobrand: !en.cobrand })} title="Cobrand" className={`p-1 ${en.cobrand ? 'text-brand-600' : 'hover:text-brand-600'}`}><Link2 size={14} /></button>
                             <button onClick={() => setRow(en.id, { item_finished: !en.item_finished })} title="Finished" className={`p-1 ${en.item_finished ? 'text-emerald-600' : 'hover:text-emerald-600'}`}><Check size={14} /></button>
                             <button onClick={() => setRow(en.id, { payment_status: en.payment_status === 'Paid' ? 'Unpaid' : 'Paid' })} title="Toggle paid" className="p-1 hover:text-emerald-600"><DollarSign size={14} /></button>
@@ -217,6 +220,7 @@ export default function ArtistCampaignDetail() {
 
       <CampaignChat room={songParam ? `song:${data.artist_key}:${String(songParam).trim().toLowerCase()}` : `artist:${data.artist_key}`} />
       {socials && <SocialsEditor entry={socials} onClose={() => setSocials(null)} onSaved={() => { setSocials(null); load() }} toast={toast} />}
+      {splitEntry && <SplitModal entry={splitEntry} artistNames={[data.artist]} toast={toast} onClose={() => setSplitEntry(null)} onDone={() => { setSplitEntry(null); load() }} />}
       {addOpen !== null && <AddExpenseModal artist={data.artist} song={addOpen} onClose={() => setAddOpen(null)} onSaved={() => { setAddOpen(null); load() }} toast={toast} />}
       {thread && <CommentThread entry={thread} onClose={() => { setThread(null); load() }} toast={toast} />}
       {preview && (

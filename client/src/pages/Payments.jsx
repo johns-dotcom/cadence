@@ -25,7 +25,8 @@ const FILTERS = [
 
 function totalsByCurrency(rows) {
   const t = {}
-  rows.forEach(r => { t[r.currency] = (t[r.currency] || 0) + Number(r.amount || 0) })
+  // family_amount collapses split families into their parent's full total.
+  rows.forEach(r => { t[r.currency] = (t[r.currency] || 0) + Number(r.family_amount ?? r.amount ?? 0) })
   return t
 }
 
@@ -114,7 +115,7 @@ export default function Payments() {
     const rows = selectedRows
     if (!rows.length) return
     const byCur = {}
-    rows.forEach(r => { byCur[r.currency || 'USD'] = (byCur[r.currency || 'USD'] || 0) + Number(r.amount || 0) })
+    rows.forEach(r => { byCur[r.currency || 'USD'] = (byCur[r.currency || 'USD'] || 0) + Number(r.family_amount ?? r.amount ?? 0) })
     const totalLine = Object.entries(byCur).map(([c, a]) => `${c} ${fmt(a)}`).join(' · ')
     const ids = [...sel]
     setEmailItems([{
@@ -253,7 +254,7 @@ export default function Payments() {
                       {r.rush && <Zap size={12} className="text-amber-600 flex-shrink-0" />}
                       {r.on_hold && <Pause size={12} className="text-gray-500 flex-shrink-0" />}
                     </p>
-                    <span className="text-sm font-semibold text-ink tabular-nums flex-shrink-0">{r.currency} {fmt(r.amount)}</span>
+                    <span className="text-sm font-semibold text-ink tabular-nums flex-shrink-0">{r.currency} {fmt(r.family_amount ?? r.amount)}</span>
                   </div>
                   <p className="text-[11px] text-gray-400 truncate mt-0.5">
                     {isPaid
@@ -316,7 +317,7 @@ export default function Payments() {
                   </td>
                   <td className="px-3 py-3 text-gray-600 whitespace-nowrap">{r.artist || '—'}</td>
                   <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{r.invoice_number || '—'}</td>
-                  <td className="px-3 py-3 text-ink font-medium whitespace-nowrap">{r.currency} {fmt(r.amount)}</td>
+                  <td className="px-3 py-3 text-ink font-medium whitespace-nowrap">{r.currency} {fmt(r.family_amount ?? r.amount)}{r.split_count > 0 && <span className="block text-[10px] text-gray-400 font-normal">family total</span>}</td>
                   <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{r.rep || '—'}</td>
                   <td className="px-3 py-3 whitespace-nowrap">
                     {r.scheduled_payment_date
