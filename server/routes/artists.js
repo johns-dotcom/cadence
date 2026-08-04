@@ -76,7 +76,8 @@ router.get('/:id', async (req, res) => {
       [artistId, req.labelId]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Artist not found' });
-    const [releases, contracts] = await Promise.all([
+    const artistName = rows[0].name;
+    const [releases, contracts, spend, budget] = await Promise.all([
       pool.query(
         `SELECT id, project_name, release_date, release_type, status, cover_art_url
          FROM releases WHERE label_id = $1 AND artist_id = $2
@@ -89,8 +90,23 @@ router.get('/:id', async (req, res) => {
          ORDER BY date_signed DESC NULLS LAST`,
         [req.labelId, artistId]
       ),
+      // Spend by category — leaf rows only (children of splits + unsplit parents)
+      // so split allocations aren't double-counted.
+      pool.query(
+        `SELECT COALESCE(category, 'Uncategorized') AS category, COALESCE(SUM(amount), 0)::numeric AS amount
+           FROM expenses e
+          WHERE label_id = $1 AND LOWER(artist) = LOWER($2) AND status = 'approved'
+            AND (deleted = false OR deleted IS NULL) AND (voided = false OR voided IS NULL)
+            AND NOT EXISTS (SELECT 1 FROM expenses c WHERE c.parent_id = e.id)
+          GROUP BY COALESCE(category, 'Uncategorized') ORDER BY SUM(amount) DESC`,
+        [req.labelId, artistName]
+      ),
+      pool.query(`SELECT COALESCE(SUM(budget_cap), 0)::numeric AS cap FROM releases WHERE label_id = $1 AND artist_id = $2`, [req.labelId, artistId]),
     ]);
-    res.json({ success: true, data: { ...rows[0], releases: releases.rows, contracts: contracts.rows } });
+    const spendByCategory = spend.rows.map(r => ({ category: r.category, amount: Number(r.amount) }));
+    const spendTotal = spendByCategory.reduce((a, b) => a + b.amount, 0);
+    const budgetTotal = Number(budget.rows[0]?.cap || 0);
+    res.json({ success: true, data: { ...rows[0], releases: releases.rows, contracts: contracts.rows, spendByCategory, spendTotal, budgetTotal } });
   } catch (error) {
     console.error('Get artist error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
