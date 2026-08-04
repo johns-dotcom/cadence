@@ -23,6 +23,16 @@ export default function Settings() {
   const { user, label, updateLabel } = useAuth()
   const { toast } = useToast()
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
+  const [tab, setTab] = useState('account')
+  const TABS = [
+    { key: 'account', label: 'Account' },
+    ...(isAdmin ? [
+      { key: 'workspace', label: 'Workspace' },
+      { key: 'finance', label: 'Finance' },
+      { key: 'team', label: 'Team' },
+      { key: 'data', label: 'Data' },
+    ] : []),
+  ]
 
   const [name, setName] = useState(user?.name || '')
   const [labelName, setLabelName] = useState('')
@@ -145,7 +155,19 @@ export default function Settings() {
     <div className="max-w-2xl">
       <PageHeader title="Settings" subtitle="Your profile and workspace" />
 
+      {/* Section tabs */}
+      <div className="flex flex-wrap gap-1 border-b border-rule mb-6">
+        {TABS.map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            className={`px-3.5 py-2 text-sm font-medium border-b-2 -mb-px transition ${tab === t.key ? 'border-brand-600 text-brand-700' : 'border-transparent text-gray-500 hover:text-gray-800'}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       <div className="space-y-6">
+        {/* ── Account ── */}
+        {tab === 'account' && (<>
         {/* Profile */}
         <form onSubmit={saveProfile} className="card p-5">
           <h2 className="text-sm font-bold text-ink mb-4">Profile</h2>
@@ -164,8 +186,19 @@ export default function Settings() {
           </div>
         </form>
 
-        {/* Workspace branding (admins only) */}
-        {isAdmin && (
+        {/* Change password */}
+        <form onSubmit={changePassword} className="card p-5">
+          <h2 className="text-sm font-bold text-ink mb-4">Change password</h2>
+          <div className="space-y-3">
+            <div><label className="label">Current password</label><input type="password" className="input" value={pw.current_password} onChange={e => setPw(p => ({ ...p, current_password: e.target.value }))} /></div>
+            <div><label className="label">New password</label><input type="password" className="input" value={pw.new_password} onChange={e => setPw(p => ({ ...p, new_password: e.target.value }))} placeholder="8+ characters" /></div>
+            <button className="btn-primary">Change password</button>
+          </div>
+        </form>
+        </>)}
+
+        {/* ── Workspace ── */}
+        {tab === 'workspace' && isAdmin && (<>
           <form onSubmit={saveLabel} className="card p-5">
             <h2 className="text-sm font-bold text-ink mb-1">Workspace identity &amp; branding</h2>
             <p className="text-xs text-gray-400 mb-4">Make this workspace feel like your team's own.</p>
@@ -257,10 +290,8 @@ export default function Settings() {
               <button className="btn-primary">Save identity &amp; branding</button>
             </div>
           </form>
-        )}
 
-        {/* Home dashboard (admins only) */}
-        {isAdmin && (
+          {/* Home dashboard */}
           <div className="card p-5">
             <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><LayoutDashboard size={15} /> Home dashboard</h2>
             <p className="text-xs text-gray-400 mb-4">Choose which widgets your team sees on the dashboard, and pin quick links.</p>
@@ -288,10 +319,10 @@ export default function Settings() {
 
             <button onClick={saveDashboard} disabled={savingDash} className="btn-primary">{savingDash ? 'Saving…' : 'Save home dashboard'}</button>
           </div>
-        )}
+        </>)}
 
-        {/* Vendor form link — public submission URL (admins only) */}
-        {isAdmin && (
+        {/* ── Finance ── */}
+        {tab === 'finance' && isAdmin && (<>
           <div className="card p-5">
             <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><Link2 size={15} /> Vendor form link</h2>
             <p className="text-xs text-gray-400 mb-3">Share this with vendors to submit invoices — no login required. Rotating it invalidates the old link everywhere.</p>
@@ -301,10 +332,8 @@ export default function Settings() {
               <button onClick={rotateVendorFormLink} className="btn-secondary"><RefreshCw size={15} /> Rotate</button>
             </div>
           </div>
-        )}
 
-        {/* Invoice details — "Funds payable to" block on issued invoices (admins only) */}
-        {isAdmin && (
+          {/* Invoice details */}
           <form onSubmit={saveInvoiceSettings} className="card p-5">
             <h2 className="text-sm font-bold text-ink mb-1">Invoice details</h2>
             <p className="text-xs text-gray-400 mb-4">Your company &amp; remittance info. Shown as the “Funds payable to” block on every invoice you issue.</p>
@@ -335,26 +364,16 @@ export default function Settings() {
               <button disabled={savingInv} className="btn-primary">{savingInv ? 'Saving…' : 'Save invoice details'}</button>
             </div>
           </form>
-        )}
+        </>)}
 
-        {/* Permissions — admin only */}
-        {isAdmin && <PermissionsManager />}
+        {/* ── Team ── */}
+        {tab === 'team' && isAdmin && (<>
+          <PermissionsManager />
+          <RepsManager />
+        </>)}
 
-        {/* Reps — admin only */}
-        {isAdmin && <RepsManager />}
-
-        {/* Data export / import — admin only */}
-        {isAdmin && <DataTools />}
-
-        {/* Password */}
-        <form onSubmit={changePassword} className="card p-5">
-          <h2 className="text-sm font-bold text-ink mb-4">Change password</h2>
-          <div className="space-y-3">
-            <div><label className="label">Current password</label><input type="password" className="input" value={pw.current_password} onChange={e => setPw(p => ({ ...p, current_password: e.target.value }))} /></div>
-            <div><label className="label">New password</label><input type="password" className="input" value={pw.new_password} onChange={e => setPw(p => ({ ...p, new_password: e.target.value }))} placeholder="8+ characters" /></div>
-            <button className="btn-primary">Change password</button>
-          </div>
-        </form>
+        {/* ── Data ── */}
+        {tab === 'data' && isAdmin && <DataTools />}
       </div>
     </div>
   )
