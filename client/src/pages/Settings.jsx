@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Upload, Trash2, Check, Link2, Copy, RefreshCw, Plus, X, LayoutDashboard } from 'lucide-react'
+import { Upload, Trash2, Check, Link2, Copy, RefreshCw, Plus, X, LayoutDashboard, Mail, Send } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
@@ -51,6 +51,11 @@ export default function Settings() {
   const [pinned, setPinned] = useState([])
   const [savingDash, setSavingDash] = useState(false)
 
+  // Outbound email identity
+  const [replyTo, setReplyTo] = useState('')
+  const [savingEmail, setSavingEmail] = useState(false)
+  const [testing, setTesting] = useState(false)
+
   useEffect(() => {
     if (isAdmin) api.get('/label').then(res => {
       const d = res.data.data || {}
@@ -64,6 +69,7 @@ export default function Settings() {
       setLogoInitials(s.logo_initials || '')
       setDashWidgets(s.dashboard?.widgets || {})
       setPinned(Array.isArray(s.dashboard?.pinned) ? s.dashboard.pinned : [])
+      setReplyTo(s.email_reply_to || '')
     }).catch(() => {})
   }, [isAdmin])
 
@@ -102,6 +108,25 @@ export default function Settings() {
       updateLabel({ name: data.data.name, accent_color: data.data.accent_color, settings: data.data.settings })
       toast('Workspace identity saved')
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+
+  const saveEmail = async (e) => {
+    e.preventDefault()
+    const rt = replyTo.trim()
+    if (rt && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rt)) { toast('Reply-to must be a valid email address', 'error'); return }
+    setSavingEmail(true)
+    try {
+      const { data } = await api.patch('/label', { settings: { email_reply_to: rt } })
+      updateLabel({ settings: data.data.settings })
+      toast('Email settings saved')
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+    finally { setSavingEmail(false) }
+  }
+  const sendTestEmail = async () => {
+    setTesting(true)
+    try { const { data } = await api.post('/label/test-email'); toast(`Test email sent to ${data.data.to}`) }
+    catch (err) { toast(err.response?.data?.error || 'Failed to send — check your email provider is configured', 'error') }
+    finally { setTesting(false) }
   }
 
   const toggleWidget = (k) => setDashWidgets(w => ({ ...w, [k]: w[k] === false ? true : false }))
@@ -324,6 +349,21 @@ export default function Settings() {
 
         {/* ── Finance ── */}
         {tab === 'finance' && isAdmin && (<>
+          {/* Outbound email identity */}
+          <form onSubmit={saveEmail} className="card p-5">
+            <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><Mail size={15} /> Outbound email</h2>
+            <p className="text-xs text-gray-400 mb-4">Emails to vendors and approvers are sent as <span className="font-medium text-ink">“{labelName || 'Your workspace'} via Cadence”</span> and tinted with your accent color. Set a reply-to so replies reach your inbox, not ours.</p>
+            <div className="max-w-md">
+              <label className="label">Reply-to address</label>
+              <input className="input" type="email" value={replyTo} onChange={e => setReplyTo(e.target.value)} placeholder="billing@yourlabel.com" />
+              <p className="text-[11px] text-gray-400 mt-1">Leave blank to use the default Cadence reply address.</p>
+            </div>
+            <div className="flex flex-wrap gap-2 mt-4">
+              <button type="submit" disabled={savingEmail} className="btn-primary">{savingEmail ? 'Saving…' : 'Save email settings'}</button>
+              <button type="button" onClick={sendTestEmail} disabled={testing} className="btn-secondary"><Send size={15} /> {testing ? 'Sending…' : 'Send test to me'}</button>
+            </div>
+          </form>
+
           <div className="card p-5">
             <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><Link2 size={15} /> Vendor form link</h2>
             <p className="text-xs text-gray-400 mb-3">Share this with vendors to submit invoices — no login required. Rotating it invalidates the old link everywhere.</p>

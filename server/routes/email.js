@@ -17,8 +17,10 @@ router.use(authMiddleware, withTenant, requireApprover);
 // attachment references from client input.
 async function safeCtx(labelId, ctx = {}) {
   const { rows } = await pool.query('SELECT name FROM labels WHERE id = $1', [labelId]);
-  const { attachments, ...rest } = ctx;
-  return { ...rest, workspaceName: rows[0]?.name || 'the label' };
+  const { attachments, label, labelId: _lid, ...rest } = ctx;
+  // labelId is injected server-side so dispatchSend self-loads the tenant's
+  // outbound identity (display name, accent, reply-to) — never client-supplied.
+  return { ...rest, labelId, workspaceName: rows[0]?.name || 'the label' };
 }
 
 // POST /api/email/preview { kind, ctx }

@@ -8,7 +8,22 @@
 // routes already have the tenant-scoped rows in hand.
 
 const email = require('./email');
+const pool = require('../db');
 const { loadFileBase64 } = require('./r2');
+
+// Resolve a tenant's outbound-email identity (display name, accent, reply-to)
+// from the labels row. Reply-to lives in labels.settings.email_reply_to.
+async function loadLabelIdentity(labelId) {
+  if (!labelId) return null;
+  try {
+    const { rows } = await pool.query(
+      `SELECT name, accent_color, COALESCE(settings->>'email_reply_to','') AS email_reply_to FROM labels WHERE id = $1`,
+      [labelId]
+    );
+    if (!rows.length) return null;
+    return { name: rows[0].name, accent_color: rows[0].accent_color || null, email_reply_to: rows[0].email_reply_to || null };
+  } catch { return null; }
+}
 
 // kind → (ctx) => { subject, html, text }
 const TEMPLATES = {
@@ -27,7 +42,10 @@ const KINDS = Object.keys(TEMPLATES);
 function render(kind, ctx = {}) {
   const fn = TEMPLATES[kind];
   if (!fn) throw new Error(`Unknown email kind: ${kind}`);
-  return fn(ctx);
+  // Let the label's accent tint the template even when the caller didn't pass
+  // one explicitly (ctx.label is the tenant identity object).
+  const withAccent = ctx.accent || ctx.label?.accent_color ? { accent: ctx.accent || ctx.label?.accent_color, ...ctx } : ctx;
+  return fn(withAccent);
 }
 
 const toCc = (cc) => (Array.isArray(cc) ? cc : cc ? [cc] : []).filter(Boolean);
@@ -58,13 +76,18 @@ async function loadAttachments(list = []) {
 
 // Send, applying the admin's overrides (to / cc / subject / html_override).
 async function dispatchSend(kind, ctx = {}, override = {}) {
+  // Self-resolve tenant identity when the caller passed a labelId but no label.
+  if (ctx.labelId && !ctx.label) {
+    const id = await loadLabelIdentity(ctx.labelId);
+    if (id) ctx = { ...ctx, label: id, accent: ctx.accent || id.accent_color };
+  }
   const base = render(kind, ctx);
   const to = override.to || ctx.to;
   const cc = toCc(override.cc !== undefined ? override.cc : ctx.cc);
   const subject = override.subject || base.subject;
   const html = override.html_override || override.html || base.html;
   const attachments = await loadAttachments(ctx.attachments);
-  return email.sendEmail({ to, cc, subject, html, text: base.text, attachments });
+  return email.sendEmail({ to, cc, subject, html, text: base.text, attachments, label: ctx.label });
 }
 
-module.exports = { KINDS, prepareEmail, dispatchSend, render };
+module.exports = { KINDS, prepareEmail, dispatchSend, render, loadLabelIdentity };

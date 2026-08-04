@@ -1,10 +1,20 @@
 const express = require('express');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { OAuth2Client } = require('google-auth-library');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { signToken, publicUser } = require('../lib/token');
 const { getSignedFileUrl } = require('../lib/r2');
+const { sendEmail, passwordResetEmail } = require('../lib/email');
+const { loadLabelIdentity } = require('../lib/emailDispatch');
+
+// Public reset links must point at a trusted origin — configured FRONTEND_URL,
+// else the browser Origin. Never the raw Host header (attacker-controllable).
+function resetLink(req, token) {
+  const origin = process.env.FRONTEND_URL || req.headers.origin || '';
+  return `${origin.replace(/\/$/, '')}/reset-password?token=${token}`;
+}
 
 const router = express.Router();
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -381,6 +391,96 @@ router.post('/change-password', authMiddleware, async (req, res) => {
     res.json({ success: true, message: 'Password changed. All sessions invalidated.' });
   } catch (error) {
     console.error('Change password error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── POST /api/auth/forgot-password ──────────────────────────────────────
+// Public. Emails a time-limited reset link. Always resolves to a generic
+// success so it never reveals whether an address is registered. If the email
+// maps to multiple workspaces and none is specified, returns the list (mirrors
+// login) so the client can disambiguate.
+const RESET_TTL_MIN = 60;
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email, workspace } = req.body;
+    if (!email) return res.status(400).json({ success: false, error: 'Email required' });
+    const addr = email.trim().toLowerCase();
+
+    let result;
+    if (workspace) {
+      result = await pool.query(
+        `SELECT u.* FROM users u JOIN labels l ON l.id = u.label_id
+         WHERE u.email = $1 AND l.slug = $2 AND NOT (u.is_platform_admin = true AND u.password_hash IS NULL)`,
+        [addr, workspace]
+      );
+    } else {
+      result = await pool.query('SELECT * FROM users WHERE email = $1 AND NOT (is_platform_admin = true AND password_hash IS NULL)', [addr]);
+    }
+
+    const generic = { success: true, message: 'If that email is registered, a reset link is on its way.' };
+    if (result.rows.length === 0) return res.json(generic);
+    if (result.rows.length > 1) {
+      const { rows } = await pool.query(
+        `SELECT l.slug, l.name FROM labels l JOIN users u ON u.label_id = l.id
+         WHERE u.email = $1 AND NOT (u.is_platform_admin = true AND u.password_hash IS NULL) ORDER BY l.name`,
+        [addr]
+      );
+      return res.status(409).json({ success: false, error: 'This email is registered to multiple workspaces. Please specify one.', workspaces: rows });
+    }
+
+    const user = result.rows[0];
+    // Suspended workspaces don't get reset links (they can't log in anyway).
+    if (!user.is_platform_admin && await isSuspended(user.label_id)) return res.json(generic);
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expires = new Date(Date.now() + RESET_TTL_MIN * 60 * 1000);
+    await pool.query('UPDATE users SET reset_token = $1, reset_expires = $2 WHERE id = $3', [token, expires, user.id]);
+
+    const identity = await loadLabelIdentity(user.label_id);
+    const msg = passwordResetEmail({
+      userName: user.name, workspaceName: identity?.name, link: resetLink(req, token),
+      expiresMinutes: RESET_TTL_MIN, accent: identity?.accent_color,
+    });
+    await sendEmail({ to: user.email, subject: msg.subject, html: msg.html, text: msg.text, label: identity });
+    res.json(generic);
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── POST /api/auth/reset-password ───────────────────────────────────────
+// Public, token-gated. Sets a new password, clears the reset token, bumps
+// token_version (kills every existing session), and logs the user straight in.
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token) return res.status(400).json({ success: false, error: 'Missing reset token' });
+    if (!password || password.length < 8) return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' });
+
+    const { rows } = await pool.query('SELECT * FROM users WHERE reset_token = $1', [token]);
+    if (!rows.length) return res.status(400).json({ success: false, error: 'This reset link is invalid or has already been used.' });
+    const user = rows[0];
+    if (!user.reset_expires || new Date(user.reset_expires) < new Date()) {
+      return res.status(410).json({ success: false, error: 'This reset link has expired. Please request a new one.' });
+    }
+    if (!user.is_platform_admin && await isSuspended(user.label_id)) {
+      return res.status(403).json({ success: false, error: 'This workspace has been suspended. Contact the platform operator.' });
+    }
+
+    const hash = await bcrypt.hash(password, 10);
+    const updated = await pool.query(
+      `UPDATE users SET password_hash = $1, reset_token = NULL, reset_expires = NULL,
+         token_version = COALESCE(token_version, 0) + 1 WHERE id = $2 RETURNING *`,
+      [hash, user.id]
+    );
+    const fresh = updated.rows[0];
+    const sessionToken = signToken(fresh);
+    recordLogin(fresh, req, 'Password reset');
+    res.json({ success: true, data: { token: sessionToken, user: publicUser(fresh) } });
+  } catch (error) {
+    console.error('Reset password error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

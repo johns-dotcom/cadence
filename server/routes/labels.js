@@ -54,6 +54,10 @@ router.patch('/', requireAdmin, async (req, res) => {
     if (settings !== undefined && (typeof settings !== 'object' || Array.isArray(settings) || settings === null)) {
       return res.status(400).json({ success: false, error: 'Settings must be an object' });
     }
+    // Reply-to is a real email address (empty string clears it).
+    if (settings && settings.email_reply_to && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(settings.email_reply_to).trim())) {
+      return res.status(400).json({ success: false, error: 'Reply-to must be a valid email address' });
+    }
 
     // Empty string clears the accent (back to Cadence default).
     const accentValue = accent_color === '' ? null : accent_color;
@@ -77,6 +81,35 @@ router.patch('/', requireAdmin, async (req, res) => {
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Update label error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/label/test-email — send a sample email to the requesting admin
+// using this workspace's outbound identity (display name + reply-to + accent),
+// so they can confirm delivery and how it looks before it reaches vendors.
+router.post('/test-email', requireAdmin, async (req, res) => {
+  try {
+    const { sendEmail } = require('../lib/email');
+    const { loadLabelIdentity } = require('../lib/emailDispatch');
+    const identity = await loadLabelIdentity(req.labelId);
+    const to = (req.body.to && String(req.body.to).trim()) || req.user.email;
+    if (!to) return res.status(400).json({ success: false, error: 'No recipient address' });
+
+    const accent = /^#([0-9a-fA-F]{3,8})$/.test(String(identity?.accent_color || '')) ? identity.accent_color : '#4F46E5';
+    const html = `
+      <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:480px;margin:0 auto;padding:8px">
+        <div style="height:4px;border-radius:4px;background:${accent};margin:0 0 14px"></div>
+        <h2 style="color:#111;font-size:18px;margin:0 0 8px">Test email from ${identity?.name || 'your workspace'}</h2>
+        <p style="color:#444;font-size:14px;line-height:1.6">This is a test message sent from your Cadence workspace. If you received it, outbound email is working.</p>
+        <p style="color:#444;font-size:14px;line-height:1.6">Replies to this message go to <strong>${identity?.email_reply_to || 'your login email'}</strong>.</p>
+        <p style="color:#aaa;font-size:11px;margin-top:24px">Sent via Cadence.</p>
+      </div>`;
+    const result = await sendEmail({ to, subject: `Test email — ${identity?.name || 'Cadence'}`, html, text: 'This is a test email from your Cadence workspace.', label: identity });
+    if (!result.sent) return res.status(502).json({ success: false, error: result.reason || 'Send failed' });
+    res.json({ success: true, data: { to, via: result.via } });
+  } catch (error) {
+    console.error('Test email error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

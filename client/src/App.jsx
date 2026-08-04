@@ -10,6 +10,7 @@ import PlatformAnnouncements from './pages/PlatformAnnouncements'
 import PlatformOperators from './pages/PlatformOperators'
 import PlatformAccount from './pages/PlatformAccount'
 import Login from './pages/Login'
+import ResetPassword from './pages/ResetPassword'
 import Dashboard from './pages/Dashboard'
 import Releases from './pages/Releases'
 import ReleaseDetail from './pages/ReleaseDetail'
@@ -95,6 +96,7 @@ function AppContent() {
       <Route path="/login"        element={token ? <Navigate to="/" replace /> : <Login />} />
       <Route path="/submit/:slug" element={<VendorSubmit />} />
       <Route path="/accept-invite" element={<AcceptInvite />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/privacy"      element={<Privacy />} />
       <Route path="/eula"         element={<EULA />} />
 

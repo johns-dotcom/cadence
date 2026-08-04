@@ -22,8 +22,9 @@ let smtpTransport = null;
 // Attachments are [{ filename, content (base64 string), contentType }].
 const ccList = (cc) => (Array.isArray(cc) ? cc : cc ? [cc] : []).filter(Boolean);
 
-async function viaResend({ to, cc, subject, html, text, attachments }) {
-  const body = { from: FROM, to: [to], subject, html, text };
+async function viaResend({ to, cc, subject, html, text, attachments, from, replyTo }) {
+  const body = { from: from || FROM, to: [to], subject, html, text };
+  if (replyTo) body.reply_to = replyTo;
   if (ccList(cc).length) body.cc = ccList(cc);
   if (attachments?.length) body.attachments = attachments.map(a => ({ filename: a.filename, content: a.content }));
   const res = await fetch('https://api.resend.com/emails', {
@@ -35,16 +36,18 @@ async function viaResend({ to, cc, subject, html, text, attachments }) {
   return true;
 }
 
-async function viaSendgrid({ to, cc, subject, html, text, attachments }) {
+async function viaSendgrid({ to, cc, subject, html, text, attachments, from: fromStr, replyTo }) {
   // SendGrid wants a bare address or "Name <addr>" split into name/email.
-  const m = FROM.match(/^\s*(.*?)\s*<(.+)>\s*$/);
-  const from = m ? { name: m[1], email: m[2] } : { email: FROM };
+  const src = fromStr || FROM;
+  const m = src.match(/^\s*(.*?)\s*<(.+)>\s*$/);
+  const from = m ? { name: m[1], email: m[2] } : { email: src };
   const personalization = { to: [{ email: to }] };
   if (ccList(cc).length) personalization.cc = ccList(cc).map(email => ({ email }));
   const body = {
     personalizations: [personalization], from, subject,
     content: [text ? { type: 'text/plain', value: text } : null, { type: 'text/html', value: html }].filter(Boolean),
   };
+  if (replyTo) body.reply_to = { email: replyTo };
   if (attachments?.length) body.attachments = attachments.map(a => ({ content: a.content, filename: a.filename, type: a.contentType || 'application/octet-stream', disposition: 'attachment' }));
   const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
     method: 'POST',
@@ -55,7 +58,7 @@ async function viaSendgrid({ to, cc, subject, html, text, attachments }) {
   return true;
 }
 
-async function viaSmtp({ to, cc, subject, html, text, attachments }) {
+async function viaSmtp({ to, cc, subject, html, text, attachments, from, replyTo }) {
   if (!smtpTransport) {
     smtpTransport = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -64,17 +67,34 @@ async function viaSmtp({ to, cc, subject, html, text, attachments }) {
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     });
   }
-  const msg = { from: FROM, to, subject, html, text };
+  const msg = { from: from || FROM, to, subject, html, text };
+  if (replyTo) msg.replyTo = replyTo;
   if (ccList(cc).length) msg.cc = ccList(cc);
   if (attachments?.length) msg.attachments = attachments.map(a => ({ filename: a.filename, content: a.content, encoding: 'base64', contentType: a.contentType }));
   await smtpTransport.sendMail(msg);
   return true;
 }
 
-async function sendEmail({ to, cc, subject, html, text, attachments }) {
+// Split the configured FROM into its verified address and default display name.
+const FROM_ADDR = (FROM.match(/<([^>]+)>/)?.[1] || FROM).trim();
+const FROM_NAME = (FROM.match(/^\s*(.*?)\s*</)?.[1] || 'Cadence').trim();
+
+// Per-tenant identity: keep the verified sending ADDRESS (domain must stay
+// verified with the provider) but show "<Label> via Cadence" as the display
+// name, and set Reply-To to the label's chosen mailbox so vendors reply to the
+// label, not to us.
+function identityFor(label) {
+  if (!label || !label.name) return { from: FROM, replyTo: null };
+  const from = `${label.name} via Cadence <${FROM_ADDR}>`;
+  const replyTo = label.email_reply_to || null;
+  return { from, replyTo };
+}
+
+async function sendEmail({ to, cc, subject, html, text, attachments, label }) {
   try {
     if (!to) return { sent: false, reason: 'No recipient' };
-    const args = { to, cc, subject, html, text, attachments };
+    const { from, replyTo } = identityFor(label);
+    const args = { to, cc, subject, html, text, attachments, from, replyTo };
     if (process.env.RESEND_API_KEY) { await viaResend(args); return { sent: true, via: 'resend' }; }
     if (process.env.SENDGRID_API_KEY) { await viaSendgrid(args); return { sent: true, via: 'sendgrid' }; }
     if (process.env.SMTP_HOST) {
@@ -115,16 +135,23 @@ function inviteEmail({ inviteeName, workspaceName, inviterName, link, expiresDay
 }
 
 const esc = (s) => String(s || '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
-const shell = (title, bodyHtml) => `
+const ACCENT = '#4F46E5';
+// Normalize an accent to a safe hex; fall back to the Cadence indigo.
+const accentOf = (a) => (typeof a === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(a.trim()) ? a.trim() : ACCENT);
+const shell = (title, bodyHtml, accent) => {
+  const a = accentOf(accent);
+  return `
   <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:480px;margin:0 auto;padding:8px">
+    <div style="height:4px;border-radius:4px;background:${a};margin:0 0 14px"></div>
     <h2 style="color:#111;font-size:18px;margin:0 0 8px">${esc(title)}</h2>
     ${bodyHtml}
     <p style="color:#aaa;font-size:11px;margin-top:24px">Sent via Cadence.</p>
   </div>`;
+};
 const money = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
 
 // Vendor's invoice was approved or rejected.
-function vendorDecisionEmail({ vendorName, workspaceName, approved, invoiceNumber, amount, currency, reason }) {
+function vendorDecisionEmail({ vendorName, workspaceName, approved, invoiceNumber, amount, currency, reason, accent }) {
   const subject = approved
     ? `Your invoice ${invoiceNumber || ''} was approved by ${workspaceName}`.trim()
     : `Update on your invoice ${invoiceNumber || ''} for ${workspaceName}`.trim();
@@ -133,15 +160,27 @@ function vendorDecisionEmail({ vendorName, workspaceName, approved, invoiceNumbe
        <p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(workspaceName)}</strong> has approved your invoice${invoiceNumber ? ` <strong>${esc(invoiceNumber)}</strong>` : ''}${amount ? ` for ${esc(money(amount, currency))}` : ''}. Payment will follow per your agreed terms.</p>`
     : `<p style="color:#444;font-size:14px;line-height:1.6">Hi ${esc(vendorName)},</p>
        <p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(workspaceName)}</strong> was unable to approve your invoice${invoiceNumber ? ` <strong>${esc(invoiceNumber)}</strong>` : ''}.${reason ? ` Reason: ${esc(reason)}.` : ''} Please reach out if you have questions.</p>`;
-  return { subject, html: shell(approved ? 'Invoice approved' : 'Invoice update', body), text: `${subject}` };
+  return { subject, html: shell(approved ? 'Invoice approved' : 'Invoice update', body, accent), text: `${subject}` };
 }
 
 // Vendor's invoice was paid.
-function paymentConfirmationEmail({ vendorName, workspaceName, invoiceNumber, amount, currency, method, date }) {
+function paymentConfirmationEmail({ vendorName, workspaceName, invoiceNumber, amount, currency, method, date, accent }) {
   const subject = `Payment sent by ${workspaceName}${invoiceNumber ? ` — invoice ${invoiceNumber}` : ''}`;
   const body = `<p style="color:#444;font-size:14px;line-height:1.6">Hi ${esc(vendorName)},</p>
     <p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(workspaceName)}</strong> has sent payment${amount ? ` of <strong>${esc(money(amount, currency))}</strong>` : ''}${invoiceNumber ? ` for invoice <strong>${esc(invoiceNumber)}</strong>` : ''}${method ? ` via ${esc(method)}` : ''}${date ? ` on ${esc(date)}` : ''}.</p>`;
-  return { subject, html: shell('Payment sent', body), text: subject };
+  return { subject, html: shell('Payment sent', body, accent), text: subject };
+}
+
+// Self-service password reset. Link points at the client /reset-password page.
+function passwordResetEmail({ userName, workspaceName, link, expiresMinutes, accent }) {
+  const a = accentOf(accent);
+  const subject = `Reset your ${workspaceName || 'Cadence'} password`;
+  const body = `<p style="color:#444;font-size:14px;line-height:1.6">Hi ${esc(userName || 'there')},</p>
+    <p style="color:#444;font-size:14px;line-height:1.6">We received a request to reset your password${workspaceName ? ` for <strong>${esc(workspaceName)}</strong>` : ''} on Cadence. Click below to choose a new one.</p>
+    <p style="margin:22px 0"><a href="${link}" style="background:${a};color:#fff;text-decoration:none;font-weight:600;font-size:14px;padding:12px 22px;border-radius:10px;display:inline-block">Reset password</a></p>
+    <p style="color:#888;font-size:12px;line-height:1.6">Or paste this link into your browser:<br><span style="color:${a};word-break:break-all">${link}</span></p>
+    <p style="color:#aaa;font-size:11px;margin-top:20px">This link expires in ${expiresMinutes || 60} minutes. If you didn't request this, you can safely ignore this email — your password won't change.</p>`;
+  return { subject, html: shell('Password reset', body, accent), text: `${subject}\n\nReset your password:\n${link}\n\nThis link expires in ${expiresMinutes || 60} minutes. If you didn't request it, ignore this email.` };
 }
 
 // A task was assigned to a team member.
@@ -182,4 +221,4 @@ function chatMentionEmail({ recipientName, actorName, workspaceName, channelLabe
   return { subject, html: shell('You were mentioned', body), text: `${subject}: ${snippet}` };
 }
 
-module.exports = { sendEmail, inviteEmail, vendorDecisionEmail, paymentConfirmationEmail, taskAssignmentEmail, internalRequestEmail, approvalRequestEmail, chatMentionEmail };
+module.exports = { sendEmail, identityFor, inviteEmail, vendorDecisionEmail, paymentConfirmationEmail, passwordResetEmail, taskAssignmentEmail, internalRequestEmail, approvalRequestEmail, chatMentionEmail };

@@ -9,8 +9,9 @@ const { computeDueDate } = require('../lib/payments');
 const { upsertVendor } = require('../lib/vendors');
 const claude = require('../lib/claude');
 const { sendEmail, vendorDecisionEmail, paymentConfirmationEmail } = require('../lib/email');
-const { dispatchSend } = require('../lib/emailDispatch');
+const { dispatchSend, loadLabelIdentity } = require('../lib/emailDispatch');
 const { stampFxRateAsync } = require('../lib/fxStamp');
+const { familyRoot, cascadePaymentFieldsToFamily, recomputeFamilyPaymentStatus } = require('../lib/paymentFamily');
 const { toUSD } = require('../lib/fx');
 const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
 const aiScan = require('../lib/aiScan');
@@ -46,13 +47,14 @@ const safe = (s) => String(s || '').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 8
 async function notifyVendor(labelId, entry, kind, extra = {}) {
   try {
     if (!entry?.vendor_email) return;
-    const label = await pool.query('SELECT name FROM labels WHERE id = $1', [labelId]);
-    const workspaceName = label.rows[0]?.name || 'the label';
-    const common = { vendorName: entry.vendor_name || entry.payee || 'there', workspaceName, invoiceNumber: entry.invoice_number, amount: entry.amount, currency: entry.currency };
+    const identity = await loadLabelIdentity(labelId);
+    const workspaceName = identity?.name || 'the label';
+    const accent = identity?.accent_color || null;
+    const common = { vendorName: entry.vendor_name || entry.payee || 'there', workspaceName, accent, invoiceNumber: entry.invoice_number, amount: entry.amount, currency: entry.currency };
     const msg = kind === 'paid'
       ? paymentConfirmationEmail({ ...common, method: extra.method, date: extra.date })
       : vendorDecisionEmail({ ...common, approved: kind === 'approved', reason: extra.reason });
-    await sendEmail({ to: entry.vendor_email, subject: msg.subject, html: msg.html, text: msg.text });
+    await sendEmail({ to: entry.vendor_email, subject: msg.subject, html: msg.html, text: msg.text, label: identity });
   } catch (_) { /* best-effort */ }
 }
 
@@ -262,6 +264,28 @@ router.patch('/entries/:id', async (req, res) => {
            VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
           [req.labelId, id, k, norm(prev[k]) || null, norm(rows[0][k]) || null, req.user.name]
         ).catch(() => {});
+      }
+    }
+
+    // A manual payment_status change must move the WHOLE split family together.
+    if (keys.includes('payment_status')) {
+      const root = await familyRoot(pool, id, req.labelId);
+      const st = rows[0].payment_status;
+      if (st === 'Unpaid') {
+        // Reverting to Unpaid clears every payment stamp across the family.
+        await cascadePaymentFieldsToFamily(pool, root, req.labelId, {
+          payment_status: 'Unpaid', payment_date: null, paid_by: null, payment_ref: null, fx_rate_to_usd: null, paid_marked_at: null,
+        });
+      } else if (st === 'Paid') {
+        await cascadePaymentFieldsToFamily(pool, root, req.labelId, {
+          payment_status: 'Paid',
+          payment_date: rows[0].payment_date || new Date().toISOString().slice(0, 10),
+          paid_by: rows[0].paid_by || req.user.name, paid_marked_at: new Date(),
+        });
+        const fam = await pool.query('SELECT id FROM expenses WHERE (id = $1 OR parent_id = $1) AND label_id = $2', [root, req.labelId]);
+        fam.rows.forEach(r => stampFxRateAsync(r.id));  // one rate per family flip
+      } else {
+        await cascadePaymentFieldsToFamily(pool, root, req.labelId, { payment_status: st });
       }
     }
     res.json({ success: true, data: rows[0] });
@@ -612,7 +636,7 @@ router.post('/send-for-approval', async (req, res) => {
 
     const lab = await pool.query('SELECT name FROM labels WHERE id = $1', [req.labelId]);
     const result = await dispatchSend('approval_request',
-      { to: Array.isArray(to) ? to[0] : to, cc: Array.isArray(to) ? to.slice(1) : [], workspaceName: lab.rows[0]?.name || 'the label', count: rows.length, totalLine, note: req.body.note, attachments }, {});
+      { labelId: req.labelId, to: Array.isArray(to) ? to[0] : to, cc: Array.isArray(to) ? to.slice(1) : [], workspaceName: lab.rows[0]?.name || 'the label', count: rows.length, totalLine, note: req.body.note, attachments }, {});
     if (!result.sent) return res.status(502).json({ success: false, error: result.reason || 'Send failed' });
     rows.forEach(r => bkAudit(req, r.id, 'sent for approval', `to ${Array.isArray(to) ? to.join(', ') : to}`));
     await logActivity(req, 'Sent invoices for approval', `${rows.length} entries → ${Array.isArray(to) ? to.join(', ') : to}`);
@@ -1189,14 +1213,16 @@ router.get('/check-dup', async (req, res) => {
 // POST /api/ledger/entries/:id/rush — flag for expedited payment.
 router.post('/entries/:id/rush', async (req, res) => {
   try {
-    // rush/hold are mutually exclusive — flagging rush clears any hold.
-    const { rows } = await pool.query(
-      `UPDATE expenses SET rush = TRUE, rush_reason = $1, rush_needed_by = $2, rush_by = $3, rush_at = NOW(),
-         on_hold = FALSE, hold_reason = NULL, hold_by = NULL, hold_at = NULL
-         WHERE id = $4 AND label_id = $5 RETURNING *`,
-      [req.body.reason || null, req.body.needed_by || null, req.user.name, parseInt(req.params.id, 10), req.labelId]
-    );
-    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    // rush/hold are mutually exclusive — flagging rush clears any hold — and
+    // the flag cascades to the whole split family so members never disagree.
+    const id = parseInt(req.params.id, 10);
+    const root = await familyRoot(pool, id, req.labelId);
+    if (!root) return res.status(404).json({ success: false, error: 'Entry not found' });
+    await cascadePaymentFieldsToFamily(pool, root, req.labelId, {
+      rush: true, rush_reason: req.body.reason || null, rush_needed_by: req.body.needed_by || null,
+      rush_by: req.user.name, rush_at: new Date(), on_hold: false, hold_reason: null, hold_by: null, hold_at: null,
+    });
+    const { rows } = await pool.query('SELECT * FROM expenses WHERE id = $1 AND label_id = $2', [id, req.labelId]);
     await logActivity(req, 'Flagged rush', `${rows[0].payee} — ${rows[0].amount}`);
     res.json({ success: true, data: rows[0] });
   } catch (error) {
@@ -1208,12 +1234,12 @@ router.post('/entries/:id/rush', async (req, res) => {
 // DELETE /api/ledger/entries/:id/rush — clear the rush flag.
 router.delete('/entries/:id/rush', async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      `UPDATE expenses SET rush = FALSE, rush_reason = NULL, rush_needed_by = NULL, rush_by = NULL, rush_at = NULL
-         WHERE id = $1 AND label_id = $2 RETURNING id`,
-      [parseInt(req.params.id, 10), req.labelId]
-    );
-    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    const id = parseInt(req.params.id, 10);
+    const root = await familyRoot(pool, id, req.labelId);
+    if (!root) return res.status(404).json({ success: false, error: 'Entry not found' });
+    await cascadePaymentFieldsToFamily(pool, root, req.labelId, {
+      rush: false, rush_reason: null, rush_needed_by: null, rush_by: null, rush_at: null,
+    });
     res.json({ success: true });
   } catch (error) {
     console.error('Clear rush error:', error);
@@ -1243,13 +1269,14 @@ router.post('/rush-bulk', async (req, res) => {
 // POST /api/ledger/entries/:id/hold — pause payment (clears any rush).
 router.post('/entries/:id/hold', async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      `UPDATE expenses SET on_hold = TRUE, hold_reason = $1, hold_by = $2, hold_at = NOW(),
-         rush = FALSE, rush_reason = NULL, rush_needed_by = NULL, rush_by = NULL, rush_at = NULL
-         WHERE id = $3 AND label_id = $4 RETURNING *`,
-      [req.body.reason || null, req.user.name, parseInt(req.params.id, 10), req.labelId]
-    );
-    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    const id = parseInt(req.params.id, 10);
+    const root = await familyRoot(pool, id, req.labelId);
+    if (!root) return res.status(404).json({ success: false, error: 'Entry not found' });
+    await cascadePaymentFieldsToFamily(pool, root, req.labelId, {
+      on_hold: true, hold_reason: req.body.reason || null, hold_by: req.user.name, hold_at: new Date(),
+      rush: false, rush_reason: null, rush_needed_by: null, rush_by: null, rush_at: null,
+    });
+    const { rows } = await pool.query('SELECT * FROM expenses WHERE id = $1 AND label_id = $2', [id, req.labelId]);
     await logActivity(req, 'Put payment on hold', `${rows[0].payee} — ${rows[0].amount}`);
     res.json({ success: true, data: rows[0] });
   } catch (error) {
@@ -1261,12 +1288,12 @@ router.post('/entries/:id/hold', async (req, res) => {
 // DELETE /api/ledger/entries/:id/hold — release the hold.
 router.delete('/entries/:id/hold', async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      `UPDATE expenses SET on_hold = FALSE, hold_reason = NULL, hold_by = NULL, hold_at = NULL
-         WHERE id = $1 AND label_id = $2 RETURNING id`,
-      [parseInt(req.params.id, 10), req.labelId]
-    );
-    if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    const id = parseInt(req.params.id, 10);
+    const root = await familyRoot(pool, id, req.labelId);
+    if (!root) return res.status(404).json({ success: false, error: 'Entry not found' });
+    await cascadePaymentFieldsToFamily(pool, root, req.labelId, {
+      on_hold: false, hold_reason: null, hold_by: null, hold_at: null,
+    });
     res.json({ success: true });
   } catch (error) {
     console.error('Clear hold error:', error);
@@ -1609,19 +1636,15 @@ router.post('/entries/:id/installments', upload.single('proof'), async (req, res
        VALUES ($1,$2,$3,COALESCE($4,CURRENT_DATE),$5,$6,$7,$8,$9) RETURNING *`,
       [req.labelId, id, amount, req.body.paid_date || null, req.body.method || null, req.body.reference || null, proof.key, proof.filename, req.user.name]
     );
-    // Settle / mark partial based on cumulative installments.
-    const sum = await pool.query('SELECT COALESCE(SUM(amount),0) AS paid FROM payment_installments WHERE label_id = $1 AND expense_id = $2', [req.labelId, id]);
-    const paid = Number(sum.rows[0].paid);
-    const full = Number(exp.rows[0].amount || 0);
-    const status = paid >= full && full > 0 ? 'Paid' : 'Partial';
-    await pool.query(
-      `UPDATE expenses SET payment_status = $1,
-         payment_date = CASE WHEN $1 = 'Paid' THEN COALESCE(payment_date, CURRENT_DATE) ELSE payment_date END,
-         paid_by = CASE WHEN $1 = 'Paid' THEN COALESCE(paid_by, $4) ELSE paid_by END
-       WHERE id = $2 AND label_id = $3`,
-      [status, id, req.labelId, req.user.name]
-    );
-    if (status === 'Paid') stampFxRateAsync(id);  // lock the rate once fully settled
+    // Recompute payment status across the WHOLE family (never a half-paid family).
+    const root = await familyRoot(pool, id, req.labelId);
+    const status = await recomputeFamilyPaymentStatus(pool, root, req.labelId);
+    if (status === 'Paid') {
+      await cascadePaymentFieldsToFamily(pool, root, req.labelId, { payment_date: req.body.paid_date || new Date().toISOString().slice(0, 10), paid_by: req.user.name, paid_marked_at: new Date() });
+      const fam = await pool.query('SELECT id FROM expenses WHERE (id = $1 OR parent_id = $1) AND label_id = $2', [root, req.labelId]);
+      fam.rows.forEach(r => stampFxRateAsync(r.id));  // one rate per family flip
+    }
+    const paid = Number((await pool.query('SELECT COALESCE(SUM(amount),0) AS paid FROM payment_installments WHERE label_id = $1 AND expense_id = ANY(SELECT id FROM expenses WHERE (id=$2 OR parent_id=$2) AND label_id=$1)', [req.labelId, root])).rows[0].paid);
     res.status(201).json({ success: true, data: { installment: rows[0], paid, payment_status: status } });
   } catch (error) {
     console.error('Create installment error:', error);
@@ -1648,12 +1671,16 @@ router.delete('/installments/:installmentId', async (req, res) => {
     const del = await pool.query('DELETE FROM payment_installments WHERE id = $1 AND label_id = $2 RETURNING expense_id', [parseInt(req.params.installmentId, 10), req.labelId]);
     if (!del.rows.length) return res.status(404).json({ success: false, error: 'Installment not found' });
     const id = del.rows[0].expense_id;
-    const exp = await pool.query('SELECT amount FROM expenses WHERE id = $1 AND label_id = $2', [id, req.labelId]);
-    const sum = await pool.query('SELECT COALESCE(SUM(amount),0) AS paid FROM payment_installments WHERE label_id = $1 AND expense_id = $2', [req.labelId, id]);
-    const paid = Number(sum.rows[0].paid);
-    const full = Number(exp.rows[0]?.amount || 0);
-    const status = paid <= 0 ? 'Unpaid' : (paid >= full && full > 0 ? 'Paid' : 'Partial');
-    await pool.query('UPDATE expenses SET payment_status = $1 WHERE id = $2 AND label_id = $3', [status, id, req.labelId]);
+    // Recompute across the whole family; a family that drops below fully-paid
+    // must shed its payment stamps too.
+    const root = await familyRoot(pool, id, req.labelId);
+    const status = await recomputeFamilyPaymentStatus(pool, root, req.labelId);
+    if (status === 'Unpaid') {
+      await cascadePaymentFieldsToFamily(pool, root, req.labelId, {
+        payment_date: null, paid_by: null, payment_ref: null, fx_rate_to_usd: null, paid_marked_at: null,
+      });
+    }
+    const paid = Number((await pool.query('SELECT COALESCE(SUM(amount),0) AS paid FROM payment_installments WHERE label_id = $1 AND expense_id = ANY(SELECT id FROM expenses WHERE (id=$2 OR parent_id=$2) AND label_id=$1)', [req.labelId, root])).rows[0].paid);
     res.json({ success: true, data: { paid, payment_status: status } });
   } catch (error) {
     console.error('Delete installment error:', error);
