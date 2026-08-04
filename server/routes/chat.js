@@ -48,6 +48,10 @@ router.use(authMiddleware, withTenant);
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const INLINE_MAX = 2 * 1024 * 1024; // 2 MB cap for the DB fallback when R2 is off
 
+// Anti email-bomb throttle for @mention emails: recipientId -> last-sent ms.
+const MENTION_EMAIL_WINDOW_MS = 5 * 60 * 1000;
+const mentionEmailAt = new Map();
+
 // ── helpers ────────────────────────────────────────────────────────────────
 
 // Returns the caller's membership row for a channel (scoped to the tenant), or
@@ -463,16 +467,22 @@ router.post('/channels/:id/messages', upload.array('files', 10), async (req, res
           const onlineSet = new Set((rt.onlineUsers(req.labelId) || []).map(Number));
           const offline = ids.filter(id => !onlineSet.has(Number(id)));
           if (offline.length) {
-            const recips = await pool.query(`SELECT name, email FROM users WHERE id = ANY($1::int[]) AND email IS NOT NULL AND email <> ''`, [offline]);
+            const recips = await pool.query(`SELECT id, name, email FROM users WHERE id = ANY($1::int[]) AND email IS NOT NULL AND email <> ''`, [offline]);
             const lab = await pool.query('SELECT name FROM labels WHERE id = $1', [req.labelId]);
             const workspaceName = lab.rows[0]?.name || 'your workspace';
             const origin = process.env.FRONTEND_URL || req.headers.origin || '';
             const channelLabel = mem?.type === 'object' ? (mem.name || 'a thread') : (mem?.name ? `#${mem.name}` : 'a conversation');
             const snippet = body.slice(0, 280);
+            const nowMs = Date.now();
             for (const r of recips.rows) {
+              // Anti email-bomb: at most one mention email per recipient per window
+              // (they still get the in-app bell every time).
+              if (nowMs - (mentionEmailAt.get(r.id) || 0) < MENTION_EMAIL_WINDOW_MS) continue;
+              mentionEmailAt.set(r.id, nowMs);
               const msg = chatMentionEmail({ recipientName: r.name, actorName: req.user.name, workspaceName, channelLabel, snippet, link: `${origin}/messages/${req.params.id}` });
               sendEmail({ to: r.email, subject: msg.subject, html: msg.html, text: msg.text }).catch(() => {});
             }
+            if (mentionEmailAt.size > 5000) mentionEmailAt.clear();
           }
         }
       } catch (e) { console.error('chat mentions:', e.message); }

@@ -53,8 +53,28 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // ── Security headers ────────────────────────────────────────────────────
+// Content-Security-Policy — the backstop that makes any stray XSS unable to
+// exfiltrate the session. Ships REPORT-ONLY by default (logs violations without
+// breaking anything — verify the browser console is clean, then set
+// CSP_ENFORCE=true to enforce). script-src omits 'unsafe-inline'/'unsafe-eval'
+// so injected inline script won't run when enforced.
 app.use(helmet({
-  contentSecurityPolicy: false,
+  contentSecurityPolicy: {
+    useDefaults: false,
+    reportOnly: process.env.CSP_ENFORCE !== 'true',
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", 'https://accounts.google.com', 'https://apis.google.com'],
+      styleSrc: ["'self'", "'unsafe-inline'"],       // React inline style={} + injected styles
+      imgSrc: ["'self'", 'data:', 'blob:', 'https:'], // R2 signed URLs, inline logos, blob previews
+      fontSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'", 'https://accounts.google.com'], // API + same-origin websocket
+      frameSrc: ["'self'", 'https://accounts.google.com'],   // Google SSO
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      frameAncestors: ["'self'"],
+    },
+  },
   crossOriginEmbedderPolicy: false,
   crossOriginResourcePolicy: { policy: 'cross-origin' },
   crossOriginOpenerPolicy: { policy: 'unsafe-none' }, // Required for Google SSO popup flow

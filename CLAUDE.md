@@ -254,6 +254,18 @@ upload. New deps: `jspdf` + `docx` (dynamically imported), `socket.io`(-client).
   in index.js caps concurrent multipart requests (`MAX_CONCURRENT_UPLOADS`, def 8)
   to bound multer memoryStorage RAM. (Socket auth already uses the handshake
   `auth` payload, not a URL query, so it wasn't log-exposed.)
+  Third pass (residual): dropped the vulnerable `xlsx` package — `/ledger/bulk-zip`
+  now parses uploaded spreadsheets with `exceljs` (+ 20k-row cap) so a crafted
+  `.xlsx` can't hit SheetJS's prototype-pollution/ReDoS CVEs; removed `?token=`
+  query-param session auth entirely (Authorization header only — files use
+  signed URLs, socket uses handshake auth); @mention emails throttled per
+  recipient (5-min window, in-memory) to stop email-bombing; **CSP enabled** via
+  helmet — REPORT-ONLY by default (script-src has no `unsafe-inline`), flip
+  `CSP_ENFORCE=true` after confirming the browser console is clean. Still to
+  verify OUTSIDE code: R2 bucket must deny public read (rely on signed URLs);
+  tighten prod CORS from `origin:true`. Known trade-offs left: no maker-checker
+  on approvals (an Approver can self-approve); AI-parsed fields are human-gated
+  but not visually flagged; login 409 reveals an email's workspaces.
 - Keyboard: global help modal (`?`) + a handful of `g`-nav shortcuts in Layout; NO
   reusable `useHotkeys`, NO per-page hotkeys.
 

@@ -16,10 +16,26 @@ const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
 const aiScan = require('../lib/aiScan');
 const activityBot = require('../lib/activityBot');
 const ExcelJS = require('exceljs');
-const XLSX = require('xlsx');
 const { buildZip, toCsv } = require('../lib/zip');
 
 const money = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+
+// Bound spreadsheet import (parsed from an uploaded file). exceljs replaces the
+// `xlsx` package (known unpatched prototype-pollution / ReDoS CVEs); the row cap
+// bounds a crafted-file DoS.
+const MAX_IMPORT_ROWS = 20000;
+// Normalize an exceljs cell value to a plain string (rich text / formula /
+// hyperlink cells come through as objects).
+const cellText = (v) => {
+  if (v == null) return '';
+  if (typeof v === 'object') {
+    if (Array.isArray(v.richText)) return v.richText.map(t => t.text).join('');
+    if (v.text != null) return v.text;
+    if (v.result != null) return v.result;
+    return '';
+  }
+  return v;
+};
 
 // Canonical invoice-number key — shared with vendor-submit, bulk-zip, dup-check.
 const normInv = normalizeInvoiceNum;
@@ -1711,7 +1727,9 @@ router.get('/vendor-zip', async (req, res) => {
 router.post('/bulk-zip', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: 'No spreadsheet provided' });
-    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const wb = new ExcelJS.Workbook();
+    try { await wb.xlsx.load(req.file.buffer); }
+    catch { return res.status(400).json({ success: false, error: 'Could not read that spreadsheet (expected .xlsx).' }); }
 
     // Index this label's invoices by vendor_lc|normInv for fast lookup.
     const { rows: all } = await pool.query(
@@ -1732,8 +1750,13 @@ router.post('/bulk-zip', upload.single('file'), async (req, res) => {
     const matchHeaderRe = /vendor|payee|supplier|company|bill ?to/i;
     const invHeaderRe = /invoice ?#?|inv ?#?|invoice ?number/i;
 
-    for (const sheetName of wb.SheetNames) {
-      const grid = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, blankrows: false });
+    for (const ws of wb.worksheets) {
+      const sheetName = ws.name;
+      const grid = [];
+      ws.eachRow({ includeEmpty: false }, (row) => {
+        if (grid.length >= MAX_IMPORT_ROWS) return;
+        grid.push((row.values || []).slice(1).map(cellText)); // exceljs values are 1-indexed
+      });
       if (!grid.length) continue;
       // Find the header row + vendor/invoice columns in the first 15 rows.
       let headerRow = -1, vCol = -1, iCol = -1;

@@ -6,7 +6,10 @@ pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INT DEFAULT
   .catch(e => console.warn('token_version migration:', e.message));
 
 const authMiddleware = async (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1] || req.query.token;
+  // Authorization header only. The session token is deliberately NOT accepted
+  // as a ?token= query param (it would leak the full session into access logs /
+  // Referer). Files use file-scoped signed URLs; the socket uses handshake auth.
+  const token = req.headers.authorization?.split(' ')[1];
 
   if (!token) {
     return res.status(401).json({ success: false, error: 'No token provided' });
