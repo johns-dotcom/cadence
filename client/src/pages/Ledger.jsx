@@ -162,9 +162,9 @@ export default function Ledger() {
     { key: 'created_at', label: 'Uploaded', render: en => <span className="text-gray-500 whitespace-nowrap">{en.created_at ? formatDate(en.created_at) : '—'}</span> },
     { key: 'notes', label: 'Notes', render: en => <EditCell en={en} field="notes" display={<span className="text-gray-600 truncate block max-w-[220px]">{en.notes || '—'}</span>} {...editProps} /> },
     { key: 'payment_ref', label: 'Ref', render: en => <EditCell en={en} field="payment_ref" display={<span className="text-gray-500 whitespace-nowrap">{en.payment_ref || '—'}</span>} {...editProps} /> },
-    { key: 'invoice_file', label: 'Invoice', render: en => en.invoice_r2_key ? <button onClick={() => openFile(en.id, 'invoice')} className="text-brand-600 hover:underline text-xs">Open</button> : <span className="text-gray-300">—</span> },
-    { key: 'w9_file', label: 'W9', render: en => en.w9_r2_key ? <button onClick={() => openFile(en.id, 'w9')} className="text-brand-600 hover:underline text-xs">Open</button> : <span className="text-gray-300">—</span> },
-    { key: 'receipt_file', label: 'Receipt / proof', render: en => en.receipt_r2_key ? <button onClick={() => openFile(en.id, 'receipt')} className="text-brand-600 hover:underline text-xs">Open</button> : <span className="text-gray-300">—</span> },
+    { key: 'invoice_file', label: 'Invoice', render: en => <FileCell en={en} type="invoice" r2key={en.invoice_r2_key} openFile={openFile} onUploaded={load} toast={toast} /> },
+    { key: 'w9_file', label: 'W9', render: en => <FileCell en={en} type="w9" r2key={en.w9_r2_key} openFile={openFile} onUploaded={load} toast={toast} /> },
+    { key: 'receipt_file', label: 'Receipt / proof', render: en => <FileCell en={en} type="receipt" r2key={en.receipt_r2_key} openFile={openFile} onUploaded={load} toast={toast} /> },
     { key: 'files', label: 'Files', render: en => <FilesCell en={en} openFile={openFile} /> },
   ]
   const ALL_KEYS = COLS.map(c => c.key)
@@ -550,6 +550,31 @@ function FilesCell({ en, openFile }) {
       {en.receipt_r2_key && <button onClick={() => openFile(en.id, 'receipt')} title="Receipt" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">RCT</button>}
       {!en.invoice_r2_key && !en.w9_r2_key && !en.receipt_r2_key && <span className="text-gray-300">—</span>}
     </div>
+  )
+}
+
+// A per-type file cell: opens the file if present, and always offers an
+// upload/replace control so files can be attached straight from the ledger.
+function FileCell({ en, type, r2key, openFile, onUploaded, toast }) {
+  const ref = useRef(null)
+  const [busy, setBusy] = useState(false)
+  const upload = async (file) => {
+    if (!file) return
+    setBusy(true)
+    try {
+      const fd = new FormData(); fd.append('file', file)
+      await api.post(`/ledger/entries/${en.id}/file/${type}`, fd)
+      onUploaded()
+    } catch { toast('Upload failed', 'error'); setBusy(false) }
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {r2key && <button onClick={() => openFile(en.id, type)} className="text-brand-600 hover:underline text-xs">Open</button>}
+      <button onClick={() => ref.current?.click()} title={r2key ? 'Replace file' : 'Upload file'} className="text-gray-300 hover:text-brand-600">
+        {busy ? <span className="text-[10px] text-gray-400">…</span> : <Upload size={13} />}
+      </button>
+      <input ref={ref} type="file" accept="application/pdf,image/*" hidden onChange={e => { upload(e.target.files?.[0]); e.target.value = '' }} />
+    </span>
   )
 }
 

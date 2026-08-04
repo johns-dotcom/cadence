@@ -879,6 +879,28 @@ router.get('/entries/:id/file/:type', async (req, res) => {
   }
 });
 
+// POST /api/ledger/entries/:id/file/:type — attach/replace a file (invoice|w9|
+// receipt) on an existing entry, straight from the ledger.
+router.post('/entries/:id/file/:type', upload.single('file'), async (req, res) => {
+  try {
+    const cols = { invoice: ['invoice_r2_key', 'invoice_filename'], w9: ['w9_r2_key', 'w9_filename'], receipt: ['receipt_r2_key', 'receipt_filename'] }[req.params.type];
+    if (!cols) return res.status(400).json({ success: false, error: 'Invalid file type' });
+    if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
+    const cur = await pool.query('SELECT id FROM expenses WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId]);
+    if (!cur.rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    const stored = await storeFile(req.labelId, req.file, req.params.type);
+    const { rows } = await pool.query(
+      `UPDATE expenses SET ${cols[0]} = $1, ${cols[1]} = $2 WHERE id = $3 AND label_id = $4 RETURNING *`,
+      [stored.key, stored.filename, parseInt(req.params.id, 10), req.labelId]
+    );
+    await logActivity(req, 'Attached ledger file', `${req.params.type} → ${rows[0].payee}`);
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('Attach file error:', err.message);
+    res.status(500).json({ success: false, error: 'Upload failed' });
+  }
+});
+
 // POST /api/ledger/bulk-approve — approve many pending entries at once.
 router.post('/bulk-approve', async (req, res) => {
   try {
