@@ -16,6 +16,8 @@ const STATUSES = ['all', 'approved', 'rejected']
 const money = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
 const PAID_CYCLE = { Unpaid: 'Paid', Paid: 'Partial', Partial: 'Unpaid' }
 const PAID_STYLE = { Paid: 'text-emerald-600', Partial: 'text-amber-600', Unpaid: 'text-gray-400' }
+// Colored pills so payment state reads at a glance (matches the Status column).
+const PAID_PILL = { Paid: 'bg-emerald-100 text-emerald-700', Partial: 'bg-amber-100 text-amber-700', Unpaid: 'bg-rose-100 text-rose-700' }
 
 // Amount query → predicate. Supports "500", "500-1000", ">500", "<500".
 function amountPred(raw) {
@@ -140,7 +142,7 @@ export default function Ledger() {
       return <span className="text-gray-500 whitespace-nowrap tabular-nums">{usd == null ? '—' : `USD ${usd.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}</span>
     } },
     { key: 'status', label: 'Status', render: en => <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium capitalize ${STATUS_STYLES[en.status] || ''}`}>{en.status}</span> },
-    { key: 'payment', label: 'Payment', render: en => <button onClick={() => cyclePaid(en)} title="Click to cycle" className={`text-xs font-medium hover:underline ${PAID_STYLE[en.payment_status] || PAID_STYLE.Unpaid}`}>{en.payment_status || 'Unpaid'}</button> },
+    { key: 'payment', label: 'Payment', render: en => <button onClick={() => cyclePaid(en)} title="Click to cycle" className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${PAID_PILL[en.payment_status] || PAID_PILL.Unpaid}`}>{en.payment_status || 'Unpaid'}</button> },
     { key: 'payment_method', label: 'Method', render: en => <EditCell en={en} field="payment_method" kind="select" options={PAYMENT_METHODS} display={<span className="text-gray-500 whitespace-nowrap">{en.payment_method || '—'}</span>} {...editProps} /> },
     { key: 'payment_date', label: 'Paid on', render: en => <span className="text-gray-500 whitespace-nowrap">{en.payment_date ? formatDate(en.payment_date) : '—'}</span> },
     { key: 'scheduled_payment_date', label: 'Scheduled', render: en => <span className="text-gray-500 whitespace-nowrap">{en.scheduled_payment_date ? formatDate(en.scheduled_payment_date) : '—'}</span> },
@@ -403,7 +405,7 @@ export default function Ledger() {
               <div className="flex items-center justify-between mt-2">
                 <span className="text-sm font-semibold text-ink tabular-nums">{money(en.amount, en.currency)}</span>
                 <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                  <button onClick={() => cyclePaid(en)} className={`text-[11px] font-medium px-1.5 ${PAID_STYLE[en.payment_status] || PAID_STYLE.Unpaid}`}>{en.payment_status || 'Unpaid'}</button>
+                  <button onClick={() => cyclePaid(en)} className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold ${PAID_PILL[en.payment_status] || PAID_PILL.Unpaid}`}>{en.payment_status || 'Unpaid'}</button>
                   {en.status === 'pending' && (
                     <>
                       <button onClick={() => act(en.id, 'approve')} title="Approve" className="text-emerald-600 p-1"><Check size={16} /></button>
