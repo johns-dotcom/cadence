@@ -1382,19 +1382,14 @@ async function ensurePlatformHome() {
       [hqId]
     );
     if (rowCount) console.log(`[platform-home] relocated ${rowCount} operator(s) to Platform HQ`);
-    // Consolidate: if an operator email now has a canonical row in HQ, remove
-    // any stale duplicate operator rows for that email in other labels. This
-    // keeps exactly one operator per email (no login ambiguity) and no orphan
-    // rows a workspace deletion could strand. Best-effort.
-    try {
-      const del = await pool.query(
-        `DELETE FROM users a
-          WHERE a.is_platform_admin = true AND a.label_id <> $1
-            AND EXISTS (SELECT 1 FROM users b WHERE b.label_id = $1 AND LOWER(b.email) = LOWER(a.email))`,
-        [hqId]
-      );
-      if (del.rowCount) console.log(`[platform-home] removed ${del.rowCount} duplicate operator row(s)`);
-    } catch (e) { console.warn('[platform-home] dedupe skipped:', e.message); }
+    // NOTE: we deliberately do NOT delete an operator's per-workspace rows here.
+    // "Enter workspace" mints a ghost operator row (is_platform_admin=true,
+    // label_id=<workspace>) that the active session token points at; deleting it
+    // on boot would 401 that session ("account no longer exists") and log the
+    // operator out on every restart. Ghosts are passwordless so login/rosters
+    // already exclude them, and they cascade-delete with their label — so
+    // keeping them is harmless. (Login ambiguity is prevented at the login
+    // query, not here.)
   } catch (err) {
     console.error('ensurePlatformHome error:', err.message);
   }

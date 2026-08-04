@@ -22,8 +22,17 @@ api.interceptors.response.use(
   response => response,
   error => {
     if (error.response?.status === 401 && localStorage.getItem('token')) {
+      const adminToken = localStorage.getItem('admin_token')
+      if (adminToken) {
+        // We were impersonating / inside a workspace as an operator. The scoped
+        // session ended — restore the real operator session and drop back to the
+        // console instead of logging out entirely.
+        localStorage.setItem('token', adminToken)
+        localStorage.removeItem('admin_token')
+        window.location.href = '/'
+        return Promise.reject(error)
+      }
       localStorage.removeItem('token')
-      localStorage.removeItem('admin_token')
       const path = window.location.pathname
       if (path !== '/login' && path !== '/signup') {
         window.location.href = '/login?expired=1'
