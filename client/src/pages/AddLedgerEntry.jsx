@@ -32,6 +32,7 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
     invoice_date: '', payee: '', category: '', artist: '', song: '',
     invoice_number: '', amount: '', currency: 'USD', payment_method: '', rep: '',
     vendor_email: '', vendor_address: '', vendor_bank: '', description: '', notes: '',
+    payment_status: '', payment_date: '',
   })
   const [files, setFiles] = useState({ invoice_file: null, w9_file: null, proof_file: null, receipt_file: null })
   const [socials, setSocials] = useState([BLANK_SOCIAL()])
@@ -170,6 +171,18 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
           <div><label className="label">Currency</label><select className="input" value={form.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
           <div><label className="label">Payment method</label><select className="input" value={form.payment_method} onChange={set('payment_method')}><option value="">Select method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
           <div><label className="label">Rep</label>{reps.length ? <select className="input" value={form.rep} onChange={set('rep')}><option value="">—</option>{reps.map(r => <option key={r}>{r}</option>)}</select> : <input className="input" value={form.rep} onChange={set('rep')} />}</div>
+          {isApprover && (
+            <div className="sm:col-span-2 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg bg-page/60 border border-rule px-3 py-2.5">
+              <label className="inline-flex items-center gap-2 text-sm text-ink cursor-pointer">
+                <input type="checkbox" checked={form.payment_status === 'Paid'}
+                  onChange={e => setForm(f => ({ ...f, payment_status: e.target.checked ? 'Paid' : '', payment_date: e.target.checked ? (f.payment_date || new Date().toISOString().slice(0, 10)) : '' }))} />
+                Mark as already paid
+              </label>
+              {form.payment_status === 'Paid' && (
+                <span className="inline-flex items-center gap-2 text-sm text-gray-500">Paid on <input type="date" className="input !w-auto !py-1" value={form.payment_date} onChange={set('payment_date')} /></span>
+              )}
+            </div>
+          )}
           {!isReimb && <div><label className="label">Vendor email</label><input type="email" className="input" value={form.vendor_email} onChange={set('vendor_email')} placeholder="vendor@example.com" /></div>}
           <div className="sm:col-span-2"><label className="label">Mailing address</label><input className="input" value={form.vendor_address} onChange={set('vendor_address')} placeholder="Street, City, State, ZIP" /></div>
           <div className="sm:col-span-2"><label className="label">Bank name <span className="text-gray-400 font-normal">— for payment routing</span></label><input className="input" value={form.vendor_bank} onChange={set('vendor_bank')} placeholder="e.g. Chase, Bank of America" /></div>

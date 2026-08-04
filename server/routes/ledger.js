@@ -168,10 +168,15 @@ async function createEntry(req, res) {
     // — but only approvers can mark something paid on creation.
     const proofF = req.files?.proof_file?.[0];
     if (proofF) { if (!files.receipt) files.receipt = await storeFile(req.labelId, proofF, 'proof'); }
-    const markPaid = proofF && canApprove;
     const status = canApprove ? (b.status || 'approved') : 'pending';
-    const paymentStatus = markPaid ? 'Paid' : (b.payment_status || 'Unpaid');
-    const paymentDate = markPaid ? (b.payment_date || new Date().toISOString().slice(0, 10)) : (b.payment_date || null);
+    // Only approvers may mark an entry paid on creation — via a proof upload OR
+    // the "mark as paid" form toggle (payment_status). Non-approvers always
+    // create Unpaid, no matter what the body claims.
+    const proofPaid = !!proofF && canApprove;
+    const togglePaid = canApprove && ['Paid', 'Partial'].includes(b.payment_status);
+    const paid = proofPaid || togglePaid;
+    const paymentStatus = proofPaid ? 'Paid' : (togglePaid ? b.payment_status : 'Unpaid');
+    const paymentDate = paid ? (b.payment_date || new Date().toISOString().slice(0, 10)) : null;
 
     const { rows } = await pool.query(
       `INSERT INTO expenses (
@@ -198,6 +203,8 @@ async function createEntry(req, res) {
         req.user.name,
       ]
     );
+    // Lock the FX rate if it was created already-paid (matches the pay flows).
+    if (paid) stampFxRateAsync(rows[0].id);
     // Keep the vendor record current (contact + W9 if one was attached).
     await upsertVendor(pool, req.labelId, {
       name: b.vendor_name || b.payee,
