@@ -35,6 +35,7 @@ import Salary from './pages/Salary'
 import RecordingBudgets from './pages/RecordingBudgets'
 import Campaigns from './pages/Campaigns'
 import ArtistCampaigns from './pages/ArtistCampaigns'
+import ArtistCampaignDetail from './pages/ArtistCampaignDetail'
 import Ledger from './pages/Ledger'
 import Approvals from './pages/Approvals'
 import AddLedgerEntry from './pages/AddLedgerEntry'
@@ -141,6 +142,7 @@ function AppContent() {
         <Route path="/recording-budgets" element={<AdminRoute><RecordingBudgets /></AdminRoute>} />
         <Route path="/marketing"    element={<Campaigns />} />
         <Route path="/artist-campaigns" element={<AdminRoute><ArtistCampaigns /></AdminRoute>} />
+        <Route path="/artist-campaigns/:artist" element={<AdminRoute><ArtistCampaignDetail /></AdminRoute>} />
         <Route path="/approvals"    element={<AdminRoute><Approvals /></AdminRoute>} />
         <Route path="/ledger"       element={<AdminRoute><Ledger /></AdminRoute>} />
         <Route path="/add-invoice"  element={<AddLedgerEntry mode="invoice" />} />

@@ -622,6 +622,101 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_review_assign_uniq ON review_assignments (label_id, expense_id, assignee_id)`);
+
+  // ── Artist Campaigns (marketing reconciliation) ──────────────────────────
+  // Extra expense columns the campaigns surface needs.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS social_handles JSONB`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS item_finished BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS item_finished_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS item_finished_by TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS flagged BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS flag_reason TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS flagged_by TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS flagged_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS bulk_deal_quantity INT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS bulk_deal_unit TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS bulk_deal_completed INT DEFAULT 0`);
+
+  // Per-artist metadata (keyed by a normalized artist key).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS artist_meta (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      artist_key TEXT NOT NULL,
+      priority TEXT,
+      priority_updated_at TIMESTAMP, priority_updated_by TEXT,
+      flagged BOOLEAN DEFAULT FALSE, flag_reason TEXT, flagged_at TIMESTAMP, flagged_by TEXT,
+      complete BOOLEAN DEFAULT FALSE, complete_at TIMESTAMP, complete_by TEXT,
+      ready_for_planning BOOLEAN DEFAULT FALSE, ready_at TIMESTAMP, ready_by TEXT,
+      dismissed BOOLEAN DEFAULT FALSE, dismissed_at TIMESTAMP, dismissed_by TEXT,
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_artist_meta_uniq ON artist_meta (label_id, artist_key)`);
+
+  // Per-(artist,song) campaign status.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS song_campaign_status (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      artist_key TEXT NOT NULL, song_key TEXT NOT NULL,
+      finished BOOLEAN DEFAULT FALSE, finished_at TIMESTAMP, finished_by TEXT,
+      notes TEXT, notes_updated_at TIMESTAMP, notes_updated_by TEXT,
+      flagged BOOLEAN DEFAULT FALSE, flag_reason TEXT, flagged_at TIMESTAMP, flagged_by TEXT,
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_song_status_uniq ON song_campaign_status (label_id, artist_key, song_key)`);
+
+  // Per-expense reclassification: 'artist_campaign' (hidden) or
+  // 'artist_campaign_not_campaign' (visible-but-segregated).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS flag_dismissals (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      expense_id INT NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+      flag_kind TEXT NOT NULL,
+      created_by TEXT, created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_flag_dismiss_uniq ON flag_dismissals (label_id, expense_id, flag_kind)`);
+
+  // Per-page campaign chat rooms + unread watermarks.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS campaign_chat_messages (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      room TEXT NOT NULL,
+      user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      body TEXT NOT NULL,
+      edited_at TIMESTAMP, deleted BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_campaign_chat_room ON campaign_chat_messages (label_id, room, id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS campaign_chat_reads (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      room TEXT NOT NULL, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      last_read_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_chat_reads_uniq ON campaign_chat_reads (label_id, room, user_id)`);
+
+  // Marketing/influencer campaigns anchored to a ledger row.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS influencer_campaigns (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      artist TEXT, song TEXT, name TEXT,
+      planned_amount NUMERIC(12,2), currency TEXT DEFAULT 'USD',
+      expense_id INT REFERENCES expenses(id) ON DELETE SET NULL,
+      created_by TEXT, created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_influencer_campaigns_label ON influencer_campaigns (label_id, artist)`);
+
   // Recording budgets: draft → approved → locked, with line items grouped by
   // section and mapped to a ledger category for actual-vs-budget rollups.
   await pool.query(`

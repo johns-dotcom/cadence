@@ -201,7 +201,7 @@ async function createEntry(req, res) {
         files.w9?.filename || null, files.w9?.key || null,
         files.receipt?.filename || null, files.receipt?.key || null,
         req.user.name,
-        ['expense', 'invoice', 'reimbursement'].includes(b.entry_source) ? b.entry_source : null,
+        ['expense', 'invoice', 'reimbursement', 'artist_campaigns'].includes(b.entry_source) ? b.entry_source : null,
       ]
     );
     // Lock the FX rate if it was created already-paid (matches the pay flows).
