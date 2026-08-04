@@ -388,7 +388,7 @@ export default function Ledger() {
               key={en.id}
               ref={el => (rowRefs.current[en.id] = el)}
               onClick={() => setDrawerEntry(en)}
-              className={`card p-3 ${en.voided ? 'opacity-50' : ''}`}
+              className={`card p-3 ${en.voided ? 'opacity-50' : ''} ${en.entry_source === 'expense' ? 'bg-sky-50/70 border-sky-200' : ''}`}
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -434,8 +434,8 @@ export default function Ledger() {
             </thead>
             <tbody className="divide-y divide-divider">
               {filtered.map(en => (
-                <tr key={en.id} ref={el => (rowRefs.current[en.id] = el)} className={`group hover:bg-gray-50 align-top transition-shadow ${en.voided ? 'opacity-50' : ''}`}>
-                  {shownCols.map((c, ci) => <td key={c.key} className={`px-3 py-3 ${ci === 0 ? 'sticky left-0 z-10 bg-card group-hover:bg-gray-50' : ''}`}>{c.render(en)}</td>)}
+                <tr key={en.id} ref={el => (rowRefs.current[en.id] = el)} className={`group align-top transition-shadow ${en.voided ? 'opacity-50' : ''} ${en.entry_source === 'expense' ? 'bg-sky-50/70 hover:bg-sky-100/70' : 'hover:bg-gray-50'}`}>
+                  {shownCols.map((c, ci) => <td key={c.key} className={`px-3 py-3 ${ci === 0 ? `sticky left-0 z-10 ${en.entry_source === 'expense' ? 'bg-sky-50' : 'bg-card'} group-hover:bg-gray-50` : ''}`}>{c.render(en)}</td>)}
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1.5 justify-end whitespace-nowrap">
                       {en.status === 'pending' && (
@@ -557,17 +557,22 @@ function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
   const [f, setF] = useState({ invoice_date: today, payee: '', category: '', artist: '', amount: '', currency: 'USD', payment_method: '', rep: '', description: '', notes: '', recoupable: true })
   const [markPaid, setMarkPaid] = useState(false)
   const [paidDate, setPaidDate] = useState(today)
+  const [proof, setProof] = useState(null)
+  const [dragOver, setDragOver] = useState(false)
   const [saving, setSaving] = useState(false)
+  const proofRef = useRef(null)
   const set = (k) => (e) => setF(s => ({ ...s, [k]: e.target.value }))
+  const takeProof = (file) => { if (file) { setProof(file); setMarkPaid(true) } } // proof implies paid
 
   const save = async () => {
     if (!f.payee.trim() || !f.amount) { toast('A description and amount are required', 'error'); return }
     setSaving(true)
     try {
-      await api.post('/ledger/entries', {
-        ...f, vendor_name: f.payee,
-        payment_status: markPaid ? 'Paid' : '', payment_date: markPaid ? paidDate : '',
-      })
+      const fd = new FormData()
+      const body = { ...f, vendor_name: f.payee, entry_source: 'expense', is_reimbursement: 'false', payment_status: markPaid ? 'Paid' : '', payment_date: markPaid ? paidDate : '' }
+      Object.entries(body).forEach(([k, v]) => fd.append(k, v))
+      if (proof) fd.append('proof_file', proof)
+      await api.post('/ledger/entries', fd)
       toast('Expense added')
       onCreated()
     } catch (err) { toast(err.response?.data?.error || 'Failed to add expense', 'error'); setSaving(false) }
@@ -592,6 +597,20 @@ function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
           <div><label className="label">Payment method</label><select className="input" value={f.payment_method} onChange={set('payment_method')}><option value="">Select method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
           <div className="flex items-end"><label className="inline-flex items-center gap-2 text-sm text-gray-600 pb-2"><input type="checkbox" checked={f.recoupable} onChange={e => setF(s => ({ ...s, recoupable: e.target.checked }))} /> Recoupable</label></div>
           <div className="col-span-2"><label className="label">Notes</label><input className="input" value={f.notes} onChange={set('notes')} /></div>
+          <div className="col-span-2">
+            <label className="label">Proof of payment <span className="text-gray-400 font-normal">— optional</span></label>
+            <div
+              onClick={() => proofRef.current?.click()}
+              onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={e => { e.preventDefault(); setDragOver(false); takeProof(e.dataTransfer.files?.[0]) }}
+              className={`border-2 border-dashed rounded-lg px-4 py-5 text-center text-sm cursor-pointer transition ${dragOver ? 'border-brand-400 bg-brand-50 text-brand-700' : 'border-rule text-gray-400 hover:border-brand-300'}`}>
+              {proof
+                ? <span className="text-ink inline-flex items-center gap-2">{proof.name}<button onClick={e => { e.stopPropagation(); setProof(null) }} className="text-gray-400 hover:text-danger"><X size={14} /></button></span>
+                : <span>Drop proof of payment here, or click to choose</span>}
+              <input ref={proofRef} type="file" accept="application/pdf,image/*" hidden onChange={e => { takeProof(e.target.files?.[0]); e.target.value = '' }} />
+            </div>
+          </div>
           <div className="col-span-2 flex flex-wrap items-center gap-3 rounded-lg bg-page/60 border border-rule px-3 py-2.5">
             <label className="inline-flex items-center gap-2 text-sm text-ink cursor-pointer"><input type="checkbox" checked={markPaid} onChange={e => setMarkPaid(e.target.checked)} /> Mark as already paid</label>
             {markPaid && <span className="inline-flex items-center gap-2 text-sm text-gray-500">Paid on <input type="date" className="input !w-auto !py-1" value={paidDate} onChange={e => setPaidDate(e.target.value)} /></span>}

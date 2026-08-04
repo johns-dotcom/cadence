@@ -184,11 +184,11 @@ async function createEntry(req, res) {
         amount, currency, payment_method, payment_date, status, payment_status,
         is_reimbursement, recoupable, rep, notes,
         invoice_filename, invoice_r2_key, w9_filename, w9_r2_key, receipt_filename, receipt_r2_key,
-        created_by, created_at
+        created_by, entry_source, created_at
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10,'USD'),$11,$12,
         COALESCE($13,'approved'),COALESCE($14,'Unpaid'),$15,$16,$17,$18,
-        $19,$20,$21,$22,$23,$24,$25,NOW()
+        $19,$20,$21,$22,$23,$24,$25,$26,NOW()
       ) RETURNING *`,
       [
         req.labelId, b.invoice_date || null, b.payee, b.description || null, b.category || null,
@@ -201,6 +201,7 @@ async function createEntry(req, res) {
         files.w9?.filename || null, files.w9?.key || null,
         files.receipt?.filename || null, files.receipt?.key || null,
         req.user.name,
+        ['expense', 'invoice', 'reimbursement'].includes(b.entry_source) ? b.entry_source : null,
       ]
     );
     // Lock the FX rate if it was created already-paid (matches the pay flows).
