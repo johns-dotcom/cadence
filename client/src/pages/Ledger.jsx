@@ -158,6 +158,7 @@ export default function Ledger() {
     { key: 'is_bulk_deal', label: 'Bulk deal?', render: en => <button onClick={() => commitEdit(en, 'is_bulk_deal', !en.is_bulk_deal)} className="text-gray-500 hover:text-brand-600">{en.is_bulk_deal ? 'Yes' : 'No'}</button> },
     { key: 'type', label: 'Type', render: en => <span className="text-gray-500">{en.is_reimbursement ? 'Reimb.' : 'Invoice'}</span> },
     { key: 'approved_by', label: 'Approved by', render: en => <span className="text-gray-500 whitespace-nowrap">{en.approved_by || '—'}</span> },
+    { key: 'paid_by', label: 'Paid by', render: en => <span className="text-gray-500 whitespace-nowrap">{en.paid_by || '—'}</span> },
     { key: 'created_at', label: 'Uploaded', render: en => <span className="text-gray-500 whitespace-nowrap">{en.created_at ? formatDate(en.created_at) : '—'}</span> },
     { key: 'notes', label: 'Notes', render: en => <EditCell en={en} field="notes" display={<span className="text-gray-600 truncate block max-w-[220px]">{en.notes || '—'}</span>} {...editProps} /> },
     { key: 'payment_ref', label: 'Ref', render: en => <EditCell en={en} field="payment_ref" display={<span className="text-gray-500 whitespace-nowrap">{en.payment_ref || '—'}</span>} {...editProps} /> },
