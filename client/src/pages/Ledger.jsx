@@ -9,7 +9,7 @@ import { useAuth } from '../context/AuthContext'
 import LedgerEntryDrawer from '../components/LedgerEntryDrawer'
 import { formatDate } from '../utils/dates'
 import useIsMobile from '../hooks/useIsMobile'
-import { EXPENSE_CATEGORIES, PAYMENT_METHODS } from '../constants'
+import { EXPENSE_CATEGORIES, PAYMENT_METHODS, CURRENCIES } from '../constants'
 
 const STATUS_STYLES = { pending: 'bg-amber-100 text-amber-700', approved: 'bg-emerald-100 text-emerald-700', rejected: 'bg-red-100 text-red-700' }
 const STATUSES = ['all', 'approved', 'rejected']
@@ -90,6 +90,7 @@ export default function Ledger() {
   const importRef = useRef(null)
   const [importing, setImporting] = useState(false)
   const [drawerEntry, setDrawerEntry] = useState(null)
+  const [quickOpen, setQuickOpen] = useState(false)
   const [report1099, setReport1099] = useState(null)
 
   // Inline edit + 20-deep undo.
@@ -317,6 +318,7 @@ export default function Ledger() {
             <button onClick={() => importRef.current?.click()} disabled={importing} className="btn-secondary"><Upload size={15} /> {importing ? 'Importing…' : 'Import'}</button>
             <input ref={importRef} type="file" accept=".csv" className="hidden" onChange={onImportFile} />
             <button onClick={copyVendorLink} className="btn-secondary">{copied ? <><Check size={15} /> Copied</> : <><Link2 size={15} /> Vendor form link</>}</button>
+            <button onClick={() => setQuickOpen(true)} className="btn-secondary"><Plus size={16} /> Add expense</button>
             <Link to="/ledger/new-reimbursement" className="btn-secondary"><Plus size={16} /> Add reimbursement</Link>
             <Link to="/ledger/new-invoice" className="btn-primary"><Plus size={16} /> Add invoice</Link>
           </div>
@@ -472,6 +474,7 @@ export default function Ledger() {
       )}
 
       {drawerEntry && <LedgerEntryDrawer entry={drawerEntry} onClose={() => setDrawerEntry(null)} onChanged={load} />}
+      {quickOpen && <QuickExpenseModal artistNames={artistNames} toast={toast} onClose={() => setQuickOpen(false)} onCreated={() => { setQuickOpen(false); load() }} />}
 
       {report1099 && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center px-4 py-8 bg-overlay overflow-y-auto" onClick={() => setReport1099(null)}>
@@ -542,6 +545,63 @@ function FilesCell({ en, openFile }) {
       {en.w9_r2_key && <button onClick={() => openFile(en.id, 'w9')} title="W9" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">W9</button>}
       {en.receipt_r2_key && <button onClick={() => openFile(en.id, 'receipt')} title="Receipt" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">RCT</button>}
       {!en.invoice_r2_key && !en.w9_r2_key && !en.receipt_r2_key && <span className="text-gray-300">—</span>}
+    </div>
+  )
+}
+
+// Quick-add an expense straight from the ledger — no invoice number or file
+// required (for costs that don't have an invoice). Posts to the same create
+// endpoint as an approver, so it lands in the ledger immediately.
+function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
+  const today = new Date().toISOString().slice(0, 10)
+  const [f, setF] = useState({ invoice_date: today, payee: '', category: '', artist: '', amount: '', currency: 'USD', payment_method: '', rep: '', description: '', notes: '', recoupable: true })
+  const [markPaid, setMarkPaid] = useState(false)
+  const [paidDate, setPaidDate] = useState(today)
+  const [saving, setSaving] = useState(false)
+  const set = (k) => (e) => setF(s => ({ ...s, [k]: e.target.value }))
+
+  const save = async () => {
+    if (!f.payee.trim() || !f.amount) { toast('A description and amount are required', 'error'); return }
+    setSaving(true)
+    try {
+      await api.post('/ledger/entries', {
+        ...f, vendor_name: f.payee,
+        payment_status: markPaid ? 'Paid' : '', payment_date: markPaid ? paidDate : '',
+      })
+      toast('Expense added')
+      onCreated()
+    } catch (err) { toast(err.response?.data?.error || 'Failed to add expense', 'error'); setSaving(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-overlay flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-bold text-ink">Add expense</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
+        </div>
+        <p className="text-xs text-gray-400 mb-4">For a cost with no invoice — no invoice number or file needed.</p>
+        <div className="grid grid-cols-2 gap-3">
+          <div><label className="label">Date</label><input type="date" className="input" value={f.invoice_date} onChange={set('invoice_date')} /></div>
+          <div><label className="label">Amount *</label><input type="number" step="0.01" className="input" value={f.amount} onChange={set('amount')} /></div>
+          <div className="col-span-2"><label className="label">Description / paid to *</label><input className="input" value={f.payee} onChange={set('payee')} placeholder="e.g. Studio rental, office supplies" /></div>
+          <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}><option value="">Select category</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          <div><label className="label">Currency</label><select className="input" value={f.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          <div><label className="label">Artist</label><input list="qx-artists" className="input" value={f.artist} onChange={set('artist')} /><datalist id="qx-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist></div>
+          <div><label className="label">Rep</label><input className="input" value={f.rep} onChange={set('rep')} /></div>
+          <div><label className="label">Payment method</label><select className="input" value={f.payment_method} onChange={set('payment_method')}><option value="">Select method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
+          <div className="flex items-end"><label className="inline-flex items-center gap-2 text-sm text-gray-600 pb-2"><input type="checkbox" checked={f.recoupable} onChange={e => setF(s => ({ ...s, recoupable: e.target.checked }))} /> Recoupable</label></div>
+          <div className="col-span-2"><label className="label">Notes</label><input className="input" value={f.notes} onChange={set('notes')} /></div>
+          <div className="col-span-2 flex flex-wrap items-center gap-3 rounded-lg bg-page/60 border border-rule px-3 py-2.5">
+            <label className="inline-flex items-center gap-2 text-sm text-ink cursor-pointer"><input type="checkbox" checked={markPaid} onChange={e => setMarkPaid(e.target.checked)} /> Mark as already paid</label>
+            {markPaid && <span className="inline-flex items-center gap-2 text-sm text-gray-500">Paid on <input type="date" className="input !w-auto !py-1" value={paidDate} onChange={e => setPaidDate(e.target.value)} /></span>}
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="btn-secondary">Cancel</button>
+          <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Adding…' : 'Add expense'}</button>
+        </div>
+      </div>
     </div>
   )
 }
