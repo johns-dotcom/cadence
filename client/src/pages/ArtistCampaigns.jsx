@@ -4,6 +4,7 @@ import { Download, AlertTriangle, Flag, FolderCheck, Check, ChevronDown, Chevron
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
+import CampaignChat from '../components/CampaignChat'
 import { useToast } from '../context/ToastContext'
 
 const usd = (n) => `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
@@ -123,6 +124,8 @@ export default function ArtistCampaigns() {
           )}
         </>
       )}
+
+      <CampaignChat room="index" />
     </div>
   )
 }

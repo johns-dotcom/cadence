@@ -2,10 +2,11 @@ import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Download, Plus, Flag, Check, FolderCheck, Eye, Link2, Ban, EyeOff,
-  ExternalLink, MessageSquare, X, CheckCircle2, Circle, DollarSign,
+  ExternalLink, MessageSquare, X, CheckCircle2, Circle, DollarSign, AtSign,
 } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
+import CampaignChat from '../components/CampaignChat'
 import { formatDate } from '../utils/dates'
 import { EXPENSE_CATEGORIES, CURRENCIES } from '../constants'
 
@@ -25,7 +26,7 @@ function rowWash(en) {
 }
 
 export default function ArtistCampaignDetail() {
-  const { artist } = useParams()
+  const { artist, song: songParam } = useParams()
   const navigate = useNavigate()
   const { toast } = useToast()
   const [data, setData] = useState(null)
@@ -33,6 +34,8 @@ export default function ArtistCampaignDetail() {
   const [addOpen, setAddOpen] = useState(null) // song prefill or ''
   const [preview, setPreview] = useState(null)
   const [thread, setThread] = useState(null) // { id, comments, body }
+  const [socials, setSocials] = useState(null) // entry being edited
+  const [sel, setSel] = useState(new Set())
 
   const load = useCallback(() => {
     setLoading(true)
@@ -48,8 +51,10 @@ export default function ArtistCampaignDetail() {
   const notCampaign = async (id, on) => { try { await api.post('/artist-campaigns/not-campaign', { expense_id: id, value: on }); load() } catch { toast('Failed', 'error') } }
   const openFile = (id) => api.get(`/ledger/entries/${id}/file/invoice`).then(({ data }) => setPreview(data.data.url)).catch(() => toast('No invoice', 'error'))
   const exportXlsx = async () => {
-    try { const { data: blob } = await api.get(`/artist-campaigns/export?artist=${encodeURIComponent(artist)}`, { responseType: 'blob' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `${artist}-campaigns.xlsx`; a.click(); URL.revokeObjectURL(url) } catch { toast('Export failed', 'error') }
+    try { const q = `artist=${encodeURIComponent(artist)}${songParam ? `&song=${encodeURIComponent(songParam)}` : ''}`; const { data: blob } = await api.get(`/artist-campaigns/export?${q}`, { responseType: 'blob' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `${artist}-campaigns.xlsx`; a.click(); URL.revokeObjectURL(url) } catch { toast('Export failed', 'error') }
   }
+  const toggleSel = (id) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const bulkSet = async (patch) => { try { for (const id of sel) await api.post(`/artist-campaigns/entries/${id}/set`, patch); setSel(new Set()); load() } catch { toast('Failed', 'error') } }
 
   if (loading) return <p className="text-sm text-gray-400">Loading…</p>
   if (!data) return <p className="text-sm text-gray-400">Not found.</p>
@@ -62,13 +67,20 @@ export default function ArtistCampaignDetail() {
   // Group entries by song_key (children included — never parents-only).
   const groups = {}
   for (const e of entries) { (groups[e.song_key] ||= []).push(e) }
-  const groupKeys = Object.keys(groups).sort((a, b) => (a === '__no_song__' ? 1 : b === '__no_song__' ? -1 : a.localeCompare(b)))
+  let groupKeys = Object.keys(groups).sort((a, b) => (a === '__no_song__' ? 1 : b === '__no_song__' ? -1 : a.localeCompare(b)))
+  if (songParam) { const wk = String(songParam).trim().toLowerCase() || '__no_song__'; groupKeys = groupKeys.filter(k => k === wk) }
   const byCurr = totals.by_currency || {}
   const nativeLine = Object.entries(byCurr).map(([c, v]) => money(v, c)).join(' + ')
 
   return (
     <div>
-      <div className="text-sm text-gray-400 mb-4"><button onClick={() => navigate('/artist-campaigns')} className="hover:text-gray-700">Artist Campaigns</button> <span className="mx-1">›</span> <span className="text-gray-600">{data.artist}</span></div>
+      <div className="text-sm text-gray-400 mb-4">
+        <button onClick={() => navigate('/artist-campaigns')} className="hover:text-gray-700">Artist Campaigns</button>
+        <span className="mx-1">›</span>
+        {songParam
+          ? <><button onClick={() => navigate(`/artist-campaigns/${encodeURIComponent(artist)}`)} className="hover:text-gray-700">{data.artist}</button><span className="mx-1">›</span><span className="text-gray-600">{songParam}</span></>
+          : <span className="text-gray-600">{data.artist}</span>}
+      </div>
 
       {/* Header */}
       <div className="flex flex-wrap items-center gap-3 mb-6">
@@ -128,7 +140,9 @@ export default function ArtistCampaignDetail() {
           return (
             <div key={sk} className="card overflow-hidden">
               <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-divider">
-                <h3 className={`font-bold text-ink ${st.finished ? 'line-through text-gray-400' : ''}`}>{songLabel(sk)}</h3>
+                <h3 className={`font-bold text-ink ${st.finished ? 'line-through text-gray-400' : ''}`}>
+                  {songParam || sk === '__no_song__' ? songLabel(sk) : <button onClick={() => navigate(`/artist-campaigns/${encodeURIComponent(artist)}/${encodeURIComponent(sk)}`)} className="hover:underline">{songLabel(sk)}</button>}
+                </h3>
                 {rel && <span className="text-[11px] text-gray-400">{rel.release_type || 'Release'}{rel.release_date ? ` · ${formatDate(rel.release_date)}` : ''}</span>}
                 <span className="text-sm font-semibold text-ink">{usd(groupTotal)}</span>
                 {st.flagged && <span className="text-[10px] font-bold uppercase bg-rose-100 text-rose-700 rounded-full px-2 py-0.5 inline-flex items-center gap-1"><Flag size={9} /> Flagged</span>}
@@ -145,11 +159,13 @@ export default function ArtistCampaignDetail() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead><tr className="bg-page/40 text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                    <th className="px-3 py-2 w-8"></th>
                     {['Date', 'Payee', 'Category', 'Socials', 'Amount', 'Paid', 'Rep', ''].map(h => <th key={h} className="px-3 py-2 whitespace-nowrap">{h}</th>)}
                   </tr></thead>
                   <tbody className="divide-y divide-divider">
                     {rows.map(en => (
                       <tr key={en.id} className={rowWash(en)}>
+                        <td className="px-3 py-2.5"><input type="checkbox" checked={sel.has(en.id)} onChange={() => toggleSel(en.id)} /></td>
                         <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">{formatDate(en.payment_date || en.invoice_date || en.created_at)}</td>
                         <td className="px-3 py-2.5">
                           <span className={`font-medium text-ink ${en.item_finished && !en.flagged ? 'line-through' : ''}`}>{en.payee}</span>
@@ -164,6 +180,7 @@ export default function ArtistCampaignDetail() {
                         <td className="px-3 py-2.5">
                           <div className="flex items-center gap-1 justify-end whitespace-nowrap text-gray-400">
                             {en.has_invoice && <button onClick={() => openFile(en.id)} title="View invoice" className="hover:text-brand-600 p-1"><Eye size={14} /></button>}
+                            <button onClick={() => setSocials(en)} title="Edit socials" className="p-1 hover:text-brand-600"><AtSign size={14} /></button>
                             <button onClick={() => setRow(en.id, { cobrand: !en.cobrand })} title="Cobrand" className={`p-1 ${en.cobrand ? 'text-brand-600' : 'hover:text-brand-600'}`}><Link2 size={14} /></button>
                             <button onClick={() => setRow(en.id, { item_finished: !en.item_finished })} title="Finished" className={`p-1 ${en.item_finished ? 'text-emerald-600' : 'hover:text-emerald-600'}`}><Check size={14} /></button>
                             <button onClick={() => setRow(en.id, { payment_status: en.payment_status === 'Paid' ? 'Unpaid' : 'Paid' })} title="Toggle paid" className="p-1 hover:text-emerald-600"><DollarSign size={14} /></button>
@@ -185,6 +202,21 @@ export default function ArtistCampaignDetail() {
         {groupKeys.length === 0 && <div className="card p-10 text-center"><p className="text-sm text-gray-400">No campaign spend for this artist.</p></div>}
       </div>
 
+      {/* Bulk action bar */}
+      {sel.size > 0 && (
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 lg:bottom-6 z-40 card shadow-modal px-4 py-2.5 flex flex-wrap items-center gap-2 bg-brand-50 border-brand-200">
+          <span className="text-sm font-medium text-ink">{sel.size} selected</span>
+          <button onClick={() => bulkSet({ cobrand: true })} className="btn-secondary !py-1.5 text-xs">Cobrand</button>
+          <button onClick={() => bulkSet({ cobrand: false })} className="btn-secondary !py-1.5 text-xs">Un-cobrand</button>
+          <button onClick={() => bulkSet({ item_finished: true })} className="btn-secondary !py-1.5 text-xs">Finish</button>
+          <button onClick={() => bulkSet({ payment_status: 'Paid' })} className="btn-secondary !py-1.5 text-xs">Paid</button>
+          <button onClick={() => bulkSet({ payment_status: 'Unpaid' })} className="btn-secondary !py-1.5 text-xs">Unpaid</button>
+          <button onClick={() => setSel(new Set())} className="text-gray-400 hover:text-ink"><X size={16} /></button>
+        </div>
+      )}
+
+      <CampaignChat room={songParam ? `song:${data.artist_key}:${String(songParam).trim().toLowerCase()}` : `artist:${data.artist_key}`} />
+      {socials && <SocialsEditor entry={socials} onClose={() => setSocials(null)} onSaved={() => { setSocials(null); load() }} toast={toast} />}
       {addOpen !== null && <AddExpenseModal artist={data.artist} song={addOpen} onClose={() => setAddOpen(null)} onSaved={() => { setAddOpen(null); load() }} toast={toast} />}
       {thread && <CommentThread entry={thread} onClose={() => { setThread(null); load() }} toast={toast} />}
       {preview && (
@@ -236,6 +268,44 @@ function CommentThread({ entry, onClose, toast }) {
           <textarea value={body} onChange={e => setBody(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); post() } }} rows={1} placeholder="Comment…  @ to mention" className="input flex-1 resize-none text-sm" />
           <button onClick={post} disabled={busy || !body.trim()} className="btn-primary !py-2">Post</button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// Socials editor — per-row social_handles: [{ platform, handle, amount }] with a
+// running total vs the row amount.
+const PLATFORMS = ['Instagram', 'TikTok', 'YouTube', 'Twitter/X', 'Spotify', 'Facebook', 'Other']
+function SocialsEditor({ entry, onClose, onSaved, toast }) {
+  const [rows, setRows] = useState(Array.isArray(entry.social_handles) && entry.social_handles.length ? entry.social_handles.map(s => ({ platform: s.platform || 'Instagram', handle: s.handle || '', amount: s.amount ?? '' })) : [{ platform: 'Instagram', handle: '', amount: '' }])
+  const [saving, setSaving] = useState(false)
+  const upd = (i, k, v) => setRows(r => r.map((x, idx) => idx === i ? { ...x, [k]: v } : x))
+  const total = rows.reduce((a, r) => a + (Number(r.amount) || 0), 0)
+  const save = async () => {
+    setSaving(true)
+    const clean = rows.filter(r => r.handle.trim()).map(r => ({ platform: r.platform, handle: r.handle.trim(), amount: r.amount === '' ? null : Number(r.amount) }))
+    try { await api.post(`/artist-campaigns/entries/${entry.id}/set`, { social_handles: clean }); onSaved() } catch { toast('Failed', 'error'); setSaving(false) }
+  }
+  return (
+    <div className="fixed inset-0 z-[65] bg-overlay flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3"><h3 className="font-bold text-ink truncate">Socials · {entry.payee}</h3><button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button></div>
+        <div className="space-y-2">
+          {rows.map((r, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <select value={r.platform} onChange={e => upd(i, 'platform', e.target.value)} className="input !w-auto !py-1.5 text-sm">{PLATFORMS.map(p => <option key={p}>{p}</option>)}</select>
+              <input value={r.handle} onChange={e => upd(i, 'handle', e.target.value)} placeholder="@handle" className="input !py-1.5 text-sm flex-1" />
+              <input type="number" step="0.01" value={r.amount} onChange={e => upd(i, 'amount', e.target.value)} placeholder="$" className="input !py-1.5 text-sm !w-20" />
+              <button onClick={() => setRows(rs => rs.filter((_, idx) => idx !== i))} className="text-gray-300 hover:text-danger"><X size={14} /></button>
+            </div>
+          ))}
+        </div>
+        <button onClick={() => setRows(rs => [...rs, { platform: 'Instagram', handle: '', amount: '' }])} className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:underline"><Plus size={12} /> Add handle</button>
+        <div className="flex items-center justify-between mt-3 text-sm">
+          <span className="text-gray-500">Handles total</span>
+          <span className={`font-medium tabular-nums ${Math.abs(total - Number(entry.amount || 0)) < 0.01 ? 'text-emerald-600' : 'text-gray-600'}`}>{usd(total)} <span className="text-gray-400">/ {money(entry.amount, entry.currency)}</span></span>
+        </div>
+        <div className="flex justify-end gap-2 mt-4"><button onClick={onClose} className="btn-secondary">Cancel</button><button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Saving…' : 'Save'}</button></div>
       </div>
     </div>
   )
