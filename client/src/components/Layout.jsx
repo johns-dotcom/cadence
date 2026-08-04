@@ -40,7 +40,7 @@ export const PAGE_LABELS = {
   '/releases':   'Releases',
   '/catalog':    'Catalog',
   '/brand':      'Brand',
-  '/artists':    'Artists',
+  '/artists':    'Roster',
   '/deals':      'Deal Pipeline',
   '/contracts':  'Contracts',
   '/renewals':   'Renewals',
@@ -241,7 +241,7 @@ export default function Layout() {
       items: [
         { path: '/releases', label: 'Releases', icon: Music },
         { path: '/catalog',  label: 'Catalog',  icon: Disc3 },
-        { path: '/artists',  label: 'Artists',  icon: Users },
+        { path: '/artists',  label: 'Roster',  icon: Users },
         { path: '/brand',    label: 'Brand',    icon: ImageIcon },
       ],
     },

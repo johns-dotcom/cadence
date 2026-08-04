@@ -39,8 +39,8 @@ export default function Artists() {
   return (
     <div>
       <PageHeader
-        title="Artists"
-        subtitle="Your label's roster"
+        title="Roster"
+        subtitle="Your label's artists"
         action={
           <button onClick={() => setShowForm(v => !v)} className="btn-primary">
             <Plus size={16} /> Add artist

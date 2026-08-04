@@ -175,7 +175,7 @@ export default function ArtistProfile() {
   return (
     <div>
       {/* Breadcrumb */}
-      <div className="text-sm text-gray-400 mb-4"><Link to="/artists" className="hover:text-gray-700">Artists</Link> <span className="mx-1">›</span> <span className="text-gray-600">{artist.name}</span></div>
+      <div className="text-sm text-gray-400 mb-4"><Link to="/artists" className="hover:text-gray-700">Roster</Link> <span className="mx-1">›</span> <span className="text-gray-600">{artist.name}</span></div>
 
       {/* Header */}
       <div className="flex items-start gap-4 mb-6">
