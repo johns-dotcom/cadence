@@ -89,19 +89,32 @@ export default function Ledger() {
     { key: 'payee', label: 'Payee', render: en => <PayeeCell en={en} onFlag={() => setDrawerEntry(en)} /> },
     { key: 'artist', label: 'Artist', render: en => <EditCell en={en} field="artist" kind="datalist" display={<span className="text-gray-600">{en.artist || '—'}</span>} {...editProps} /> },
     { key: 'song', label: 'Song', render: en => <EditCell en={en} field="song" display={<span className="text-gray-600">{en.song || '—'}</span>} {...editProps} /> },
+    { key: 'description', label: 'Description', render: en => <EditCell en={en} field="description" display={<span className="text-gray-600 truncate block max-w-[220px]">{en.description || '—'}</span>} {...editProps} /> },
     { key: 'category', label: 'Category', render: en => <EditCell en={en} field="category" kind="select" options={EXPENSE_CATEGORIES} display={<span className="text-gray-600 whitespace-nowrap">{en.category || '—'}</span>} {...editProps} /> },
     { key: 'invoice_number', label: 'Invoice #', render: en => <EditCell en={en} field="invoice_number" display={<span className="text-gray-500 whitespace-nowrap">{en.invoice_number || '—'}</span>} {...editProps} /> },
     { key: 'amount', label: 'Amount', render: en => <EditCell en={en} field="amount" kind="number" display={<span className="text-ink font-medium whitespace-nowrap tabular-nums">{money(en.amount, en.currency)}</span>} {...editProps} /> },
+    { key: 'currency', label: 'Currency', render: en => <span className="text-gray-500">{en.currency || 'USD'}</span> },
+    { key: 'usd', label: '≈ USD', render: en => {
+      const usd = (en.currency || 'USD') === 'USD' ? Number(en.amount || 0) : (en.fx_rate_to_usd ? Number(en.amount || 0) / Number(en.fx_rate_to_usd) : null)
+      return <span className="text-gray-500 whitespace-nowrap tabular-nums">{usd == null ? '—' : `USD ${usd.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}</span>
+    } },
     { key: 'status', label: 'Status', render: en => <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium capitalize ${STATUS_STYLES[en.status] || ''}`}>{en.status}</span> },
     { key: 'payment', label: 'Payment', render: en => <button onClick={() => cyclePaid(en)} title="Click to cycle" className={`text-xs font-medium hover:underline ${PAID_STYLE[en.payment_status] || PAID_STYLE.Unpaid}`}>{en.payment_status || 'Unpaid'}</button> },
     { key: 'payment_method', label: 'Method', render: en => <EditCell en={en} field="payment_method" kind="select" options={PAYMENT_METHODS} display={<span className="text-gray-500 whitespace-nowrap">{en.payment_method || '—'}</span>} {...editProps} /> },
+    { key: 'payment_date', label: 'Paid on', render: en => <span className="text-gray-500 whitespace-nowrap">{en.payment_date ? formatDate(en.payment_date) : '—'}</span> },
+    { key: 'scheduled_payment_date', label: 'Scheduled', render: en => <span className="text-gray-500 whitespace-nowrap">{en.scheduled_payment_date ? formatDate(en.scheduled_payment_date) : '—'}</span> },
     { key: 'rep', label: 'Rep', render: en => <EditCell en={en} field="rep" display={<span className="text-gray-500">{en.rep || '—'}</span>} {...editProps} /> },
+    { key: 'vendor_email', label: 'Vendor email', render: en => <EditCell en={en} field="vendor_email" display={<span className="text-gray-500 truncate block max-w-[180px]">{en.vendor_email || '—'}</span>} {...editProps} /> },
     { key: 'recoupable', label: 'Recoup', render: en => <button onClick={() => commitEdit(en, 'recoupable', !en.recoupable)} className="text-gray-500 hover:text-brand-600">{en.recoupable ? 'Yes' : 'No'}</button> },
     { key: 'type', label: 'Type', render: en => <span className="text-gray-500">{en.is_reimbursement ? 'Reimb.' : 'Invoice'}</span> },
+    { key: 'approved_by', label: 'Approved by', render: en => <span className="text-gray-500 whitespace-nowrap">{en.approved_by || '—'}</span> },
+    { key: 'created_at', label: 'Added', render: en => <span className="text-gray-500 whitespace-nowrap">{en.created_at ? formatDate(en.created_at) : '—'}</span> },
+    { key: 'notes', label: 'Notes', render: en => <EditCell en={en} field="notes" display={<span className="text-gray-600 truncate block max-w-[220px]">{en.notes || '—'}</span>} {...editProps} /> },
+    { key: 'payment_ref', label: 'Ref', render: en => <EditCell en={en} field="payment_ref" display={<span className="text-gray-500 whitespace-nowrap">{en.payment_ref || '—'}</span>} {...editProps} /> },
     { key: 'files', label: 'Files', render: en => <FilesCell en={en} openFile={openFile} /> },
   ]
   const ALL_KEYS = COLS.map(c => c.key)
-  const DEFAULT_COLS = ['invoice_date', 'payee', 'category', 'amount', 'status', 'payment', 'files']
+  const DEFAULT_COLS = ['invoice_date', 'payee', 'artist', 'song', 'category', 'amount', 'status', 'payment', 'files']
   const storeKey = `ledger-cols:${label?.id || 0}:${user?.id || 0}`
   const [visible, setVisible] = useState(DEFAULT_COLS)
   const [colMenu, setColMenu] = useState(false)
