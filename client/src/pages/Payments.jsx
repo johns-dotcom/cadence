@@ -77,11 +77,11 @@ export default function Payments() {
   const exportCsv = () => {
     const cols = isPaid
       ? ['Payee', 'Amount', 'Currency', 'Paid date', 'Method', 'Reference']
-      : ['Date', 'Payee', 'Vendor email', 'Amount', 'Currency', 'Due date', 'Status', 'Bank']
+      : ['Date', 'Payee', 'Artist', 'Inv #', 'Amount', 'Currency', 'Rep', 'Vendor email', 'Due date', 'Status', 'Bank']
     const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
     const line = (r) => (isPaid
       ? [r.payee, r.amount, r.currency, formatDate(r.payment_date), r.payment_method, r.payment_ref]
-      : [formatDate(r.invoice_date), r.payee, r.vendor_email, r.amount, r.currency, formatDate(r.scheduled_payment_date), r.on_hold ? 'Hold' : r.rush ? 'Rush' : (r.payment_status || 'Unpaid'), r.vendor_bank]).map(cell).join(',')
+      : [formatDate(r.invoice_date), r.payee, r.artist, r.invoice_number, r.amount, r.currency, r.rep, r.vendor_email, formatDate(r.scheduled_payment_date), r.on_hold ? 'Hold' : r.rush ? 'Rush' : (r.payment_status || 'Unpaid'), r.vendor_bank]).map(cell).join(',')
     const csv = [cols.map(cell).join(','), ...shown.map(line)].join('\n')
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
     const a = document.createElement('a'); a.href = url; a.download = `payments-${filter}.csv`; a.click(); URL.revokeObjectURL(url)
@@ -286,7 +286,7 @@ export default function Payments() {
               <tr className="bg-page/50 border-b border-divider text-left">
                 <th className="px-3 py-2.5"><input type="checkbox" checked={shown.length > 0 && sel.size === shown.length} onChange={toggleAll} /></th>
                 {(isPaid ? ['Payee', 'Amount', 'Paid date', 'Method', 'Confirmation', '']
-                  : ['Date', 'Payee', 'Amount', 'Due date', 'Status', 'Bank', 'Invoice', 'Proof', '']
+                  : ['Date', 'Payee', 'Artist', 'Inv #', 'Amount', 'Rep', 'Due date', 'Status', 'Bank', 'Invoice', 'Proof', '']
                 ).map(h => <th key={h} className="px-3 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap">{h}</th>)}
               </tr>
             </thead>
@@ -312,9 +312,12 @@ export default function Payments() {
                       {r.on_hold && <span title={r.hold_reason || 'On hold'} className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded"><Pause size={10} /> Hold</span>}
                       {r.split_count > 0 && <span className="text-[10px] font-bold uppercase bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded">Split</span>}
                     </p>
-                    {(r.vendor_email || r.artist) && <p className="text-[11px] text-gray-400 truncate max-w-[200px]">{r.vendor_email || r.artist}</p>}
+                    {r.vendor_email && <p className="text-[11px] text-gray-400 truncate max-w-[200px]">{r.vendor_email}</p>}
                   </td>
+                  <td className="px-3 py-3 text-gray-600 whitespace-nowrap">{r.artist || '—'}</td>
+                  <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{r.invoice_number || '—'}</td>
                   <td className="px-3 py-3 text-ink font-medium whitespace-nowrap">{r.currency} {fmt(r.amount)}</td>
+                  <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{r.rep || '—'}</td>
                   <td className="px-3 py-3 whitespace-nowrap">
                     {r.scheduled_payment_date
                       ? <span className={isPastLocal(r.scheduled_payment_date) && !r.on_hold ? 'text-red-600 font-medium' : 'text-gray-600'}>{formatDate(r.scheduled_payment_date)}</span>
