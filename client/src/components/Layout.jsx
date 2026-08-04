@@ -234,7 +234,6 @@ export default function Layout() {
         { path: '/my-work',  label: 'My Work',   icon: Briefcase },
         { path: '/messages', label: 'Messages',  icon: MessageSquare, badge: chatUnread },
         { path: '/calendar', label: 'Calendar',  icon: CalendarDays },
-        { path: '/add-invoice', label: 'Add Invoice', icon: Receipt },
       ],
     },
     {
@@ -270,6 +269,7 @@ export default function Layout() {
     {
       label: 'Bookkeeping',
       items: [
+        { path: '/add-invoice', label: 'Add Invoice', icon: Receipt },
         ...(isApprover ? [{ path: '/approvals', label: 'Approvals', icon: Check, badge: pendingApprovals }] : []),
         ...(isApprover ? [{ path: '/ledger', label: 'Ledger', icon: BookOpen }] : []),
         ...(isApprover ? [{ path: '/payments', label: 'Payments', icon: CreditCard }] : []),
