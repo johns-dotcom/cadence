@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CreditCard, CalendarClock, Check, X, Zap, Send, MailCheck, Pause } from 'lucide-react'
+import { CreditCard, CalendarClock, Check, X, Zap, Send, MailCheck, Pause, Download, Upload, Eye } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
@@ -14,6 +14,7 @@ const usd = (n) => `$${fmt(n)}`
 const today = () => new Date().toISOString().slice(0, 10)
 
 const FILTERS = [
+  { key: 'all', label: 'All' },
   { key: 'unpaid', label: 'Unpaid' },
   { key: 'duesoon', label: 'Due Soon' },
   { key: 'overdue', label: 'Overdue' },
@@ -31,7 +32,8 @@ function totalsByCurrency(rows) {
 export default function Payments() {
   const { toast } = useToast()
   const isMobile = useIsMobile()
-  const [filter, setFilter] = useState('unpaid')
+  const [filter, setFilter] = useState('all')
+  const [preview, setPreview] = useState(null) // { url, label } file pop-up
   const [rows, setRows] = useState([])
   const [stats, setStats] = useState(null)
   const [reps, setReps] = useState({})
@@ -55,7 +57,8 @@ export default function Payments() {
 
   // Client-side quick filter over the payables list (paid loads its own list).
   const shown = isPaid ? rows : rows.filter(r => {
-    if (filter === 'unpaid') return true
+    if (filter === 'all') return true
+    if (filter === 'unpaid') return !r.on_hold
     if (filter === 'rush') return r.rush
     if (filter === 'hold') return r.on_hold
     if (r.on_hold) return false // held rows leave Due Soon / Overdue
@@ -64,6 +67,25 @@ export default function Payments() {
     if (filter === 'duesoon') return d !== null && d >= 0 && d <= 7
     return true
   })
+
+  const openFile = (id, type) => api.get(`/ledger/entries/${id}/file/${type}`).then(({ data }) => setPreview({ url: data.data.url, label: type })).catch(() => toast('No file', 'error'))
+  const uploadProof = async (id, file) => {
+    if (!file) return
+    try { const fd = new FormData(); fd.append('file', file); await api.post(`/ledger/entries/${id}/file/receipt`, fd); toast('Proof attached'); load() }
+    catch { toast('Upload failed', 'error') }
+  }
+  const exportCsv = () => {
+    const cols = isPaid
+      ? ['Payee', 'Amount', 'Currency', 'Paid date', 'Method', 'Reference']
+      : ['Date', 'Payee', 'Vendor email', 'Amount', 'Currency', 'Due date', 'Status', 'Bank']
+    const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
+    const line = (r) => (isPaid
+      ? [r.payee, r.amount, r.currency, formatDate(r.payment_date), r.payment_method, r.payment_ref]
+      : [formatDate(r.invoice_date), r.payee, r.vendor_email, r.amount, r.currency, formatDate(r.scheduled_payment_date), r.on_hold ? 'Hold' : r.rush ? 'Rush' : (r.payment_status || 'Unpaid'), r.vendor_bank]).map(cell).join(',')
+    const csv = [cols.map(cell).join(','), ...shown.map(line)].join('\n')
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    const a = document.createElement('a'); a.href = url; a.download = `payments-${filter}.csv`; a.click(); URL.revokeObjectURL(url)
+  }
 
   const toggle = (id) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
   const toggleAll = () => setSel(s => s.size === shown.length ? new Set() : new Set(shown.map(r => r.id)))
@@ -153,34 +175,44 @@ export default function Payments() {
     setEmailItems(await buildConfirmItems(list))
   }
 
+  const c = stats?.counts || {}
   const CARDS = stats ? [
-    { label: 'Outstanding', value: stats.outstanding, sub: `${stats.counts.unpaid} unpaid`, chip: 'bg-indigo-100 text-indigo-600' },
-    { label: 'Overdue', value: stats.overdue, sub: `${stats.counts.overdue} past due`, chip: 'bg-rose-100 text-rose-600', dim: !stats.counts.overdue },
-    { label: 'Rush', value: stats.rush, sub: `${stats.counts.rush} flagged`, chip: 'bg-amber-100 text-amber-600', dim: !stats.counts.rush },
-    { label: 'On hold', value: stats.hold, sub: `${stats.counts.hold} paused`, chip: 'bg-gray-200 text-gray-600', dim: !stats.counts.hold },
-    { label: 'Paid (14d)', value: stats.paid14, sub: `${stats.counts.paid14} recent`, chip: 'bg-emerald-100 text-emerald-600' },
+    { label: 'Overdue', value: usd(stats.overdue), sub: `${c.overdue || 0} invoices`, color: 'text-rose-600' },
+    { label: 'Due within 7 days', value: usd(stats.duesoon), sub: `${c.duesoon || 0} invoices`, color: 'text-amber-600' },
+    { label: 'Total unpaid', value: usd(stats.outstanding), sub: `${c.unpaid || 0} invoices`, color: 'text-ink' },
+    { label: 'Paid this month', value: usd(stats.paid14), sub: `${c.paid14 || 0} in last 14 days`, color: 'text-emerald-600' },
+    { label: 'Total entries', value: String((c.unpaid || 0) + (c.paid14 || 0)), sub: 'unpaid + recent', color: 'text-ink' },
   ] : []
 
   return (
     <div>
-      <PageHeader title="Payments" subtitle="The payment queue — USD-equivalent, honoring locked FX rates" />
+      <PageHeader title="Payment Dashboard" subtitle="Unpaid invoices and anything paid in the last 14 days. Older payments live in the ledger." />
 
-      {/* USD stat cards */}
+      {/* Filters + export */}
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <div className="flex flex-wrap items-center gap-1">
+          {FILTERS.map(f => (
+            <button key={f.key} onClick={() => setFilter(f.key)} className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition ${filter === f.key ? 'bg-brand-600 text-white border-brand-600' : 'text-gray-500 border-rule hover:bg-gray-100'}`}>{f.label}</button>
+          ))}
+        </div>
+        <button onClick={exportCsv} className="btn-secondary py-1.5 ml-auto"><Download size={15} /> CSV</button>
+      </div>
+
+      {/* Headline stat cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
-        {CARDS.map(c => (
-          <div key={c.label} className="card p-4">
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-2 ${c.chip}`}><CreditCard size={15} /></div>
-            <p className={`text-xl font-bold leading-none ${c.dim ? 'text-gray-300' : 'text-ink'}`}>{usd(c.value)}</p>
-            <p className="text-[11px] text-gray-400 mt-1">{c.label} · {c.sub}</p>
+        {CARDS.map(card => (
+          <div key={card.label} className="card p-4">
+            <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">{card.label}</p>
+            <p className={`text-2xl font-bold leading-tight mt-1.5 ${card.color}`}>{card.value}</p>
+            <p className="text-[11px] text-gray-400 mt-1">{card.sub}</p>
           </div>
         ))}
       </div>
 
-      {/* Quick filters */}
-      <div className="flex flex-wrap items-center gap-1 mb-4">
-        {FILTERS.map(f => (
-          <button key={f.key} onClick={() => setFilter(f.key)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition ${filter === f.key ? 'bg-brand-600 text-white' : 'text-gray-500 hover:bg-gray-100'}`}>{f.label}</button>
-        ))}
+      {/* Invoices header */}
+      <div className="flex items-center gap-2 mb-3">
+        <h2 className="text-base font-bold text-ink">Invoices</h2>
+        <span className="text-sm text-gray-400">{shown.length}</span>
       </div>
 
       {/* Batch action bar */}
@@ -254,7 +286,7 @@ export default function Payments() {
               <tr className="bg-page/50 border-b border-divider text-left">
                 <th className="px-3 py-2.5"><input type="checkbox" checked={shown.length > 0 && sel.size === shown.length} onChange={toggleAll} /></th>
                 {(isPaid ? ['Payee', 'Amount', 'Paid date', 'Method', 'Confirmation', '']
-                  : ['Payee', 'Category', 'Amount', 'Invoice date', 'Due', 'Terms', '']
+                  : ['Date', 'Payee', 'Amount', 'Due date', 'Status', 'Bank', 'Invoice', 'Proof', '']
                 ).map(h => <th key={h} className="px-3 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap">{h}</th>)}
               </tr>
             </thead>
@@ -272,23 +304,32 @@ export default function Payments() {
               ) : (
                 <tr key={r.id} className={`hover:bg-gray-50 ${r.on_hold ? 'opacity-60' : ''}`}>
                   <td className="px-3 py-3"><input type="checkbox" checked={sel.has(r.id)} onChange={() => toggle(r.id)} /></td>
+                  <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{formatDate(r.invoice_date)}</td>
                   <td className="px-3 py-3">
                     <p className="font-medium text-ink flex items-center gap-1.5">
                       {r.payee}
                       {r.rush && <span title={r.rush_reason || 'Rush'} className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded"><Zap size={10} /> Rush</span>}
                       {r.on_hold && <span title={r.hold_reason || 'On hold'} className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded"><Pause size={10} /> Hold</span>}
+                      {r.split_count > 0 && <span className="text-[10px] font-bold uppercase bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded">Split</span>}
                     </p>
-                    {r.artist && <p className="text-xs text-gray-400">{r.artist}</p>}
+                    {(r.vendor_email || r.artist) && <p className="text-[11px] text-gray-400 truncate max-w-[200px]">{r.vendor_email || r.artist}</p>}
                   </td>
-                  <td className="px-3 py-3 text-gray-600">{r.category || '—'}</td>
                   <td className="px-3 py-3 text-ink font-medium whitespace-nowrap">{r.currency} {fmt(r.amount)}</td>
-                  <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{formatDate(r.invoice_date)}</td>
                   <td className="px-3 py-3 whitespace-nowrap">
                     {r.scheduled_payment_date
-                      ? <span className={isPastLocal(r.scheduled_payment_date) && !r.on_hold ? 'text-red-600 font-medium' : 'text-gray-600'}>{formatDate(r.scheduled_payment_date)}{isPastLocal(r.scheduled_payment_date) && !r.on_hold ? ' · overdue' : ''}</span>
+                      ? <span className={isPastLocal(r.scheduled_payment_date) && !r.on_hold ? 'text-red-600 font-medium' : 'text-gray-600'}>{formatDate(r.scheduled_payment_date)}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
-                  <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{r.payment_terms || '—'}</td>
+                  <td className="px-3 py-3 whitespace-nowrap">
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium ${r.on_hold ? 'bg-gray-200 text-gray-600' : r.payment_status === 'Partial' ? 'bg-amber-100 text-amber-700' : 'bg-rose-50 text-rose-600'}`}>{r.on_hold ? 'On hold' : (r.payment_status || 'Unpaid')}</span>
+                  </td>
+                  <td className="px-3 py-3 text-gray-500 truncate max-w-[140px]">{r.vendor_bank || '—'}</td>
+                  <td className="px-3 py-3 whitespace-nowrap">{r.invoice_r2_key ? <button onClick={() => openFile(r.id, 'invoice')} className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline"><Eye size={13} /> View</button> : <span className="text-gray-300">—</span>}</td>
+                  <td className="px-3 py-3 whitespace-nowrap">
+                    {r.receipt_r2_key
+                      ? <button onClick={() => openFile(r.id, 'receipt')} className="inline-flex items-center gap-1 text-xs text-emerald-600 hover:underline"><Eye size={13} /> Proof</button>
+                      : <label onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); uploadProof(r.id, e.dataTransfer.files?.[0]) }} className="inline-flex items-center gap-1 text-[11px] text-gray-400 border border-dashed border-rule rounded px-2 py-1 cursor-pointer hover:border-brand-300 hover:text-brand-600"><Upload size={12} /> Drop file<input type="file" accept="application/pdf,image/*" hidden onChange={e => uploadProof(r.id, e.target.files?.[0])} /></label>}
+                  </td>
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1.5 justify-end whitespace-nowrap">
                       <button onClick={() => toggleRush(r)} className={`p-1 ${r.rush ? 'text-amber-600' : 'text-gray-400 hover:text-amber-600'}`} title={r.rush ? 'Clear rush' : 'Flag rush'}><Zap size={15} /></button>
@@ -307,6 +348,20 @@ export default function Payments() {
       {payModal && <PayModal count={payModal.ids.length} onClose={() => setPayModal(null)} onConfirm={doPay} />}
       {schedModal && <ScheduleModal initialTerms={schedModal.terms} onClose={() => setSchedModal(null)} onConfirm={doSchedule} />}
       {emailItems && <EmailPreviewModal items={emailItems} onClose={() => setEmailItems(null)} onDone={() => { setEmailItems(null); load() }} />}
+      {preview && (
+        <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={() => setPreview(null)}>
+          <div className="bg-card rounded-xl shadow-modal w-full max-w-4xl h-[88vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-rule flex-shrink-0">
+              <span className="text-sm font-semibold text-ink capitalize">{preview.label}</span>
+              <div className="flex items-center gap-3">
+                <a href={preview.url} target="_blank" rel="noreferrer" className="text-xs text-brand-600 hover:underline">Open in new tab</a>
+                <button onClick={() => setPreview(null)} className="text-gray-400 hover:text-ink"><X size={18} /></button>
+              </div>
+            </div>
+            <iframe src={preview.url} title="File preview" className="flex-1 w-full bg-gray-100" />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

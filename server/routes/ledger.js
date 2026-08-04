@@ -1308,14 +1308,17 @@ router.get('/payment-stats', async (req, res) => {
       [req.labelId]
     );
     const today = new Date().toISOString().slice(0, 10);
-    const acc = { outstanding: 0, overdue: 0, rush: 0, hold: 0, paid14: 0, counts: { unpaid: 0, overdue: 0, rush: 0, hold: 0, paid14: 0 } };
+    const in7 = new Date(); in7.setDate(in7.getDate() + 7); const in7s = in7.toISOString().slice(0, 10);
+    const acc = { outstanding: 0, overdue: 0, duesoon: 0, rush: 0, hold: 0, paid14: 0, counts: { unpaid: 0, overdue: 0, duesoon: 0, rush: 0, hold: 0, paid14: 0 } };
     for (const r of rows) {
       const u = await usd(r);
       if (r.payment_status === 'Paid') { acc.paid14 += u; acc.counts.paid14++; continue; }
       acc.outstanding += u; acc.counts.unpaid++;
       if (r.on_hold) { acc.hold += u; acc.counts.hold++; continue; }
       if (r.rush) { acc.rush += u; acc.counts.rush++; }
-      if (r.scheduled_payment_date && String(r.scheduled_payment_date).slice(0, 10) < today) { acc.overdue += u; acc.counts.overdue++; }
+      const sched = r.scheduled_payment_date ? String(r.scheduled_payment_date).slice(0, 10) : null;
+      if (sched && sched < today) { acc.overdue += u; acc.counts.overdue++; }
+      else if (sched && sched <= in7s) { acc.duesoon += u; acc.counts.duesoon++; }
     }
     res.json({ success: true, data: acc });
   } catch (error) {
