@@ -88,7 +88,7 @@ const EDITABLE = [
   'invoice_number', 'amount', 'currency', 'payment_method', 'payment_date',
   'is_reimbursement', 'recoupable', 'rep', 'notes', 'payment_status',
   'payment_terms', 'scheduled_payment_date', 'cobrand', 'is_bulk_deal',
-  'vendor_email', 'payment_ref',
+  'vendor_email', 'payment_ref', 'vendor_address', 'vendor_bank',
 ];
 
 // Rep visibility: Admins/Superadmins see all. An Approver with a configured

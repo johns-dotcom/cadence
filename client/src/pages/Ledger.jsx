@@ -28,6 +28,33 @@ function amountPred(raw) {
   return null
 }
 
+// Social handles pulled from the multi-artist breakdown (or a "Socials:" note).
+function socialsOf(en) {
+  const out = []
+  try {
+    const bd = en.artist_breakdown
+    const arr = Array.isArray(bd) ? bd : (bd ? [bd] : [])
+    for (const it of arr) {
+      if (it?.handle) out.push(it.handle)
+      if (Array.isArray(it?.socials)) for (const s of it.socials) if (s?.handle) out.push(s.handle)
+    }
+  } catch { /* ignore malformed breakdown */ }
+  if (!out.length && typeof en.notes === 'string') {
+    const m = en.notes.match(/socials?:\s*([^\n]+)/i)
+    if (m) return m[1].trim()
+  }
+  return out.length ? [...new Set(out)].join(', ') : ''
+}
+// Due date = invoice date + "Net N" from terms, else the scheduled date.
+function dueDateStr(en) {
+  const m = String(en.payment_terms || '').match(/(\d+)/)
+  if (en.invoice_date && m) {
+    const d = new Date(en.invoice_date); d.setDate(d.getDate() + Number(m[1]))
+    return formatDate(d.toISOString().slice(0, 10))
+  }
+  return en.scheduled_payment_date ? formatDate(en.scheduled_payment_date) : ''
+}
+
 export default function Ledger() {
   const { toast } = useToast()
   const { label, user } = useAuth()
@@ -105,12 +132,25 @@ export default function Ledger() {
     { key: 'scheduled_payment_date', label: 'Scheduled', render: en => <span className="text-gray-500 whitespace-nowrap">{en.scheduled_payment_date ? formatDate(en.scheduled_payment_date) : '—'}</span> },
     { key: 'rep', label: 'Rep', render: en => <EditCell en={en} field="rep" display={<span className="text-gray-500">{en.rep || '—'}</span>} {...editProps} /> },
     { key: 'vendor_email', label: 'Vendor email', render: en => <EditCell en={en} field="vendor_email" display={<span className="text-gray-500 truncate block max-w-[180px]">{en.vendor_email || '—'}</span>} {...editProps} /> },
-    { key: 'recoupable', label: 'Recoup', render: en => <button onClick={() => commitEdit(en, 'recoupable', !en.recoupable)} className="text-gray-500 hover:text-brand-600">{en.recoupable ? 'Yes' : 'No'}</button> },
+    { key: 'vendor_address', label: 'Address', render: en => <EditCell en={en} field="vendor_address" display={<span className="text-gray-500 truncate block max-w-[200px]">{en.vendor_address || '—'}</span>} {...editProps} /> },
+    { key: 'vendor_bank', label: 'Bank', render: en => <EditCell en={en} field="vendor_bank" display={<span className="text-gray-500 truncate block max-w-[160px]">{en.vendor_bank || '—'}</span>} {...editProps} /> },
+    { key: 'socials', label: 'Socials', render: en => { const s = socialsOf(en); return <span className="text-gray-500 truncate block max-w-[180px]">{s || '—'}</span> } },
+    { key: 'payment_terms', label: 'Terms', render: en => <EditCell en={en} field="payment_terms" display={<span className="text-gray-500 whitespace-nowrap">{en.payment_terms || '—'}</span>} {...editProps} /> },
+    { key: 'due', label: 'Due', render: en => { const d = dueDateStr(en); return <span className="text-gray-500 whitespace-nowrap">{d || '—'}</span> } },
+    { key: 'recoupable', label: 'Recoup?', render: en => <button onClick={() => commitEdit(en, 'recoupable', !en.recoupable)} className="text-gray-500 hover:text-brand-600">{en.recoupable ? 'Yes' : 'No'}</button> },
+    { key: 'ufr', label: 'UFR?', render: en => <span className="text-gray-500">{en.ufr ? 'Yes' : 'No'}</span> },
+    { key: 'campaign', label: 'Campaign?', render: en => <span className="text-gray-500">{(en.campaign_id || en.artist_campaign === true) ? 'Yes' : 'No'}</span> },
+    { key: 'reimbursement', label: 'Reimb?', render: en => <span className="text-gray-500">{en.is_reimbursement ? 'Yes' : 'No'}</span> },
+    { key: 'cobrand', label: 'Cobrand?', render: en => <button onClick={() => commitEdit(en, 'cobrand', !en.cobrand)} className="text-gray-500 hover:text-brand-600">{en.cobrand ? 'Yes' : 'No'}</button> },
+    { key: 'is_bulk_deal', label: 'Bulk deal?', render: en => <button onClick={() => commitEdit(en, 'is_bulk_deal', !en.is_bulk_deal)} className="text-gray-500 hover:text-brand-600">{en.is_bulk_deal ? 'Yes' : 'No'}</button> },
     { key: 'type', label: 'Type', render: en => <span className="text-gray-500">{en.is_reimbursement ? 'Reimb.' : 'Invoice'}</span> },
     { key: 'approved_by', label: 'Approved by', render: en => <span className="text-gray-500 whitespace-nowrap">{en.approved_by || '—'}</span> },
-    { key: 'created_at', label: 'Added', render: en => <span className="text-gray-500 whitespace-nowrap">{en.created_at ? formatDate(en.created_at) : '—'}</span> },
+    { key: 'created_at', label: 'Uploaded', render: en => <span className="text-gray-500 whitespace-nowrap">{en.created_at ? formatDate(en.created_at) : '—'}</span> },
     { key: 'notes', label: 'Notes', render: en => <EditCell en={en} field="notes" display={<span className="text-gray-600 truncate block max-w-[220px]">{en.notes || '—'}</span>} {...editProps} /> },
     { key: 'payment_ref', label: 'Ref', render: en => <EditCell en={en} field="payment_ref" display={<span className="text-gray-500 whitespace-nowrap">{en.payment_ref || '—'}</span>} {...editProps} /> },
+    { key: 'invoice_file', label: 'Invoice', render: en => en.invoice_r2_key ? <button onClick={() => openFile(en.id, 'invoice')} className="text-brand-600 hover:underline text-xs">Open</button> : <span className="text-gray-300">—</span> },
+    { key: 'w9_file', label: 'W9', render: en => en.w9_r2_key ? <button onClick={() => openFile(en.id, 'w9')} className="text-brand-600 hover:underline text-xs">Open</button> : <span className="text-gray-300">—</span> },
+    { key: 'receipt_file', label: 'Receipt / proof', render: en => en.receipt_r2_key ? <button onClick={() => openFile(en.id, 'receipt')} className="text-brand-600 hover:underline text-xs">Open</button> : <span className="text-gray-300">—</span> },
     { key: 'files', label: 'Files', render: en => <FilesCell en={en} openFile={openFile} /> },
   ]
   const ALL_KEYS = COLS.map(c => c.key)
