@@ -73,6 +73,17 @@ export default function Ledger() {
   const [fMethod, setFMethod] = useState('')
   const [fSource, setFSource] = useState('')
   const [flaggedOnly, setFlaggedOnly] = useState(false)
+  // Extra filters (behind "More filters"), matching the richer column set.
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [fArtist, setFArtist] = useState('')
+  const [fRep, setFRep] = useState('')
+  const [fCurrency, setFCurrency] = useState('')
+  const [fType, setFType] = useState('')       // '' | 'invoice' | 'reimb'
+  const [fRecoup, setFRecoup] = useState('')    // '' | 'yes' | 'no'
+  const [fCobrand, setFCobrand] = useState('')
+  const [fBulk, setFBulk] = useState('')
+  const [fUfr, setFUfr] = useState('')
+  const [fCampaign, setFCampaign] = useState('')
   const [sort, setSort] = useState({ key: 'invoice_date', dir: 'desc' })
 
   const [copied, setCopied] = useState(false)
@@ -241,6 +252,15 @@ export default function Ledger() {
   }
 
   // ── Apply filters + sort client-side ──────────────────────────────────
+  // Filter option lists derived from what's actually loaded.
+  const distinct = (key) => [...new Set(entries.map(e => e[key]).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)))
+  const artistOpts = useMemo(() => distinct('artist'), [entries])
+  const repOpts = useMemo(() => distinct('rep'), [entries])
+  const currencyOpts = useMemo(() => distinct('currency'), [entries])
+  const ynMatch = (mode, val) => mode === '' || (mode === 'yes' ? !!val : !val)
+  const advancedActive = fArtist || fRep || fCurrency || fType || fRecoup || fCobrand || fBulk || fUfr || fCampaign
+  const clearAdvanced = () => { setFArtist(''); setFRep(''); setFCurrency(''); setFType(''); setFRecoup(''); setFCobrand(''); setFBulk(''); setFUfr(''); setFCampaign('') }
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     const amt = amountPred(amountQ)
@@ -254,6 +274,17 @@ export default function Ledger() {
       if (fSource === 'vendor' && !en.vendor_submitted) return false
       if (fSource === 'manual' && en.vendor_submitted) return false
       if (flaggedOnly && !(en.ai_scan?.discrepancies?.length || en.w9_scan?.discrepancies?.length)) return false
+      // Advanced filters
+      if (fArtist && en.artist !== fArtist) return false
+      if (fRep && en.rep !== fRep) return false
+      if (fCurrency && (en.currency || 'USD') !== fCurrency) return false
+      if (fType === 'invoice' && en.is_reimbursement) return false
+      if (fType === 'reimb' && !en.is_reimbursement) return false
+      if (!ynMatch(fRecoup, en.recoupable)) return false
+      if (!ynMatch(fCobrand, en.cobrand)) return false
+      if (!ynMatch(fBulk, en.is_bulk_deal)) return false
+      if (!ynMatch(fUfr, en.ufr)) return false
+      if (!ynMatch(fCampaign, en.campaign_id || en.artist_campaign === true)) return false
       return true
     })
     const dir = sort.dir === 'asc' ? 1 : -1
@@ -264,7 +295,7 @@ export default function Ledger() {
       return String(av || '').localeCompare(String(bv || '')) * dir
     })
     return list
-  }, [entries, status, search, amountQ, fCategory, fPaid, fMethod, fSource, flaggedOnly, sort])
+  }, [entries, status, search, amountQ, fCategory, fPaid, fMethod, fSource, flaggedOnly, fArtist, fRep, fCurrency, fType, fRecoup, fCobrand, fBulk, fUfr, fCampaign, sort])
 
   const totals = useMemo(() => {
     const t = {}
@@ -304,6 +335,7 @@ export default function Ledger() {
         <select className="input !w-auto" value={fMethod} onChange={e => setFMethod(e.target.value)}><option value="">Any method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select>
         <select className="input !w-auto" value={fSource} onChange={e => setFSource(e.target.value)}><option value="">Any source</option><option value="vendor">Vendor-submitted</option><option value="manual">Manual</option></select>
         <button onClick={() => setFlaggedOnly(v => !v)} className={`text-xs font-semibold px-3 py-2 rounded-lg ${flaggedOnly ? 'bg-red-600 text-white' : 'text-gray-500 hover:bg-gray-100 border border-rule'}`}>⚠ Flagged</button>
+        <button onClick={() => setMoreOpen(v => !v)} className={`text-xs font-semibold px-3 py-2 rounded-lg border ${advancedActive ? 'bg-brand-50 text-brand-700 border-brand-300' : 'text-gray-500 hover:bg-gray-100 border-rule'}`}>More filters{advancedActive ? ' •' : ''}</button>
         <div className="relative">
           <button onClick={() => setColMenu(v => !v)} className="btn-secondary"><SlidersHorizontal size={15} /> Columns</button>
           {colMenu && (
@@ -317,6 +349,22 @@ export default function Ledger() {
           )}
         </div>
       </div>
+
+      {/* Advanced filters — matched to the extended column set */}
+      {moreOpen && (
+        <div className="flex flex-wrap items-center gap-2 mb-3 p-3 rounded-lg bg-page/60 border border-rule">
+          <select className="input !w-auto" value={fArtist} onChange={e => setFArtist(e.target.value)}><option value="">Any artist</option>{artistOpts.map(a => <option key={a}>{a}</option>)}</select>
+          <select className="input !w-auto" value={fRep} onChange={e => setFRep(e.target.value)}><option value="">Any rep</option>{repOpts.map(r => <option key={r}>{r}</option>)}</select>
+          <select className="input !w-auto" value={fCurrency} onChange={e => setFCurrency(e.target.value)}><option value="">Any currency</option>{currencyOpts.map(c => <option key={c}>{c}</option>)}</select>
+          <select className="input !w-auto" value={fType} onChange={e => setFType(e.target.value)}><option value="">Any type</option><option value="invoice">Invoice</option><option value="reimb">Reimbursement</option></select>
+          <select className="input !w-auto" value={fRecoup} onChange={e => setFRecoup(e.target.value)}><option value="">Recoup: any</option><option value="yes">Recoupable</option><option value="no">Not recoupable</option></select>
+          <select className="input !w-auto" value={fCampaign} onChange={e => setFCampaign(e.target.value)}><option value="">Campaign: any</option><option value="yes">In a campaign</option><option value="no">Not in a campaign</option></select>
+          <select className="input !w-auto" value={fUfr} onChange={e => setFUfr(e.target.value)}><option value="">UFR: any</option><option value="yes">UFR uploaded</option><option value="no">No UFR</option></select>
+          <select className="input !w-auto" value={fCobrand} onChange={e => setFCobrand(e.target.value)}><option value="">Cobrand: any</option><option value="yes">Cobrand</option><option value="no">Not cobrand</option></select>
+          <select className="input !w-auto" value={fBulk} onChange={e => setFBulk(e.target.value)}><option value="">Bulk deal: any</option><option value="yes">Bulk deal</option><option value="no">Not bulk</option></select>
+          {advancedActive && <button onClick={clearAdvanced} className="text-xs font-semibold px-3 py-2 rounded-lg text-gray-500 hover:bg-gray-100 border border-rule">Clear</button>}
+        </div>
+      )}
 
       <div className="flex items-center gap-1 mb-4">
         {STATUSES.map(f => (
