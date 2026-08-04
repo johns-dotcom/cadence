@@ -92,6 +92,7 @@ export default function Ledger() {
   const [drawerEntry, setDrawerEntry] = useState(null)
   const [quickOpen, setQuickOpen] = useState(false)
   const [editEntry, setEditEntry] = useState(null)
+  const [preview, setPreview] = useState(null) // { url, label } for the file pop-up
   const [report1099, setReport1099] = useState(null)
 
   // Inline edit + 20-deep undo.
@@ -215,7 +216,7 @@ export default function Ledger() {
   const act = async (id, path, body) => { try { await api.post(`/ledger/entries/${id}/${path}`, body || {}); load() } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') } }
   const reject = async (id) => { const reason = window.prompt('Reason for rejection (required):')?.trim(); if (!reason) return; act(id, 'reject', { reason }) }
   const remove = async (id) => { if (!window.confirm('Delete this entry?')) return; try { await api.delete(`/ledger/entries/${id}`); load() } catch { toast('Failed', 'error') } }
-  function openFile(id, type) { api.get(`/ledger/entries/${id}/file/${type}`).then(({ data }) => window.open(data.data.url, '_blank', 'noopener')).catch(() => toast('No file', 'error')) }
+  function openFile(id, type) { api.get(`/ledger/entries/${id}/file/${type}`).then(({ data }) => setPreview({ url: data.data.url, label: type })).catch(() => toast('No file', 'error')) }
 
   const copyVendorLink = () => {
     const url = `${window.location.origin}/submit/${label?.vendor_form_token}`
@@ -479,6 +480,20 @@ export default function Ledger() {
       {drawerEntry && <LedgerEntryDrawer entry={drawerEntry} onClose={() => setDrawerEntry(null)} onChanged={load} />}
       {quickOpen && <QuickExpenseModal artistNames={artistNames} toast={toast} onClose={() => setQuickOpen(false)} onCreated={() => { setQuickOpen(false); load() }} />}
       {editEntry && <EditEntryModal entry={editEntry} artistNames={artistNames} toast={toast} onClose={() => setEditEntry(null)} onSaved={() => { setEditEntry(null); load() }} />}
+      {preview && (
+        <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={() => setPreview(null)}>
+          <div className="bg-card rounded-xl shadow-modal w-full max-w-4xl h-[88vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-rule flex-shrink-0">
+              <span className="text-sm font-semibold text-ink capitalize">{preview.label}</span>
+              <div className="flex items-center gap-3">
+                <a href={preview.url} target="_blank" rel="noreferrer" className="text-xs text-brand-600 hover:underline">Open in new tab</a>
+                <button onClick={() => setPreview(null)} className="text-gray-400 hover:text-ink"><X size={18} /></button>
+              </div>
+            </div>
+            <iframe src={preview.url} title="File preview" className="flex-1 w-full bg-gray-100" />
+          </div>
+        </div>
+      )}
 
       {report1099 && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center px-4 py-8 bg-overlay overflow-y-auto" onClick={() => setReport1099(null)}>
