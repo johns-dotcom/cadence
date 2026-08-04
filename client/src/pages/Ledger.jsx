@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useMemo } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart, Search } from 'lucide-react'
+import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart, Search, Pencil } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
@@ -91,6 +91,7 @@ export default function Ledger() {
   const [importing, setImporting] = useState(false)
   const [drawerEntry, setDrawerEntry] = useState(null)
   const [quickOpen, setQuickOpen] = useState(false)
+  const [editEntry, setEditEntry] = useState(null)
   const [report1099, setReport1099] = useState(null)
 
   // Inline edit + 20-deep undo.
@@ -447,6 +448,7 @@ export default function Ledger() {
                       {en.status === 'approved' && en.payment_status !== 'Paid' && (
                         <button onClick={() => act(en.id, 'mark-paid')} title="Mark paid" className="text-gray-500 hover:text-emerald-600 p-1 rounded"><DollarSign size={15} /></button>
                       )}
+                      <button onClick={() => setEditEntry(en)} title="Edit" className="text-gray-400 hover:text-brand-600 p-1 rounded"><Pencil size={14} /></button>
                       <button onClick={() => setDrawerEntry(en)} title="Details" className="text-gray-400 hover:text-brand-600 p-1 rounded"><SlidersHorizontal size={14} /></button>
                       <button onClick={() => remove(en.id)} title="Delete" className="text-gray-300 hover:text-danger p-1 rounded"><Trash2 size={14} /></button>
                     </div>
@@ -475,6 +477,7 @@ export default function Ledger() {
 
       {drawerEntry && <LedgerEntryDrawer entry={drawerEntry} onClose={() => setDrawerEntry(null)} onChanged={load} />}
       {quickOpen && <QuickExpenseModal artistNames={artistNames} toast={toast} onClose={() => setQuickOpen(false)} onCreated={() => { setQuickOpen(false); load() }} />}
+      {editEntry && <EditEntryModal entry={editEntry} artistNames={artistNames} toast={toast} onClose={() => setEditEntry(null)} onSaved={() => { setEditEntry(null); load() }} />}
 
       {report1099 && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center px-4 py-8 bg-overlay overflow-y-auto" onClick={() => setReport1099(null)}>
@@ -620,6 +623,82 @@ function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
         <div className="flex justify-end gap-2 mt-5">
           <button onClick={onClose} className="btn-secondary">Cancel</button>
           <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Adding…' : 'Add expense'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Full edit form for a ledger entry — every editable field in one place (for
+// the fields that aren't inline-editable in the table, and as a convenient
+// all-in-one editor). PATCHes /ledger/entries/:id.
+function EditEntryModal({ entry, artistNames, toast, onClose, onSaved }) {
+  const d = (x) => x ? String(x).slice(0, 10) : ''
+  const [f, setF] = useState({
+    invoice_date: d(entry.invoice_date), payee: entry.payee || '', description: entry.description || '',
+    category: entry.category || '', artist: entry.artist || '', song: entry.song || '',
+    invoice_number: entry.invoice_number || '', amount: entry.amount ?? '', currency: entry.currency || 'USD',
+    payment_method: entry.payment_method || '', payment_status: entry.payment_status || 'Unpaid',
+    payment_date: d(entry.payment_date), scheduled_payment_date: d(entry.scheduled_payment_date),
+    rep: entry.rep || '', vendor_email: entry.vendor_email || '', vendor_address: entry.vendor_address || '',
+    vendor_bank: entry.vendor_bank || '', payment_terms: entry.payment_terms || '', payment_ref: entry.payment_ref || '',
+    notes: entry.notes || '',
+    recoupable: !!entry.recoupable, cobrand: !!entry.cobrand, is_bulk_deal: !!entry.is_bulk_deal, is_reimbursement: !!entry.is_reimbursement,
+  })
+  const [saving, setSaving] = useState(false)
+  const set = (k) => (e) => setF(s => ({ ...s, [k]: e.target.value }))
+  const chk = (k) => (e) => setF(s => ({ ...s, [k]: e.target.checked }))
+
+  const save = async () => {
+    if (!f.payee.trim() || f.amount === '' || f.amount == null) { toast('Payee and amount are required', 'error'); return }
+    setSaving(true)
+    try {
+      const payload = {}
+      for (const [k, v] of Object.entries(f)) payload[k] = v === '' ? null : v   // empty → null (dates/amount)
+      await api.patch(`/ledger/entries/${entry.id}`, payload)
+      toast('Entry updated')
+      onSaved()
+    } catch (err) { toast(err.response?.data?.error || 'Failed to save', 'error'); setSaving(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-overlay flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card w-full max-w-2xl p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-bold text-ink truncate">Edit · {entry.payee || 'entry'}</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div><label className="label">Date</label><input type="date" className="input" value={f.invoice_date} onChange={set('invoice_date')} /></div>
+          <div><label className="label">Amount *</label><input type="number" step="0.01" className="input" value={f.amount} onChange={set('amount')} /></div>
+          <div><label className="label">Currency</label><select className="input" value={f.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          <div className="col-span-2 md:col-span-3"><label className="label">Payee / description *</label><input className="input" value={f.payee} onChange={set('payee')} /></div>
+          <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}><option value="">—</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          <div><label className="label">Invoice #</label><input className="input" value={f.invoice_number} onChange={set('invoice_number')} /></div>
+          <div><label className="label">Rep</label><input className="input" value={f.rep} onChange={set('rep')} /></div>
+          <div><label className="label">Artist</label><input list="edit-artists" className="input" value={f.artist} onChange={set('artist')} /><datalist id="edit-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist></div>
+          <div><label className="label">Song</label><input className="input" value={f.song} onChange={set('song')} /></div>
+          <div><label className="label">Payment method</label><select className="input" value={f.payment_method} onChange={set('payment_method')}><option value="">—</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
+          <div><label className="label">Payment status</label><select className="input" value={f.payment_status} onChange={set('payment_status')}><option>Unpaid</option><option>Partial</option><option>Paid</option></select></div>
+          <div><label className="label">Paid on</label><input type="date" className="input" value={f.payment_date} onChange={set('payment_date')} /></div>
+          <div><label className="label">Scheduled</label><input type="date" className="input" value={f.scheduled_payment_date} onChange={set('scheduled_payment_date')} /></div>
+          <div><label className="label">Terms</label><input className="input" value={f.payment_terms} onChange={set('payment_terms')} placeholder="e.g. Net 30" /></div>
+          <div><label className="label">Payment ref</label><input className="input" value={f.payment_ref} onChange={set('payment_ref')} /></div>
+          <div><label className="label">Vendor email</label><input type="email" className="input" value={f.vendor_email} onChange={set('vendor_email')} /></div>
+          <div className="col-span-2"><label className="label">Mailing address</label><input className="input" value={f.vendor_address} onChange={set('vendor_address')} /></div>
+          <div><label className="label">Bank</label><input className="input" value={f.vendor_bank} onChange={set('vendor_bank')} /></div>
+          <div className="col-span-2 md:col-span-3"><label className="label">Description</label><input className="input" value={f.description} onChange={set('description')} /></div>
+          <div className="col-span-2 md:col-span-3"><label className="label">Notes</label><input className="input" value={f.notes} onChange={set('notes')} /></div>
+          <div className="col-span-2 md:col-span-3 flex flex-wrap items-center gap-4 rounded-lg bg-page/60 border border-rule px-3 py-2.5">
+            <label className="inline-flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" checked={f.recoupable} onChange={chk('recoupable')} /> Recoupable</label>
+            <label className="inline-flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" checked={f.is_reimbursement} onChange={chk('is_reimbursement')} /> Reimbursement</label>
+            <label className="inline-flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" checked={f.cobrand} onChange={chk('cobrand')} /> Cobrand</label>
+            <label className="inline-flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" checked={f.is_bulk_deal} onChange={chk('is_bulk_deal')} /> Bulk deal</label>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="btn-secondary">Cancel</button>
+          <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Saving…' : 'Save changes'}</button>
         </div>
       </div>
     </div>
