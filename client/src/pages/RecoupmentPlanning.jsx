@@ -18,10 +18,12 @@ export default function RecoupmentPlanning() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [sel, setSel] = useState(new Set())
+  const [deferred, setDeferred] = useState(new Set()) // artists saved for later — excluded from commit
   const [committing, setCommitting] = useState(false)
 
   const load = () => { setLoading(true); setSel(new Set()); api.get('/financials/planning').then(r => setRows(r.data.data || [])).catch(() => {}).finally(() => setLoading(false)) }
   useEffect(() => { load() }, [])
+  const toggleDefer = (artist, items) => setDeferred(d => { const n = new Set(d); if (n.has(artist)) n.delete(artist); else { n.add(artist); setSel(s => { const ss = new Set(s); items.forEach(r => ss.delete(r.id)); return ss }) } return n })
 
   const toggle = (id) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
 
@@ -62,10 +64,16 @@ export default function RecoupmentPlanning() {
         <div className="card p-10 text-center"><Layers size={28} className="text-gray-300 mx-auto mb-3" /><p className="text-sm text-gray-500">Nothing to plan — every recoupable entry is already on a statement.</p></div>
       ) : (
         <div className="space-y-4">
-          {Object.entries(groups).map(([artist, songs]) => (
-            <div key={artist} className="card overflow-hidden">
-              <div className="px-4 py-2.5 border-b border-divider bg-page/50 font-semibold text-ink text-sm">{artist}</div>
-              {Object.entries(songs).map(([song, items]) => {
+          {Object.entries(groups).map(([artist, songs]) => {
+            const artistItems = Object.values(songs).flat()
+            const isDeferred = deferred.has(artist)
+            return (
+            <div key={artist} className={`card overflow-hidden ${isDeferred ? 'opacity-60' : ''}`}>
+              <div className="flex items-center justify-between px-4 py-2.5 border-b border-divider bg-page/50">
+                <span className="font-semibold text-ink text-sm">{artist}{isDeferred && <span className="ml-2 text-[10px] font-semibold uppercase text-gray-400">Saved for later</span>}</span>
+                <button onClick={() => toggleDefer(artist, artistItems)} className="text-[11px] font-medium text-gray-500 hover:text-brand-600">{isDeferred ? 'Include' : 'Save for later'}</button>
+              </div>
+              {!isDeferred && Object.entries(songs).map(([song, items]) => {
                 const allOn = items.every(r => sel.has(r.id))
                 const subtotal = items.reduce((s, r) => s + Number(r.amount_usd || 0), 0)
                 return (
@@ -89,7 +97,7 @@ export default function RecoupmentPlanning() {
                 )
               })}
             </div>
-          ))}
+          )})}
         </div>
       )}
 

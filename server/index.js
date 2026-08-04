@@ -540,6 +540,8 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS ufr BOOLEAN DEFAULT FALSE`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS ufr_marked_at TIMESTAMP`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS entry_source TEXT`);
+  // Prior-year recoupment tag — moves rows to a dedicated subpage (item 9).
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS prior_year_tag TEXT`);
   // Soft-delete attribution (who/when) for the Archive + restore.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS deleted_by TEXT`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP`);
@@ -660,6 +662,8 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_artist_meta_uniq ON artist_meta (label_id, artist_key)`);
+  // Per-artist recoupment notes (item 9).
+  await pool.query(`ALTER TABLE artist_meta ADD COLUMN IF NOT EXISTS notes TEXT`);
 
   // Per-(artist,song) campaign status.
   await pool.query(`

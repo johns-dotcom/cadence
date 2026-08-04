@@ -4,6 +4,7 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { toUSD } = require('../lib/fx');
+const { statementMonthFor } = require('../lib/statementMonth');
 
 const router = express.Router();
 // Financials are privileged — approvers and up. Every query is label-scoped.
@@ -138,18 +139,22 @@ router.get('/analytics', async (req, res) => {
 // GET /api/financials/recoupments — per-artist recoupable spend vs income.
 router.get('/recoupments', async (req, res) => {
   try {
-    const [artists, spendRows, incRows] = await Promise.all([
+    const [artists, spendRows, incRows, metaRows] = await Promise.all([
       pool.query('SELECT id, name FROM artists WHERE label_id = $1 ORDER BY name', [req.labelId]),
       pool.query(
         `SELECT LOWER(e.artist) AS akey, e.amount, e.currency,
                 COALESCE(e.payment_date, e.invoice_date, e.created_at::date) AS fx_date
          FROM expenses e
          WHERE e.label_id = $1 AND e.recoupable = TRUE AND e.status = 'approved'
-           AND (e.deleted = false OR e.deleted IS NULL) AND e.parent_id IS NULL AND (e.voided = false OR e.voided IS NULL)`,
+           AND (e.deleted = false OR e.deleted IS NULL) AND e.parent_id IS NULL AND (e.voided = false OR e.voided IS NULL)
+           AND e.prior_year_tag IS NULL`,
         [req.labelId]
       ),
       pool.query('SELECT artist_id, amount, currency, income_date AS fx_date FROM artist_income WHERE label_id = $1', [req.labelId]),
+      pool.query('SELECT artist_key, priority, ready_for_planning, flagged, flag_reason, notes FROM artist_meta WHERE label_id = $1', [req.labelId]),
     ]);
+    const metaByKey = {};
+    for (const m of metaRows.rows) metaByKey[m.artist_key] = m;
 
     // Roll up recoupable spend (by artist name) and income (by artist_id) in USD.
     const spendByName = {};
@@ -167,7 +172,11 @@ router.get('/recoupments', async (req, res) => {
     const data = artists.rows.map(a => {
       const spend = round(spendByName[a.name.toLowerCase()]);
       const income = round(incById[a.id]);
-      return { artist_id: a.id, name: a.name, currency: 'USD', recoupable_spend: spend, income, balance: round(income - spend), recouped: income >= spend && spend > 0 };
+      const meta = metaByKey[a.name.toLowerCase()] || {};
+      return {
+        artist_id: a.id, name: a.name, currency: 'USD', recoupable_spend: spend, income, balance: round(income - spend), recouped: income >= spend && spend > 0,
+        priority: meta.priority || null, ready_for_planning: !!meta.ready_for_planning, flagged: !!meta.flagged, flag_reason: meta.flag_reason || null, notes: meta.notes || null,
+      };
     });
     res.json({ success: true, data });
   } catch (error) {
@@ -175,16 +184,6 @@ router.get('/recoupments', async (req, res) => {
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
-
-// Statement month for a date: cutoff day 20 — on day >= 21 it rolls to next
-// month (shared rule; a UFR mark stamped on the 22nd lands next month).
-function statementMonthFor(value) {
-  const d = value ? new Date(value) : new Date();
-  if (isNaN(d.getTime())) return null;
-  let m = d.getMonth(), y = d.getFullYear();
-  if (d.getDate() >= 21) { m += 1; if (m > 11) { m = 0; y += 1; } }
-  return `${y}-${String(m + 1).padStart(2, '0')}`;
-}
 
 // GET /api/financials/recoupments/:artistId — one artist's recoupable ledger
 // entries (for song grouping) + income + totals, in USD.
@@ -198,11 +197,11 @@ router.get('/recoupments/:artistId', async (req, res) => {
     const [spend, income] = await Promise.all([
       pool.query(
         `SELECT id, payee, song, category, amount, currency, invoice_date, payment_date, payment_status,
-                ufr, ufr_marked_at, created_at
+                ufr, ufr_marked_at, social_handles, created_at
            FROM expenses
           WHERE label_id = $1 AND recoupable = TRUE AND status = 'approved'
             AND LOWER(artist) = LOWER($2) AND (deleted = false OR deleted IS NULL)
-            AND parent_id IS NULL AND (voided = false OR voided IS NULL)
+            AND parent_id IS NULL AND (voided = false OR voided IS NULL) AND prior_year_tag IS NULL
           ORDER BY COALESCE(payment_date, invoice_date, created_at::date) DESC`,
         [req.labelId, name]
       ),
@@ -280,7 +279,7 @@ router.get('/planning', async (req, res) => {
          FROM expenses
         WHERE label_id = $1 AND recoupable = TRUE AND status = 'approved' AND (ufr = false OR ufr IS NULL)
           AND (deleted = false OR deleted IS NULL) AND parent_id IS NULL AND (voided = false OR voided IS NULL)
-          AND artist IS NOT NULL AND artist <> ''
+          AND prior_year_tag IS NULL AND artist IS NOT NULL AND artist <> ''
         ORDER BY LOWER(artist), LOWER(COALESCE(song,'')), COALESCE(payment_date, invoice_date, created_at::date) DESC`,
       [req.labelId]
     );
@@ -318,18 +317,93 @@ router.post('/recoupments/add-expense', async (req, res) => {
     const b = req.body;
     const amount = parseFloat(b.amount);
     if (!b.artist || !amount || amount <= 0) return res.status(400).json({ success: false, error: 'Artist and a valid amount are required' });
+    const paid = b.paid === true || b.paid === 'true';
     const { rows } = await pool.query(
       `INSERT INTO expenses (label_id, invoice_date, payee, description, category, artist, song, amount, currency,
-         status, payment_status, recoupable, entry_source, created_by, created_at)
-       VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7, COALESCE($8,'USD'), 'approved', 'Unpaid', TRUE, 'recoupment', $9, NOW())
+         status, payment_status, payment_date, paid_by, paid_marked_at, recoupable, entry_source, created_by, created_at)
+       VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7, COALESCE($8,'USD'), 'approved', $10,
+               CASE WHEN $10 = 'Paid' THEN CURRENT_DATE ELSE NULL END,
+               CASE WHEN $10 = 'Paid' THEN $9 ELSE NULL END,
+               CASE WHEN $10 = 'Paid' THEN NOW() ELSE NULL END,
+               TRUE, 'recoupment', $9, NOW())
        RETURNING id`,
       [req.labelId, (b.payee || b.description || 'Recoupable expense').trim(), (b.description || '').trim() || null,
-       (b.category || '').trim() || null, b.artist.trim(), (b.song || '').trim() || null, amount, (b.currency || 'USD').trim(), req.user.name]
+       (b.category || '').trim() || null, b.artist.trim(), (b.song || '').trim() || null, amount, (b.currency || 'USD').trim(), req.user.name,
+       paid ? 'Paid' : 'Unpaid']
     );
+    if (paid) require('../lib/fxStamp').stampFxRateAsync(rows[0].id);
     await logActivity(req, 'Added recoupable expense', `${b.artist} — ${amount}`);
     res.status(201).json({ success: true, data: { id: rows[0].id } });
   } catch (error) {
     console.error('Add recoupable expense error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/financials/recoupments/artist-meta { artist, priority?, ready_for_planning?,
+// notes?, flagged?, flag_reason? } — upsert the shared artist_meta row (same
+// table the campaigns hub uses; keyed by lower(artist name)).
+router.post('/recoupments/artist-meta', async (req, res) => {
+  try {
+    const artist = String(req.body.artist || '').trim();
+    if (!artist) return res.status(400).json({ success: false, error: 'Artist required' });
+    const key = artist.toLowerCase();
+    const sets = [], vals = [req.labelId, key];
+    const add = (col, val) => { vals.push(val); sets.push(`${col} = $${vals.length}`); };
+    if (req.body.priority !== undefined) { add('priority', req.body.priority || null); sets.push(`priority_updated_at = NOW()`); vals.push(req.user.name); sets.push(`priority_updated_by = $${vals.length}`); }
+    if (req.body.ready_for_planning !== undefined) { add('ready_for_planning', !!req.body.ready_for_planning); sets.push(`ready_at = ${req.body.ready_for_planning ? 'NOW()' : 'NULL'}`); vals.push(req.user.name); sets.push(`ready_by = $${vals.length}`); }
+    if (req.body.notes !== undefined) add('notes', req.body.notes || null);
+    if (req.body.flagged !== undefined) { add('flagged', !!req.body.flagged); add('flag_reason', req.body.flag_reason || null); sets.push(`flagged_at = ${req.body.flagged ? 'NOW()' : 'NULL'}`); vals.push(req.user.name); sets.push(`flagged_by = $${vals.length}`); }
+    if (!sets.length) return res.status(400).json({ success: false, error: 'Nothing to update' });
+    // Insert-or-update on the unique (label_id, artist_key).
+    const insertCols = ['label_id', 'artist_key'];
+    const insertVals = ['$1', '$2'];
+    await pool.query(
+      `INSERT INTO artist_meta (${insertCols.join(', ')}) VALUES (${insertVals.join(', ')})
+       ON CONFLICT (label_id, artist_key) DO UPDATE SET ${sets.join(', ')}, updated_at = NOW()`,
+      vals
+    );
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Recoupment artist-meta error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/financials/recoupments/prior-year { ids, tag } — tag/untag rows for
+// the prior-year subpage. tag = a year label (e.g. "2024") or null to unmark.
+router.post('/recoupments/prior-year', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
+    const tag = req.body.tag ? String(req.body.tag).trim().slice(0, 20) : null;
+    const { rowCount } = await pool.query('UPDATE expenses SET prior_year_tag = $1 WHERE label_id = $2 AND id = ANY($3::int[])', [tag, req.labelId, ids]);
+    await logActivity(req, tag ? 'Tagged prior-year recoupment' : 'Untagged prior-year recoupment', `${rowCount} entries`);
+    res.json({ success: true, data: { affected: rowCount } });
+  } catch (error) {
+    console.error('Prior-year tag error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/financials/recoupments-prior-year — tagged rows grouped by artist
+// (per-artist key cards + summary on the client).
+router.get('/recoupments-prior-year', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, payee, artist, song, category, amount, currency, prior_year_tag, payment_status,
+              COALESCE(payment_date, invoice_date, created_at::date) AS fx_date
+         FROM expenses
+        WHERE label_id = $1 AND recoupable = TRUE AND prior_year_tag IS NOT NULL
+          AND (deleted = false OR deleted IS NULL) AND parent_id IS NULL AND (voided = false OR voided IS NULL)
+        ORDER BY LOWER(artist), fx_date DESC`,
+      [req.labelId]
+    );
+    const out = [];
+    for (const r of rows) out.push({ ...r, amount_usd: Math.round((await toUSD(r.amount, r.currency, r.fx_date)) * 100) / 100 });
+    res.json({ success: true, data: out });
+  } catch (error) {
+    console.error('Prior-year list error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
