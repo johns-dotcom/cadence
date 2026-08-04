@@ -1535,6 +1535,31 @@ const runMigrations = async () => {
   // Per-label configurable bank-account list (seed-less; defaults applied in the route).
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS bank_accounts JSONB`);
 
+  // ── Data-quality: dismissals + artist normalization map (item 10) ───────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS data_quality_dismissals (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      flag_key TEXT NOT NULL,
+      kind VARCHAR(40),
+      note TEXT,
+      dismissed_by TEXT,
+      dismissed_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_dq_dismissals_uniq ON data_quality_dismissals (label_id, flag_key)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS artist_normalization_map (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      pattern TEXT NOT NULL,
+      base_artist TEXT NOT NULL,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_artist_norm_uniq ON artist_normalization_map (label_id, LOWER(pattern))`);
+
   // Helpful indexes for the hot tenant-scoped lookups.
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_releases_label ON releases (label_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_artists_label ON artists (label_id)`);

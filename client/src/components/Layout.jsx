@@ -6,7 +6,7 @@ import {
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
   FileClock, Shield, Lock, FileSignature, FileSpreadsheet, Layers, PiggyBank, FilePlus2,
-  MessageSquarePlus, MessageSquare, Landmark,
+  MessageSquarePlus, MessageSquare, Landmark, ShieldCheck,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useSocket } from '../context/SocketContext'
@@ -288,6 +288,7 @@ export default function Layout() {
       items: [
         ...(isAdmin ? [{ path: '/team', label: 'Team', icon: UserCheck }] : []),
         ...(isAdmin ? [{ path: '/activity', label: 'Activity', icon: ScrollText }] : []),
+        ...(isAdmin ? [{ path: '/data-quality', label: 'Data Quality', icon: ShieldCheck }] : []),
         { path: '/requests', label: 'Requests & feedback', icon: MessageSquarePlus },
         { path: '/settings', label: 'Settings', icon: Settings },
       ],
