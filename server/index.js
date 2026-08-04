@@ -21,6 +21,7 @@ const dealsRoutes = require('./routes/deals');
 const contractsRoutes = require('./routes/contracts');
 const tasksRoutes = require('./routes/tasks');
 const ledgerRoutes = require('./routes/ledger');
+const bankStatementsRoutes = require('./routes/bank-statements');
 const invoicesRoutes = require('./routes/invoices');
 const vendorRoutes = require('./routes/vendor');
 const dashboardRoutes = require('./routes/dashboard');
@@ -184,6 +185,7 @@ app.use('/api/deals', dealsRoutes);
 app.use('/api/contracts', contractsRoutes);
 app.use('/api/tasks', tasksRoutes);
 app.use('/api/ledger', ledgerRoutes);
+app.use('/api/bank-statements', bankStatementsRoutes);
 app.use('/api/invoices', invoicesRoutes);
 app.use('/api/vendor', vendorRoutes); // public (no auth) — label resolved by slug
 app.use('/api/dashboard', dashboardRoutes);
@@ -1447,6 +1449,87 @@ const runMigrations = async () => {
   // meta carries an icon + deep-link for the client to render.
   await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE`);
   await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS meta JSONB`);
+
+  // ── Bank statements / reconciliation (item 8, premium finance) ──────────
+  // Statements are a LENS over the master ledger — no staging copy. A parsed
+  // statement holds its transactions; matching/booking writes straight to
+  // expenses. Admin-only surface (balances are sensitive).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bank_statements (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      account VARCHAR(60) NOT NULL,
+      filename VARCHAR(255),
+      r2_key TEXT,
+      period_start DATE,
+      period_end DATE,
+      txn_count INT DEFAULT 0,
+      status VARCHAR(16) DEFAULT 'ready',
+      error TEXT,
+      import_summary JSONB,
+      uploaded_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_bank_statements_label ON bank_statements (label_id, created_at DESC)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bank_transactions (
+      id SERIAL PRIMARY KEY,
+      statement_id INT NOT NULL REFERENCES bank_statements(id) ON DELETE CASCADE,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      txn_date DATE,
+      description TEXT,
+      payee_guess TEXT,
+      amount NUMERIC(18,2),
+      direction VARCHAR(8),
+      currency VARCHAR(8) DEFAULT 'USD',
+      reference TEXT,
+      fee NUMERIC(18,2),
+      matched_expense_id INT,
+      match_method VARCHAR(24),
+      match_score NUMERIC(4,3),
+      matched_by TEXT,
+      matched_at TIMESTAMP,
+      booked BOOLEAN DEFAULT FALSE,
+      dismissed BOOLEAN DEFAULT FALSE,
+      dismissed_reason VARCHAR(24),
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_bank_txns_statement ON bank_transactions (statement_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_bank_txns_match ON bank_transactions (label_id, matched_expense_id)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS statement_dismiss_rules (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      pattern TEXT NOT NULL,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS statement_category_rules (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      pattern TEXT NOT NULL,
+      category VARCHAR(80),
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS statement_payee_map (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      bank_payee TEXT NOT NULL,
+      ledger_payee TEXT NOT NULL,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_statement_payee_map_uniq ON statement_payee_map (label_id, LOWER(bank_payee))`);
+  // Per-label configurable bank-account list (seed-less; defaults applied in the route).
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS bank_accounts JSONB`);
 
   // Helpful indexes for the hot tenant-scoped lookups.
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_releases_label ON releases (label_id)`);

@@ -33,6 +33,7 @@ import Financials from './pages/Financials'
 import Recoupments from './pages/Recoupments'
 import RecoupmentPlanning from './pages/RecoupmentPlanning'
 import Salary from './pages/Salary'
+import BankStatements from './pages/BankStatements'
 import RecordingBudgets from './pages/RecordingBudgets'
 import Campaigns from './pages/Campaigns'
 import ArtistCampaigns from './pages/ArtistCampaigns'
@@ -141,6 +142,8 @@ function AppContent() {
         <Route path="/recoupments"  element={<AdminRoute><Recoupments /></AdminRoute>} />
         <Route path="/recoupments/planning" element={<AdminRoute><RecoupmentPlanning /></AdminRoute>} />
         <Route path="/salary"       element={<AdminRoute><Salary /></AdminRoute>} />
+        <Route path="/bank-statements" element={<AdminRoute><BankStatements /></AdminRoute>} />
+        <Route path="/bank-statements/:id" element={<AdminRoute><BankStatements /></AdminRoute>} />
         <Route path="/recording-budgets" element={<AdminRoute><RecordingBudgets /></AdminRoute>} />
         <Route path="/marketing"    element={<Campaigns />} />
         <Route path="/artist-campaigns" element={<AdminRoute><ArtistCampaigns /></AdminRoute>} />

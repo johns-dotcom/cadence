@@ -88,6 +88,68 @@ async function callClaude({ system, content, schema, maxTokens = 2048 }) {
   }
 }
 
+// Streaming text completion for LONG outputs (bank-statement parsing). The API
+// refuses non-streaming calls that could exceed 10 min at high max_tokens, so
+// dense statements MUST stream. Parses the SSE feed by hand (raw fetch, no
+// SDK), accumulating text deltas and capturing the final usage + stop_reason.
+// Returns { ok, text, output_tokens, stop_reason, error? }.
+async function streamText({ system, content, maxTokens = 32000 }) {
+  if (!isEnabled()) return { ok: false, disabled: true, error: 'AI not configured' };
+  const labelId = aiUsage.currentLabelId();
+  if (labelId) {
+    const q = await aiUsage.check(labelId);
+    if (!q.ok) return { ok: false, limitReached: true, error: 'Workspace AI limit reached' };
+  }
+  try {
+    const body = { model: MODEL, max_tokens: maxTokens, stream: true, messages: [{ role: 'user', content }] };
+    if (system) body.system = system;
+    const res = await fetch(API, {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey(), 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok || !res.body) {
+      const detail = await res.text().catch(() => '');
+      return { ok: false, error: `Claude ${res.status}: ${detail.slice(0, 200)}` };
+    }
+    let text = '';
+    let outputTokens = 0;
+    let stopReason = null;
+    let buf = '';
+    const decoder = new TextDecoder();
+    const reader = res.body.getReader();
+    const handleLine = (line) => {
+      if (!line.startsWith('data:')) return;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') return;
+      let evt;
+      try { evt = JSON.parse(payload); } catch { return; }
+      if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') text += evt.delta.text;
+      else if (evt.type === 'message_delta') {
+        if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
+        if (evt.usage?.output_tokens) outputTokens = evt.usage.output_tokens;
+      } else if (evt.type === 'message_start' && evt.message?.usage?.output_tokens) {
+        outputTokens = evt.message.usage.output_tokens;
+      }
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        handleLine(buf.slice(0, nl).trim());
+        buf = buf.slice(nl + 1);
+      }
+    }
+    if (buf.trim()) handleLine(buf.trim());
+    if (labelId) aiUsage.record(labelId, { output: outputTokens });
+    return { ok: true, text: text.trim(), output_tokens: outputTokens, stop_reason: stopReason };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 // Extract structured data from an uploaded document/image (invoice, W9, etc.).
 async function extractFromFile({ buffer, mimeType, instruction, schema, maxTokens }) {
   const block = fileBlock(buffer, mimeType);
@@ -211,4 +273,4 @@ function parseMarketing({ buffer, mimeType }) {
   });
 }
 
-module.exports = { isEnabled, callClaude, extractFromFile, fileBlock, MODEL, parseInvoice, scanInvoice, validateW9, parseMarketing, draftClause };
+module.exports = { isEnabled, callClaude, streamText, extractFromFile, fileBlock, MODEL, parseInvoice, scanInvoice, validateW9, parseMarketing, draftClause };
