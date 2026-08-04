@@ -554,7 +554,7 @@ function FilesCell({ en, openFile }) {
 // endpoint as an approver, so it lands in the ledger immediately.
 function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
   const today = new Date().toISOString().slice(0, 10)
-  const [f, setF] = useState({ invoice_date: today, payee: '', category: '', artist: '', amount: '', currency: 'USD', payment_method: '', rep: '', description: '', notes: '', recoupable: true })
+  const [f, setF] = useState({ invoice_date: today, payee: '', category: '', artist: '', song: '', amount: '', currency: 'USD', payment_method: '', rep: '', description: '', notes: '', recoupable: true })
   const [markPaid, setMarkPaid] = useState(false)
   const [paidDate, setPaidDate] = useState(today)
   const [proof, setProof] = useState(null)
@@ -593,6 +593,7 @@ function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
           <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}><option value="">Select category</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
           <div><label className="label">Currency</label><select className="input" value={f.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
           <div><label className="label">Artist</label><input list="qx-artists" className="input" value={f.artist} onChange={set('artist')} /><datalist id="qx-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist></div>
+          <div><label className="label">Song</label><input className="input" value={f.song} onChange={set('song')} /></div>
           <div><label className="label">Rep</label><input className="input" value={f.rep} onChange={set('rep')} /></div>
           <div><label className="label">Payment method</label><select className="input" value={f.payment_method} onChange={set('payment_method')}><option value="">Select method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
           <div className="flex items-end"><label className="inline-flex items-center gap-2 text-sm text-gray-600 pb-2"><input type="checkbox" checked={f.recoupable} onChange={e => setF(s => ({ ...s, recoupable: e.target.checked }))} /> Recoupable</label></div>
