@@ -465,12 +465,18 @@ export default function Ledger() {
           </div>
         </div>
       ) : (
+        // FROZEN FIRST COLUMN — the frozen region is exactly ONE sticky <td> per
+        // row (ci === 0), NOT several adjacent sticky cells. Multiple sticky
+        // cells produce sub-pixel gaps that flicker on horizontal scroll. The
+        // sticky cell paints its own row background (so row washes like the
+        // expense-hue don't vanish under it) and carries a right-edge shadow to
+        // separate it from the scrolling body. Do NOT split into multiple cells.
         <div className="card overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-page/50 border-b border-divider text-left">
                 {shownCols.map((c, ci) => (
-                  <th key={c.key} onClick={() => setSortKey(c.key)} className={`px-3 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap cursor-pointer select-none hover:text-gray-600 ${ci === 0 ? 'sticky left-0 z-20 bg-page' : ''}`}>
+                  <th key={c.key} onClick={() => setSortKey(c.key)} className={`px-3 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap cursor-pointer select-none hover:text-gray-600 ${ci === 0 ? 'sticky left-0 z-20 bg-page shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)]' : ''}`}>
                     {c.label}{sort.key === c.key ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
                   </th>
                 ))}
@@ -481,7 +487,7 @@ export default function Ledger() {
               {filtered.map(en => (
                 <Fragment key={en.id}>
                 <tr ref={el => (rowRefs.current[en.id] = el)} className={`group align-top transition-shadow ${en.voided ? 'opacity-50' : ''} ${en.entry_source === 'expense' ? 'bg-sky-50/70 hover:bg-sky-100/70' : 'hover:bg-gray-50'}`}>
-                  {shownCols.map((c, ci) => <td key={c.key} className={`px-3 py-3 ${ci === 0 ? `sticky left-0 z-10 ${en.entry_source === 'expense' ? 'bg-sky-50' : 'bg-card'} group-hover:bg-gray-50` : ''}`}>{c.render(en)}</td>)}
+                  {shownCols.map((c, ci) => <td key={c.key} className={`px-3 py-3 ${ci === 0 ? `sticky left-0 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)] ${en.entry_source === 'expense' ? 'bg-sky-50' : 'bg-card'} group-hover:bg-gray-50` : ''}`}>{c.render(en)}</td>)}
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1.5 justify-end whitespace-nowrap">
                       {en.status === 'pending' && (
@@ -505,7 +511,7 @@ export default function Ledger() {
                 {expanded[en.id] && (childrenMap[en.id] || []).map(kid => (
                   <tr key={`k-${kid.id}`} className="bg-page/40 text-[13px]">
                     {shownCols.map((c, ci) => (
-                      <td key={c.key} className={`px-3 py-2 ${ci === 0 ? 'sticky left-0 z-10 bg-page/60' : ''}`}>
+                      <td key={c.key} className={`px-3 py-2 ${ci === 0 ? 'sticky left-0 z-10 bg-page/60 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)]' : ''}`}>
                         {ci === 0 ? <span className="flex items-center gap-1.5 text-gray-500 pl-4"><span className="text-gray-300">↳</span>{c.render(kid)}</span> : c.render(kid)}
                       </td>
                     ))}

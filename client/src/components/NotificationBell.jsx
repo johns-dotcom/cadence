@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, Music, FileText, CheckSquare, Receipt, AtSign } from 'lucide-react'
+import { Bell, Music, FileText, CheckSquare, Receipt, AtSign, Package } from 'lucide-react'
 import api from '../api'
 import { useSocket } from '../context/SocketContext'
 
 // Smart-alert bell. Polls /api/notifications (computed live, label-scoped) and
 // shows a badge + dropdown. Each alert deep-links to the relevant page.
-const ICONS = { release: Music, task: CheckSquare, contract: FileText, approval: Receipt, mention: AtSign }
+const ICONS = { release: Music, task: CheckSquare, contract: FileText, approval: Receipt, mention: AtSign, bulk_deal: Package }
 const SEVERITY = {
   danger:  'text-red-600 bg-red-50',
   warning: 'text-amber-600 bg-amber-50',
@@ -45,6 +45,8 @@ export default function NotificationBell() {
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''
 
   const open_ = () => { setOpen(v => !v); if (!open) load() }
+  // Clear-all watermarks computed alerts only; mentions are left untouched.
+  const clearAll = async () => { try { await api.post('/notifications/clear'); load() } catch { /* ignore */ } }
   const goTo = (item) => {
     setOpen(false)
     // Clicking a mention marks it read so it won't re-appear.
@@ -74,7 +76,7 @@ export default function NotificationBell() {
         <div className="absolute right-0 top-full mt-2 w-80 bg-card rounded-xl border border-rule shadow-modal z-50 overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-divider">
             <p className="text-sm font-semibold text-ink">Notifications</p>
-            <span className="text-[11px] text-gray-400">{count} active</span>
+            <button onClick={clearAll} className="text-[11px] font-medium text-gray-400 hover:text-brand-600">Clear alerts</button>
           </div>
           <div className="max-h-[60vh] overflow-y-auto">
             {items.length === 0 ? (
@@ -105,6 +107,7 @@ export default function NotificationBell() {
               })
             )}
           </div>
+          <button onClick={() => { setOpen(false); navigate('/notifications') }} className="w-full text-center text-xs font-semibold text-brand-600 hover:bg-gray-50 py-2.5 border-t border-divider">View all notifications</button>
         </div>
       )}
     </div>

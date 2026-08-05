@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { SocketProvider } from './context/SocketContext'
 import Messages from './pages/Messages'
@@ -35,6 +35,8 @@ import RecoupmentPlanning from './pages/RecoupmentPlanning'
 import Salary from './pages/Salary'
 import BankStatements from './pages/BankStatements'
 import DataQuality from './pages/DataQuality'
+import Notifications from './pages/Notifications'
+import UserManual from './components/UserManual'
 import RecordingBudgets from './pages/RecordingBudgets'
 import Campaigns from './pages/Campaigns'
 import ArtistCampaigns from './pages/ArtistCampaigns'
@@ -76,6 +78,12 @@ function ProtectedRoute({ children }) {
 
 // Gate: admin/superadmin/approver only. Non-admins are redirected home (the
 // server independently 403s the underlying data, so this is just UX).
+// The in-app manual as a routable page (also available as a modal in Layout).
+function ManualPage() {
+  const navigate = useNavigate()
+  return <UserManual open onClose={() => navigate(-1)} />
+}
+
 function AdminRoute({ children }) {
   const { user, loading } = useAuth()
   if (loading) return null
@@ -146,6 +154,8 @@ function AppContent() {
         <Route path="/bank-statements" element={<AdminRoute><BankStatements /></AdminRoute>} />
         <Route path="/bank-statements/:id" element={<AdminRoute><BankStatements /></AdminRoute>} />
         <Route path="/data-quality" element={<AdminRoute><DataQuality /></AdminRoute>} />
+        <Route path="/notifications" element={<Notifications />} />
+        <Route path="/manual" element={<ManualPage />} />
         <Route path="/recording-budgets" element={<AdminRoute><RecordingBudgets /></AdminRoute>} />
         <Route path="/marketing"    element={<Campaigns />} />
         <Route path="/artist-campaigns" element={<AdminRoute><ArtistCampaigns /></AdminRoute>} />

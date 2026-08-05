@@ -6,6 +6,7 @@ import Skeleton from '../components/Skeleton'
 import EmailPreviewModal from '../components/EmailPreviewModal'
 import { useToast } from '../context/ToastContext'
 import { PAYMENT_TERMS, PAYMENT_METHODS } from '../constants'
+import { BarChart, Bar, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import { formatDate, isPastLocal, daysUntilLocal } from '../utils/dates'
 import useIsMobile from '../hooks/useIsMobile'
 
@@ -37,6 +38,7 @@ export default function Payments() {
   const [preview, setPreview] = useState(null) // { url, label } file pop-up
   const [rows, setRows] = useState([])
   const [stats, setStats] = useState(null)
+  const [analytics, setAnalytics] = useState(null)
   const [reps, setReps] = useState({})
   const [loading, setLoading] = useState(true)
   const [sel, setSel] = useState(new Set())
@@ -55,6 +57,7 @@ export default function Payments() {
   }
   useEffect(() => { load() }, [filter])
   useEffect(() => { api.get('/reps').then(r => setReps(Object.fromEntries((r.data.data || []).filter(x => x.email).map(x => [String(x.name).toLowerCase(), x.email])))).catch(() => {}) }, [])
+  useEffect(() => { api.get('/ledger/payment-analytics').then(r => setAnalytics(r.data.data)).catch(() => {}) }, [])
 
   // Client-side quick filter over the payables list (paid loads its own list).
   const shown = isPaid ? rows : rows.filter(r => {
@@ -209,6 +212,14 @@ export default function Payments() {
           </div>
         ))}
       </div>
+
+      {/* Weekly trend cards (last 12 weeks) */}
+      {analytics && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
+          <WeeklyTrend title="Invoices logged / week" series={analytics.submissions} color="#6366f1" />
+          <WeeklyTrend title="Paid / week" series={analytics.paid} color="#10b981" />
+        </div>
+      )}
 
       {/* Invoices header */}
       <div className="flex items-center gap-2 mb-3">
@@ -423,5 +434,28 @@ function ScheduleModal({ initialTerms, onClose, onConfirm }) {
         <button onClick={() => onConfirm({ payment_terms: terms, scheduled_payment_date: date })} className="btn-primary w-full">Save schedule</button>
       </div>
     </Modal>
+  )
+}
+
+// Tiny 12-week bar chart. `series` = [{ week, count, amount }].
+function WeeklyTrend({ title, series, color }) {
+  const data = (series || []).map(s => ({ ...s, label: s.week.slice(5) }))
+  const total = data.reduce((a, d) => a + (d.count || 0), 0)
+  return (
+    <div className="card p-4">
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">{title}</p>
+        <span className="text-xs text-gray-400">{total} in 12 wks</span>
+      </div>
+      <div style={{ height: 120 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
+            <XAxis dataKey="label" tick={{ fontSize: 9, fill: '#9ca3af' }} interval={1} axisLine={false} tickLine={false} />
+            <Tooltip cursor={{ fill: 'rgba(0,0,0,0.04)' }} contentStyle={{ fontSize: 12, borderRadius: 8 }} formatter={(v, n) => [v, n === 'count' ? 'entries' : n]} labelFormatter={(l) => `Week of ${l}`} />
+            <Bar dataKey="count" fill={color} radius={[3, 3, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
   )
 }

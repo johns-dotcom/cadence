@@ -1424,6 +1424,47 @@ router.get('/payment-stats', async (req, res) => {
   }
 });
 
+// GET /api/ledger/payment-analytics — submissions-per-week (entries created)
+// and paid-per-week (by payment_date), last 12 weeks. Week boundaries are
+// anchored in the label's timezone (default America/Los_Angeles) so Sunday-
+// night entries don't drift into the next week the way a UTC anchor caused.
+router.get('/payment-analytics', async (req, res) => {
+  try {
+    const tzRow = await pool.query(`SELECT COALESCE(settings->>'timezone','America/Los_Angeles') AS tz FROM labels WHERE id = $1`, [req.labelId]);
+    const tz = tzRow.rows[0]?.tz || 'America/Los_Angeles';
+    // 12 week buckets, Monday-anchored in the label tz. `bucketExpr` must yield
+    // the row's local week-start date.
+    const series = async (bucketExpr, extraWhere) => {
+      const { rows } = await pool.query(
+        `WITH weeks AS (
+           SELECT generate_series(
+             date_trunc('week', (NOW() AT TIME ZONE $2)::date) - INTERVAL '11 weeks',
+             date_trunc('week', (NOW() AT TIME ZONE $2)::date),
+             INTERVAL '1 week')::date AS wk)
+         SELECT to_char(w.wk, 'YYYY-MM-DD') AS week,
+                COALESCE(COUNT(e.id), 0)::int AS count,
+                COALESCE(SUM(CASE WHEN e.fx_rate_to_usd IS NOT NULL THEN e.amount / e.fx_rate_to_usd ELSE e.amount END), 0)::numeric(18,2) AS amount
+           FROM weeks w
+           LEFT JOIN expenses e ON ${bucketExpr} = w.wk
+             AND e.label_id = $1 AND (e.deleted = false OR e.deleted IS NULL) AND e.parent_id IS NULL ${extraWhere}
+          GROUP BY w.wk ORDER BY w.wk`,
+        [req.labelId, tz]
+      );
+      return rows;
+    };
+    const [submissions, paid] = await Promise.all([
+      // created_at is UTC → convert into the label tz before bucketing.
+      series(`date_trunc('week', (e.created_at AT TIME ZONE 'UTC' AT TIME ZONE $2))::date`, ''),
+      // payment_date is a calendar date — bucket it directly.
+      series(`date_trunc('week', e.payment_date::timestamp)::date`, "AND e.payment_status = 'Paid' AND e.payment_date IS NOT NULL"),
+    ]);
+    res.json({ success: true, data: { submissions, paid, tz } });
+  } catch (error) {
+    console.error('Payment analytics error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // ── Vendor saved emails (auto-CC on confirmations) ─────────────────────────
 router.get('/vendors/:name/emails', async (req, res) => {
   try {

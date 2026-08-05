@@ -345,6 +345,8 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_token TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_expires TIMESTAMP`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invited_at TIMESTAMP`);
+  // "Clear all" watermark for computed notifications (mentions are excluded).
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS notifications_cleared_at TIMESTAMP`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMP`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_invite_token ON users (invite_token)`);
