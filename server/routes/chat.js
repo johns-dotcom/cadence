@@ -273,7 +273,9 @@ router.post('/channels/:id/join', async (req, res) => {
 
 // POST /api/chat/object-thread — find-or-create the discussion thread anchored
 // to a record. { entity_type, entity_id, title }. The caller is auto-joined.
-const OBJECT_TABLES = { release: 'releases', deal: 'deals', expense: 'expenses', artist: 'artists', campaign: 'campaigns' };
+// Every value must be a real table with `id` + `label_id` columns — that's the
+// whole contract for anchoring a thread to a new record type.
+const OBJECT_TABLES = { release: 'releases', deal: 'deals', expense: 'expenses', artist: 'artists', campaign: 'campaigns', task: 'tasks' };
 router.post('/object-thread', async (req, res) => {
   try {
     const entityType = String(req.body.entity_type || '');
@@ -284,6 +286,23 @@ router.post('/object-thread', async (req, res) => {
     // The record must exist in this tenant.
     const ent = await pool.query(`SELECT id FROM ${table} WHERE id = $1 AND label_id = $2`, [entityId, req.labelId]);
     if (!ent.rows.length) return res.status(404).json({ success: false, error: 'Record not found' });
+
+    // `task` is the first entity type whose per-ROW visibility is narrower than the
+    // label: GET /api/tasks shows you your own (or your department's, as a lead).
+    // Existence-in-tenant is therefore not enough here, or anyone could open the
+    // thread of a task they can't see by guessing its id. Mirrors canMutateTask.
+    if (entityType === 'task') {
+      const { rows: t } = await pool.query(
+        `SELECT t.user_id, u.department FROM tasks t
+           LEFT JOIN users u ON u.id = t.user_id AND u.label_id = t.label_id
+          WHERE t.id = $1 AND t.label_id = $2`,
+        [entityId, req.labelId]
+      );
+      const own = t[0]?.user_id === req.user.id;
+      const admin = ['Superadmin', 'Admin'].includes(req.user.role);
+      const lead = req.user.role === 'Approver' && !!req.user.department && t[0]?.department === req.user.department;
+      if (!own && !admin && !lead) return res.status(403).json({ success: false, error: 'Not your task' });
+    }
 
     const title = String(req.body.title || '').slice(0, 120);
     let found = await pool.query(

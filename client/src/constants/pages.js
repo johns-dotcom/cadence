@@ -5,6 +5,7 @@ export const PAGE_GROUPS = [
   { group: 'General', pages: [
     { path: '/', label: 'Dashboard' },
     { path: '/my-work', label: 'My Work' },
+    { path: '/team-work', label: 'Team Work' },
     { path: '/calendar', label: 'Calendar' },
   ] },
   { group: 'Catalog', pages: [

@@ -7,11 +7,15 @@ import { useToast } from '../context/ToastContext'
 import { MessageList, FileChips, postMessage } from '../pages/Messages'
 
 // A discussion thread anchored to a record (release, deal, invoice, artist,
-// campaign). It's a real chat channel behind the scenes, so messages here also
-// appear in Messages under "Threads", @mentions notify, and it's fully live.
+// campaign, task). It's a real chat channel behind the scenes, so messages here
+// also appear in Messages under "Threads", @mentions notify, and it's fully live.
 //
-// Props: entityType ('release'|'deal'|'expense'|'artist'|'campaign'), entityId,
-// title (used to name the thread the first time it's opened).
+// Props: entityType ('release'|'deal'|'expense'|'artist'|'campaign'|'task'),
+// entityId, title (used to name the thread the first time it's opened).
+// Keep the union in sync with OBJECT_TABLES in server/routes/chat.js.
+//
+// NOTE: `title` only takes effect on first creation, so for records whose name can
+// change (a task's description) the thread keeps the name it was born with.
 export default function ObjectDiscussion({ entityType, entityId, title, className = '' }) {
   const { user } = useAuth()
   const { on, emit } = useSocket()

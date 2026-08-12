@@ -761,7 +761,10 @@ router.post('/workspaces/:id/members/:userId/make-owner', requireWorkspaceAccess
     const m = await memberOf(id, userId);
     if (!m) return res.status(404).json({ success: false, error: 'Member not found' });
     const current = await ownerOf(id);
-    await pool.query("UPDATE users SET role = 'Superadmin', department = 'Executive', hierarchy_level = 1 WHERE id = $1 AND label_id = $2", [userId, id]);
+    // token_version bump: `department` is a JWT claim that Team Work's teamFilter
+    // trusts (and unlike `role`, auth middleware does NOT re-read it per request),
+    // so changing it here must invalidate the member's live sessions.
+    await pool.query("UPDATE users SET role = 'Superadmin', department = 'Executive', hierarchy_level = 1, token_version = token_version + 1 WHERE id = $1 AND label_id = $2", [userId, id]);
     if (current && current.id !== userId && !current.is_platform_admin) {
       await pool.query("UPDATE users SET role = 'Admin', hierarchy_level = 2 WHERE id = $1 AND label_id = $2", [current.id, id]);
     }

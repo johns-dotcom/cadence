@@ -6,7 +6,7 @@ import {
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
   FileClock, Shield, Lock, FileSignature, FileSpreadsheet, Layers, PiggyBank, FilePlus2,
-  MessageSquarePlus, MessageSquare, Landmark, ShieldCheck,
+  MessageSquarePlus, MessageSquare, Landmark, ShieldCheck, Users2,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useSocket } from '../context/SocketContext'
@@ -23,6 +23,7 @@ import ErrorBoundary from './ErrorBoundary'
 export const PAGE_LABELS = {
   '/':           'Dashboard',
   '/my-work':    'My Work',
+  '/team-work':  'Team Work',
   '/calendar':   'Calendar',
   '/financials': 'Financials',
   '/recording-budgets': 'Recording Budgets',
@@ -232,6 +233,8 @@ export default function Layout() {
       items: [
         { path: '/',         label: 'Dashboard', icon: LayoutDashboard },
         { path: '/my-work',  label: 'My Work',   icon: Briefcase },
+        // Team leads only. canView() below still applies, so an admin can revoke it.
+        ...(isApprover ? [{ path: '/team-work', label: 'Team Work', icon: Users2 }] : []),
         { path: '/messages', label: 'Messages',  icon: MessageSquare, badge: chatUnread },
         { path: '/calendar', label: 'Calendar',  icon: CalendarDays },
       ],

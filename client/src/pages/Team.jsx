@@ -16,6 +16,7 @@ const ROLE_STYLES = {
 export default function Team() {
   const { user } = useAuth()
   const { toast } = useToast()
+  const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -62,6 +63,17 @@ export default function Team() {
   const changeRole = async (id, role) => {
     try { await api.patch(`/team/${id}`, { role }); toast('Role updated'); load() }
     catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+
+  // Department is not cosmetic: it decides which teammates an Approver can see and
+  // reassign on Team Work. Changing it signs the member out so the new scope takes
+  // effect immediately, so say so rather than letting a silent logout surprise them.
+  const changeDepartment = async (id, department) => {
+    try {
+      await api.patch(`/team/${id}`, { department })
+      toast(`Moved to ${department} — they'll be signed out`)
+      load()
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
 
   const remove = async (id, name) => {
@@ -137,7 +149,22 @@ export default function Team() {
                     </p>
                     <p className="text-xs text-gray-400">{m.email}</p>
                   </td>
-                  <td className="px-4 py-3 text-gray-600">{m.department || '—'}</td>
+                  <td className="px-4 py-3 text-gray-600">
+                    {/* Editable for admin-tier (matching requireAdmin on PATCH /team) —
+                        department scopes Team Work, so it has to be fixable after invite. */}
+                    {isAdmin ? (
+                      <select
+                        value={m.department || ''}
+                        onChange={e => changeDepartment(m.id, e.target.value)}
+                        className="text-xs font-medium rounded-md px-1.5 py-1 border border-rule bg-card text-gray-600 cursor-pointer"
+                      >
+                        {/* Placeholder only — the server rejects a blank department,
+                            and clearing one would drop the member out of Team Work. */}
+                        {!m.department && <option value="" disabled>—</option>}
+                        {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+                      </select>
+                    ) : (m.department || '—')}
+                  </td>
                   <td className="px-4 py-3">
                     {/* Superadmin can reassign roles; the owner row stays read-only here. */}
                     {user?.role === 'Superadmin' && m.id !== user.id ? (

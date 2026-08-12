@@ -6,11 +6,22 @@ const { withTenant, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { sendEmail, inviteEmail } = require('../lib/email');
 const { checkUserDeletable, deleteUserWithSweep } = require('../lib/userDelete');
+const { ROLES, DEPARTMENTS } = require('../lib/constants');
 
 const router = express.Router();
 
 const INVITE_DAYS = 7;
 const isValidEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+
+// A member's department scopes what an Approver sees and may mutate on Team Work
+// (routes/tasks.js teamFilter / canMutateTask), so it is a permission boundary and
+// must be one of the known values. Left unvalidated, a typo'd "a&r" would create a
+// one-person department that no lead could ever see out of.
+function badMemberFields({ role, department }) {
+  if (role !== undefined && role !== null && !ROLES.includes(role)) return 'Invalid role';
+  if (department !== undefined && department !== null && !DEPARTMENTS.includes(department)) return 'Invalid department';
+  return null;
+}
 
 // Build the public accept-invite link. Uses the configured FRONTEND_URL, else
 // the browser Origin — never the raw Host header (attacker-controllable, which
@@ -55,6 +66,8 @@ router.post('/', requireAdmin, async (req, res) => {
     if (!isValidEmail(email.trim())) {
       return res.status(400).json({ success: false, error: 'Please enter a valid email address' });
     }
+    const fieldErr = badMemberFields(req.body);
+    if (fieldErr) return res.status(400).json({ success: false, error: fieldErr });
 
     const token = crypto.randomBytes(32).toString('hex');
     const { rows } = await pool.query(
@@ -115,11 +128,28 @@ router.post('/:id/resend', requireAdmin, async (req, res) => {
 router.patch('/:id', requireAdmin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(404).json({ success: false, error: 'User not found' });
     const { name, role, department, hierarchy_level } = req.body;
 
-    // Bump token_version on role change so the affected user's existing
-    // sessions pick up (or lose) permissions immediately.
-    const bumpRole = role !== undefined;
+    const fieldErr = badMemberFields(req.body);
+    if (fieldErr) return res.status(400).json({ success: false, error: fieldErr });
+
+    // Bump token_version so the affected user's sessions pick up (or lose) access
+    // immediately. BOTH role and department matter: department is a JWT claim that
+    // teamFilter() trusts, so without this a lead moved out of A&R would keep A&R
+    // access until their token expired.
+    //
+    // "Changed" must mean DIFFERS FROM STORED, not merely present-in-body — this
+    // endpoint COALESCEs, so the UI resends unchanged fields and a present-in-body
+    // test would log everyone out on every save.
+    const { rows: before } = await pool.query(
+      'SELECT role, department FROM users WHERE id = $1 AND label_id = $2',
+      [id, req.labelId]
+    );
+    if (!before.length) return res.status(404).json({ success: false, error: 'User not found' });
+    const roleChanged = role !== undefined && role !== null && role !== before[0].role;
+    const deptChanged = department !== undefined && department !== null && department !== before[0].department;
+
     const { rows } = await pool.query(
       `UPDATE users SET
          name = COALESCE($1, name),
@@ -129,7 +159,7 @@ router.patch('/:id', requireAdmin, async (req, res) => {
          token_version = token_version + $5
        WHERE id = $6 AND label_id = $7
        RETURNING id, name, email, role, department, hierarchy_level`,
-      [name, role, department, hierarchy_level, bumpRole ? 1 : 0, id, req.labelId]
+      [name, role, department, hierarchy_level, (roleChanged || deptChanged) ? 1 : 0, id, req.labelId]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'User not found' });
     await logActivity(req, 'Updated team member', rows[0].name);

@@ -23,7 +23,8 @@ const TABLES = [
   { file: 'campaigns.csv', sql: 'SELECT id,artist_id,name,platform,status,planned_budget,actual_spend,currency FROM campaigns WHERE label_id=$1', cols: ['id', 'artist_id', 'name', 'platform', 'status', 'planned_budget', 'actual_spend', 'currency'] },
   { file: 'dsp_submissions.csv', sql: 'SELECT release_id,platform,status,submitted_date,live_date FROM dsp_submissions WHERE label_id=$1', cols: ['release_id', 'platform', 'status', 'submitted_date', 'live_date'] },
   { file: 'salary.csv', sql: 'SELECT e.name,e.department,e.monthly_amount,p.month,p.year,p.paid FROM salary_employees e LEFT JOIN salary_payments p ON p.employee_id=e.id AND p.label_id=e.label_id WHERE e.label_id=$1', cols: ['name', 'department', 'monthly_amount', 'month', 'year', 'paid'] },
-  { file: 'tasks.csv', sql: 'SELECT id,description,priority,status,due_date FROM tasks WHERE label_id=$1', cols: ['id', 'description', 'priority', 'status', 'due_date'] },
+  // `sql` and `cols` are parallel — a length mismatch shifts every column, so add to both.
+  { file: 'tasks.csv', sql: 'SELECT id,description,category,priority,status,due_date,completed_at,notes FROM tasks WHERE label_id=$1', cols: ['id', 'description', 'category', 'priority', 'status', 'due_date', 'completed_at', 'notes'] },
 ];
 
 // GET /api/full-export — streams a .zip of every table as CSV + a manifest.

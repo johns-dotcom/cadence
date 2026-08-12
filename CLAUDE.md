@@ -136,6 +136,71 @@ too. Follow-ups (not built): external-guest channels, huddles, Slack import.
 mobile "lighter passes" on secondary pages, AI rate-limit buckets, MIME sniff on
 upload. New deps: `jspdf` + `docx` (dynamically imported), `socket.io`(-client).
 
+## Post-spec: task database views + Team Work (2026-08-11)
+
+`/my-work` became a **Notion-style database** and gained a sibling **`/team-work`**.
+Both render one shared shell — `components/mywork/TaskSurface.jsx` with a
+`surface="mine"|"team"` prop — so the two pages cannot drift. **Zero new deps.**
+
+- **Views**: Board · Table · Calendar · List (+ **Workload**, team only). Group by
+  status / priority / due bucket / category / assignee / department; filter chips;
+  sort; ~9 toggleable columns. One pipeline in `useTaskView.js`
+  (`filter → sort → group`) feeds every view, so group counts, table rows and
+  Workload bars are derived from the same array and can't disagree. All of it is
+  **client-side by design**: the dataset is one fetch, and `daysUntilLocal` is
+  local-calendar so a server-side "overdue" would contradict the board next to it.
+- **`components/mywork/`**: `taskFields.js` (pure — descriptors, `dueBucketOf`,
+  `matches`/`sortTasks`/`groupTasks`, `groupFieldFor`, `canDropInGroup`),
+  `useTaskData` (optimistic patch + exact rollback + 20-deep undo, `z`),
+  `useTaskView`, `useTaskDnd`, `TaskSurface`, `TaskToolbar`, `TaskBoard`,
+  `TaskTable` (also renders List via `dense`), `TaskCell`, `TaskCalendar`,
+  `TaskDrawer`, `WorkloadView`, `TaskCard`, `GroupHeader`, `WaitingOnYou`.
+  Presets in `constants/taskViews.js`.
+- **Schema**: `tasks` +`notes` +`category` +`sort_order` +`completed_at`, plus its
+  first two indexes `(label_id,user_id)` / `(label_id,status)`. New `task_views`
+  (per-user named JSONB configs, upsert on `(label_id,user_id,LOWER(name))`,
+  modelled on `permission_templates`). `description` stays the title — 5 consumers
+  read it as one. `config.surface` is what keeps a team view off the personal page.
+- **DnD**: native HTML5, no library, extending the Deals pattern with **intra-group
+  reordering** (new to the repo) — drop index from the pointer vs the hovered row's
+  midpoint, neighbours read from `group.items`. `PATCH /tasks/:id/reorder`
+  `{before_id, after_id}` does integer midpoints on 1024 gaps with a loud
+  renormalize branch (floats lose precision silently); `renormalized: true` tells
+  the client to refetch once. Requires the Manual sort; disabled <768px (HTML5 drag
+  doesn't fire on touch).
+- **Team scoping — `department` is now a PERMISSION BOUNDARY, not a label.**
+  `teamFilter()` in `routes/tasks.js` is the single source of truth: Superadmin/Admin
+  → whole workspace, Approver → own `department`, anyone else → 403. Fails closed on
+  a missing department. `?scope=team` is authorized inline (no route middleware —
+  see the note in `middleware/tenant.js`). `canMutateTask()` widens the old
+  "assignee or admin" rule to include a lead of the owner's department, but **not**
+  upward onto an Admin/Superadmin's task; `canAssignTo()` keeps a lead from pushing
+  work into another department; unassigning is admin-only. Cross-user mutations hit
+  `logActivity`. Consequences: `Team.jsx` can now edit Department inline,
+  `DEPARTMENTS` is validated server-side (`lib/constants.js`), and **`token_version`
+  bumps on a department change** (`team.js`, `platform.js` make-owner) because
+  `department` is a JWT claim that auth middleware does NOT re-read per request.
+- **Other endpoints**: `PATCH /tasks/bulk` (gate inside the WHERE; out-of-scope ids
+  skipped, count returned so the client can say "n of m"), `/tasks/views` CRUD.
+  Every task-returning route goes through the shared `TASK_SELECT` — a bare
+  `RETURNING *` would omit `assignee_department` and silently make a just-created
+  task read-only, since `canEditTask` reads it.
+- **Task threads**: `task` added to `OBJECT_TABLES` (`chat.js`), so `ObjectDiscussion`
+  works in the drawer. It is the first entity whose per-ROW visibility is narrower
+  than the label, so `/object-thread` gained an explicit task visibility check —
+  existence-in-tenant is not sufficient for these.
+- **Also fixed**: `MyWork.jsx`'s `new Date(due_date).toLocaleDateString()` TZ shift
+  (now `formatDate`); `PATCH /tasks/:id` never re-validated `release_id` in-tenant;
+  NaN `:id`/`?user_id` reaching Postgres as `NaN` → 500; `notifications.js` decided
+  overdue by comparing a UTC-parsed date against a locally-parsed one (now
+  `(due_date < CURRENT_DATE) AS is_overdue` in SQL — one rule, though still server
+  timezone, which needs a per-user tz to fix properly); `tasks.csv` in
+  `full-export.js` gained `category`/`notes`.
+- **Not built**: `pinned` (redundant with drag), multi-value tags (breaks group-by),
+  `archived_at` (5 routes would silently over-count), server-side filter/sort,
+  a cross-page view engine, subtasks/recurrence, tasks in `search.js`,
+  `/team-work` in `BottomNav` (5 slots already full).
+
 ---
 
 ## Stack & deploy (as built — matches spec §2 unless noted)
@@ -331,8 +396,10 @@ upload. New deps: `jspdf` + `docx` (dynamically imported), `socket.io`(-client).
 - **Dashboard** widgets: latest-releases carousel, pipeline bar chart, genre pie, upcoming
   timeline, notifications panel, my-tasks summary, pending-approvals card, bookkeeping widget.
   — MISSING (basic stat cards + activity only).
-- **My Work** command center: "Waiting on you" rail, To Do Today ordering, quick-add
-  shorthand parse, bucket grouping, pins, assigned releases/contracts, hotkeys. — PARTIAL.
+- **My Work** command center — DONE and beyond spec (see "Post-spec: task database
+  views + Team Work" above). Not carried over from the spec: quick-add shorthand
+  parsing (`!high` / `#Finance` / natural dates), pins (superseded by drag-to-top),
+  and assigned-releases/contracts rails.
 - **Catalog** page — MISSING.
 - **Releases**: 7-tab (add Activity + Checklist grouping), merge flow, assignment, hotkeys,
   mobile tab strip. Deal pipeline true drag-drop. Artist roster search/filter + delete gate.

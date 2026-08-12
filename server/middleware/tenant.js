@@ -44,6 +44,13 @@ function requireRole(...allowed) {
 const requireAdmin = requireRole('Superadmin', 'Admin');
 const requireApprover = requireRole('Superadmin', 'Admin', 'Approver');
 
+// NOTE for Team Work (/team-work): there is deliberately no requireTeamLead gate
+// here. Team access isn't a whole-route decision — GET /api/tasks serves both
+// surfaces, and `?scope=team` is authorized inline by teamFilter() in
+// routes/tasks.js, which both checks the role AND narrows an Approver to their own
+// department. A middleware that only answered the role half would invite the
+// mistake of treating it as sufficient.
+
 // Platform-admin gate. This is the SaaS *operator* (you) — a level above any
 // label's Superadmin. Platform admins provision new label workspaces and are
 // the ONLY identity allowed to act across tenants. Everyone else is confined

@@ -865,6 +865,43 @@ const runMigrations = async () => {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  // My Work database views. `description` stays the one-line title — five
+  // consumers (notifications, calendar, full-export, task emails, activity log)
+  // already read it as one, so there is deliberately no separate `title`.
+  await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS notes TEXT`);
+  // Free-text group-by bucket. Not an enum: a task taxonomy is per-workspace.
+  await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS category VARCHAR(60)`);
+  // Manual ordering: ONE global sequence per label, spaced by 1024 so a drag is a
+  // single midpoint UPDATE. NULL = never hand-placed (sorts last). Not named
+  // "position" — that's a SQL keyword and these are raw queries.
+  await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sort_order INT`);
+  // Server-derived on the transition INTO 'Done'; never client-writable. Kept as
+  // TIMESTAMP for consistency with created_at/updated_at — consumers must compare
+  // it as an INSTANT (rolling window), never via utils/dates.js, which is
+  // YYYY-MM-DD prefix math and would truncate it to its UTC day.
+  await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP`);
+  // tasks had no indexes at all. These two cover every existing consumer:
+  // (label_id, user_id) → GET /tasks both modes, dashboard widgets, notifications;
+  // (label_id, status)  → platform open_tasks, the calendar event stream.
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_label_user ON tasks (label_id, user_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_label_status ON tasks (label_id, status)`);
+
+  // Saved My Work / Team Work views. Named per-user config rows, modelled on
+  // permission_templates. `config` is owned by the client (see constants/taskViews.js);
+  // the server only bounds its size, so shipping a new filter needs no API deploy.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS task_views (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name VARCHAR(60) NOT NULL,
+      config JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_task_views_name ON task_views (label_id, user_id, LOWER(name))`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_task_views_user ON task_views (label_id, user_id)`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS activity_log (

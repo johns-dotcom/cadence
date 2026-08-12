@@ -35,9 +35,16 @@ router.get('/', async (req, res) => {
          ORDER BY r.release_date ASC LIMIT 25`,
         [req.labelId]
       ),
-      // The caller's own tasks that are overdue or due within 3 days.
+      // The caller's own tasks that are overdue or due within 3 days. `is_overdue`
+      // is decided HERE, in the same query as the 3-day window, so there is one
+      // rule instead of two. It used to be recomputed in JS as
+      // `new Date(due_date) < new Date(new Date().toDateString())` — which compares
+      // a UTC-parsed date against a locally-parsed one, so east of UTC a task due
+      // today read as overdue and the bell nagged a day early.
       pool.query(
-        `SELECT id, description, due_date, priority, created_at FROM tasks
+        `SELECT id, description, due_date, priority, created_at,
+                (due_date < CURRENT_DATE) AS is_overdue
+           FROM tasks
          WHERE label_id = $1 AND user_id = $2 AND status != 'Done' AND due_date IS NOT NULL
            AND due_date <= CURRENT_DATE + INTERVAL '3 days'
          ORDER BY due_date ASC LIMIT 25`,
@@ -97,7 +104,7 @@ router.get('/', async (req, res) => {
     const cleared = (createdAt) => wm && createdAt && new Date(createdAt) <= new Date(wm);
     const smart = [];
     for (const r of releases) if (!cleared(r.created_at)) smart.push({ type: 'release', key: `release-${r.id}`, title: [r.artist_name, r.project_name].filter(Boolean).join(' — '), detail: 'Checklist incomplete', date: r.release_date, link: `/releases/${r.id}`, severity: 'warning' });
-    for (const t of tasks) { if (cleared(t.created_at)) continue; const overdue = new Date(t.due_date) < new Date(new Date().toDateString()); smart.push({ type: 'task', key: `task-${t.id}`, title: t.description, detail: overdue ? 'Task overdue' : 'Task due soon', date: t.due_date, link: '/my-work', severity: overdue ? 'danger' : 'warning' }); }
+    for (const t of tasks) { if (cleared(t.created_at)) continue; const overdue = t.is_overdue; smart.push({ type: 'task', key: `task-${t.id}`, title: t.description, detail: overdue ? 'Task overdue' : 'Task due soon', date: t.due_date, link: '/my-work', severity: overdue ? 'danger' : 'warning' }); }
     for (const b of bulkDeals) if (!cleared(b.created_at)) smart.push({ type: 'bulk_deal', key: `bulkdeal-${b.id}`, title: `${b.payee || 'Bulk deal'} · ${fmt(b.amount, b.currency)}`, detail: 'Bulk deal stalled (21+ days unpaid)', date: b.created_at, link: `/ledger?focus=${b.id}`, severity: 'warning' });
     for (const c of contracts) if (!cleared(c.created_at)) smart.push({ type: 'contract', key: `contract-${c.id}`, title: [c.artist_name, c.type].filter(Boolean).join(' '), detail: 'Contract expiring', date: c.expiration_date, link: '/renewals', severity: 'warning' });
     for (const e of approvals) if (!cleared(e.created_at)) smart.push({ type: 'approval', key: `approval-${e.id}`, title: `${e.payee || 'Vendor'} · ${fmt(e.amount, e.currency)}`, detail: e.vendor_submitted ? 'Vendor submission' : 'Awaiting approval', date: null, link: '/ledger', severity: 'info' });

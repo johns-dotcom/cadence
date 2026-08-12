@@ -16,6 +16,21 @@ export const SHORTCUT_GROUPS = [
     ],
   },
   {
+    group: 'My Work / Team Work',
+    items: [
+      { keys: ['N'], desc: 'New task' },
+      { keys: ['1'], desc: 'Board view' },
+      { keys: ['2'], desc: 'Table view' },
+      { keys: ['3'], desc: 'Calendar view' },
+      { keys: ['4'], desc: 'List view' },
+      { keys: ['5'], desc: 'Workload view (Team Work)' },
+      { keys: ['G'], desc: 'Cycle group-by' },
+      { keys: ['F'], desc: 'Focus search' },
+      { keys: ['Z'], desc: 'Undo last inline edit' },
+      { keys: ['Esc'], desc: 'Close drawer · clear selection' },
+    ],
+  },
+  {
     group: 'Ledger',
     items: [
       { keys: ['Z'], desc: 'Undo last inline edit' },

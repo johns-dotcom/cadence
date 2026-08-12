@@ -28,6 +28,7 @@ import CreateNda from './pages/CreateNda'
 import ArtistClearance from './pages/ArtistClearance'
 import Renewals from './pages/Renewals'
 import MyWork from './pages/MyWork'
+import TeamWork from './pages/TeamWork'
 import Calendar from './pages/Calendar'
 import Financials from './pages/Financials'
 import Recoupments from './pages/Recoupments'
@@ -128,6 +129,9 @@ function AppContent() {
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route path="/"             element={<Dashboard />} />
         <Route path="/my-work"      element={<MyWork />} />
+        {/* AdminRoute is misleadingly named — it gates on Approver-or-above, which
+            is exactly the team-lead tier. The server re-decides scope per request. */}
+        <Route path="/team-work"    element={<AdminRoute><TeamWork /></AdminRoute>} />
         <Route path="/messages"     element={<Messages />} />
         <Route path="/messages/:channelId" element={<Messages />} />
         <Route path="/calendar"     element={<Calendar />} />
