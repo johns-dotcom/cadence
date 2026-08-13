@@ -27,25 +27,25 @@ export default function WaitingOnYou({ tasks }) {
 
   return (
     <div className="mb-6">
-      <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Waiting on you</p>
+      <h2 className="text-xs font-bold text-ink-muted uppercase tracking-wide mb-2">Waiting on you</h2>
       {/* Horizontal strip on phones, tiles from sm up. */}
       <div className="flex gap-3 overflow-x-auto pb-1 sm:overflow-visible sm:pb-0 sm:grid sm:grid-cols-3">
         {overdue > 0 && (
           <div className="card p-4 flex items-center gap-3 border-l-4 border-l-red-500 min-w-[13rem] sm:min-w-0">
             <AlertTriangle size={20} className="text-red-500 flex-shrink-0" />
-            <div><p className="text-lg font-bold text-ink leading-none">{overdue}</p><p className="text-xs text-gray-500 mt-1">Overdue task{overdue === 1 ? '' : 's'}</p></div>
+            <div><p className="text-lg font-bold text-ink leading-none">{overdue}</p><p className="text-xs text-ink-muted mt-1">Overdue task{overdue === 1 ? '' : 's'}</p></div>
           </div>
         )}
         {pending > 0 && (
-          <Link to="/approvals" className="card p-4 flex items-center gap-3 border-l-4 border-l-amber-500 hover:bg-gray-50 transition min-w-[13rem] sm:min-w-0">
+          <Link to="/approvals" className="card p-4 flex items-center gap-3 border-l-4 border-l-amber-500 hover:bg-elev transition min-w-[13rem] sm:min-w-0">
             <Stamp size={20} className="text-amber-500 flex-shrink-0" />
-            <div><p className="text-lg font-bold text-ink leading-none">{pending}</p><p className="text-xs text-gray-500 mt-1">Awaiting your approval</p></div>
+            <div><p className="text-lg font-bold text-ink leading-none">{pending}</p><p className="text-xs text-ink-muted mt-1">Awaiting your approval</p></div>
           </Link>
         )}
         {reviewCount > 0 && (
-          <Link to="/artist-campaigns" className="card p-4 flex items-center gap-3 border-l-4 border-l-brand-500 hover:bg-gray-50 transition min-w-[13rem] sm:min-w-0">
+          <Link to="/artist-campaigns" className="card p-4 flex items-center gap-3 border-l-4 border-l-brand-500 hover:bg-elev transition min-w-[13rem] sm:min-w-0">
             <Inbox size={20} className="text-brand-500 flex-shrink-0" />
-            <div><p className="text-lg font-bold text-ink leading-none">{reviewCount}</p><p className="text-xs text-gray-500 mt-1">Campaign{reviewCount === 1 ? '' : 's'} to review</p></div>
+            <div><p className="text-lg font-bold text-ink leading-none">{reviewCount}</p><p className="text-xs text-ink-muted mt-1">Campaign{reviewCount === 1 ? '' : 's'} to review</p></div>
           </Link>
         )}
       </div>

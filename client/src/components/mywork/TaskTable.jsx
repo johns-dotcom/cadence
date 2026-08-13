@@ -6,10 +6,29 @@
 // one place rather than two that can drift.
 
 import { GripVertical } from 'lucide-react'
-import { colByKey, PRIORITY_DOT } from './taskFields'
+import { colByKey } from './taskFields'
 import GroupHeader from './GroupHeader'
 import TaskCell from './TaskCell'
 import TaskCard from './TaskCard'
+
+// box-shadow on a <tr> is NOT painted by Blink/WebKit under `border-collapse:
+// collapse` (Tailwind preflight sets it) — only `background` renders in the row
+// layer — so the drop-insertion line lives on the <td>s instead. That also works in
+// the separated model, so it stops depending on browser table trivia.
+//
+// Do NOT "fix" this with `border-separate`: divide-y compiles to border-top on each
+// <tr>, which the separated model ignores, silently deleting every row divider.
+//
+// Static strings on purpose — the JIT cannot see an interpolated class name. The
+// sticky variants compose the frozen column's own right-hand rule.
+const CELL_SHADOW = {
+  none: '',
+  top: 'shadow-[inset_0_2px_0_0_rgb(var(--color-brand-500))]',
+  bottom: 'shadow-[inset_0_-2px_0_0_rgb(var(--color-brand-500))]',
+  sticky: 'shadow-[1px_0_0_0_var(--color-border)]',
+  stickyTop: 'shadow-[inset_0_2px_0_0_rgb(var(--color-brand-500)),1px_0_0_0_var(--color-border)]',
+  stickyBottom: 'shadow-[inset_0_-2px_0_0_rgb(var(--color-brand-500)),1px_0_0_0_var(--color-border)]',
+}
 
 export default function TaskTable({
   groups, columns, members, dense = false,
@@ -38,7 +57,6 @@ export default function TaskTable({
                 collapsed={isCollapsed}
                 onToggle={() => onToggleGroup(group.key)}
                 droppable={groupDroppable?.(group.key)}
-                dragOver={over?.groupKey === group.key}
               />
               {!isCollapsed && (
                 <div className="space-y-1.5" {...(groupDragProps?.(group) || {})}>
@@ -57,7 +75,7 @@ export default function TaskTable({
                       insertAfter={over?.groupKey === group.key && over?.beforeId === task.id}
                     />
                   ))}
-                  {group.items.length === 0 && <p className="text-xs text-gray-300 px-1 py-2">Empty</p>}
+                  {group.items.length === 0 && <p className="text-xs text-ink-muted px-1 py-2">Empty</p>}
                 </div>
               )}
             </div>
@@ -80,8 +98,9 @@ export default function TaskTable({
             {cols.map((c, i) => (
               <th
                 key={c.key}
-                className={`px-3 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap ${c.width || ''} ${
-                  i === 0 ? 'sticky left-0 z-10 bg-card shadow-[1px_0_0_0_var(--color-border)]' : ''
+                scope="col"
+                className={`px-3 py-2.5 text-xs font-semibold text-ink-muted uppercase tracking-wide whitespace-nowrap ${c.width || ''} ${
+                  i === 0 ? `sticky left-0 z-10 bg-card ${CELL_SHADOW.sticky}` : ''
                 }`}
               >
                 {c.label}
@@ -101,7 +120,6 @@ export default function TaskTable({
                     collapsed={isCollapsed}
                     onToggle={() => onToggleGroup(group.key)}
                     droppable={groupDroppable?.(group.key)}
-                    dragOver={over?.groupKey === group.key}
                     dense
                   />
                 </td>
@@ -111,28 +129,35 @@ export default function TaskTable({
                 const canEdit = canEditTask ? canEditTask(task) : true
                 const insertTop = over?.groupKey === group.key && over?.afterId === task.id
                 const insertBottom = over?.groupKey === group.key && over?.beforeId === task.id
+                const isSel = selected.has(task.id)
+                // useTaskDnd never sets both (beforeId/afterId are always different rows).
+                const shadowFor = (sticky) => sticky
+                  ? (insertTop ? CELL_SHADOW.stickyTop : insertBottom ? CELL_SHADOW.stickyBottom : CELL_SHADOW.sticky)
+                  : (insertTop ? CELL_SHADOW.top : insertBottom ? CELL_SHADOW.bottom : CELL_SHADOW.none)
+
                 return (
                   <tr
                     key={task.id}
                     draggable={!!dragHandlersFor && canEdit}
                     {...(dragHandlersFor?.(task, i, group) || {})}
-                    className={`group hover:bg-gray-50 transition
+                    // Selection is a ternary against hover, not a sibling class:
+                    // hover: outranks a plain background in Tailwind's variant order,
+                    // so hovering a selected row used to erase its tint entirely.
+                    className={`group transition
                       ${drag?.id === task.id ? 'opacity-40' : ''}
-                      ${selected.has(task.id) ? 'bg-brand-50/50' : ''}
-                      ${insertTop ? 'shadow-[inset_0_2px_0_0_theme(colors.brand.500)]' : ''}
-                      ${insertBottom ? 'shadow-[inset_0_-2px_0_0_theme(colors.brand.500)]' : ''}`}
+                      ${isSel ? 'bg-selected' : 'hover:bg-elev'}`}
                   >
-                    <td className="px-2 py-2 align-top">
+                    <td className={`px-2 py-2 align-top ${shadowFor(false)}`}>
                       <div className="flex items-center gap-1">
                         <input
                           type="checkbox"
-                          checked={selected.has(task.id)}
+                          checked={isSel}
                           onChange={() => onToggleSelect(task.id)}
                           className="cursor-pointer"
                           aria-label={`Select ${task.description}`}
                         />
                         {dragHandlersFor && canEdit && (
-                          <GripVertical size={12} className="text-gray-300 opacity-0 group-hover:opacity-100 cursor-grab" />
+                          <GripVertical size={12} className="text-ink-faint opacity-0 group-hover:opacity-100 cursor-grab" aria-hidden="true" />
                         )}
                       </div>
                     </td>
@@ -141,18 +166,26 @@ export default function TaskTable({
                       <td
                         key={c.key}
                         className={`px-3 py-2 align-top ${c.width || ''} ${
-                          ci === 0 ? 'sticky left-0 z-10 bg-card group-hover:bg-gray-50 shadow-[1px_0_0_0_var(--color-border)]' : ''
+                          ci === 0
+                            // The frozen cell must stay OPAQUE — it paints over the
+                            // cells sliding under it — so selection needs a solid
+                            // token here rather than the row's tint showing through.
+                            ? `sticky left-0 z-10 ${isSel ? 'bg-selected' : 'bg-card group-hover:bg-elev'} ${shadowFor(true)}`
+                            : shadowFor(false)
                         }`}
                       >
                         {ci === 0 ? (
                           <div className="flex items-start gap-2">
-                            <span className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${PRIORITY_DOT[task.priority] || PRIORITY_DOT.Medium}`} />
+                            {/* The priority dot used to sit here — redundant with the
+                                literal Priority column a few cells away. */}
                             <div className="min-w-0 flex-1">
                               <TaskCell task={task} col={c} members={members} canEdit={cellEditable(c, canEdit)} canUnassign={canUnassign} onCommit={f => onPatch(task.id, f)} />
                             </div>
+                            {/* focus:opacity-100 — Tab used to land on an invisible control. */}
                             <button
                               onClick={() => onOpen?.(task)}
-                              className="text-[10px] font-semibold text-brand-600 opacity-0 group-hover:opacity-100 flex-shrink-0"
+                              className="text-[10px] font-semibold text-brand-ink opacity-0 group-hover:opacity-100 focus:opacity-100 flex-shrink-0 rounded px-1
+                                         focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
                             >
                               Open
                             </button>
@@ -167,7 +200,7 @@ export default function TaskTable({
               })}
 
               {!isCollapsed && group.items.length === 0 && (
-                <tr><td colSpan={cols.length + 1} className="px-4 py-3 text-xs text-gray-300">Empty</td></tr>
+                <tr><td colSpan={cols.length + 1} className="px-3 py-2 text-xs text-ink-muted">Empty</td></tr>
               )}
             </tbody>
           )

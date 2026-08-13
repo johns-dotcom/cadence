@@ -24,11 +24,13 @@
            hover:bg-brand-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
   }
 
-  /* Secondary / outline button. */
+  /* Secondary / outline button. Focus ring matches ui/Button.jsx's BASE — without
+     it, Tab lands on this button invisibly, which is the whole toolbar's triggers. */
   .btn-secondary {
     @apply inline-flex items-center justify-center gap-2 text-sm font-semibold
            text-gray-600 border border-rule px-4 py-2.5 rounded-lg
-           hover:bg-gray-50 hover:text-gray-900 transition-colors disabled:opacity-40;
+           hover:bg-gray-50 hover:text-gray-900 transition-colors disabled:opacity-40
+           focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400;
   }
 
   /* Text input. */

@@ -26,6 +26,10 @@ export default {
           800: 'rgb(var(--color-brand-800) / <alpha-value>)',
           900: 'rgb(var(--color-brand-900) / <alpha-value>)',
           950: 'rgb(var(--color-brand-950) / <alpha-value>)',
+          // text-brand-ink — the accent as FOREGROUND. Flips to brand-400 in dark,
+          // where brand-600 is only 2.6:1 on the card. Use this for links and active
+          // affordances; keep the numeric shades for fills.
+          ink: 'rgb(var(--color-brand-ink) / <alpha-value>)',
         },
         surface: {
           0: '#FFFFFF',
@@ -54,6 +58,8 @@ export default {
         page:    'var(--color-bg-page)',
         card:    'var(--color-bg-card)',
         elev:    'var(--color-bg-elev)',
+        // bg-selected — multi-select row tint. Opaque; see tokens.css for why.
+        selected: 'var(--color-bg-selected)',
         sidebar: 'var(--color-bg-sidebar)',
         header:  'var(--color-bg-header)',
 

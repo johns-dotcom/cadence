@@ -201,6 +201,71 @@ Both render one shared shell — `components/mywork/TaskSurface.jsx` with a
   a cross-page view engine, subtasks/recurrence, tasks in `search.js`,
   `/team-work` in `BottomNav` (5 slots already full).
 
+### UI defect pass (2026-08-12) — new shared primitives
+
+A follow-up pass on the above. **Three new reusable primitives, usable app-wide:**
+
+- **`hooks/useEscapeStack.js`** — ONE `document` **capture**-phase listener draining a
+  LIFO stack of overlay owners. Every other keydown listener in the app is on the
+  bubble end (`useHotkeys`, `Layout`'s ⌘K/`g`-nav, `Ledger`, `Approvals`), so
+  capture + `stopPropagation` gives Escape to the topmost overlay and guarantees the
+  page never sees it. This fixed Escape-in-a-popover clearing a 12-row selection, and
+  the drawer + page both firing for one keypress. **Consequence to know: it also
+  pre-empts React's synthetic `onKeyDown`, so a React Escape handler on a field
+  *inside* a registered overlay will not run — handle it from the overlay's
+  `onClose`.** `BottomSheet` now uses it instead of its own listener.
+- **`hooks/useFocusTrap.js`** — returns a ref for a dialog panel (which also needs
+  `tabIndex={-1}`). Focuses the panel, not its first field; restores focus only
+  `if (document.contains(prev))`. Container-`keydown`, **not** a `focusin` sentinel —
+  these dialogs open `window.confirm` and OS file pickers, which move focus out of the
+  document and back. `aria-modal` + a real trap is the complete fix: no `inert`, no
+  `aria-hidden` on the background.
+- **`ui/Modal` + `ui/ConfirmDialog`** — portalled, focus-trapped, Escape-stacked,
+  scroll-locked. Markup matches the ~35 hand-rolled `fixed inset-0` overlays in
+  `pages/`, so they're drop-in replacements for those and for the 34 remaining
+  `window.confirm` sites. `mywork/Popover.jsx` (extracted from the toolbar) is the
+  anchored equivalent, degrading to `BottomSheet` on mobile.
+
+**Token additions** (`tokens.css` + `tailwind.config.js`), still zero `dark:` variants
+anywhere: **`text-brand-ink`** — the accent as *foreground*, since `brand-600` is only
+2.6:1 on the dark card; defined as `var()` indirection so `utils/branding.js`'s inline
+per-workspace accent still flows through. **`bg-selected`** — opaque multi-select row
+tint via `color-mix()` (the repo's first; floor Chrome 111/Safari 16.2/FF 113), opaque
+because the table's frozen first cell must paint over the cells sliding under it.
+`.btn-secondary` gained the focus ring it never had.
+
+**What was actually broken** (the feature was mouse-only and low-contrast): `TaskCard`
+was a `<div onClick>` → now `role="button"` + Enter/Space; the drawer declared
+`aria-modal` and did none of the work; the bulk bar's three native `<select>`s fired
+`change` on every arrow keypress, so tabbing in and pressing ↓↓↓ applied three
+statuses to the whole selection → now menu buttons, plus in-flight disable and
+don't-clear-selection-on-failure; the bar sat at `z-50` over `BottomNav`'s `z-30`,
+hiding all navigation below 1024px. All metadata was `text-gray-400` (≈2.4:1) and state
+words like "Empty" `text-gray-300` (≈1.5:1) → `text-ink-muted`/`ink-faint`; raw
+`red/amber/emerald-600` → `text-danger/warning/success`; five `bg-brand-50` fills went
+near-white in dark (`text-ink` on them was **1.14:1** — the text was gone) → `bg-brand-500/10`
+hover, `/15` state. There was **no filtered-empty state** at all, and the error state
+had no Retry. The Workload bar was `open / peak`, so the busiest person was always
+full — now absolute against `labels.settings.task_capacity` (default 10, set on
+Settings → Team; no migration, `PATCH /api/label` already shallow-merges `settings`),
+with an inline-style width replacing an 11-step quantization map.
+
+**Two things a build can't catch, found in review:** `box-shadow` on a `<tr>` is not
+painted by Blink/WebKit under `border-collapse: collapse`, so the table's drop-insertion
+line never rendered — it now lives on the `<td>`s via a static `CELL_SHADOW` map (and
+**not** via `border-separate`, which would silently delete every `divide-y` row
+border). And two `!important` background utilities tie on specificity, so `!bg-elev`
+beat `!bg-brand-500/15` on stylesheet order and the board's drop-target fill was dead.
+
+**Deliberately not done:** the visual-hierarchy redesign (group labels still outrank
+task names; six card paddings; five sub-14px type sizes), keyboard drag-and-drop, and
+a `useHotkeys` focused-button guard — that last one would break `ReleaseDetail`'s
+click-a-tab-then-press-2 flow, and page hotkeys working while a button holds focus is
+standard. Logged for later: in `tokens.css`'s `.dark` block `--color-gray-50` and
+`--color-gray-100` are the **same colour**, which is why all 74 `hover:bg-gray-50` and
+96 `bg-gray-100` sites app-wide are near-invisible in dark; retuning it needs a
+`ui/Badge` neutral-tone re-audit.
+
 ---
 
 ## Stack & deploy (as built — matches spec §2 unless noted)

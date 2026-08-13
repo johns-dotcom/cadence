@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Upload, Trash2, Check, Link2, Copy, RefreshCw, Plus, X, LayoutDashboard, Mail, Send } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Upload, Trash2, Check, Link2, Copy, RefreshCw, Plus, X, LayoutDashboard, Mail, Send, Gauge } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
@@ -54,6 +55,8 @@ export default function Settings() {
   // Outbound email identity
   const [replyTo, setReplyTo] = useState('')
   const [savingEmail, setSavingEmail] = useState(false)
+  const [taskCapacity, setTaskCapacity] = useState('10')
+  const [savingCapacity, setSavingCapacity] = useState(false)
   const [testing, setTesting] = useState(false)
 
   useEffect(() => {
@@ -70,6 +73,7 @@ export default function Settings() {
       setDashWidgets(s.dashboard?.widgets || {})
       setPinned(Array.isArray(s.dashboard?.pinned) ? s.dashboard.pinned : [])
       setReplyTo(s.email_reply_to || '')
+      setTaskCapacity(String(s.task_capacity || 10))
     }).catch(() => {})
   }, [isAdmin])
 
@@ -127,6 +131,22 @@ export default function Settings() {
     try { const { data } = await api.post('/label/test-email'); toast(`Test email sent to ${data.data.to}`) }
     catch (err) { toast(err.response?.data?.error || 'Failed to send — check your email provider is configured', 'error') }
     finally { setTesting(false) }
+  }
+
+  // Target open-task count per person, powering the Team Work workload bars. Saved
+  // as its own settings sub-section — PATCH /api/label shallow-merges `settings`, so
+  // each section writes independently.
+  const saveCapacity = async (e) => {
+    e.preventDefault()
+    const n = parseInt(taskCapacity, 10)
+    if (!Number.isInteger(n) || n < 1 || n > 200) { toast('Enter a number between 1 and 200', 'error'); return }
+    setSavingCapacity(true)
+    try {
+      const { data } = await api.patch('/label', { settings: { task_capacity: n } })
+      updateLabel({ settings: data.data.settings })
+      toast('Workload target saved')
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+    finally { setSavingCapacity(false) }
   }
 
   const toggleWidget = (k) => setDashWidgets(w => ({ ...w, [k]: w[k] === false ? true : false }))
@@ -409,6 +429,29 @@ export default function Settings() {
 
         {/* ── Team ── */}
         {tab === 'team' && isAdmin && (<>
+          <form onSubmit={saveCapacity} className="card p-5">
+            <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><Gauge size={15} /> Workload target</h2>
+            <p className="text-xs text-ink-muted mb-4">
+              How many open tasks one person is expected to carry. The load bars on{' '}
+              <Link to="/team-work" className="text-brand-ink hover:underline font-medium">Team Work</Link>{' '}
+              fill against this, so anyone above it reads as over capacity.
+            </p>
+            <div className="max-w-[10rem]">
+              <label className="label" htmlFor="task-capacity">Open tasks per person</label>
+              <input
+                id="task-capacity"
+                className="input"
+                type="number"
+                min={1}
+                max={200}
+                value={taskCapacity}
+                onChange={e => setTaskCapacity(e.target.value)}
+              />
+            </div>
+            <button type="submit" disabled={savingCapacity} className="btn-primary mt-4">
+              {savingCapacity ? 'Saving…' : 'Save workload target'}
+            </button>
+          </form>
           <PermissionsManager />
           <RepsManager />
         </>)}

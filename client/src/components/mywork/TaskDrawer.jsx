@@ -10,6 +10,9 @@ import { Link } from 'react-router-dom'
 import { Trash2, X } from 'lucide-react'
 import ObjectDiscussion from '../ObjectDiscussion'
 import Button from '../ui/Button'
+import ConfirmDialog from '../ui/ConfirmDialog'
+import useEscapeStack from '../../hooks/useEscapeStack'
+import useFocusTrap from '../../hooks/useFocusTrap'
 import { TASK_STATUSES, PRIORITIES } from '../../constants'
 import { formatDate } from '../../utils/dates'
 import { categoriesIn, dueLabel } from './taskFields'
@@ -17,6 +20,7 @@ import { categoriesIn, dueLabel } from './taskFields'
 export default function TaskDrawer({ task, tasks, members, canEdit, canAssign, canUnassign = false, onClose, onPatch, onDelete }) {
   const [notes, setNotes] = useState('')
   const [notesDirty, setNotesDirty] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   // Notes commit on blur, but closing the drawer (or switching task) fires no blur,
   // and this component stays MOUNTED across a close — `task` just goes null — so an
@@ -39,19 +43,28 @@ export default function TaskDrawer({ task, tasks, members, canEdit, canAssign, c
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task?.id])
 
+  // While open, the drawer OWNS Escape (hooks/useEscapeStack.js). It consumes the
+  // key even when it declines to close, so the page-level handler can never clear a
+  // multi-select out from under an open drawer. Previously both this and
+  // TaskSurface's useHotkeys fired for one keypress.
+  useEscapeStack(!!task, (e) => {
+    // Don't close out from under someone typing — Escape mid-notes would throw away
+    // the draft. Declining still consumes the key.
+    const el = e.target
+    if (el && (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable)) return
+    onClose()
+  })
+
+  // aria-modal="true" is a promise to assistive tech that focus stays inside; these
+  // two make it true. Without them, Tab from an open drawer walked straight into the
+  // sidebar behind it and the board scrolled under a stray wheel.
+  const panelRef = useFocusTrap(!!task)
   useEffect(() => {
-    const onKey = (e) => {
-      if (e.key !== 'Escape') return
-      // Don't close out from under someone typing — useHotkeys guards this for
-      // page-level keys, but this listener is raw, and Escape mid-notes would
-      // otherwise throw away the draft.
-      const el = e.target
-      if (el && (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable)) return
-      onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+    if (!task) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = prev }
+  }, [!!task]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!task) return null
 
@@ -67,17 +80,26 @@ export default function TaskDrawer({ task, tasks, members, canEdit, canAssign, c
   }
 
   const remove = () => {
-    if (!window.confirm(`Delete “${task.description}”? This cannot be undone.`)) return
+    setConfirmDelete(false)
+    // Drop the pending notes draft first: the [task?.id] cleanup below would
+    // otherwise PATCH notes onto the row we just deleted and toast "Save failed".
+    pending.current = { id: null, notes: '', dirty: false }
+    setNotesDirty(false)
     onDelete(task.id)
     onClose()
   }
 
-  const field = 'w-full text-sm bg-card border border-rule rounded-lg px-2 py-1.5 disabled:opacity-60'
+  // `.input` rather than a hand-rolled string: the previous local style was px-2
+  // py-1.5 with no focus ring, so the drawer's fields were visibly tighter than the
+  // quick-add form's on the same page and focused invisibly.
+  const field = 'input disabled:opacity-60'
 
   return (
     <div className="fixed inset-0 z-[60] flex justify-end bg-overlay" onClick={onClose}>
       <div
-        className="w-full max-w-md bg-card h-full overflow-y-auto shadow-modal flex flex-col"
+        ref={panelRef}
+        tabIndex={-1}
+        className="w-full max-w-md bg-card h-full overflow-y-auto shadow-modal flex flex-col outline-none"
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -85,10 +107,10 @@ export default function TaskDrawer({ task, tasks, members, canEdit, canAssign, c
       >
         <div className="sticky top-0 bg-card border-b border-divider px-4 py-3 flex items-start justify-between gap-2 z-10">
           <div className="min-w-0">
-            <p className="text-xs text-gray-400">{task.assignee_name || 'Unassigned'} · {dueLabel(task)}</p>
+            <p className="text-xs text-ink-muted">{task.assignee_name || 'Unassigned'} · {dueLabel(task)}</p>
             <h2 className="text-sm font-semibold text-ink break-words">{task.description}</h2>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-ink flex-shrink-0" aria-label="Close"><X size={18} /></button>
+          <button onClick={onClose} className="text-ink-muted hover:text-ink flex-shrink-0 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400" aria-label="Close"><X size={18} /></button>
         </div>
 
         <div className="p-4 space-y-4 flex-1">
@@ -135,7 +157,7 @@ export default function TaskDrawer({ task, tasks, members, canEdit, canAssign, c
               )}
               {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
-            {!canAssign && <p className="text-[11px] text-gray-400 mt-1">Only team leads can reassign.</p>}
+            {!canAssign && <p className="text-[11px] text-ink-muted mt-1">Only team leads can reassign.</p>}
           </div>
 
           <div>
@@ -149,12 +171,17 @@ export default function TaskDrawer({ task, tasks, members, canEdit, canAssign, c
               onBlur={saveNotes}
               placeholder="Longer detail, links, context…"
             />
-            {notesDirty && <p className="text-[11px] text-amber-600 mt-1">Unsaved — click outside to save.</p>}
+            {notesDirty && (
+              <div className="flex items-center gap-2 mt-1">
+                <Button size="sm" variant="secondary" onClick={saveNotes}>Save notes</Button>
+                <span className="text-[11px] text-warning">Unsaved</span>
+              </div>
+            )}
           </div>
 
-          <div className="text-[11px] text-gray-400 space-y-0.5">
+          <div className="text-[11px] text-ink-muted space-y-0.5">
             {task.release_name && (
-              <p>Release: <Link to={`/releases/${task.release_id}`} className="text-brand-600 hover:underline">{task.release_name}</Link></p>
+              <p>Release: <Link to={`/releases/${task.release_id}`} className="text-brand-ink hover:underline">{task.release_name}</Link></p>
             )}
             {task.assigner_name && <p>Assigned by {task.assigner_name}</p>}
             {task.completed_at && <p>Completed {formatDate(task.completed_at)}</p>}
@@ -169,11 +196,22 @@ export default function TaskDrawer({ task, tasks, members, canEdit, canAssign, c
         </div>
 
         <div className="sticky bottom-0 bg-card border-t border-divider px-4 py-3 flex items-center justify-between">
-          <Button variant="danger" size="sm" onClick={remove} disabled={!canEdit}>
+          <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)} disabled={!canEdit}>
             <Trash2 size={14} /> Delete
           </Button>
           <Button variant="secondary" size="sm" onClick={onClose}>Close</Button>
         </div>
+
+        {/* Was a native confirm interpolating an unbounded description — a long task
+            title produced an unreadable wall of text. */}
+        <ConfirmDialog
+          open={confirmDelete}
+          onClose={() => setConfirmDelete(false)}
+          onConfirm={remove}
+          title="Delete task"
+          message={`“${String(task.description).slice(0, 80)}${String(task.description).length > 80 ? '…' : ''}” will be permanently deleted. This can't be undone.`}
+          confirmLabel="Delete task"
+        />
       </div>
     </div>
   )

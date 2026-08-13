@@ -44,6 +44,20 @@
   --color-brand-900:  49  46 129;
   --color-brand-950:  30  27  75;
 
+  /* The accent used as FOREGROUND (links, active affordances, "Today", "+N more").
+   * brand-600 is only 2.6:1 on the dark card, so this indirects to brand-400 under
+   * .dark. It is a var REFERENCE, not a literal, which is what lets it keep tracking
+   * a custom workspace accent: utils/branding.js writes --color-brand-<shade> as
+   * inline styles on <html>, and an inline literal here would outrank the .dark rule. */
+  --color-brand-ink: var(--color-brand-600);
+
+  /* Multi-select row tint. OPAQUE on purpose: the task table's frozen first cell has
+   * to paint over the cells sliding underneath it during horizontal scroll, so a
+   * translucent tint would either let them show through or double-composite where the
+   * <tr> and <td> backgrounds overlap. color-mix keeps it following both the runtime
+   * accent and the theme. */
+  --color-bg-selected: color-mix(in srgb, rgb(var(--color-brand-500)) 12%, var(--color-bg-card));
+
   /* Tailwind gray palette as RGB triplets (space-separated), consumed via
    * rgb(var(--…) / <alpha-value>) in tailwind.config.js. Light = Tailwind v3
    * defaults; dark values mirror them below. */
@@ -65,6 +79,13 @@
   --color-bg-elev:    #232734;
   --color-bg-sidebar: #161824;
   --color-bg-header:  #131520;
+
+  /* brand-600 is 2.6:1 on the dark card; brand-400 is 5.5:1. The brand SCALE stays
+   * identical across themes (below) so brand identity is stable — only this
+   * foreground alias flips. */
+  --color-brand-ink: var(--color-brand-400);
+  /* A heavier mix: the same percentage reads weaker against a dark base. */
+  --color-bg-selected: color-mix(in srgb, rgb(var(--color-brand-500)) 18%, var(--color-bg-card));
 
   --color-border:       #2e3340;
   --color-border-light: #1f222c;

@@ -24,8 +24,15 @@ export default function TaskBoard({
           <div
             key={group.key}
             {...(groupDragProps?.(group) || {})}
-            className={`bg-elev border rounded-2xl p-3 snap-start min-w-[16rem] flex-shrink-0 md:min-w-0 transition
-              ${isTarget ? 'border-brand-400 bg-brand-50/40' : 'border-rule'}
+            // .card composed rather than reimplemented, so a column and the cards
+            // inside it share the same border and shadow tokens. bg-elev overrides
+            // the card surface to keep the column recessed behind its cards.
+            // bg-elev is NOT !important: two !important background utilities tie on
+            // specificity and the later one in the stylesheet wins, which made the
+            // drop-target fill below dead on every column. A plain utility already
+            // outranks .card's bg-card, since utilities layer after components.
+            className={`card bg-elev p-3 snap-start min-w-[16rem] flex-shrink-0 md:min-w-0 transition
+              ${isTarget ? '!border-brand-400 !bg-brand-500/15' : ''}
               ${crossing && !droppable ? 'opacity-60' : ''}`}
           >
             <GroupHeader
@@ -34,7 +41,6 @@ export default function TaskBoard({
               onToggle={() => onToggleGroup(group.key)}
               onAdd={onAdd}
               droppable={droppable}
-              dragOver={isTarget}
             />
 
             {!isCollapsed && (
@@ -55,7 +61,7 @@ export default function TaskBoard({
                   />
                 ))}
                 {group.items.length === 0 && (
-                  <p className="text-xs text-gray-300 px-1 py-3 text-center">
+                  <p className="text-xs text-ink-muted px-1 py-3 text-center">
                     {crossing && droppable ? 'Drop here' : 'Empty'}
                   </p>
                 )}

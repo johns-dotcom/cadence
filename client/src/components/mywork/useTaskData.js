@@ -134,6 +134,10 @@ export default function useTaskData(surface = 'mine') {
   /**
    * Multi-select edit. The server skips out-of-scope ids rather than failing the
    * batch, so report the shortfall instead of implying everything landed.
+   *
+   * Returns the updated rows, or NULL if the request failed — the caller needs to
+   * tell those apart, because clearing the selection after a failure throws away
+   * the user's work along with the error.
    */
   const bulkPatch = useCallback(async (ids, fields) => {
     try {
@@ -146,7 +150,7 @@ export default function useTaskData(surface = 'mine') {
       return rows
     } catch (err) {
       toast(err.response?.data?.error || 'Bulk update failed', 'error')
-      return []
+      return null
     }
   }, [toast])
 

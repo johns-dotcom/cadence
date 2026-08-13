@@ -1,20 +1,23 @@
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
+import useEscapeStack from '../../hooks/useEscapeStack'
 
 // Slide-up mobile drawer (detail views, action menus, filter panels). Portals
 // to document.body to escape overflow/stacking contexts; closes on backdrop tap
 // or Escape; locks body scroll while open. Semantic tokens = dark-mode native.
 export default function BottomSheet({ open, onClose, title, children, footer }) {
   const panelRef = useRef(null)
+  // Escape goes through the shared overlay stack (hooks/useEscapeStack.js) rather
+  // than a local listener, so a sheet opened over a page with its own Escape
+  // handler consumes the key instead of both firing.
+  useEscapeStack(open, onClose)
   useEffect(() => {
     if (!open) return
-    const onKey = (e) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', onKey)
     const prev = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = prev }
-  }, [open, onClose])
+    return () => { document.body.style.overflow = prev }
+  }, [open])
 
   if (!open) return null
 
