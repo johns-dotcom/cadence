@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Plus, X, Trash2, AtSign, Receipt } from 'lucide-react'
+import { ArrowLeft, Sparkles, Loader2, Plus, X, Trash2, AtSign, Receipt } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Dropzone from '../components/Dropzone'
@@ -13,7 +13,9 @@ const BLANK_SOCIAL = () => ({ platform: 'Instagram', handle: '', amount: '' })
 const BLANK_SPLIT = () => ({ artist: '', song: '', amount: '', socials: [] })
 
 // Internal "Add invoice" — a team member manually enters/uploads an invoice
-// (or a reimbursement). Uploading the invoice auto-parses it; a proof of
+// (or a reimbursement). Parsing the invoice with AI is an explicit button, not a
+// side effect of uploading: every parse spends one of the workspace's monthly AI
+// requests, and auto-parsing spent another on every replacement. A proof of
 // payment auto-marks it paid; and the amount can be split across artists (and
 // socials with amounts) which are created as ledger splits on save. Staff
 // entries are created approved (they don't route through Approvals).
@@ -25,6 +27,10 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
   const [isReimb, setIsReimb] = useState(mode === 'reimbursement')
   const [saving, setSaving] = useState(false)
   const [scanning, setScanning] = useState(false)
+  const [parsed, setParsed] = useState(false)
+  // `currency` defaults to 'USD' and is therefore never blank, so the usual
+  // fill-blanks-only rule can't express "leave the user's choice alone" for it.
+  const [currencyTouched, setCurrencyTouched] = useState(false)
   const [dup, setDup] = useState(null)
   const [reps, setReps] = useState([])
 
@@ -48,29 +54,39 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
     catch { setDup(null) }
   }
 
-  const onInvoice = (file) => { setFiles(f => ({ ...f, invoice_file: file })); if (file) setTimeout(() => scanInvoice(file), 0) }
-  const scanInvoice = async (file) => {
-    const f = file || files.invoice_file
-    if (!f) return
+  // Choosing a file no longer parses it — see the Parse button below. Reset `parsed`
+  // so a replacement file doesn't inherit the previous one's state.
+  const onInvoice = (file) => { setFiles(f => ({ ...f, invoice_file: file })); setParsed(false) }
+
+  const scanInvoice = async () => {
+    const f = files.invoice_file
+    // Guard: there was no double-fire check and no way to cancel an in-flight parse,
+    // so two overlapping requests could let the REPLACED file's data win.
+    if (!f || scanning) return
     setScanning(true)
     try {
       const fd = new FormData(); fd.append('file', f)
       const { data } = await api.post('/ledger/parse-invoice', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
       const d = data.data
+      // Fill blanks only — whatever you typed wins.
       setForm(prev => ({
         ...prev,
         payee: prev.payee || d.vendor_name || '',
         amount: prev.amount || (d.amount != null ? String(d.amount) : ''),
-        currency: d.currency || prev.currency,
+        currency: currencyTouched ? prev.currency : (d.currency || prev.currency),
         invoice_number: prev.invoice_number || d.invoice_number || '',
         invoice_date: prev.invoice_date || d.invoice_date || '',
         category: prev.category || d.category || '',
         payment_method: prev.payment_method || d.payment_method || '',
         description: prev.description || d.description || '',
       }))
-      if (file) toast('Invoice parsed — review the fields')
-    } catch { if (!file) toast('Could not read the invoice', 'error') }
-    finally { setScanning(false) }
+      setParsed(true)
+      toast('Invoice parsed — review the fields')
+    } catch (err) {
+      // Always surfaced now. The old auto path swallowed everything, including the
+      // 403 non-approvers get from this endpoint and the monthly AI-limit 502.
+      toast(err.response?.data?.error || 'Could not read the invoice', 'error')
+    } finally { setScanning(false) }
   }
 
   // Socials (top-level, used when not splitting)
@@ -141,8 +157,26 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
         {/* Invoice upload */}
         <div>
           <Dropzone value={files.invoice_file} onChange={onInvoice} accept="application/pdf,image/*" label="Drag or click to upload invoice" hint="PDF, JPG, or PNG" />
-          {scanning && <p className="text-[11px] text-gray-400 mt-1 inline-flex items-center gap-1"><Sparkles size={11} className="animate-pulse" /> Reading the invoice…</p>}
-          {files.invoice_file && !scanning && <button type="button" onClick={() => scanInvoice()} className="text-xs font-semibold text-brand-600 hover:underline mt-1 inline-flex items-center gap-1"><Sparkles size={12} /> Re-parse</button>}
+
+          {/* Explicit action, matching the /contracts/draft-clause control. Gated on
+              isApprover because POST /ledger/parse-invoice sits below requireApprover
+              while /add-invoice itself is open to any member — showing the button to
+              them would guarantee a 403. */}
+          {files.invoice_file && isApprover && (
+            <div className="rounded-xl border border-dashed border-rule bg-page/40 p-3 mt-2">
+              <div className="flex items-center gap-1.5 mb-2">
+                <Sparkles size={14} className="text-brand-600" />
+                <span className="text-xs font-semibold text-ink">Fill fields from the invoice</span>
+              </div>
+              <button type="button" onClick={scanInvoice} disabled={scanning} className="btn-secondary !py-1.5">
+                {scanning ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                {scanning ? 'Reading the invoice…' : parsed ? 'Parse again' : 'Parse invoice'}
+              </button>
+              <p className="text-[11px] text-gray-400 mt-1.5">
+                Only empty fields are filled — your edits are kept. AI features require a configured key.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Reimbursement toggle */}
@@ -168,7 +202,8 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
           <div><label className="label">Song</label><input className="input" value={form.song} onChange={set('song')} disabled={splitOn} /></div>
           {!isReimb && <div><label className="label">Invoice # *</label><input className="input" value={form.invoice_number} onChange={set('invoice_number')} onBlur={checkDup} /></div>}
           <div><label className="label">Amount *</label><input type="number" step="0.01" className="input" value={form.amount} onChange={set('amount')} /></div>
-          <div><label className="label">Currency</label><select className="input" value={form.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          {/* Setting this by hand opts out of the parse overwriting it. */}
+          <div><label className="label">Currency</label><select className="input" value={form.currency} onChange={e => { setCurrencyTouched(true); set('currency')(e) }}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
           <div><label className="label">Payment method</label><select className="input" value={form.payment_method} onChange={set('payment_method')}><option value="">Select method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
           <div><label className="label">Rep</label>{reps.length ? <select className="input" value={form.rep} onChange={set('rep')}><option value="">—</option>{reps.map(r => <option key={r}>{r}</option>)}</select> : <input className="input" value={form.rep} onChange={set('rep')} />}</div>
           {isApprover && (
@@ -228,7 +263,9 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
         </div>
 
         <div className="flex justify-end">
-          <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving…' : (isReimb ? 'Add reimbursement' : 'Add invoice')}</button>
+          {/* Blocked mid-parse: the response would otherwise patch a form that has
+              already navigated away. */}
+          <button type="submit" disabled={saving || scanning} className="btn-primary">{saving ? 'Saving…' : (isReimb ? 'Add reimbursement' : 'Add invoice')}</button>
         </div>
       </form>
     </div>
