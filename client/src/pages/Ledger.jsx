@@ -188,7 +188,7 @@ export default function Ledger() {
     { key: 'payment_ref', label: 'Ref', render: en => <EditCell en={en} field="payment_ref" display={<span className="text-gray-500 whitespace-nowrap">{en.payment_ref || '—'}</span>} {...editProps} /> },
     { key: 'invoice_file', label: 'Invoice', render: en => <FileCell en={en} type="invoice" r2key={en.invoice_r2_key} openFile={openFile} onUploaded={load} toast={toast} /> },
     { key: 'w9_file', label: 'W9', render: en => <FileCell en={en} type="w9" r2key={en.w9_r2_key} openFile={openFile} onUploaded={load} toast={toast} /> },
-    { key: 'receipt_file', label: 'Receipt / proof', render: en => <FileCell en={en} type="receipt" r2key={en.receipt_r2_key} openFile={openFile} onUploaded={load} toast={toast} /> },
+    { key: 'receipt_file', label: 'Receipt / proof', render: en => <FileCell en={en} type="receipt" r2key={(en.receipt_r2_key || en.proof_r2_key)} openFile={openFile} onUploaded={load} toast={toast} /> },
     { key: 'files', label: 'Files', render: en => <FilesCell en={en} openFile={openFile} /> },
   ]
   const ALL_KEYS = COLS.map(c => c.key)
@@ -639,8 +639,8 @@ function FilesCell({ en, openFile }) {
     <div className="flex gap-1.5">
       {en.invoice_r2_key && <button onClick={() => openFile(en.id, 'invoice')} title="Invoice" className="text-gray-400 hover:text-brand-600"><Paperclip size={14} /></button>}
       {en.w9_r2_key && <button onClick={() => openFile(en.id, 'w9')} title="W9" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">W9</button>}
-      {en.receipt_r2_key && <button onClick={() => openFile(en.id, 'receipt')} title="Receipt" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">RCT</button>}
-      {!en.invoice_r2_key && !en.w9_r2_key && !en.receipt_r2_key && <span className="text-gray-300">—</span>}
+      {(en.receipt_r2_key || en.proof_r2_key) && <button onClick={() => openFile(en.id, 'receipt')} title="Receipt" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">RCT</button>}
+      {!en.invoice_r2_key && !en.w9_r2_key && !(en.receipt_r2_key || en.proof_r2_key) && <span className="text-gray-300">—</span>}
     </div>
   )
 }

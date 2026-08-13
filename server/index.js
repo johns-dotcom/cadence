@@ -556,6 +556,12 @@ const runMigrations = async () => {
   // Proof-of-payment file on partial-payment installments.
   await pool.query(`ALTER TABLE payment_installments ADD COLUMN IF NOT EXISTS proof_r2_key TEXT`);
   await pool.query(`ALTER TABLE payment_installments ADD COLUMN IF NOT EXISTS proof_filename TEXT`);
+  // Proof of PAYMENT on the entry itself, deliberately NOT reusing receipt_r2_key:
+  // on a reimbursement that column holds the expense receipt being claimed (required
+  // by the add form), so writing a payment proof there would destroy the document
+  // that justifies the claim. The Payments page merely labels receipt_* as "Proof".
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS proof_r2_key TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS proof_filename TEXT`);
   // Vendor aliases — alternate spellings that should resolve to one canonical
   // vendor name (used by dup-check, rename, and merge). Label-scoped.
   await pool.query(`

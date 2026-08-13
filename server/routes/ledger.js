@@ -62,6 +62,12 @@ const router = express.Router();
 router.use(authMiddleware, withTenant);
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+// How long a PAID row keeps showing on the Payments list before it drops to the
+// ledger. Shared by /payables and /payment-stats so the list and the stat card can
+// never disagree about what counts as "recent". A compile-time integer, never user
+// input — safe to interpolate into SQL.
+const PAID_GRACE_DAYS = 7;
 const fileFields = upload.fields([
   { name: 'invoice_file', maxCount: 1 },
   { name: 'w9_file', maxCount: 1 },
@@ -479,7 +485,20 @@ router.get('/payables', async (req, res) => {
     // Only family HEADS (parent_id IS NULL). Split families collapse into their
     // parent row here; `family_amount` sums the whole family (parent slice +
     // children) since paying any member pays them all (item 1 cascade).
-    let where = `e.label_id = $1 AND e.status = 'approved' AND e.payment_status IN ('Unpaid', 'Partial')
+    // Recently-paid rows linger here for PAID_GRACE_DAYS instead of vanishing the
+    // moment they're paid, so you can see what you just did (and undo a mistake)
+    // before it drops to the ledger.
+    //
+    // COALESCE because paid_marked_at is NULL on rows created already-paid, on
+    // imports, on split children and on artist-campaign writes — keying on it alone
+    // would silently hide those. payment_date is the fallback rather than the
+    // primary because it's user-editable and can be backdated.
+    let where = `e.label_id = $1 AND e.status = 'approved'
+       AND (
+         e.payment_status IN ('Unpaid', 'Partial')
+         OR (e.payment_status = 'Paid'
+             AND COALESCE(e.paid_marked_at, e.payment_date::timestamp) >= NOW() - INTERVAL '${PAID_GRACE_DAYS} days')
+       )
        AND (e.deleted = false OR e.deleted IS NULL) AND (e.voided = false OR e.voided IS NULL)
        AND e.parent_id IS NULL`;
     const reps = await visibleReps(req);
@@ -489,7 +508,7 @@ router.get('/payables', async (req, res) => {
          (SELECT COUNT(*)::int FROM expenses c WHERE c.parent_id = e.id AND (c.deleted = false OR c.deleted IS NULL)) AS split_count,
          (e.amount + COALESCE((SELECT SUM(c.amount) FROM expenses c WHERE c.parent_id = e.id AND (c.deleted = false OR c.deleted IS NULL)), 0)) AS family_amount
        FROM expenses e WHERE ${where}
-       ORDER BY e.scheduled_payment_date ASC NULLS LAST, e.invoice_date ASC NULLS LAST, e.id ASC`,
+       ORDER BY (e.payment_status = 'Paid'), e.scheduled_payment_date ASC NULLS LAST, e.invoice_date ASC NULLS LAST, e.id ASC`,
       params
     );
     res.json({ success: true, data: rows });
@@ -572,7 +591,13 @@ router.post('/entries/:id/pay-with-proof', upload.single('proof'), async (req, r
     if (req.file && claude.isEnabled()) {
       const r = await claude.extractFromFile({ buffer: req.file.buffer, mimeType: req.file.mimetype, schema: PROOF_SCHEMA, maxTokens: 512,
         instruction: 'This is a proof of payment (bank confirmation, wire receipt, or screenshot). Extract payment_date (YYYY-MM-DD), reference (confirmation/reference number), and method (ACH, Wire, Check, PayPal, etc.). Use null for anything not present.' }).catch(() => null);
-      if (r?.ok) { date = date || r.data.payment_date; ref = ref || r.data.reference; method = method || r.data.method; }
+      // Validate the shape before trusting it: PROOF_SCHEMA only constrains the type,
+      // so a model answering "N/A" or "Aug-2026" would reach a DATE column and 500.
+      if (r?.ok) {
+        if (!date && /^\d{4}-\d{2}-\d{2}$/.test(String(r.data.payment_date || ''))) date = r.data.payment_date;
+        ref = ref || r.data.reference;
+        method = method || r.data.method;
+      }
     }
     let proof = { key: null, filename: null };
     if (req.file) proof = await storeFile(req.labelId, req.file, 'proof');
@@ -592,6 +617,20 @@ router.post('/entries/:id/pay-with-proof', upload.single('proof'), async (req, r
        RETURNING *`,
       [date, method, ref, req.user.name, req.labelId, id]
     );
+    // Surface the proof on the ENTRY too, not just the installment row above —
+    // otherwise paying with proof leaves the Payments row's Proof link grey, the
+    // mirror image of an inline upload turning it green without marking paid.
+    //
+    // Deliberately LAST: these statements are separate autocommits, so recording the
+    // proof before the pay could leave a row with a Proof link, still Unpaid, and no
+    // drop zone left to retry from. Written to `id` alone, not the family — the proof
+    // documents the row it was dropped on, always the family head on this page.
+    if (proof.key) {
+      await pool.query(
+        'UPDATE expenses SET proof_r2_key = $1, proof_filename = $2 WHERE id = $3 AND label_id = $4',
+        [proof.key, proof.filename, id, req.labelId]
+      );
+    }
     rows.forEach(r => stampFxRateAsync(r.id));
     await logActivity(req, 'Paid via proof', `${rows[0]?.payee} — ${rows[0]?.amount}`);
     res.json({ success: true, data: { paid: rows.length, payment_date: date, reference: ref } });
@@ -894,10 +933,12 @@ router.post('/vendors/scan-w9s', requireAdmin, async (req, res) => {
   }
 });
 
-// GET /api/ledger/entries/:id/file/:type — signed URL for invoice|w9|receipt
+// GET /api/ledger/entries/:id/file/:type — signed URL for invoice|w9|receipt|proof
 router.get('/entries/:id/file/:type', async (req, res) => {
   try {
-    const col = { invoice: 'invoice_r2_key', w9: 'w9_r2_key', receipt: 'receipt_r2_key' }[req.params.type];
+    // `receipt` is the expense receipt (what a reimbursement is claiming); `proof` is
+    // proof of PAYMENT. Two different documents, two different columns.
+    const col = { invoice: 'invoice_r2_key', w9: 'w9_r2_key', receipt: 'receipt_r2_key', proof: 'proof_r2_key' }[req.params.type];
     if (!col) return res.status(400).json({ success: false, error: 'Invalid file type' });
     const { rows } = await pool.query(
       `SELECT ${col} AS key FROM expenses WHERE id = $1 AND label_id = $2`,
@@ -916,7 +957,7 @@ router.get('/entries/:id/file/:type', async (req, res) => {
 // receipt) on an existing entry, straight from the ledger.
 router.post('/entries/:id/file/:type', upload.single('file'), async (req, res) => {
   try {
-    const cols = { invoice: ['invoice_r2_key', 'invoice_filename'], w9: ['w9_r2_key', 'w9_filename'], receipt: ['receipt_r2_key', 'receipt_filename'] }[req.params.type];
+    const cols = { invoice: ['invoice_r2_key', 'invoice_filename'], w9: ['w9_r2_key', 'w9_filename'], receipt: ['receipt_r2_key', 'receipt_filename'], proof: ['proof_r2_key', 'proof_filename'] }[req.params.type];
     if (!cols) return res.status(400).json({ success: false, error: 'Invalid file type' });
     if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
     const cur = await pool.query('SELECT id FROM expenses WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId]);
@@ -1092,7 +1133,7 @@ router.delete('/entries/:id/splits', async (req, res) => {
     if (!kids.length) { await client.query('ROLLBACK'); return res.status(400).json({ success: false, error: 'This entry is not split' }); }
 
     // Refuse when a child carries its own attachments…
-    const withFiles = kids.filter(k => k.invoice_r2_key || k.receipt_r2_key || k.w9_r2_key);
+    const withFiles = kids.filter(k => k.invoice_r2_key || k.receipt_r2_key || k.w9_r2_key || k.proof_r2_key);
     if (withFiles.length) { await client.query('ROLLBACK'); return res.status(409).json({ success: false, error: 'A split has its own file attached — remove it before unsplitting' }); }
     // …or its own recorded installments.
     const kidIds = kids.map(k => k.id);
@@ -1401,15 +1442,17 @@ router.get('/payment-stats', async (req, res) => {
               payment_status, rush, on_hold
          FROM expenses
         WHERE label_id = $1 AND status = 'approved' AND (deleted = false OR deleted IS NULL) AND (voided = false OR voided IS NULL)
-          AND (payment_status IN ('Unpaid','Partial') OR (payment_status = 'Paid' AND payment_date >= CURRENT_DATE - INTERVAL '14 days'))`,
+          AND (payment_status IN ('Unpaid','Partial')
+            OR (payment_status = 'Paid'
+                AND COALESCE(paid_marked_at, payment_date::timestamp) >= NOW() - INTERVAL '${PAID_GRACE_DAYS} days'))`,
       [req.labelId]
     );
     const today = new Date().toISOString().slice(0, 10);
     const in7 = new Date(); in7.setDate(in7.getDate() + 7); const in7s = in7.toISOString().slice(0, 10);
-    const acc = { outstanding: 0, overdue: 0, duesoon: 0, rush: 0, hold: 0, paid14: 0, counts: { unpaid: 0, overdue: 0, duesoon: 0, rush: 0, hold: 0, paid14: 0 } };
+    const acc = { outstanding: 0, overdue: 0, duesoon: 0, rush: 0, hold: 0, paidRecent: 0, counts: { unpaid: 0, overdue: 0, duesoon: 0, rush: 0, hold: 0, paidRecent: 0 } };
     for (const r of rows) {
       const u = await usd(r);
-      if (r.payment_status === 'Paid') { acc.paid14 += u; acc.counts.paid14++; continue; }
+      if (r.payment_status === 'Paid') { acc.paidRecent += u; acc.counts.paidRecent++; continue; }
       acc.outstanding += u; acc.counts.unpaid++;
       if (r.on_hold) { acc.hold += u; acc.counts.hold++; continue; }
       if (r.rush) { acc.rush += u; acc.counts.rush++; }

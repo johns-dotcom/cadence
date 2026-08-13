@@ -60,8 +60,11 @@ export default function Payments() {
   useEffect(() => { api.get('/ledger/payment-analytics').then(r => setAnalytics(r.data.data)).catch(() => {}) }, [])
 
   // Client-side quick filter over the payables list (paid loads its own list).
+  // /payables now also returns anything paid in the last 7 days; those linger under
+  // "All" only — a paid invoice is not unpaid, due soon, overdue, rush or held.
   const shown = isPaid ? rows : rows.filter(r => {
     if (filter === 'all') return true
+    if (r.payment_status === 'Paid') return false
     if (filter === 'unpaid') return !r.on_hold
     if (filter === 'rush') return r.rush
     if (filter === 'hold') return r.on_hold
@@ -73,10 +76,22 @@ export default function Payments() {
   })
 
   const openFile = (id, type) => api.get(`/ledger/entries/${id}/file/${type}`).then(({ data }) => setPreview({ url: data.data.url, label: type })).catch(() => toast('No file', 'error'))
+  // Dropping a proof marks the whole split family paid — that's the point of the
+  // control. Goes to pay-with-proof rather than the plain file-attach route, which
+  // only ever turned the cell green and left the row Unpaid.
+  //
+  // Deliberately sends NO payment_date, so the server's AI extraction supplies the
+  // date off the document. Via PayModal that extraction is dead code, because the
+  // modal always posts today's date.
   const uploadProof = async (id, file) => {
     if (!file) return
-    try { const fd = new FormData(); fd.append('file', file); await api.post(`/ledger/entries/${id}/file/receipt`, fd); toast('Proof attached'); load() }
-    catch { toast('Upload failed', 'error') }
+    try {
+      const fd = new FormData(); fd.append('proof', file)
+      const { data } = await api.post(`/ledger/entries/${id}/pay-with-proof`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+      const d = data.data || {}
+      toast(`Marked paid${d.payment_date ? ` · ${formatDate(d.payment_date)}` : ''}${d.reference ? ` · ref ${d.reference}` : ''}`)
+      load()
+    } catch (err) { toast(err.response?.data?.error || 'Upload failed', 'error') }
   }
   const exportCsv = () => {
     const cols = isPaid
@@ -85,14 +100,16 @@ export default function Payments() {
     const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
     const line = (r) => (isPaid
       ? [r.payee, r.amount, r.currency, formatDate(r.payment_date), r.payment_method, r.payment_ref]
-      : [formatDate(r.invoice_date), r.payee, r.artist, r.invoice_number, r.amount, r.currency, r.rep, r.vendor_email, formatDate(r.scheduled_payment_date), r.on_hold ? 'Hold' : r.rush ? 'Rush' : (r.payment_status || 'Unpaid'), r.vendor_bank]).map(cell).join(',')
+      : [formatDate(r.invoice_date), r.payee, r.artist, r.invoice_number, r.amount, r.currency, r.rep, r.vendor_email, formatDate(r.scheduled_payment_date), r.payment_status === 'Paid' ? 'Paid' : r.on_hold ? 'Hold' : r.rush ? 'Rush' : (r.payment_status || 'Unpaid'), r.vendor_bank]).map(cell).join(',')
     const csv = [cols.map(cell).join(','), ...shown.map(line)].join('\n')
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
     const a = document.createElement('a'); a.href = url; a.download = `payments-${filter}.csv`; a.click(); URL.revokeObjectURL(url)
   }
 
   const toggle = (id) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
-  const toggleAll = () => setSel(s => s.size === shown.length ? new Set() : new Set(shown.map(r => r.id)))
+  // Paid rows have no checkbox, so they must not be swept up by select-all either.
+  const selectable = shown.filter(r => r.payment_status !== 'Paid')
+  const toggleAll = () => setSel(s => s.size === selectable.length ? new Set() : new Set(selectable.map(r => r.id)))
   const selectedRows = shown.filter(r => sel.has(r.id))
   const selTotals = totalsByCurrency(selectedRows)
 
@@ -184,13 +201,13 @@ export default function Payments() {
     { label: 'Overdue', value: usd(stats.overdue), sub: `${c.overdue || 0} invoices`, color: 'text-rose-600' },
     { label: 'Due within 7 days', value: usd(stats.duesoon), sub: `${c.duesoon || 0} invoices`, color: 'text-amber-600' },
     { label: 'Total unpaid', value: usd(stats.outstanding), sub: `${c.unpaid || 0} invoices`, color: 'text-ink' },
-    { label: 'Paid this month', value: usd(stats.paid14), sub: `${c.paid14 || 0} in last 14 days`, color: 'text-emerald-600' },
-    { label: 'Total entries', value: String((c.unpaid || 0) + (c.paid14 || 0)), sub: 'unpaid + recent', color: 'text-ink' },
+    { label: 'Paid recently', value: usd(stats.paidRecent), sub: `${c.paidRecent || 0} in the last 7 days`, color: 'text-emerald-600' },
+    { label: 'Total entries', value: String((c.unpaid || 0) + (c.paidRecent || 0)), sub: 'unpaid + recent', color: 'text-ink' },
   ] : []
 
   return (
     <div>
-      <PageHeader title="Payment Dashboard" subtitle="Unpaid invoices and anything paid in the last 14 days. Older payments live in the ledger." />
+      <PageHeader title="Payment Dashboard" subtitle="Unpaid invoices and anything paid in the last 7 days. Older payments live in the ledger." />
 
       {/* Filters + export */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -255,9 +272,11 @@ export default function Payments() {
            bar as desktop; quick actions mirror the row buttons. */
         <div className="space-y-2">
           {shown.map(r => (
-            <div key={r.id} className={`card p-3 ${r.on_hold ? 'opacity-60' : ''}`}>
+            <div key={r.id} className={`card p-3 ${r.on_hold || (r.payment_status === 'Paid' && !isPaid) ? 'opacity-60' : ''}`}>
               <div className="flex items-start gap-2.5">
-                <input type="checkbox" checked={sel.has(r.id)} onChange={() => toggle(r.id)} className="mt-1 flex-shrink-0" />
+                {r.payment_status === 'Paid' && !isPaid
+                  ? <span className="mt-1 w-4 flex-shrink-0" aria-hidden="true" />
+                  : <input type="checkbox" checked={sel.has(r.id)} onChange={() => toggle(r.id)} className="mt-1 flex-shrink-0" />}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-2">
                     <p className="font-semibold text-ink truncate flex items-center gap-1.5">
@@ -268,12 +287,14 @@ export default function Payments() {
                     <span className="text-sm font-semibold text-ink tabular-nums flex-shrink-0">{r.currency} {fmt(r.family_amount ?? r.amount)}</span>
                   </div>
                   <p className="text-[11px] text-gray-400 truncate mt-0.5">
-                    {isPaid
+                    {isPaid || r.payment_status === 'Paid'
                       ? `${r.payment_method || '—'} · paid ${formatDate(r.payment_date)}`
                       : `${[r.category, r.artist].filter(Boolean).join(' · ') || '—'}${r.scheduled_payment_date ? ` · due ${formatDate(r.scheduled_payment_date)}` : ''}`}
                   </p>
                   <div className="flex items-center gap-1 mt-2 justify-end">
-                    {isPaid ? (
+                    {r.payment_status === 'Paid' && !isPaid ? (
+                      <span className="text-[11px] text-emerald-600 font-medium">Paid</span>
+                    ) : isPaid ? (
                       r.vendor_email
                         ? <button onClick={() => sendConfirm(r)} className="inline-flex items-center gap-1 text-xs text-brand-600 px-1"><Send size={14} /> {r.payment_notified ? 'Resend' : 'Send confirmation'}</button>
                         : <span className="text-[11px] text-gray-300">no email</span>
@@ -296,7 +317,7 @@ export default function Payments() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-page/50 border-b border-divider text-left">
-                <th className="px-3 py-2.5"><input type="checkbox" checked={shown.length > 0 && sel.size === shown.length} onChange={toggleAll} /></th>
+                <th className="px-3 py-2.5"><input type="checkbox" checked={selectable.length > 0 && sel.size === selectable.length} onChange={toggleAll} /></th>
                 {(isPaid ? ['Payee', 'Amount', 'Paid date', 'Method', 'Confirmation', '']
                   : ['Date', 'Payee', 'Artist', 'Inv #', 'Amount', 'Rep', 'Due date', 'Status', 'Bank', 'Invoice', 'Proof', '']
                 ).map(h => <th key={h} className="px-3 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap">{h}</th>)}
@@ -314,8 +335,10 @@ export default function Payments() {
                   <td className="px-3 py-3 text-right">{r.vendor_email ? <button onClick={() => sendConfirm(r)} className="text-gray-500 hover:text-brand-600 p-1" title={r.payment_notified ? 'Resend confirmation' : 'Send confirmation'}><Send size={15} /></button> : <span className="text-[11px] text-gray-300">no email</span>}</td>
                 </tr>
               ) : (
-                <tr key={r.id} className={`hover:bg-gray-50 ${r.on_hold ? 'opacity-60' : ''}`}>
-                  <td className="px-3 py-3"><input type="checkbox" checked={sel.has(r.id)} onChange={() => toggle(r.id)} /></td>
+                <tr key={r.id} className={`hover:bg-gray-50 ${r.on_hold || r.payment_status === 'Paid' ? 'opacity-60' : ''}`}>
+                  {/* Recently-paid rows linger here for 7 days but are done: no
+                      checkbox (nothing left to bulk-act on) and no action icons. */}
+                  <td className="px-3 py-3">{r.payment_status !== 'Paid' && <input type="checkbox" checked={sel.has(r.id)} onChange={() => toggle(r.id)} />}</td>
                   <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{formatDate(r.invoice_date)}</td>
                   <td className="px-3 py-3">
                     <p className="font-medium text-ink flex items-center gap-1.5">
@@ -332,25 +355,32 @@ export default function Payments() {
                   <td className="px-3 py-3 text-gray-500 whitespace-nowrap">{r.rep || '—'}</td>
                   <td className="px-3 py-3 whitespace-nowrap">
                     {r.scheduled_payment_date
-                      ? <span className={isPastLocal(r.scheduled_payment_date) && !r.on_hold ? 'text-red-600 font-medium' : 'text-gray-600'}>{formatDate(r.scheduled_payment_date)}</span>
+                      ? <span className={isPastLocal(r.scheduled_payment_date) && !r.on_hold && r.payment_status !== 'Paid' ? 'text-red-600 font-medium' : 'text-gray-600'}>{formatDate(r.scheduled_payment_date)}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td className="px-3 py-3 whitespace-nowrap">
-                    <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium ${r.on_hold ? 'bg-gray-200 text-gray-600' : r.payment_status === 'Partial' ? 'bg-amber-100 text-amber-700' : 'bg-rose-50 text-rose-600'}`}>{r.on_hold ? 'On hold' : (r.payment_status || 'Unpaid')}</span>
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium ${r.payment_status === 'Paid' ? 'bg-emerald-50 text-emerald-700' : r.on_hold ? 'bg-gray-200 text-gray-600' : r.payment_status === 'Partial' ? 'bg-amber-100 text-amber-700' : 'bg-rose-50 text-rose-600'}`}>{r.payment_status === 'Paid' ? 'Paid' : r.on_hold ? 'On hold' : (r.payment_status || 'Unpaid')}</span>
                   </td>
                   <td className="px-3 py-3 text-gray-500 truncate max-w-[140px]">{r.vendor_bank || '—'}</td>
                   <td className="px-3 py-3 whitespace-nowrap">{r.invoice_r2_key ? <button onClick={() => openFile(r.id, 'invoice')} className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline"><Eye size={13} /> View</button> : <span className="text-gray-300">—</span>}</td>
                   <td className="px-3 py-3 whitespace-nowrap">
-                    {r.receipt_r2_key
-                      ? <button onClick={() => openFile(r.id, 'receipt')} className="inline-flex items-center gap-1 text-xs text-emerald-600 hover:underline"><Eye size={13} /> Proof</button>
-                      : <label onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); uploadProof(r.id, e.dataTransfer.files?.[0]) }} className="inline-flex items-center gap-1 text-[11px] text-gray-400 border border-dashed border-rule rounded px-2 py-1 cursor-pointer hover:border-brand-300 hover:text-brand-600"><Upload size={12} /> Drop file<input type="file" accept="application/pdf,image/*" hidden onChange={e => uploadProof(r.id, e.target.files?.[0])} /></label>}
+                    {/* proof_r2_key is the payment proof; receipt_r2_key is the
+                        expense receipt a reimbursement is claiming. Falling back to
+                        receipt keeps every pre-existing row's link working. */}
+                    {(r.proof_r2_key || r.receipt_r2_key)
+                      ? <button onClick={() => openFile(r.id, r.proof_r2_key ? 'proof' : 'receipt')} className="inline-flex items-center gap-1 text-xs text-emerald-600 hover:underline"><Eye size={13} /> Proof</button>
+                      : r.payment_status === 'Paid'
+                        ? <span className="text-gray-300">—</span>
+                        : <label onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); uploadProof(r.id, e.dataTransfer.files?.[0]) }} title="Attaching proof marks this paid" className="inline-flex items-center gap-1 text-[11px] text-gray-400 border border-dashed border-rule rounded px-2 py-1 cursor-pointer hover:border-brand-300 hover:text-brand-600"><Upload size={12} /> Drop file<input type="file" accept="application/pdf,image/*" hidden onChange={e => uploadProof(r.id, e.target.files?.[0])} /></label>}
                   </td>
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1.5 justify-end whitespace-nowrap">
+                      {r.payment_status === 'Paid' ? <span className="text-[11px] text-gray-400">Paid {formatDate(r.payment_date)}</span> : <>
                       <button onClick={() => toggleRush(r)} className={`p-1 ${r.rush ? 'text-amber-600' : 'text-gray-400 hover:text-amber-600'}`} title={r.rush ? 'Clear rush' : 'Flag rush'}><Zap size={15} /></button>
                       <button onClick={() => toggleHold(r)} className={`p-1 ${r.on_hold ? 'text-gray-700' : 'text-gray-400 hover:text-gray-700'}`} title={r.on_hold ? 'Release hold' : 'Hold'}><Pause size={15} /></button>
                       <button onClick={() => setSchedModal({ id: r.id, terms: r.payment_terms || 'Net 30' })} className="text-gray-500 hover:text-brand-600 p-1" title="Schedule"><CalendarClock size={15} /></button>
                       <button onClick={() => setPayModal({ ids: [r.id] })} className="text-gray-500 hover:text-emerald-600 p-1" title="Mark paid"><Check size={16} /></button>
+                      </>}
                     </div>
                   </td>
                 </tr>
