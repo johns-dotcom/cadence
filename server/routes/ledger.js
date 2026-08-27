@@ -350,9 +350,19 @@ function breakdownChildLines(bd) {
   return out;
 }
 
-// Turn a vendor allocation into real ledger child splits on approval — the
-// parent becomes the container. No-op when it resolves to <2 lines, there's no
-// breakdown, or the parent is already split.
+// Turn a vendor allocation into real ledger child splits on approval. No-op when
+// it resolves to <2 lines, there's no breakdown, or the parent is already split.
+//
+// The PARENT TAKES THE FIRST SLICE, matching POST /entries/:id/split. That is the
+// model the rest of the app assumes — `family_amount` is computed as
+// `e.amount + SUM(children)` and the /payables comment spells it out as
+// "parent slice + children".
+//
+// This function used to leave the parent's amount untouched while creating children
+// that summed to the FULL invoice, so a $900 split reported family_amount = $1800 on
+// the Payments page, and unsplit restored $1800 too (its legacy fallback is also
+// `parent.amount + SUM(kids)`). No production data hit it — there were no split
+// families yet — but the first split on the Add Invoice page would have.
 async function applyBreakdownSplits(labelId, parent, actorName) {
   if (parent.parent_id) return 0;
   const children = breakdownChildLines(parent.artist_breakdown);
@@ -362,10 +372,28 @@ async function applyBreakdownSplits(labelId, parent, actorName) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    let n = 0;
-    for (const c of children) {
-      const tag = c.social ? `Social: ${c.social}` : (c.socialsNote && c.socialsNote.length ? `Socials: ${c.socialsNote.join(', ')}` : '');
-      const notes = [parent.notes, tag].filter(Boolean).join(' · ') || null;
+    const [head, ...rest] = children;
+    // Per-slice note tag, shared by the parent slice and the children.
+    const tagFor = (c) => (c.social ? `Social: ${c.social}` : (c.socialsNote && c.socialsNote.length ? `Socials: ${c.socialsNote.join(', ')}` : ''));
+
+    // Snapshot the pre-split parent so DELETE /entries/:id/splits restores it
+    // exactly instead of falling back to summing live rows.
+    const snapshot = { origin: { amount: Number(parent.amount), artist: parent.artist || null, song: parent.song || null }, splits: children };
+
+    // Parent takes slice 1. Category is deliberately NOT flipped to 'Marketing' for
+    // a social head line the way a child would be — the container keeps the
+    // invoice's own category; the social is recorded in notes instead.
+    const headTag = tagFor(head);
+    await client.query(
+      `UPDATE expenses SET amount = $1, artist = COALESCE($2, artist), song = $3, notes = $4, artist_breakdown = $5::jsonb
+         WHERE id = $6 AND label_id = $7`,
+      [head.amount, head.artist || null, (head.song || parent.song) || null,
+       [parent.notes, headTag].filter(Boolean).join(' · ') || null,
+       JSON.stringify(snapshot), parent.id, labelId]
+    );
+
+    for (const c of rest) {
+      const notes = [parent.notes, tagFor(c)].filter(Boolean).join(' · ') || null;
       await client.query(
         `INSERT INTO expenses (label_id, parent_id, invoice_date, payee, description, category, artist, song,
            invoice_number, amount, currency, payment_method, status, payment_status, is_reimbursement, recoupable, rep, notes, created_by, created_at)
@@ -375,10 +403,11 @@ async function applyBreakdownSplits(labelId, parent, actorName) {
          c.artist || parent.artist, (c.song || parent.song) || null, parent.invoice_number, c.amount, parent.currency,
          parent.payment_method, parent.payment_status || 'Unpaid', parent.is_reimbursement, parent.recoupable, parent.rep, notes, actorName]
       );
-      n++;
     }
     await client.query('COMMIT');
-    return n;
+    // Total slices in the family (parent + children) — callers report this as
+    // "split across N lines", so it must not be just the inserted-child count.
+    return children.length;
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('Auto-split on approve failed:', e.message);
