@@ -410,23 +410,11 @@ export default function Layout() {
 
       {/* Main */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {impersonating && (
-          <div className="flex items-center justify-between px-6 py-2 bg-amber-400 text-amber-900 text-xs font-semibold flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <Eye size={13} />
-              <span>
-                {adminUser?.is_platform_admin ? (
-                  <>Operating in <span className="font-bold">{label?.name || 'workspace'}</span> as platform admin (<span className="font-bold">{user?.name}</span>)</>
-                ) : (
-                  <>Viewing <span className="font-bold">{label?.name || 'workspace'}</span> as <span className="font-bold">{user?.name}</span> ({user?.role})</>
-                )}
-              </span>
-            </div>
-            <button onClick={exitImpersonation} className="flex items-center gap-1 font-bold hover:underline">
-              <X size={12} /> Exit
-            </button>
-          </div>
-        )}
+        {/* The amber "Operating in X as platform admin" / "Viewing as" banner used to
+            live here. Removed — the header's "Exit — back to <name>" button carries
+            the same state and the same escape hatch, so the bar was pure duplication.
+            That button is force-shown while impersonating (see ViewAsDropdown's
+            wrapper below), because it is now the ONLY way out. */}
 
         {/* Header */}
         <div className="h-14 flex items-center gap-3 px-4 lg:px-6 border-b border-divider bg-header flex-shrink-0">
@@ -455,7 +443,8 @@ export default function Layout() {
             <BookOpen size={15} />
           </button>
           <NotificationBell />
-          <span className="hidden sm:block"><ViewAsDropdown /></span>
+          {/* Normally desktop-only, but while impersonating this is the only exit. */}
+          <span className={impersonating ? 'block' : 'hidden sm:block'}><ViewAsDropdown /></span>
           <button
             onClick={toggleTheme}
             title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
