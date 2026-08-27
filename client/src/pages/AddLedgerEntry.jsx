@@ -134,7 +134,11 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
       }
 
       const fd = new FormData()
-      Object.entries(form).forEach(([k, v]) => fd.append(k, v))
+      // When splitting, artist/song live on the allocation rows. Blank them here so
+      // the parent container doesn't keep whatever was typed before the box was
+      // ticked (the server uses parent.artist / parent.song as the per-child
+      // fallback, so a leftover value would leak into the children).
+      Object.entries(form).forEach(([k, v]) => fd.append(k, splitOn && (k === 'artist' || k === 'song') ? '' : v))
       fd.append('vendor_name', form.payee)
       fd.append('is_reimbursement', isReimb ? 'true' : 'false')
       if (splitsPayload) fd.append('splits', JSON.stringify(splitsPayload))
@@ -198,8 +202,13 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
           <div><label className="label">Invoice date *</label><input type="date" className="input" value={form.invoice_date} onChange={set('invoice_date')} /></div>
           <div><label className="label">{isReimb ? 'Pay to *' : 'Payee *'}</label><input className="input" value={form.payee} onChange={set('payee')} onBlur={checkDup} /></div>
           <div><label className="label">Category</label><select className="input" value={form.category} onChange={set('category')}><option value="">Select category</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
-          <div><label className="label">Artist</label><input className="input" value={form.artist} onChange={set('artist')} disabled={splitOn} /></div>
-          <div><label className="label">Song</label><input className="input" value={form.song} onChange={set('song')} disabled={splitOn} /></div>
+          {/* Hidden while splitting: the allocation rows below own artist + song, and
+              two sets of the same fields on one form reads as a bug. The typed values
+              stay in state so unchecking the box restores them, but they are NOT
+              submitted (see create()) — otherwise the parent row keeps a stale artist
+              and the split rows silently inherit a song nobody can see. */}
+          {!splitOn && <div><label className="label">Artist</label><input className="input" value={form.artist} onChange={set('artist')} /></div>}
+          {!splitOn && <div><label className="label">Song</label><input className="input" value={form.song} onChange={set('song')} /></div>}
           {!isReimb && <div><label className="label">Invoice # *</label><input className="input" value={form.invoice_number} onChange={set('invoice_number')} onBlur={checkDup} /></div>}
           <div><label className="label">Amount *</label><input type="number" step="0.01" className="input" value={form.amount} onChange={set('amount')} /></div>
           {/* Setting this by hand opts out of the parse overwriting it. */}
@@ -248,7 +257,7 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
           {splitOn && (
             <div className="sm:col-span-2 space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Allocation</span>
+                <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Allocation <span className="font-normal normal-case tracking-normal">— artist &amp; song are set per row</span></span>
                 <span className={`text-[11px] font-semibold ${Math.abs(total - allocated) < 0.01 && total > 0 ? 'text-emerald-600' : 'text-amber-600'}`}>Allocated {allocated.toFixed(2)} / {total.toFixed(2)} {form.currency}</span>
               </div>
               {splits.map((l, i) => (
