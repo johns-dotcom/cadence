@@ -1,0 +1,140 @@
+# Reports
+
+OLD: `boom-dashboard/client/src/pages/Reports.jsx` (2,986 lines) + `boom-dashboard/server/routes/reports.js` (4,324 lines) + `server/lib/report-rows.js` (shared row-model renderer for Excel + Google Sheets).
+NEW: `cadence/client/src/pages/Reports.jsx` (183) + `components/reports/{PnlTable,DrillModal,SpendByArtist,BalanceSheetCard,DismissedTab}.jsx` + `server/routes/reports.js` (1,195) + `server/lib/reportRows.js` (170).
+
+Design-system diffs are RC-1..RC-6 in `_audit/01-design-system.md`. NEW was built 2026-08-27 to OLD's model.
+
+**Basis (the governing intentional divergence):** OLD is **bank-mastered** — the P&L counts every bank transaction exactly once; the ledger supplies categories; ledger rows without bank evidence are "shown, never counted" (OLD client :1089; server bankRows/dedupeTxns/txnParts machinery, reports.js :144-620). NEW is deliberately **LEDGER-mastered** cash: approved+Paid ledger families bucketed by the root's payment_date, every live split slice summed exactly once, with bank data demoted to a per-month *coverage* signal (NEW reports.js :4-18, :130-148, :391-416). The basis change and everything that only exists because of the bank master (unbooked-row lines, unverified section, txn-part apportioning, per-txn reassign/dismiss ids) are intentional; missing *user-facing* capabilities are defects and are logged below.
+
+**Recorded scope cuts (log as [INT], per the audit inventory):** reversal-pair exclusion machinery, `/reports/search` line-item search, and the label-level pool / ad-allocation subsystem are recorded as out-of-scope cuts of the NEW build — `_audit/00-inventory.md:180` ("OLD adds reversal banners, /reports/search, label-level pool, part-aware split editing") and `:188` (`/bk/advertising` OLD orphan — ad pool allocation). Google Sheets export is a KNOWN intentional scope cut.
+
+## 1. Layout & structure
+
+**OLD** (:1082-2986): header (icon + title + ReconciledBadge) → basis disclosure row w/ "Need unpaid commitments? See Financials →" (:1093-1102) → up to three stacked disclosure banners (dismissed :1107-1129; **reversals** :1135-1168 w/ credit_total + bold "N still marked paid on the ledger" + "Review reversals →" link to `/bk/statements`; month reassignments incl. bold moved-OUT sentence :1175-1201) → tab row (P&L / Balance Sheet / Spend by Artist / Dismissed) + per-tab toolbar (P&L: from/to inputs with `max`/`min` cross-clamps, artist select w/ immediate refetch, Run, **ListSearch line/line-item filter**; BS: as-of + Run; Dismissed: Refresh) + **Google Sheet** + Export Excel buttons (:1203-1274) → persistent sheet-link strip w/ refreshed-at stamp (:1279-1291) → notice/error strips → **line-item search results panel** (:1303-1439) → tab bodies → drill modal (:2334-2824) → **review deck over drill rows** (:2826-2976) → shared FilePreview overlay (:2980-2983).
+
+**NEW** (Reports.jsx :99-182): header (title + ReconciledBadge + subtitle carrying the reassignment count) + right-aligned toolbar (BS: as-of; else from/to + artist select (pnl only) + Run + Excel) → tab chips (same four tabs, dismissed count chip) → error card w/ Retry / skeleton → tab bodies (PnlTable / SpendByArtist / BalanceSheetCard / DismissedTab) → DrillModal. Banners live inside PnlTable (:128-160): dismissed, reassigned-between-columns, moved-out (expandable **row list** — richer than OLD's sentence), contra notes. Tab + range persisted per label+user (`reports:{label}:{user}`, :36, :50-59) — OLD persists nothing.
+
+Structural deltas: no reversal banner ([INT] cut); no search box of any kind; no Google Sheet button/strip ([INT]); no review deck; drill modal is a much smaller surface (see §4).
+
+## 2. Visual differences
+
+| Element | OLD | NEW | Source |
+|---|---|---|---|
+| Money format | `fmt` renders missing as **em dash** ("a missing field is NOT zero") and negatives as `($1,200.00)` accounting parens; `fmtFlow` sign-flips | `money()` renders `Number(n||0)` — undefined becomes a confident $0.00, the exact regression OLD's comment warns about | OLD :22-45 / NEW utils/money.js (`UNVERIFIED — needs runtime check` on money.js internals; DrillModal:47 uses `data.total` guarded) |
+| P&L cells | `font-mono text-[12.5px]`, zero = `—`, drill affordance = hover boom tint | tabular-nums sans, zero = `—` ✓, hover underline | OLD :920-921 / NEW PnlTable :15-27 |
+| Month headers | amber ⚠ <85% coverage + gray dot no-data, tooltip w/ open_n ✓ | same semantics ✓ | OLD :1448-1463 / NEW PnlTable :29-42 |
+| Per-line dismissed badge | amber **amount** on the line label, click → Dismissed tab | amber `◦` glyph on the Total cell only, tooltip only, not clickable | OLD :1057-1067 / NEW PnlTable :24,:76 |
+| Line actions | hover-revealed Pencil (rename) + Ban (dismiss) inline | hover-revealed `⋯` kebab → modal w/ 3 actions (adds Reclassify) | OLD :1040-1056 / NEW PnlTable :64-68,:193-198 |
+| Net rows | Net Income + Non-recurring net + Below-line net + Net Change in Cash (3-section sum) | Net Income + Below-line net + Net Change in Cash (2-section) | OLD :1492-1572 / NEW PnlTable :178-187 |
+| SBA table | frozen Artist+Spend+Advances+Total-out (fixed widths 190/108/100/100, computed left offsets), sticky headers on BOTH axes, `max-h-[70vh]` two-direction scroll | one sticky Artist column, no sticky header, page-height table | OLD :1956-2027 / NEW SpendByArtist :11,:72-81 |
+| Prompts | `window.prompt/confirm/alert` throughout | ui/Modal + ConfirmDialog for line actions; inline sub-modal in drill | OLD :277,:373,:403 / NEW PnlTable :193-217 — NEW is the corrected form |
+
+## 3. Copy & content differences
+
+- OLD's headline basis paragraph: "Statements are the master: the P&L counts every bank transaction exactly once…" (:1089). NEW subtitle: "Cash basis, statement-verified" (Reports.jsx :104) — **"statement-verified" overstates NEW's basis**: NEW counts every approved+Paid ledger row whether or not a bank line vouches for it; coverage markers only warn. Copy defect.
+- OLD cross-links Financials for unpaid commitments (:1099-1101); NEW has no cross-link.
+- OLD dismissal prompts spell out standing-rule semantics ("it is a standing rule, not a one-off", :403-406); NEW ConfirmDialog message covers the same ✓ (PnlTable :217).
+- OLD SBA footnotes: coverage explanation, placeholder-artist rule, advances paragraph incl. advance-only-artist count (:1892-1917). NEW keeps placeholder rule + tie note (SpendByArtist :147) but drops the advance-only-artist sentence and the attributed-advances sentence.
+- OLD BS footer explains each source + "drawdowns are funding, not debt" (:1829); NEW note says only "gross received — repayments/recoupment not yet netted" (server :745) — and NEW's math contradicts the OLD copy (see defect 3).
+
+## 4. Feature & interaction differences
+
+### Features in OLD missing/changed in NEW — defects unless marked [INT]
+
+1. **Review deck over drill cells** — OLD opens the shared ReviewDeck over `drillShown` (snapshot honoring filter+sort): card per row with amount, %-of-deck weight, payee, evidence chip; `→` accept (part-aware recategorize/book), `←` skip, `⌫` **full undo** (recat→old value, book→unbook, dismiss→restore, :754-787), `F` flag (bank txn flag), `D` dismiss, `1-9` usage-ranked category hotkeys, `P` document side-panel (`useDeckPreview` + InlineFilePreview), typing guard, money progress (`$done of $total`, `changed` derived from history), done panel summarizing $ changed (OLD :639-875, :2826-2976). NEW: nothing — the "Review N" affordance doesn't exist, though NEW has its own `components/ReviewDeck.jsx` (used by bank-matching) and the drill returns everything a deck needs. **P1.**
+2. **P&L line filter (`pnlQ`)** — client-side name filter over every section with per-section "Subtotal of shown" rows, real totals relabelled "(all lines)", orphan-header no-match rows, and a match-count chip (OLD :935-1033, :1239-1248, :1470-1483, :1543-1549). NEW has no filter input on the P&L at all. **P1.** (The same box's second half — `/reports/search` line-ITEM search naming the exact cell, w/ counted/dismissed/reversed/unverified/unpaid breakdown, per-cell chips, debounce + stale-token, doc buttons; OLD :948-979, :1303-1439; server :2145-2333 — is **[INT]**, recorded cut, `00-inventory.md:180`.)
+3. **Balance sheet: funding treatment regression + missing presentation.** OLD deliberately re-classed drawdowns OUT of liabilities into a "Funded by" block (drawdowns + derived **accumulated deficit** + block total + "presentation, not a proof" note + recoupable memo inside it; hideable via `bs_line:funding` with an inline "Show Funded by" way back) — Liabilities = unpaid invoices only, per John's 2026-08-07 call (OLD server :1907-1985, :2003-2018; client :1755-1826). NEW **adds `advances_outstanding` into `total_liabilities`** (NEW server :736-738, `liabilities = ap + adv`; client renders it under "Liabilities & funding", BalanceSheetCard :83-94) and has no accumulated-deficit line, no funding block, no funding-hide. This reproduces the exact "$5.49M liabilities / meaningless equity" failure OLD's comment documents. **P1.**
+4. **BS depth: aging, composition, undated-paid** — OLD computes A/R + A/P **aging buckets** (current/31-60/61-90/90+ sub-line, :1825-1841, client :1712-1747), per-line **composition breakdowns** (by client / category / source, built from the same filtered rows, expandable chevrons, :1803-1823, client :311-358), and the **undated-paid disclosure** ("N paid bills have no payment date and cannot be placed in time — excluded", :1896-1905). NEW server computes none of these; client has a flat rows list per line. **P2.** (NEW keeps: as-of-aware A/P `payment_date > asOf` ✓ :688, cash floor guard ✓ :637-647, recoupable **family-aware memo** ✓ :710-723, `equity` deprecated-alias concern N/A by construction.)
+5. **BS whole-line exclusions have no NEW UI** — server supports `bs_line` scope incl. `cash:*` (NEW server :865-877) and DismissedTab can restore them, but no control on the balance sheet excludes a line or an excluded cash account (OLD every line has hover Ban/Undo2 + excluded lines re-listed from the exclusion block so they can be restored in place, :311-345, :1706-1711). NEW's only BS control is per-item ✕ inside "rows". **P2.**
+6. **Drill modal — documents**: OLD rows carry `DocButton` (invoice→proof→receipt pick, named tooltip) opening the shared FilePreview, plus "no invoice · attach" deep link to the vendor attach picker on invented-evidence rows (OLD :53-71, :2649-2671; server `withFileFlags` :1672). NEW rows have only an external Ledger `?focus` link (DrillModal :146) — no way to see the paper behind a number without leaving the report. **P2.**
+7. **Drill modal — sort**: Date/Name/Amount pills, each with a stated default direction and click-to-flip, applied to the full filtered set and feeding the deck order (OLD :456-469, :2400-2436). NEW: fixed date-desc (server sort, reports.js :557). **P2.**
+8. **Drill modal — bulk gaps**: OLD has bulk **month move** (:618-637, :2552-2565), **"Attribute all N"** past the 500-row render cap via `all_expense_ids` (:2463-2489 — NEW's server *returns* `all_expense_ids` at reports.js :566 and the client never reads it), selection **pruned when the filter changes** (:476-483), selected-**$** readout (:2456-2462), select-all, and eligibility-split button copy ("Attribute 4 of 6" + why, :2490-2543). NEW has bulk recategorize (per-row loop w/ progress ✓) and one-call bulk set-artist ✓ (DrillModal :57-80) but none of the above. **P2** (month-bulk + attribute-all), **P3** (select-all/prune/$-readout/eligibility copy).
+9. **Part-aware split editing** — OLD's `partIdsOf` / `editableHere` / `isAmbiguousSplit` / `partIdOf` machinery (three measured shapes; ambiguous cells refuse with an "edit split" link to Bank Matching; `resyncBreakdown` staleness alert after set-artist, :659-693, :548-554, :2692-2733; server split-breakdown lib). In NEW's ledger-mastered model each split slice is its own drill row with its own `expense_id`, so per-slice edits are structurally safe — **[INT] adaptation** — but two OLD behaviors have no NEW analogue: nothing marks a row whose *family* spans cells, and `recategorize` on a slice can silently diverge a family the Ledger UI treats as one unit (`UNVERIFIED — needs runtime check` whether cadence's ledger tolerates per-child categories everywhere).
+10. **Reversal machinery** — pairing (`pairReversals`, window-overhung fetch that sees already-dismissed credit legs, :512-553), P&L exclusion of both legs, `summarizeReversals` (credit_total, per-cell, **still_matched_expense_id** → bold "N still marked paid on the ledger", :1317-1362), the indigo banner w/ deck link (client :1135-1168), reversed tags in search, and the SBA excludes line "Reversal pairs — money that never moved". **[INT]** — recorded cut (`00-inventory.md:180`). Note the consequence honestly: a reversed (refunded) payment still marked Paid inflates NEW's P&L with no disclosure anywhere.
+11. **Label-level pool + ad allocation** — `loadLabelLevelRules`/`applyAllocations`, `label_level` block in the SBA payload (unallocated remainder, allocated_by_artist, trimmed disclosures), coverage_pct excluding pool money from the denominator (+ `coverage_pct_of_all` kept beside it), and the `/ad-months`, `/ad-charges`, `/ad-allocate`, `/ad-pool`, `/label-level-rules` routes feeding `/bk/advertising` (OLD server :30, :1215-1306, :2411-3244). **[INT]** — recorded cut (`00-inventory.md:188`, `:180`).
+12. **Google Sheets export** — one long-lived spreadsheet, both tabs written every run from the same row models as Excel, persistent link strip w/ refreshed-at + share-warning, Cloudflare-aware error mapping (OLD :899-917, :1263-1291; server :4249-4304, `renderExcel` shared-model contract :4018). **[INT]** — known intentional scope cut.
+13. **Unverified / unbooked disclosure layer** — "Ledger-paid, unverified" not-counted section w/ its own drill kind, `UNORGANIZED_OUT/IN` synthetic lines, "What backs these figures" evidence bar (invoice/invented/none $ + rows + %, summing to the expense figure, :1574-1665; server :99-103, :299-333). The unverified/unorganized lines are **[INT]** (meaningless under a ledger master). The **evidence aggregate**, however, is portable — NEW already stamps per-row `evidence: invented|invoice` from `entry_source` (NEW reports.js :538) and renders it per row (DrillModal :129) but has no aggregate. **P2** for the missing evidence block.
+14. **Dismissed tab detail** — OLD chips: **counted vs hidden-only** (amber vs gray — hidden-only = unverified rows that never counted; basis-dependent, [INT] under NEW's model where every dismissed item counted), per-category-rule **"$X excluded in range · N txns"** live chip (:2262-2271), and orphaned "no longer present" ✓ (NEW has orphaned ✓ DismissedTab :77). NEW category rules show no in-range impact. **P3.**
+15. **Rename feedback** — OLD surfaces the per-table touched counts ("updated expenses 147, report_dismissals 1") in a dismissible notice (:383-394); NEW's server returns `counts` (reports.js :1140) but the toast says only "Renamed/Merged" (PnlTable :113). **P3.** (NEW's rename itself is stronger: transactional, tombstones seeded names, updates statement rules + contra pointers ✓ :1080-1148.)
+16. **Drill header dismissed jump** — OLD "+$Y dismissed" is a button that closes the drill and opens the Dismissed tab (:2370-2376); NEW renders it as inert text (DrillModal :93). **P3.**
+17. **SBA export ↔ screen sync** — OLD sends the on-screen `topN` and defaults both to All, with UI copy promising "Export Excel follows this" (:83-86, :884, :1928-1932); NEW's server accepts `topN` (:1167) but the client never passes it (Reports.jsx :94), so exporting while "Top 10" is shown produces a workbook that doesn't match the screen. **P3.**
+18. **Merged-spellings disclosure** — OLD artist rows show `×N` + tooltip listing every spelling that merged (:2033-2039, shaped at :1230). NEW's buildPnl collects spellings (`noteSpelling`, :222-228) then discards all but the best one (:311-326). **P3.**
+19. **SBA column order** — OLD orders category columns by *artist-attributable* spend and pushes overhead-only columns (gray-headed, tooltipped) to the end (:1949-1954, :2022-2024); NEW sorts by grand total including unattributed, so overhead columns lead again. **P3.**
+20. **Toolbar niceties** — from/to inputs lack `max`/`min` cross-clamps (OLD :1227-1229; NEW server still rejects backwards ranges ✓ :66); no Financials cross-link row. **P3.**
+21. **classify / rename authorization narrowed** — OLD gates with `isBkAdmin` (Approver included, :3478, :3541); NEW adds `requireAdmin` (NEW :1060, :1080) so an Approver can run reports but not reclassify/rename. Possibly deliberate hardening; behavior change either way. **P3 (MED).**
+
+### Features in NEW not in OLD
+
+- **Classify UI** (operating / below_line / non_recurring section picker with rationale copy) — OLD has the `/classify` endpoint but no UI anywhere in Reports.jsx (grep-verified). NEW PnlTable :206-213.
+- **Drill drift self-check** — visible rose banner when drill total ≠ cell total (DrillModal :98-101); OLD relies on same-code-path and has no runtime alarm in the drill (its tie-check is SBA-only).
+- **Moved-out banner row list** — NEW expands to per-row date/payee/$/from→to (PnlTable :139-154); OLD states count + total only.
+- **Fingerprint-keyed dismissals + month overrides** (`lib/reportFingerprint`) so exclusions survive statement re-upload id churn — an adaptation OLD does per-txn-id; strictly more durable. NEW reports.js :14-17, :106-127.
+- **Persisted tab + range per label/user** (Reports.jsx :36, :50-59).
+- **Activity-bot events** on line dismiss / classify / rename (NEW :862, :1074, :1139).
+- **Set-artist skip accounting** (updated/requested/skipped, cap 2000, :1040-1056); NEW client doesn't surface `skipped` though — minor.
+- **ties_to_pnl compared on unrounded accumulators** ✓ (NEW :220, :327-328) — faithfully ports OLD's one-cent lesson (OLD :1246-1256).
+
+### Interaction/UX differences
+
+- Artist select refetches immediately with the explicit new value ✓ both (OLD :1230; NEW Reports.jsx :119 + :61 comment).
+- Drill stale-response guard: OLD monotonic `drillReq` token + close-invalidation (:148-180); NEW fetches once on mount and unmounts on close — equivalent protection by construction ✓; NEW refetches drill + report after actions ✓ (DrillModal :76).
+- Dismissed tab failure honesty: both render explicit error + Retry ✓ (OLD :219-233; NEW DismissedTab :40).
+
+## 5. Data layer differences
+
+| Concern | OLD | NEW |
+|---|---|---|
+| Master | bank_transactions (deduped cross-statement, txn-part apportioned) + income + unverified ledger overlay | expenses root-family join (`JOIN expenses r ON r.id = COALESCE(e.parent_id, e.id)`, root Paid + payment_date, every live slice once) + artist_income — [INT] basis (NEW :130-160) |
+| Dismissal identity | txn_id / expense_id rows in report_dismissals | row **fingerprint** (+ scopes item/category/bs_line/bs_item, partial unique indexes) — [INT] adaptation |
+| Month override identity | txn_id | fingerprint; extra-months fetch for overrides INTO range ✓ both (OLD monthOverrides :248; NEW :120-127, :164-170) |
+| Advisory loaders degrade | ✓ (bk_categories → fallback sets) | ✓ (categories/report_dismissals/report_month_overrides all degrade, :83-127) |
+| Advance detection | `Set(['Advance'])` name equality + advOther disclosure | same, lowercased (:38, :216) ✓ |
+| Contra recoveries | bk_categories.contra_of; netted, listed apart in drill ✓ | categories.contra_of; same ✓ incl. recoveries lifted out of rows (:542-553) |
+| Coverage | per-month matched-debit % from statements, in P&L payload ✓ | same shape (:391-416) ✓ |
+| Range guards | MAX 120 months, backwards rejected, real-date check (`2026-02-31` caught, :107-136) | MAX 120 ✓ backwards ✓ but regex-only day check — `2026-02-31` passes `isValidDay` (NEW :63) and reaches SQL. P3 |
+| Drill cap | 500 + truncation notice + all-ids escape hatch | 500 + truncation notice + all_expense_ids returned-but-unused (:35, :561-566) |
+| Access | per-endpoint isBkAdmin | router-level requireApprover (equivalent tier) + requireAdmin on classify/rename (narrower — defect 21); label-scoped throughout ✓ [INT tenancy] |
+| A/R source | `boom_invoices` (no payment date → can't restate; disclosed :1843-1866) | `invoices` outbound ✓ correct table; same created_at limitation, undisclosed (fold into defect 4) |
+| Exports | shared row-model (`renderExcel` + Sheets writer) — one layout, two renderers | three independent ExcelJS builders from the same payload the page renders (reportRows.js) — Sheets [INT] |
+
+## 6. Tables & forms
+
+- P&L grid: both sticky-first-column month matrices; OLD sets a table min-width formula (:1444); NEW relies on cell `whitespace-nowrap` (`UNVERIFIED — needs runtime check` on long-range compression).
+- SBA matrix: see §4.7; NEW row set = union of spend + advance keys ✓ (:307), advance-only artists appear ✓, unattributed row ✓, Other-artists collapse row ✓ **drillable via `keys` ✓** (SpendByArtist :97-109 — parity with OLD :2058-2085) though its label doesn't expand to All (OLD :2065; NEW label is the same drill button — P3 tail).
+- Dismissed list: OLD single mixed list w/ scope-styled rows + search; NEW grouped by scope + search ✓.
+- Forms: NEW rename/classify/dismiss-line are proper modals ✓; NEW drill sub-actions are an inline mini-modal; item dismiss reason optional ✓ both.
+
+## 7. Defects found
+
+- [P1] Review deck over drill cells missing entirely (hotkeys, part-aware accept, full undo incl. dismiss-restore/unbook, flag, doc side-panel, money progress, done summary) — OLD Reports.jsx:639-875,:2826-2976; NEW has its own ReviewDeck component unused here (HIGH)
+- [P1] P&L line filter missing: no pnlQ input, no subtotal-of-shown rows, no "(all lines)" total relabel, no per-section no-match rows — OLD :935-1033,:1239-1248,:1470-1483 (HIGH)
+- [P1] Balance sheet counts drawdowns as liabilities (total_liabilities = A/P + advances) — reverses OLD's documented funding re-classification (John's 2026-08-07 call) and re-creates the unreadable-sheet failure OLD's comment records; "Funded by" block, accumulated-deficit line, funding-hide all missing — NEW server/routes/reports.js:736-738 + BalanceSheetCard.jsx:83-94 vs OLD server :1907-1985,:2003-2018, client :1755-1826 (HIGH)
+- [P2] BS depth missing server-side: A/R + A/P aging buckets, per-line composition breakdowns (sum-to-line by construction), undated-paid disclosure — OLD server :1803-1905; NEW computes none (HIGH)
+- [P2] BS whole-line exclusion has no UI (server + Dismissed-tab restore exist; no line-level Ban control; excluded cash accounts unreachable from the sheet) — OLD client :311-345,:1706-1711 (HIGH)
+- [P2] Drill rows expose no documents: DocButton/FilePreview/attach-link absent; only a Ledger ?focus link — OLD :53-71,:2649-2671, server withFileFlags :1672 (HIGH)
+- [P2] Drill sort controls missing (Date/Name/Amount, default-direction + flip) — OLD :456-469,:2400-2436 (HIGH)
+- [P2] Bulk month reassign + "Attribute all N" past the 500-row cap missing — NEW server returns all_expense_ids (reports.js:566) that the client never reads — OLD :618-637,:2463-2489,:2552-2565 (HIGH)
+- [P2] Non-recurring section not rendered: server folds section='non_recurring' into below-line "labelled by the client" (reports.js:247-248) but PnlTable shows it inside "Below the line — advances & pass-through" unlabelled, while the classify UI offers Non-recurring — OLD renders a separate section + net + explanation :1517-1536 (HIGH)
+- [P2] "What backs these figures" evidence aggregate missing (invoice/invented/none $ + % bar summing to the expense figure) — NEW already stamps per-row evidence, no rollup — OLD :1574-1665 (HIGH)
+- [P3] Dismissed tab category rules lack live "$X excluded in range · N txns" chip — OLD :2262-2271 (HIGH)
+- [P3] Rename result hides touched-table counts (server returns them; toast drops them) — OLD :383-394 / NEW PnlTable:113 (HIGH)
+- [P3] Per-line dismissed badge is an unclickable ◦ on the Total cell, no amount, no jump — OLD :1057-1067 / NEW PnlTable:24,:76 (HIGH)
+- [P3] Drill header "+$Y dismissed" not a jump to the Dismissed tab — OLD :2370-2376 / NEW DrillModal:93 (HIGH)
+- [P3] SBA export ignores on-screen Top-N (client never sends topN; screen/workbook can disagree — the exact trap OLD's comment removed) — NEW Reports.jsx:94 vs OLD :83-86,:884 (HIGH)
+- [P3] Merged-spelling disclosure dropped (×N chip + tooltip); NEW collects spellings then discards them — NEW reports.js:222-228,:311-326 vs OLD :2033-2039 (HIGH)
+- [P3] Drill-bulk polish: no select-all, no selected-$ readout, selection not pruned on filter change, no "Attribute N of M" eligibility copy — OLD :476-483,:2448-2462,:2490-2543 (MED)
+- [P3] SBA category columns ordered by grand total incl. overhead vs OLD artist-spend-first w/ grayed overhead-only columns — OLD :1949-1954,:2022-2024 (MED)
+- [P3] SBA advances paragraph reduced (advance-only-artist count, attributed-vs-total advances sentences gone) — OLD :1897-1917 / NEW SpendByArtist:53,:141-147 (MED)
+- [P3] `isValidDay` regex-only — impossible dates (2026-02-31) pass to SQL (OLD validates realness :111-116) — NEW reports.js:63 (MED; `UNVERIFIED — needs runtime check`)
+- [P3] classify/rename narrowed to Admin+ (Approver excluded) vs OLD isBkAdmin — NEW :1060,:1080 vs OLD :3478,:3541 (MED — possibly deliberate)
+- [P3] from/to inputs lack max/min cross-clamps; no Financials basis cross-link row — OLD :1227-1229,:1093-1102 (MED)
+- [P3] Subtitle "statement-verified" overstates the ledger-mastered basis (coverage only warns; unreconciled ledger rows count) — NEW Reports.jsx:104 vs reports.js:4-12 (MED)
+- [INT] LEDGER-mastered basis replacing OLD's bank-mastered engine (bankRows/dedupe/txnParts/splitUsd, unbooked "Unorganized" lines, unverified not-counted section + drill kind, per-txn action ids) — deliberate architectural adaptation, NEW reports.js:4-18
+- [INT] Reversal-pair exclusion + banner + search tags + SBA excludes line — recorded scope cut, `_audit/00-inventory.md:180`; consequence: refunded payments still marked Paid silently inflate NEW's P&L
+- [INT] `/reports/search` line-item search backend — recorded scope cut, `_audit/00-inventory.md:180`
+- [INT] Label-level pool, allocations, coverage-denominator split + `/bk/advertising` ad-allocation routes — recorded scope cut, `_audit/00-inventory.md:188`,`:180`
+- [INT] Google Sheets export (long-lived sheet, both tabs, shared row model) — known intentional scope cut
+- [INT] Fingerprint-keyed dismissals/month-overrides (survive statement re-upload) — adaptation, strictly more durable
+- [INT] Counted vs hidden-only dismissal chip — meaningless under NEW's basis (every dismissed item counted)
+- [INT] Access model: per-endpoint isBkAdmin → router requireApprover + withTenant label scoping (multi-tenant)

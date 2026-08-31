@@ -1,0 +1,290 @@
+{
+  "last_updated": "2026-08-30",
+  "phase": "complete",
+  "pages": [
+    {
+      "slug": "dashboard",
+      "status": "done"
+    },
+    {
+      "slug": "my-work",
+      "status": "done"
+    },
+    {
+      "slug": "calendar",
+      "status": "done"
+    },
+    {
+      "slug": "flags-data-quality",
+      "status": "done"
+    },
+    {
+      "slug": "artists",
+      "status": "done"
+    },
+    {
+      "slug": "artist-profile",
+      "status": "done"
+    },
+    {
+      "slug": "deals",
+      "status": "done"
+    },
+    {
+      "slug": "releases",
+      "status": "done"
+    },
+    {
+      "slug": "release-detail",
+      "status": "done"
+    },
+    {
+      "slug": "catalog",
+      "status": "done"
+    },
+    {
+      "slug": "contracts",
+      "status": "done"
+    },
+    {
+      "slug": "pending-contracts",
+      "status": "done"
+    },
+    {
+      "slug": "renewals",
+      "status": "done"
+    },
+    {
+      "slug": "create-nda",
+      "status": "done"
+    },
+    {
+      "slug": "label-waiver",
+      "status": "done"
+    },
+    {
+      "slug": "artist-clearance",
+      "status": "done"
+    },
+    {
+      "slug": "approvals",
+      "status": "done"
+    },
+    {
+      "slug": "payments",
+      "status": "done"
+    },
+    {
+      "slug": "ledger",
+      "status": "done"
+    },
+    {
+      "slug": "add-invoice",
+      "status": "done"
+    },
+    {
+      "slug": "add-reimbursement",
+      "status": "done"
+    },
+    {
+      "slug": "create-invoice",
+      "status": "done"
+    },
+    {
+      "slug": "vendors",
+      "status": "done"
+    },
+    {
+      "slug": "creators",
+      "status": "done"
+    },
+    {
+      "slug": "bank-statements",
+      "status": "done"
+    },
+    {
+      "slug": "bank-matching",
+      "status": "done"
+    },
+    {
+      "slug": "upload-rules",
+      "status": "done"
+    },
+    {
+      "slug": "financials",
+      "status": "done"
+    },
+    {
+      "slug": "reports",
+      "status": "done"
+    },
+    {
+      "slug": "recording-budgets",
+      "status": "done"
+    },
+    {
+      "slug": "recoupments",
+      "status": "done"
+    },
+    {
+      "slug": "recoupments-planning",
+      "status": "done"
+    },
+    {
+      "slug": "artist-budgets",
+      "status": "done"
+    },
+    {
+      "slug": "artist-campaigns",
+      "status": "done"
+    },
+    {
+      "slug": "salary",
+      "status": "done"
+    },
+    {
+      "slug": "team",
+      "status": "done"
+    },
+    {
+      "slug": "settings",
+      "status": "done"
+    },
+    {
+      "slug": "admin-docs",
+      "status": "done"
+    },
+    {
+      "slug": "activity",
+      "status": "done"
+    },
+    {
+      "slug": "legal",
+      "status": "done"
+    },
+    {
+      "slug": "manual",
+      "status": "done"
+    },
+    {
+      "slug": "vendor-submit",
+      "status": "done"
+    },
+    {
+      "slug": "login",
+      "status": "done"
+    },
+    {
+      "slug": "privacy-eula",
+      "status": "done"
+    },
+    {
+      "slug": "missing--contracts-create",
+      "status": "done"
+    },
+    {
+      "slug": "missing--approvals-archive",
+      "status": "done"
+    },
+    {
+      "slug": "missing--bank-ledger",
+      "status": "done"
+    },
+    {
+      "slug": "missing--vendors-added-expenses",
+      "status": "done"
+    },
+    {
+      "slug": "missing--bk-invoices",
+      "status": "done"
+    },
+    {
+      "slug": "missing--bulk-upload",
+      "status": "done"
+    },
+    {
+      "slug": "missing--ledger-matching",
+      "status": "done"
+    },
+    {
+      "slug": "missing--financials-month-drill",
+      "status": "done"
+    },
+    {
+      "slug": "missing--recoupments-audit",
+      "status": "done"
+    },
+    {
+      "slug": "missing--ad-allocation",
+      "status": "done"
+    },
+    {
+      "slug": "missing--bulk-deals",
+      "status": "done"
+    },
+    {
+      "slug": "missing--team-member",
+      "status": "done"
+    },
+    {
+      "slug": "missing--analytics",
+      "status": "done"
+    },
+    {
+      "slug": "missing--vendor-preview-lab",
+      "status": "done"
+    },
+    {
+      "slug": "g-sidebar-nav",
+      "status": "done"
+    },
+    {
+      "slug": "g-topbar-header",
+      "status": "done"
+    },
+    {
+      "slug": "g-global-search",
+      "status": "done"
+    },
+    {
+      "slug": "g-notification-bell",
+      "status": "done"
+    },
+    {
+      "slug": "g-toasts",
+      "status": "done"
+    },
+    {
+      "slug": "g-modal-overlay-primitives",
+      "status": "done"
+    },
+    {
+      "slug": "g-keyboard-shortcuts",
+      "status": "done"
+    },
+    {
+      "slug": "g-auth-screens",
+      "status": "done"
+    },
+    {
+      "slug": "g-error-404-loading",
+      "status": "done"
+    },
+    {
+      "slug": "g-empty-states",
+      "status": "done"
+    },
+    {
+      "slug": "g-mobile-shell",
+      "status": "done"
+    },
+    {
+      "slug": "g-theme-dark-mode",
+      "status": "done"
+    },
+    {
+      "slug": "g-email-preview-modal",
+      "status": "done"
+    }
+  ]
+}
