@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext'
 import { ROLES, DEPARTMENTS } from '../constants'
 
 const ROLE_STYLES = {
-  Superadmin: 'bg-brand-100 text-brand-700',
+  Superadmin: 'bg-brand-500/15 text-brand-700',
   Admin:      'bg-indigo-100 text-indigo-700',
   Approver:   'bg-amber-100 text-amber-700',
   User:       'bg-gray-100 text-gray-600',
@@ -92,7 +92,7 @@ export default function Team() {
 
       {/* Invite result — shows the link to copy (and whether the email sent). */}
       {invite && (
-        <div className="card p-4 mb-6 border-brand-200 bg-brand-50/40">
+        <div className="card p-4 mb-6 border-brand-200 bg-brand-500/10/40">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-ink flex items-center gap-1.5">

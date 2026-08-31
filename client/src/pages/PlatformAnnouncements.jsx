@@ -7,7 +7,7 @@ import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 
 const LEVELS = [
-  { key: 'info', label: 'Info', icon: Info, chip: 'bg-brand-100 text-brand-700' },
+  { key: 'info', label: 'Info', icon: Info, chip: 'bg-brand-500/15 text-brand-700' },
   { key: 'warning', label: 'Warning', icon: AlertTriangle, chip: 'bg-amber-100 text-amber-700' },
   { key: 'critical', label: 'Critical', icon: AlertOctagon, chip: 'bg-red-100 text-red-700' },
 ]

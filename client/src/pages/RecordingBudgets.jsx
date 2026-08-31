@@ -4,7 +4,7 @@ import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
-import { EXPENSE_CATEGORIES } from '../constants'
+import CategoryOptions from '../components/CategoryOptions'
 
 const money = (n) => `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const SECTIONS = ['Producers', 'Studio', 'Mixing/Mastering', 'Musicians', 'Travel', 'Other']
@@ -111,7 +111,7 @@ export default function RecordingBudgets() {
                           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-3 pt-3 border-t border-divider">
                             <select className="input !py-1.5 text-sm" value={item.section} onChange={e => setItem(f => ({ ...f, section: e.target.value }))}>{SECTIONS.map(s => <option key={s}>{s}</option>)}</select>
                             <input className="input !py-1.5 text-sm" placeholder="Description" value={item.description} onChange={e => setItem(f => ({ ...f, description: e.target.value }))} />
-                            <select className="input !py-1.5 text-sm" value={item.category} onChange={e => setItem(f => ({ ...f, category: e.target.value }))}><option value="">Category…</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
+                            <select className="input !py-1.5 text-sm" value={item.category} onChange={e => setItem(f => ({ ...f, category: e.target.value }))}><option value="">Category…</option><CategoryOptions /></select>
                             <input type="number" step="0.01" className="input !py-1.5 text-sm" placeholder="0.00" value={item.amount} onChange={e => setItem(f => ({ ...f, amount: e.target.value }))} />
                             <button onClick={() => addItem(b.id)} className="btn-primary !py-1.5 text-xs">Add line</button>
                           </div>

@@ -25,6 +25,15 @@ if (process.env.NODE_ENV !== 'production' && process.env.DISABLE_TENANT_ASSERT !
     'bulk_deal_items', 'ledger_history', 'dsp_submissions', 'release_comments',
     'release_budget_items', 'user_page_permissions', 'user_visible_reps',
     'user_login_logs', 'entity_files', 'reps', 'artist_dev_log',
+    // Finance / reconciliation tables (some predate this list — all tenant-scoped).
+    'categories', 'bank_statements', 'bank_transactions', 'statement_payee_map',
+    'statement_dismiss_rules', 'statement_category_rules', 'artist_meta',
+    'song_campaign_status', 'bk_audit_log', 'data_quality_dismissals',
+    'artist_normalization_map', 'flag_dismissals',
+    'report_dismissals', 'report_month_overrides',
+    'statement_match_rejections', 'bank_txn_invoice_links', 'statement_no_invoice_rules',
+    'statement_artist_rules', 'statement_flag_acks', 'statement_months',
+    'artist_budget_sections',
   ];
   const tableRe = new RegExp(`\\b(from|join|into|update|delete\\s+from)\\s+"?(${TENANT_TABLES.join('|')})"?\\b`, 'i');
   const origQuery = pool.query.bind(pool);

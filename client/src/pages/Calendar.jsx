@@ -8,7 +8,7 @@ import { useToast } from '../context/ToastContext'
 // Event kinds → colour + label. "event" is a manual entry (deletable); the rest
 // are derived live from releases/tasks/contracts and link to their source page.
 const KINDS = {
-  release:          { label: 'Releases',  dot: 'bg-brand-500',   text: 'text-brand-700',   bg: 'bg-brand-50' },
+  release:          { label: 'Releases',  dot: 'bg-brand-500',   text: 'text-brand-700',   bg: 'bg-brand-500/10' },
   task:             { label: 'Tasks',     dot: 'bg-amber-500',   text: 'text-amber-700',   bg: 'bg-amber-50' },
   contract_expiry:  { label: 'Expiring',  dot: 'bg-red-500',     text: 'text-red-700',     bg: 'bg-red-50' },
   contract_signed:  { label: 'Signed',    dot: 'bg-emerald-500', text: 'text-emerald-700', bg: 'bg-emerald-50' },

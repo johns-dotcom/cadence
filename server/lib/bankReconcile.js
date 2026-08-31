@@ -5,6 +5,8 @@
 // and booking creates a normal approved+Paid expense.
 
 const pool = require('../db');
+const { normalizeBankPayee } = require('./normalizeBankPayee');
+const { normalizeInvoiceNum } = require('./normalizeInvoiceNum');
 
 // ── Bank accounts ─────────────────────────────────────────────────────────
 // Per-label configurable; these ship as defaults. `methods` = payment methods
@@ -54,19 +56,122 @@ function vendorsMatch(bankPayee, ledgerPayee) {
   return { score: j, method: 'auto-fuzzy' };
 }
 
-// Best name evidence for (bankPayee → ledgerPayee), folding the learned payee
-// map (exact bank-descriptor hit = 1.0) and vendor aliases into the fuzzy
-// fallback. `payeeMap` = { normalizedBankPayee: ledgerPayeeLower }.
-// `aliasMap` = { aliasLower: canonicalLower }.
+// ── Email extraction (banks mash "Name / email@x" into one field) ───────────
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
+function splitPayeeEmail(raw) {
+  const s = String(raw || '');
+  const m = s.match(EMAIL_RE);
+  if (!m) return { payee: s.trim() || null, email: null };
+  const payee = s.replace(EMAIL_RE, '').replace(/[\s/|,-]+$/g, '').replace(/^[\s/|,-]+/g, '').trim();
+  return { payee: payee || null, email: m[0].toLowerCase() };
+}
+
+// Stable identity across re-uploads — keys statement_match_rejections.
+const txnFingerprint = (txn) =>
+  `${String(txn.txn_date).slice(0, 10)}|${(Number(txn.amount) || 0).toFixed(2)}|${normalizeBankPayee(txn.payee_guess || txn.description || '')}`;
+
+// ── refEvidence — invoice/reference numbers in the wire text ─────────────────
+// The strongest signal a bank row can carry. Checked FIRST; returns 1.0.
+//   * payment_ref: the ledger's payment reference (≥4 chars) as a substring
+//     of the wire text.
+//   * invoice #: normalized with the SAME canonical normalizer the
+//     duplicate-invoice detection uses (#003 ≡ INV-003 ≡ 003). Token scan
+//     (only when normalized length ≥ 2) with the MMDD GUARD — card
+//     descriptors embed the charge date ("PURCHASE 0227 FACEBK") and invoice
+//     "227" must NOT match it — plus a prefixed regex for short numbers.
+const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function looksLikeMMDD(tok) {
+  if (!/^\d{4}$/.test(tok)) return false;
+  const mo = Number(tok.slice(0, 2)), da = Number(tok.slice(2));
+  return mo >= 1 && mo <= 12 && da >= 1 && da <= 31;
+}
+function refEvidence(txn, cand) {
+  const hay = `${txn.reference || ''} ${txn.description || ''} ${txn.payee_guess || ''}`;
+  const ref = String(cand.payment_ref || '').trim();
+  if (ref.length >= 4 && hay.toLowerCase().includes(ref.toLowerCase())) return { score: 1.0, reason: 'ref' };
+  const inv = normalizeInvoiceNum(String(cand.invoice_number || ''));
+  if (inv) {
+    if (inv.length >= 2) {
+      for (const rawTok of hay.split(/[\s,;:|]+/)) {
+        if (looksLikeMMDD(rawTok)) continue; // MMDD guard
+        if (normalizeInvoiceNum(rawTok) === inv) return { score: 1.0, reason: 'ref' };
+      }
+    }
+    const prefixed = new RegExp(`(?:invoice|inv|no\\.?|#)[\\s\\-.:_/]*0*${escRe(inv)}\\b`, 'i');
+    if (prefixed.test(hay)) return { score: 1.0, reason: 'ref' };
+  }
+  return null;
+}
+
+// ONE derivation of the match_method string from the evidence reason —
+// every tier uses it, so the vocabulary can't fork.
+function methodOf(reason) {
+  return {
+    ref: 'auto-ref', email: 'auto-email', learned: 'auto-learned',
+    alias: 'auto-alias', 'alias-fuzzy': 'auto-fuzzy',
+    exact: 'auto-exact', fuzzy: 'auto-fuzzy', date: 'auto-date', fee: 'auto-fee',
+  }[reason] || 'auto-fuzzy';
+}
+
+// Evidence-date scoring (banks settle 1-3 business days after the ledger's
+// paid date). evidenceDate = paid ? payment_date : scheduled_payment_date —
+// yes, scheduled dates count for unpaid invoices. Neutral 0.5 when no date
+// exists: never penalize undated candidates.
+const dayOf = (d) => (d ? String(d).slice(0, 10) : null);
+function evidenceDate(cand) {
+  return dayOf(cand.payment_status === 'Paid' ? cand.payment_date : cand.scheduled_payment_date) || dayOf(cand.payment_date);
+}
+function daysApart(a, b) {
+  if (!a || !b) return null;
+  return Math.abs((new Date(`${a}T00:00:00Z`) - new Date(`${b}T00:00:00Z`)) / 86400000);
+}
+function dateScore(txn, cand) {
+  const d = daysApart(evidenceDate(cand), dayOf(txn.txn_date));
+  return d == null ? 0.5 : Math.max(0, 1 - d / 7);
+}
+
+// Best evidence for (txn → candidate). Priority: reference/invoice# (1.0) →
+// email (1.0) → learned map, raw or descriptor-normalized key (1.0) → alias
+// exact (0.95) → fuzzy best-of the payee AND every alias in its group.
+// `maps` from loadMaps.
+function evidence(txn, cand, maps) {
+  const r = refEvidence(txn, cand);
+  if (r) return { score: r.score, method: methodOf(r.reason) };
+  const candEmail = String(cand.vendor_email || '').toLowerCase().trim();
+  if (txn.payee_email && candEmail && txn.payee_email === candEmail) return { score: 1.0, method: 'auto-email' };
+  if (txn.payee_email && maps.emailByVendor?.get(String(cand.payee || '').toLowerCase().trim())?.has(txn.payee_email)) {
+    return { score: 1.0, method: 'auto-email' };
+  }
+  const bankRaw = txn.payee_guess || '';
+  if (!bankRaw) return { score: 0, method: 'auto-fuzzy' };
+  const candLower = String(cand.payee || '').toLowerCase().trim();
+  const group = maps.aliasGroups?.get(candLower) || new Set([candLower]);
+  // Learned map: raw key first, then the descriptor-normalized key; a hit
+  // also matches when the learned name is an ALIAS of the candidate's payee.
+  const learned = maps.payeeMap?.[normalizeName(bankRaw)] || maps.payeeMap?.[`~${normalizeBankPayee(bankRaw)}`];
+  if (learned && (learned === candLower || group.has(learned))) return { score: 1.0, method: 'auto-learned' };
+  // Alias exact: the bank name IS a member of the candidate's alias group.
+  const bankLower = bankRaw.toLowerCase().trim();
+  if (group.has(bankLower) || group.has(normalizeName(bankRaw))) return { score: 0.95, method: 'auto-alias' };
+  // Fuzzy — best score across the payee and every alias in its group.
+  let best = { score: 0, method: 'auto-fuzzy' };
+  for (const name of group) {
+    const v = vendorsMatch(bankRaw, name);
+    if (v.score > best.score) best = v;
+  }
+  return best;
+}
+
+// Back-compat string signature (older callers / fixtures).
 function nameEvidence(bankPayee, ledgerPayee, payeeMap = {}, aliasMap = {}) {
-  if (!bankPayee) return { score: 0, method: 'auto-fuzzy' };
-  const bn = normalizeName(bankPayee);
-  const learned = payeeMap[bn];
-  if (learned && learned === String(ledgerPayee || '').toLowerCase()) return { score: 1.0, method: 'auto-learned' };
-  // Fold aliases: if the bank payee is a known alias of the ledger payee.
-  const canon = aliasMap[String(bankPayee).toLowerCase().trim()] || aliasMap[bn];
-  if (canon && canon === String(ledgerPayee || '').toLowerCase()) return { score: 0.95, method: 'auto-exact' };
-  return vendorsMatch(bankPayee, ledgerPayee);
+  const aliasGroups = new Map();
+  for (const [alias, canon] of Object.entries(aliasMap)) {
+    const set = aliasGroups.get(canon) || new Set([canon]);
+    set.add(alias);
+    aliasGroups.set(canon, set);
+    aliasGroups.set(alias, set);
+  }
+  return evidence({ payee_guess: bankPayee }, { payee: ledgerPayee }, { payeeMap, aliasGroups });
 }
 
 // ── Internal-movement detection ─────────────────────────────────────────────
@@ -85,18 +190,99 @@ function parsePipeLines(text) {
     if (!line || line.startsWith('#') || /^date\s*\|/i.test(line)) continue;
     const parts = line.split('|').map(p => p.trim());
     if (parts.length < 3) continue;
-    const [date, dir, amount, payee, reference, ...descRest] = parts;
+    // Two line shapes: legacy DATE|DIR|AMOUNT|PAYEE|REFERENCE|DESCRIPTION and
+    // v2 DATE|DIR|AMOUNT|PAYEE|EMAIL|REFERENCE|DESCRIPTION. Field 5 is an
+    // email when it looks like one (or the line is long enough to be v2).
+    const [date, dir, amount, payee, ...rest] = parts;
     const d = normalizeDate(date);
     const amt = parseAmount(amount);
     if (!d || amt == null) continue;
     const direction = /credit|cr|deposit|\+/i.test(dir) ? 'credit' : 'debit';
+    let email = null, reference, descRest;
+    if (rest.length >= 3 || (rest.length >= 1 && EMAIL_RE.test(rest[0]))) {
+      email = (rest[0] || '').match(EMAIL_RE)?.[0]?.toLowerCase() || null;
+      reference = rest[1];
+      descRest = rest.slice(2);
+    } else {
+      reference = rest[0];
+      descRest = rest.slice(1);
+    }
+    // Emails also arrive mashed into the payee — split them out either way.
+    const split = splitPayeeEmail(payee);
     out.push({
       txn_date: d, direction, amount: Math.abs(amt),
-      payee_guess: payee || null, reference: reference || null,
+      payee_guess: split.payee, payee_email: email || split.email,
+      reference: reference || null,
       description: (descRest.join(' | ') || payee || '').trim() || null,
     });
   }
   return out;
+}
+
+// Balance header lines from the PDF parse ("ENDING_BALANCE|1234.56" /
+// "BEGINNING_BALANCE|1000.00" as the first output lines; empty after the pipe
+// when the document doesn't print one). parsePipeLines already skips them
+// (no parseable date), so this is a separate, backward-compatible peel-off.
+function extractBalanceLines(text) {
+  const out = { ending_balance: null, beginning_balance: null };
+  for (const raw of String(text || '').split('\n').slice(0, 12)) {
+    const line = raw.trim();
+    let m;
+    if ((m = line.match(/^ENDING_BALANCE\s*\|\s*(.*)$/i))) {
+      const v = parseAmount(m[1]);
+      if (v != null) out.ending_balance = v;
+    } else if ((m = line.match(/^BEGINNING_BALANCE\s*\|\s*(.*)$/i))) {
+      const v = parseAmount(m[1]);
+      if (v != null) out.beginning_balance = v;
+    }
+  }
+  return out;
+}
+
+// Best-effort balance capture from a CSV with a running-balance column:
+// ending = the balance on the latest-dated row; beginning = the earliest
+// row's balance rolled back by that row's own signed amount. NULL when no
+// balance column exists — absence is honest, a guess is not.
+function extractCsvBalances(text) {
+  const none = { ending_balance: null, beginning_balance: null };
+  try {
+    const rows = splitCsv(text).filter(r => r.some(c => String(c).trim()));
+    if (rows.length < 2) return none;
+    const hi = findHeader(rows);
+    const headers = rows[hi].map(h => String(h).toLowerCase().trim().replace(/\s+/g, ' '));
+    const iBal = headers.findIndex(h => /^(running |ledger |current )?balance$/.test(h));
+    if (iBal < 0) return none;
+    const iDate = col(headers, 'date', 'transaction date', 'posting date');
+    const iAmt = col(headers, 'amount', 'gross');
+    const iDebit = col(headers, 'debit');
+    const iCredit = col(headers, 'credit');
+    const parsed = [];
+    for (let r = hi + 1; r < rows.length; r++) {
+      const cells = rows[r];
+      const d = normalizeDate(iDate >= 0 ? cells[iDate] : '');
+      const bal = parseAmount(cells[iBal]);
+      if (!d || bal == null) continue;
+      let signed = null;
+      if (iDebit >= 0 || iCredit >= 0) {
+        const deb = parseAmount(cells[iDebit]) || 0;
+        const cre = parseAmount(cells[iCredit]) || 0;
+        signed = cre ? Math.abs(cre) : -Math.abs(deb);
+      } else if (iAmt >= 0) {
+        signed = parseAmount(cells[iAmt]);
+      }
+      parsed.push({ d, bal, signed });
+    }
+    if (!parsed.length) return none;
+    parsed.sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
+    const first = parsed[0];
+    const last = parsed[parsed.length - 1];
+    return {
+      ending_balance: last.bal,
+      beginning_balance: first.signed != null ? Math.round((first.bal - first.signed) * 100) / 100 : null,
+    };
+  } catch {
+    return none;
+  }
 }
 
 function normalizeDate(s) {
@@ -208,15 +394,67 @@ function parseCsv(text, account) {
 }
 
 // ── The tiered learning matcher ──────────────────────────────────────────────
-// Load the learned payee map + vendor aliases once per statement ingest.
+// Load the learned payee map, vendor aliases (as SYMMETRIC groups), match
+// rejections and vendor emails once per statement ingest / detail request.
 async function loadMaps(db, labelId) {
-  const pm = await (db || pool).query('SELECT bank_payee, ledger_payee FROM statement_payee_map WHERE label_id = $1', [labelId]);
+  const c = db || pool;
+  const pm = await c.query('SELECT bank_payee, ledger_payee FROM statement_payee_map WHERE label_id = $1', [labelId]);
   const payeeMap = {};
-  for (const r of pm.rows) payeeMap[normalizeName(r.bank_payee)] = String(r.ledger_payee).toLowerCase();
-  const al = await (db || pool).query('SELECT alias, canonical FROM vendor_aliases WHERE label_id = $1', [labelId]);
-  const aliasMap = {};
-  for (const r of al.rows) aliasMap[String(r.alias).toLowerCase().trim()] = String(r.canonical).toLowerCase();
-  return { payeeMap, aliasMap };
+  for (const r of pm.rows) {
+    const target = String(r.ledger_payee).toLowerCase();
+    payeeMap[normalizeName(r.bank_payee)] = target;
+    // Descriptor-normalized key (card descriptors vary per charge, so an
+    // exact-string map re-learns every FACEBK code). '~' prefix keeps the two
+    // key spaces from colliding. Only when the normalized form is meaningful.
+    const norm = normalizeBankPayee(r.bank_payee);
+    if (norm.length >= 3) payeeMap[`~${norm}`] = target;
+  }
+
+  // Aliases as symmetric groups: alias ↔ canonical share ONE Set, so lookups
+  // from either name find the whole group.
+  const al = await c.query('SELECT alias, canonical FROM vendor_aliases WHERE label_id = $1', [labelId]);
+  const aliasGroups = new Map();
+  const aliasMap = {}; // kept for back-compat consumers
+  for (const r of al.rows) {
+    const a = String(r.alias).toLowerCase().trim();
+    const canon = String(r.canonical).toLowerCase().trim();
+    aliasMap[a] = canon;
+    const set = aliasGroups.get(canon) || aliasGroups.get(a) || new Set();
+    set.add(a); set.add(canon);
+    for (const name of set) aliasGroups.set(name, set);
+  }
+
+  // A human's "no" — never re-propose a rejected (txn fingerprint, root) pair.
+  let rejections = new Set();
+  try {
+    const rj = await c.query('SELECT txn_fingerprint, expense_root_id FROM statement_match_rejections WHERE label_id = $1', [labelId]);
+    rejections = new Set(rj.rows.map((r) => `${r.txn_fingerprint}::${r.expense_root_id}`));
+  } catch { /* table may predate migration */ }
+
+  // Vendor emails — an email match is the strongest evidence a bank carries.
+  const emailByVendor = new Map();
+  const addEmail = (vendor, email) => {
+    const v = String(vendor || '').toLowerCase().trim();
+    const e = String(email || '').toLowerCase().trim();
+    if (!v || !e) return;
+    const set = emailByVendor.get(v) || new Set();
+    set.add(e);
+    emailByVendor.set(v, set);
+  };
+  try {
+    const ve = await c.query('SELECT vendor_name, email FROM vendor_emails WHERE label_id = $1', [labelId]);
+    for (const r of ve.rows) addEmail(r.vendor_name, r.email);
+  } catch { /* optional */ }
+  try {
+    const ee = await c.query(
+      `SELECT DISTINCT payee, vendor_email FROM expenses
+        WHERE label_id = $1 AND vendor_email IS NOT NULL AND TRIM(vendor_email) <> ''`,
+      [labelId]
+    );
+    for (const r of ee.rows) addEmail(r.payee, r.vendor_email);
+  } catch { /* optional */ }
+
+  return { payeeMap, aliasMap, aliasGroups, rejections, emailByVendor };
 }
 
 // Candidate ledger FAMILIES (roots) for one debit txn: approved/live,
@@ -240,7 +478,7 @@ async function candidates(db, labelId, txn, methods) {
        AND e.entry_source IS DISTINCT FROM 'bank_statement'
        AND NOT EXISTS (SELECT 1 FROM bank_transactions bt WHERE bt.matched_expense_id = e.id AND bt.label_id = e.label_id)
        AND (
-         (e.payment_status = 'Paid' AND e.payment_date BETWEEN $3::date - 5 AND $3::date + 5)
+         (e.payment_status = 'Paid' AND e.payment_date BETWEEN $3::date - 7 AND $3::date + 7)
          OR (e.payment_status IN ('Unpaid','Partial') AND (e.invoice_date IS NULL OR e.invoice_date <= $3::date + 5) AND $3::date >= e.invoice_date - 5)
        )${methodClause}`,
     params
@@ -249,34 +487,56 @@ async function candidates(db, labelId, txn, methods) {
 }
 
 // Match ONE debit txn against the ledger. Returns {expense_id, method, score}
-// or null. `maps` from loadMaps.
-async function matchTxn(db, labelId, txn, methods, maps) {
+// or null. `maps` from loadMaps. `used` = Set of family-root ids already
+// claimed (seeded from ALL existing claims + per-match adds during a run) —
+// layer 1 of one-debit-per-invoice.
+async function matchTxn(db, labelId, txn, methods, maps, used = new Set()) {
   if (txn.direction !== 'debit') return null;
-  const cands = await candidates(db, labelId, txn, methods);
+  const fp = txnFingerprint(txn);
+  const cands = (await candidates(db, labelId, txn, methods))
+    .filter(c => !used.has(c.id))
+    .filter(c => !maps.rejections || !maps.rejections.has(`${fp}::${c.id}`));
   if (!cands.length) return null;
   const amt = Number(txn.amount);
 
   // Tier 1 — exact amount.
   const exact = cands.filter(c => Math.abs(Number(c.family_amount) - amt) < 0.01);
   if (exact.length) {
-    const scored = exact.map(c => ({ c, ev: nameEvidence(txn.payee_guess, c.payee, maps.payeeMap, maps.aliasMap) }));
+    const scored = exact.map(c => ({ c, ev: evidence(txn, c, maps) }));
     if (exact.length === 1) {
-      // A bare amount-only match is dangerous — require a non-empty bank payee.
-      if (!txn.payee_guess) return null;
       const best = scored[0];
+      if (!txn.payee_guess && !txn.payee_email) {
+        // A bare amount-only match is dangerous (the currency-conversion
+        // lesson) — but an evidenceDate within 3 days is the missing evidence.
+        const d = daysApart(evidenceDate(best.c), dayOf(txn.txn_date));
+        if (d != null && d <= 3) return { expense_id: best.c.id, method: 'auto-date', score: 0.85 };
+        return null;
+      }
       return { expense_id: best.c.id, method: best.ev.method, score: Math.max(best.ev.score, 0.6) };
     }
     scored.sort((a, b) => b.ev.score - a.ev.score);
-    if (scored[0].ev.score >= 0.6 && (scored.length < 2 || scored[0].ev.score - scored[1].ev.score >= 0.15)) {
+    if (scored[0].ev.score >= 0.6 && scored[0].ev.score - scored[1].ev.score >= 0.15) {
       return { expense_id: scored[0].c.id, method: scored[0].ev.method, score: scored[0].ev.score };
+    }
+    // Exact-tier date tiebreak: no name winner → the candidate whose
+    // evidenceDate is within 3 days of the bank date, IF the runner-up is
+    // 3+ days farther. Requires a non-empty bank payee.
+    if (txn.payee_guess) {
+      const dated = scored
+        .map(x => ({ ...x, d: daysApart(evidenceDate(x.c), dayOf(txn.txn_date)) }))
+        .filter(x => x.d != null)
+        .sort((a, b) => a.d - b.d);
+      if (dated.length && dated[0].d <= 3 && (dated.length < 2 || dated[1].d - dated[0].d >= 3)) {
+        return { expense_id: dated[0].c.id, method: 'auto-date', score: 0.8 };
+      }
     }
     return null;
   }
 
-  // Tier 2 — fee-tolerant (wires land a fee above the invoice).
+  // Tier 2 — fee-tolerant (wires land a fee above the invoice). Name REQUIRED.
   const tol = Math.max(35, amt * 0.01);
   const near = cands
-    .map(c => ({ c, delta: amt - Number(c.family_amount), ev: nameEvidence(txn.payee_guess, c.payee, maps.payeeMap, maps.aliasMap) }))
+    .map(c => ({ c, delta: amt - Number(c.family_amount), ev: evidence(txn, c, maps) }))
     .filter(x => x.delta >= -0.01 && x.delta <= tol && x.ev.score >= 0.6);
   if (near.length) {
     near.sort((a, b) => b.ev.score - a.ev.score);
@@ -285,15 +545,32 @@ async function matchTxn(db, labelId, txn, methods, maps) {
   return null;
 }
 
-// Top-3 near-miss suggestions for the "Match…" UI (amount-prefiltered ±15%,
-// then name-scored). Returns [{ expense_id, payee, amount, score }].
+// Top-3 suggestions for the "Match…" UI and the review deck.
+// score = amount·0.55 + name·0.30 + date·0.15 (0..1; the UI shows ×100).
+// Calibration to preserve (asserted by the evidence harness):
+//   exact + perfect name stays ≥0.90 whether paid or unpaid, so ≥0.85
+//   deck-primary and ≥0.90 auto-accept keep working; amount-only tops out at
+//   0.70 — below every automation threshold.
 async function suggestions(db, labelId, txn, methods, maps) {
   const cands = await candidates(db, labelId, txn, methods);
   const amt = Number(txn.amount);
+  const fp = txnFingerprint(txn);
+  const tol = Math.max(35, amt * 0.01);
   const scored = cands
     .filter(c => { const fa = Number(c.family_amount); return fa >= amt * 0.85 && fa <= amt * 1.15; })
-    .map(c => ({ expense_id: c.id, payee: c.payee, amount: Number(c.family_amount), currency: c.currency, invoice_number: c.invoice_number, score: nameEvidence(txn.payee_guess, c.payee, maps.payeeMap, maps.aliasMap).score }))
-    .sort((a, b) => (Math.abs(a.amount - amt) === Math.abs(b.amount - amt) ? b.score - a.score : Math.abs(a.amount - amt) - Math.abs(b.amount - amt)));
+    .filter(c => !maps.rejections || !maps.rejections.has(`${fp}::${c.id}`))
+    .map(c => {
+      const fa = Number(c.family_amount);
+      const delta = Math.abs(fa - amt);
+      const amountScore = delta < 0.01 ? 1.0 : delta <= tol ? 0.92 : Math.max(0, 1 - delta / amt / 0.15);
+      const ev = evidence(txn, c, maps);
+      const score = amountScore * 0.55 + ev.score * 0.30 + dateScore(txn, c) * 0.15;
+      return {
+        expense_id: c.id, payee: c.payee, amount: fa, currency: c.currency,
+        invoice_number: c.invoice_number, score: Math.round(score * 1000) / 1000, method: ev.method,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
   return scored.slice(0, 3);
 }
 
@@ -309,7 +586,9 @@ async function learnPayee(db, labelId, bankPayee, ledgerPayee, actor) {
 
 module.exports = {
   DEFAULT_ACCOUNTS, accountsFor, accountMethods,
-  normalizeName, nameEvidence, vendorsMatch, isInternal,
+  normalizeName, nameEvidence, evidence, vendorsMatch, isInternal,
+  splitPayeeEmail, txnFingerprint, refEvidence, methodOf,
   parsePipeLines, parseCsv, extractPayee,
+  extractBalanceLines, extractCsvBalances,
   loadMaps, candidates, matchTxn, suggestions, learnPayee,
 };

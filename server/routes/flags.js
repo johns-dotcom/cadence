@@ -45,7 +45,7 @@ router.get('/', async (req, res) => {
            FROM expenses WHERE label_id = $1 AND (deleted = false OR deleted IS NULL) AND parent_id IS NULL AND (voided = false OR voided IS NULL)`,
         [L]
       ),
-      pool.query('SELECT name, w9_name FROM vendors WHERE label_id = $1', [L]),
+      pool.query('SELECT name FROM vendors WHERE label_id = $1', [L]),
       pool.query('SELECT id, pattern, base_artist FROM artist_normalization_map WHERE label_id = $1 ORDER BY pattern', [L]),
       dismissedSet(L),
     ]);

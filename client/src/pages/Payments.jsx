@@ -246,7 +246,7 @@ export default function Payments() {
 
       {/* Batch action bar */}
       {sel.size > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-2 card px-4 py-2.5 mb-3 bg-brand-50 border-brand-200">
+        <div className="flex flex-wrap items-center justify-between gap-2 card px-4 py-2.5 mb-3 bg-brand-500/10 border-brand-200">
           <span className="text-sm font-medium text-ink">{sel.size} selected · {Object.entries(selTotals).map(([c, a]) => `${c} ${fmt(a)}`).join(' · ')}</span>
           <div className="flex items-center gap-2">
             {!isPaid && <button onClick={() => bulkFlag('rush')} className="btn-secondary py-1.5"><Zap size={15} /> Rush</button>}
@@ -345,7 +345,7 @@ export default function Payments() {
                       {r.payee}
                       {r.rush && <span title={r.rush_reason || 'Rush'} className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded"><Zap size={10} /> Rush</span>}
                       {r.on_hold && <span title={r.hold_reason || 'On hold'} className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded"><Pause size={10} /> Hold</span>}
-                      {r.split_count > 0 && <span className="text-[10px] font-bold uppercase bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded">Split</span>}
+                      {r.split_count > 0 && <span className="text-[10px] font-bold uppercase bg-brand-500/15 text-brand-700 px-1.5 py-0.5 rounded">Split</span>}
                     </p>
                     {r.vendor_email && <p className="text-[11px] text-gray-400 truncate max-w-[200px]">{r.vendor_email}</p>}
                   </td>
@@ -392,7 +392,7 @@ export default function Payments() {
 
       {payModal && <PayModal count={payModal.ids.length} onClose={() => setPayModal(null)} onConfirm={doPay} />}
       {schedModal && <ScheduleModal initialTerms={schedModal.terms} onClose={() => setSchedModal(null)} onConfirm={doSchedule} />}
-      {emailItems && <EmailPreviewModal items={emailItems} onClose={() => setEmailItems(null)} onDone={() => { setEmailItems(null); load() }} />}
+      {emailItems && <EmailPreviewModal open items={emailItems} onClose={() => setEmailItems(null)} onDone={() => { setEmailItems(null); load() }} />}
       {preview && (
         <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={() => setPreview(null)}>
           <div className="bg-card rounded-xl shadow-modal w-full max-w-4xl h-[88vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>

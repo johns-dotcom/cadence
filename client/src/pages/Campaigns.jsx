@@ -7,7 +7,7 @@ import { CURRENCIES } from '../constants'
 
 const STATUSES = ['Planned', 'Active', 'Completed', 'Cancelled']
 const STATUS_STYLE = {
-  Planned: 'bg-gray-100 text-gray-600', Active: 'bg-brand-100 text-brand-700',
+  Planned: 'bg-gray-100 text-gray-600', Active: 'bg-brand-500/15 text-brand-700',
   Completed: 'bg-emerald-100 text-emerald-700', Cancelled: 'bg-red-100 text-red-700',
 }
 const money = (n, c = 'USD') => `${c === 'USD' ? '$' : c + ' '}${Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`

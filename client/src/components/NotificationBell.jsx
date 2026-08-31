@@ -10,7 +10,7 @@ const ICONS = { release: Music, task: CheckSquare, contract: FileText, approval:
 const SEVERITY = {
   danger:  'text-red-600 bg-red-50',
   warning: 'text-amber-600 bg-amber-50',
-  info:    'text-brand-600 bg-brand-50',
+  info:    'text-brand-600 bg-brand-500/10',
 }
 
 export default function NotificationBell() {

@@ -81,7 +81,7 @@ function renderMentions(text, myHandles) {
     if (m.index > last) out.push(text.slice(last, m.index))
     const h = m[1].toLowerCase()
     const me = myHandles?.has(h) || MENTION_ALL.has(h)
-    out.push(<span key={i++} className={me ? 'bg-brand-100 text-brand-700 font-semibold rounded px-0.5' : 'text-brand-600 font-medium'}>{m[0]}</span>)
+    out.push(<span key={i++} className={me ? 'bg-brand-500/15 text-brand-700 font-semibold rounded px-0.5' : 'text-brand-600 font-medium'}>{m[0]}</span>)
     last = m.index + m[0].length
   }
   if (last < text.length) out.push(text.slice(last))
@@ -117,7 +117,7 @@ function ReactionChips({ reactions, myId, onToggle }) {
         const mine = (r.users || []).map(Number).includes(Number(myId))
         return (
           <button key={r.emoji} onClick={() => onToggle(r.emoji)}
-            className={`text-xs px-1.5 py-0.5 rounded-full border ${mine ? 'bg-brand-50 border-brand-300 text-brand-700' : 'bg-card border-rule text-gray-600'} hover:border-brand-300`}>
+            className={`text-xs px-1.5 py-0.5 rounded-full border ${mine ? 'bg-brand-500/10 border-brand-300 text-brand-700' : 'bg-card border-rule text-gray-600'} hover:border-brand-300`}>
             {r.emoji} {r.count}
           </button>
         )
@@ -532,7 +532,7 @@ export default function Messages() {
               onDragOver={e => { e.preventDefault(); setDragOver(true) }}
               onDragLeave={() => setDragOver(false)}
               onDrop={e => { e.preventDefault(); setDragOver(false); addFiles(setMainFiles)(e.dataTransfer.files) }}>
-              {dragOver && <div className="absolute inset-0 z-10 flex items-center justify-center bg-brand-50/80 text-brand-700 font-medium text-sm pointer-events-none">Drop files to attach</div>}
+              {dragOver && <div className="absolute inset-0 z-10 flex items-center justify-center bg-brand-500/10/80 text-brand-700 font-medium text-sm pointer-events-none">Drop files to attach</div>}
               {loadingMsgs ? <div className="p-6 text-sm text-gray-400">Loading…</div>
                 : messages.length === 0 ? <div className="p-6 text-sm text-gray-400">This is the beginning of {active.display_name ? `your conversation with ${active.display_name}` : `#${active.name}`}.</div>
                 : <MessageList messages={messages} myId={user.id} myHandles={myHandles} highlightId={highlightId} onReact={react} onReply={openThread} onEdit={startEdit} onDelete={del} showThread />}

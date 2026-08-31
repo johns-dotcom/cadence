@@ -52,9 +52,19 @@ router.get('/:slug', async (req, res) => {
     if (!label) return res.status(404).json({ success: false, error: 'Workspace not found' });
     const logo_url = label.logo_r2_key ? await getSignedFileUrl(label.logo_r2_key, 6 * 3600).catch(() => null) : null;
     const reps = await pool.query(`SELECT name FROM reps WHERE label_id = $1 AND active = TRUE ORDER BY LOWER(name)`, [label.id]).catch(() => ({ rows: [] }));
+    // Live category vocabulary — the form is unauthenticated, so categories
+    // ride the bootstrap payload instead of the (authed) /api/categories.
+    const cats = await pool.query(
+      `SELECT name FROM categories WHERE label_id = $1 AND kind = 'expense' AND active = TRUE ORDER BY sort_order ASC NULLS LAST, name`,
+      [label.id]
+    ).catch(() => ({ rows: [] }));
     res.json({
       success: true,
-      data: { name: label.name, slug: label.slug, accent_color: label.accent_color, logo_url, reps: reps.rows.map(r => r.name) },
+      data: {
+        name: label.name, slug: label.slug, accent_color: label.accent_color, logo_url,
+        reps: reps.rows.map(r => r.name),
+        categories: cats.rows.map(r => r.name),
+      },
     });
   } catch (error) {
     console.error('Vendor context error:', error);

@@ -63,7 +63,7 @@ export default function ArtistCampaigns() {
                   <Flag size={13} className="text-rose-500 flex-shrink-0" />
                   <span className="text-sm text-ink truncate flex-1">{r.payee} · <span className="text-gray-500">{r.artist}{r.song ? ` — ${r.song}` : ''}</span></span>
                   {r.flag_reason && <span className="text-[11px] text-gray-400 truncate max-w-[240px]">{r.flag_reason}</span>}
-                  {(r.assignees || []).map(u => <span key={u.id} className="text-[10px] bg-brand-100 text-brand-700 rounded-full px-1.5 py-0.5">{u.name?.split(' ')[0]}</span>)}
+                  {(r.assignees || []).map(u => <span key={u.id} className="text-[10px] bg-brand-500/15 text-brand-700 rounded-full px-1.5 py-0.5">{u.name?.split(' ')[0]}</span>)}
                 </button>
               ))}
               {feed.flaggedSongs.map((s, i) => (

@@ -16,6 +16,16 @@ export const SHORTCUT_GROUPS = [
     ],
   },
   {
+    group: 'Bank review deck',
+    items: [
+      { keys: ['→'], desc: 'Accept (match or book the card)' },
+      { keys: ['←'], desc: 'Skip' },
+      { keys: ['D'], desc: 'Dismiss (not a ledger item)' },
+      { keys: ['1', '–', '9'], desc: 'Pick a category / income type' },
+      { keys: ['Esc'], desc: 'Close the deck' },
+    ],
+  },
+  {
     group: 'My Work / Team Work',
     items: [
       { keys: ['N'], desc: 'New task' },

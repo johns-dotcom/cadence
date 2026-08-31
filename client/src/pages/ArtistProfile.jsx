@@ -181,7 +181,7 @@ export default function ArtistProfile() {
       <div className="flex items-start gap-4 mb-6">
         {artist.image_url
           ? <img src={artist.image_url} alt="" className="w-16 h-16 rounded-2xl object-cover flex-shrink-0 bg-gray-100" />
-          : <div className="w-16 h-16 rounded-2xl bg-brand-100 flex items-center justify-center flex-shrink-0"><span className="text-2xl font-bold text-brand-700">{artist.name?.charAt(0)?.toUpperCase()}</span></div>}
+          : <div className="w-16 h-16 rounded-2xl bg-brand-500/15 flex items-center justify-center flex-shrink-0"><span className="text-2xl font-bold text-brand-700">{artist.name?.charAt(0)?.toUpperCase()}</span></div>}
         <div className="flex-1 min-w-0">
           <h1 className="text-2xl font-bold text-ink tracking-tight">{artist.name}</h1>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1 text-sm text-gray-500">

@@ -439,6 +439,7 @@ router.post('/workspaces', requirePlatformOwner, async (req, res) => {
         'INSERT INTO labels (name, slug, owner_user_id, created_at) VALUES ($1, $2, $3, NOW()) RETURNING id, name, slug, created_at',
         [labelName.trim(), slug, ownerOperatorId]
       );
+      await require('../lib/seedCategories').seedCategoriesForLabel(pool, labelRes.rows[0].id).catch(() => {});
       activityBot.postOperatorEvent({ text: `🏢 New workspace created: *${labelRes.rows[0].name}* — owner ${op[0].name}, by ${req.user.name}`, icon: 'building', link: '/workspaces' });
       return res.status(201).json({ success: true, data: { label: labelRes.rows[0], owner: op[0], assigned_operator: true } });
     }
@@ -459,6 +460,7 @@ router.post('/workspaces', requirePlatformOwner, async (req, res) => {
       [labelName.trim(), slug]
     );
     const label = labelRes.rows[0];
+    await require('../lib/seedCategories').seedCategoriesForLabel(client, label.id).catch(() => {});
 
     // Owner is created WITHOUT a password — they activate via an invite link
     // and set their own (same flow as team invites).

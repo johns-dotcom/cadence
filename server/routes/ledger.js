@@ -15,6 +15,7 @@ const { familyRoot, cascadePaymentFieldsToFamily, recomputeFamilyPaymentStatus }
 const { toUSD } = require('../lib/fx');
 const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
 const aiScan = require('../lib/aiScan');
+const { validateApprovalChecklist, stampChecklist, writeApprovalChecklist } = require('../lib/approvalChecklist');
 const activityBot = require('../lib/activityBot');
 const ExcelJS = require('exceljs');
 const { buildZip, toCsv } = require('../lib/zip');
@@ -169,6 +170,23 @@ async function createEntry(req, res) {
     }
     const canApprove = ['Superadmin', 'Admin', 'Approver'].includes(req.user.role);
 
+    // ── The approval checklist, answered at CREATE time by Add Invoice ────
+    // An approver's add is written `status = 'approved'` below, so it never
+    // reaches the Approvals queue — the same review has to happen here or
+    // "approved" means two things. Optional (the vendor form, CSV import and
+    // internal add-expense modals send none and are unaffected), but a
+    // checklist that ARRIVES must be valid BEFORE the insert: a 400 later
+    // would leave behind exactly the row this exists to prevent — approved,
+    // filed, and never asked. Multipart bodies carry it as a JSON string.
+    let checklistAnswered = null;
+    if (b.checklist !== undefined && b.checklist !== null && b.checklist !== '') {
+      let rawChecklist = b.checklist;
+      if (typeof rawChecklist === 'string') { try { rawChecklist = JSON.parse(rawChecklist); } catch { rawChecklist = null; } }
+      const check = validateApprovalChecklist(rawChecklist);
+      if (!check.ok) return res.status(400).json({ success: false, error: check.error });
+      checklistAnswered = check.value;
+    }
+
     const files = {};
     for (const [field, kind] of [['invoice_file', 'invoice'], ['w9_file', 'w9'], ['receipt_file', 'receipt']]) {
       const f = req.files?.[field]?.[0];
@@ -223,6 +241,28 @@ async function createEntry(req, res) {
       w9_r2_key: files.w9?.key || null, w9_filename: files.w9?.filename || null,
     }).catch(() => {});
 
+    // ── The checklist, stored on the row it describes ─────────────────────
+    // Only when the row was created APPROVED. A pending row's checklist belongs
+    // to the approver who will see it in the queue, not to the submitter —
+    // storing one here would let a submitter pre-answer their own approval.
+    // Runs BEFORE the splits below so applyBreakdownSplits' children inherit the
+    // DECIDED category / recoupable / cobrand, not the submitted ones.
+    let checklistStored = false;
+    if (checklistAnswered && rows[0].status === 'approved') {
+      const stamped = stampChecklist(checklistAnswered, req.user);
+      await writeApprovalChecklist(pool, req.labelId, rows[0].id, stamped);
+      Object.assign(rows[0], {
+        approval_checklist: stamped,
+        is_bulk_deal: stamped.bulk_deal,
+        cobrand: stamped.cobrand,
+        recoupable: stamped.recoupable,
+        artist_campaign: stamped.campaign,
+        category: stamped.cobrand ? 'Marketing' : rows[0].category,
+      });
+      bkAudit(req, rows[0].id, 'approved', `created approved on Add Invoice · checklist ${JSON.stringify(stamped)}`);
+      checklistStored = true;
+    }
+
     // Multi-artist / social allocation → store it, and apply as splits NOW only
     // if this entry is already approved. Pending entries get split on approval.
     let splitParts = 0;
@@ -236,7 +276,7 @@ async function createEntry(req, res) {
     } catch { /* no/invalid split — single entry stands */ }
 
     await logActivity(req, status === 'approved' ? 'Added ledger entry' : 'Submitted invoice for approval', `${b.payee} — ${b.amount}`);
-    res.status(201).json({ success: true, data: { ...rows[0], split_parts: splitParts, pending: status !== 'approved' } });
+    res.status(201).json({ success: true, data: { ...rows[0], split_parts: splitParts, pending: status !== 'approved' }, checklist_stored: checklistStored });
   } catch (error) {
     console.error('Create ledger entry error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -419,14 +459,29 @@ async function applyBreakdownSplits(labelId, parent, actorName) {
 // auto-email (the Approvals page previews + sends via EmailPreviewModal instead).
 router.post('/entries/:id/approve', async (req, res) => {
   try {
+    const id = parseInt(req.params.id, 10);
+    // THE GATE — after authorization, before every write below. Approving is an
+    // attestation, not a status flip: the eight-question checklist must arrive
+    // complete or nothing changes. A 400 here leaves the invoice exactly as it
+    // was. (Boom parity: validateApprovalChecklist in bookkeeping.js.)
+    const check = validateApprovalChecklist(req.body.checklist);
+    if (!check.ok) return res.status(400).json({ success: false, error: check.error });
+    const stamped = stampChecklist(check.value, req.user);
+
+    // The checklist's answers land FIRST (cobrand ⇒ category='Marketing',
+    // recoupable, artist_campaign, is_bulk_deal) so the RETURNING row below —
+    // which feeds applyBreakdownSplits' child inheritance — already carries the
+    // decided values instead of the submitted ones.
+    await writeApprovalChecklist(pool, req.labelId, id, stamped);
+
     const { rows } = await pool.query(
       `UPDATE expenses SET status = 'approved', approved_by = $1, approved_at = NOW()
        WHERE id = $2 AND label_id = $3 RETURNING *`,
-      [req.user.name, parseInt(req.params.id, 10), req.labelId]
+      [req.user.name, id, req.labelId]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
     await logActivity(req, 'Approved ledger entry', `${rows[0].payee} — ${rows[0].amount}`);
-    bkAudit(req, rows[0].id, 'approved', `${rows[0].payee} — ${rows[0].currency} ${rows[0].amount}`);
+    bkAudit(req, rows[0].id, 'approved', `${rows[0].payee} — ${rows[0].currency} ${rows[0].amount} · checklist ${JSON.stringify(stamped)}`);
     const parts = await applyBreakdownSplits(req.labelId, rows[0], req.user.name);
     if (parts) { await logActivity(req, 'Applied vendor split on approve', `${rows[0].payee} → ${parts} artists`); bkAudit(req, rows[0].id, 'split', `auto-split into ${parts} artists on approve`); }
     if (req.body.notify !== false && rows[0].vendor_submitted) notifyVendor(req.labelId, rows[0], 'approved');
@@ -529,7 +584,8 @@ router.get('/payables', async (req, res) => {
              AND COALESCE(e.paid_marked_at, e.payment_date::timestamp) >= NOW() - INTERVAL '${PAID_GRACE_DAYS} days')
        )
        AND (e.deleted = false OR e.deleted IS NULL) AND (e.voided = false OR e.voided IS NULL)
-       AND e.parent_id IS NULL`;
+       AND e.parent_id IS NULL
+       AND e.entry_source IS DISTINCT FROM 'creator_payment'`;
     const reps = await visibleReps(req);
     if (reps) { params.push(reps); where += ` AND (e.rep = ANY($${params.length}) OR e.rep IS NULL)`; }
     const { rows } = await pool.query(
@@ -753,6 +809,7 @@ router.get('/vendors', async (req, res) => {
          FROM expenses
          WHERE label_id = $1 AND (deleted = false OR deleted IS NULL)
            AND payee IS NOT NULL AND payee != '' AND status = 'approved'
+           AND entry_source IS DISTINCT FROM 'creator_payment'
          GROUP BY payee
        ) agg
        LEFT JOIN vendors v ON v.label_id = $1 AND LOWER(v.name) = LOWER(agg.payee)
@@ -835,6 +892,7 @@ router.get('/vendor-suggest', async (req, res) => {
          FROM expenses
         WHERE label_id = $1 AND payee IS NOT NULL AND payee <> '' AND LOWER(payee) LIKE $2
           AND (deleted = false OR deleted IS NULL)
+          AND entry_source IS DISTINCT FROM 'creator_payment'
         GROUP BY payee ORDER BY invoices DESC LIMIT 12`,
       [req.labelId, q]
     );
@@ -1009,13 +1067,28 @@ router.post('/bulk-approve', async (req, res) => {
   try {
     const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
     if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
+    // Every id needs its own completed checklist (`checklists: { [id]: {...} }`).
+    // The Approvals page now reviews cards one at a time through the deck, so
+    // this route has no UI caller — but an unguarded route IS the bypass:
+    // anyone holding a token could still POST to it, and a checklist you can
+    // skip by calling a different endpoint is not a checklist.
+    const checklists = req.body.checklists || {};
+    const stampedById = new Map();
+    for (const cid of ids) {
+      const check = validateApprovalChecklist(checklists[cid]);
+      if (!check.ok) return res.status(400).json({ success: false, error: `Invoice ${cid}: ${check.error}` });
+      stampedById.set(cid, stampChecklist(check.value, req.user));
+    }
+    for (const [cid, stamped] of stampedById) {
+      await writeApprovalChecklist(pool, req.labelId, cid, stamped);
+    }
     const { rows } = await pool.query(
       `UPDATE expenses SET status = 'approved', approved_by = $1, approved_at = NOW()
        WHERE label_id = $2 AND status = 'pending' AND id = ANY($3::int[])
        RETURNING *`,
       [req.user.name, req.labelId, ids]
     );
-    rows.forEach(r => bkAudit(req, r.id, 'approved', `bulk — ${r.payee} ${r.currency} ${r.amount}`));
+    rows.forEach(r => bkAudit(req, r.id, 'approved', `bulk — ${r.payee} ${r.currency} ${r.amount} · checklist ${JSON.stringify(stampedById.get(r.id))}`));
     // Apply any vendor-provided multi-artist allocation as real splits.
     for (const r of rows) {
       const parts = await applyBreakdownSplits(req.labelId, r, req.user.name);
@@ -1038,7 +1111,7 @@ router.post('/bulk-approve', async (req, res) => {
 });
 
 // POST /api/ledger/entries/:id/restore — undo a soft delete.
-router.post('/entries/:id/restore', async (req, res) => {
+router.post('/entries/:id/restore', requireAdmin, async (req, res) => {
   try {
     // Un-delete (family-wide) AND revive a rejected entry back to pending.
     const { rows } = await pool.query(
@@ -1890,9 +1963,9 @@ router.get('/1099-report', async (req, res) => {
          AND e.parent_id IS NULL AND e.payee IS NOT NULL AND e.payee != ''
          AND EXTRACT(YEAR FROM COALESCE(e.payment_date, e.invoice_date, e.created_at::date)) = $2
        GROUP BY e.payee
-       HAVING SUM(e.amount) >= 600
+       HAVING SUM(e.amount) >= $3
        ORDER BY total_paid DESC`,
-      [req.labelId, year]
+      [req.labelId, year, require('../lib/ledgerSource').reportingThresholdFor(year)]
     );
     res.json({ success: true, data: { year, vendors: rows.map(r => ({ ...r, total_paid: Number(r.total_paid) })) } });
   } catch (error) {

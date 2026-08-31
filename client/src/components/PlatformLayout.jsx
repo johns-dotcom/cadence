@@ -87,7 +87,7 @@ export default function PlatformLayout() {
             const active = isActive(path)
             return (
               <Link key={path} to={path}
-                className={`group relative flex items-center gap-3 pl-3 pr-3 py-2 rounded-lg text-sm font-medium transition-all ${active ? 'bg-brand-50 text-brand-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'}`}>
+                className={`group relative flex items-center gap-3 pl-3 pr-3 py-2 rounded-lg text-sm font-medium transition-all ${active ? 'bg-brand-500/10 text-brand-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'}`}>
                 {active && <span className="absolute left-0 top-1.5 bottom-1.5 w-1 rounded-full bg-brand-600" />}
                 <Icon size={17} strokeWidth={active ? 2.2 : 1.6} className={active ? 'text-brand-600' : 'text-gray-400 group-hover:text-gray-600'} />
                 <span>{label}</span>

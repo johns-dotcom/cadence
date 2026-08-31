@@ -147,7 +147,7 @@ export default function Workspaces() {
       </div>
 
       {created && (
-        <div className="card p-5 mb-6 border-brand-200 bg-brand-50/40">
+        <div className="card p-5 mb-6 border-brand-200 bg-brand-500/10/40">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <h3 className="text-sm font-bold text-ink mb-2">
@@ -218,7 +218,7 @@ export default function Workspaces() {
               {shown.map(w => {
                 const num = (n) => <span className={n > 0 ? 'text-ink font-medium tabular-nums' : 'text-gray-300 tabular-nums'}>{n ?? 0}</span>
                 return (
-                <tr key={w.id} className="group hover:bg-brand-50/40 cursor-pointer transition-colors" onClick={() => setDrawerId(w.id)}>
+                <tr key={w.id} className="group hover:bg-brand-500/10/40 cursor-pointer transition-colors" onClick={() => setDrawerId(w.id)}>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       {w.logo_url ? (

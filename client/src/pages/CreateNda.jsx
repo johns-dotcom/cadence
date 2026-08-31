@@ -129,7 +129,7 @@ export default function CreateNda() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           {Object.values(NDA_TEMPLATES).map(t => (
             <Link key={t.key} to={`/create-nda/${t.key}`} className="card p-5 hover:border-brand-300 transition group">
-              <div className="w-10 h-10 rounded-xl bg-brand-100 flex items-center justify-center mb-3"><FileText size={18} className="text-brand-700" /></div>
+              <div className="w-10 h-10 rounded-xl bg-brand-500/15 flex items-center justify-center mb-3"><FileText size={18} className="text-brand-700" /></div>
               <h3 className="text-sm font-bold text-ink group-hover:text-brand-700">{t.name}</h3>
               <p className="text-xs text-gray-500 mt-1 leading-relaxed">{t.description}</p>
             </Link>

@@ -51,4 +51,12 @@ async function sumUSD(rows) {
   return total;
 }
 
-module.exports = { toUSD, sumUSD, getRates, SUPPORTED: CURRENCIES };
+// Synchronous view of the freshest known rates (latest cache, else the
+// fallback table). For request-path conversions that cannot await —
+// lib/usd.js usdOf(). index.js primes the cache at boot so this is never
+// the fallback for long.
+function getCachedRates() {
+  return latest || FALLBACK;
+}
+
+module.exports = { toUSD, sumUSD, getRates, getCachedRates, SUPPORTED: CURRENCIES };

@@ -5,6 +5,7 @@ import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 import { useAuth } from '../context/AuthContext'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
+import ReconciledBadge from '../components/statements/ReconciledBadge'
 import Skeleton from '../components/Skeleton'
 import { formatDate } from '../utils/dates'
 
@@ -43,10 +44,11 @@ export default function Dashboard() {
 
   return (
     <div>
+      <div className="mb-2"><ReconciledBadge /></div>
       <PageHeader title={`Welcome${user?.name ? `, ${user.name.split(' ')[0]}` : ''}`} subtitle={label?.name ? `${label.name} · label operations` : 'Label operations'} />
 
       {welcome && (
-        <div className="rounded-xl border border-brand-200 bg-brand-50/50 px-4 py-3 mb-6">
+        <div className="rounded-xl border border-brand-200 bg-brand-500/10/50 px-4 py-3 mb-6">
           <p className="text-sm text-brand-900 whitespace-pre-line">{welcome}</p>
         </div>
       )}

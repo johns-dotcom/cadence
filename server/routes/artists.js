@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
-const { withTenant } = require('../middleware/tenant');
+const { withTenant, requireRole } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { uploadFile, getSignedFileUrl, deleteFile } = require('../lib/r2');
 const spotify = require('../lib/spotify');
@@ -216,18 +216,39 @@ router.delete('/:id/log/:logId', async (req, res) => {
   }
 });
 
-// DELETE /api/artists/:id
-router.delete('/:id', async (req, res) => {
+// DELETE /api/artists/:id — Superadmin only. Refuses while releases still
+// point here (releases.artist_id is ON DELETE SET NULL, so a bare delete would
+// silently orphan catalog rows), and cleans up entity_files rows + R2 objects.
+router.delete('/:id', requireRole('Superadmin'), async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { rowCount } = await pool.query(
-      'DELETE FROM artists WHERE id = $1 AND label_id = $2',
-      [parseInt(req.params.id, 10), req.labelId]
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(404).json({ success: false, error: 'Artist not found' });
+    const artist = await client.query('SELECT id, name FROM artists WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    if (!artist.rows.length) return res.status(404).json({ success: false, error: 'Artist not found' });
+    const rel = await client.query('SELECT COUNT(*)::int AS n FROM releases WHERE artist_id = $1 AND label_id = $2', [id, req.labelId]);
+    if (rel.rows[0].n > 0) {
+      return res.status(409).json({ success: false, error: `Artist has ${rel.rows[0].n} release(s) — reassign or delete them first` });
+    }
+    const files = await client.query(
+      "SELECT r2_key FROM entity_files WHERE label_id = $1 AND entity_type = 'artist' AND entity_id = $2",
+      [req.labelId, id]
     );
-    if (!rowCount) return res.status(404).json({ success: false, error: 'Artist not found' });
+    await client.query('BEGIN');
+    await client.query("DELETE FROM entity_files WHERE label_id = $1 AND entity_type = 'artist' AND entity_id = $2", [req.labelId, id]);
+    await client.query('DELETE FROM artists WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    await client.query('COMMIT');
+    for (const row of files.rows) {
+      if (row.r2_key) deleteFile(row.r2_key).catch(() => {});
+    }
+    await logActivity(req, 'Deleted artist', artist.rows[0].name);
     res.json({ success: true });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('Delete artist error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 

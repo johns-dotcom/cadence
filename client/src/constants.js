@@ -60,10 +60,25 @@ export const CONTRACT_STATUSES = ['Active', 'Pending', 'Expired', 'Terminated']
 export const TASK_STATUSES = ['To Do', 'In Progress', 'Done']
 
 // ── Bookkeeping ──────────────────────────────────────────────────────────
+// Categories are now DATA — a per-label `categories` table seeded from these
+// lists (server/lib/seedCategories.js). These constants are the seed and the
+// offline fallback for pickers (hooks/useCategories.js); order matters (the
+// review deck's 1-9 hotkeys index the rendered list, and Royalties /
+// Reimbursements sit between Salary and Advance by design).
 export const EXPENSE_CATEGORIES = [
   'Recording', 'Mixing & Mastering', 'Music Video', 'Marketing', 'PR',
   'Sync/Licensing', 'Distribution', 'Design', 'Production', 'Legal',
-  'Services', 'Merch', 'Tour/Live', 'Advance', 'Other',
+  'Services', 'Merch', 'Tour/Live',
+  'Travel', 'Meals & Entertainment', 'Software / Subscriptions', 'Bank Fees',
+  'Salary', 'Royalties', 'Reimbursements',
+  'Advance', 'Other',
+]
+
+// Income types (artist_income.source vocabulary). Reimbursements sits between
+// Drawdown Fund and Refund by design.
+export const INCOME_TYPES = [
+  'Streaming / Distribution', 'Sync Licensing', 'Publishing', 'Merch',
+  'Performance', 'Drawdown Fund', 'Reimbursements', 'Refund', 'Other Income',
 ]
 
 export const PAYMENT_METHODS = ['ACH', 'Check', 'Wire', 'Credit Card', 'PayPal', 'Cash']

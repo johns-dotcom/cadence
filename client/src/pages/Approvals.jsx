@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, X, Sparkles, Zap, Pencil, FileText, Paperclip, Tag, History, ShieldAlert, Split, Mail, Search, Flag } from 'lucide-react'
+import { Check, X, Sparkles, Zap, Pencil, FileText, Paperclip, Tag, History, ShieldAlert, Split, Mail, Search, Flag, Archive } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import api from '../api'
 import Skeleton from '../components/Skeleton'
 import EmailPreviewModal from '../components/EmailPreviewModal'
 import { useToast } from '../context/ToastContext'
-import { EXPENSE_CATEGORIES, CURRENCIES } from '../constants'
+import { CURRENCIES } from '../constants'
+import CategoryOptions from '../components/CategoryOptions'
+import ApprovalChecklistDeck from '../components/ApprovalChecklistDeck'
 
 const SEV = { high: 'bg-red-100 text-red-700', medium: 'bg-amber-100 text-amber-700', low: 'bg-gray-100 text-gray-600' }
 const SCAN_FIELDS = ['payee', 'amount', 'currency', 'invoice_number', 'artist']
@@ -24,6 +27,8 @@ export default function Approvals() {
   const [auditFor, setAuditFor] = useState(null)
   const [splitFor, setSplitFor] = useState(null)
   const [selected, setSelected] = useState(() => new Set())
+  const [deckItems, setDeckItems] = useState(null)
+  const emailQueue = useRef([])
   const [notifyMap, setNotifyMap] = useState({}) // id → notify override
   const [q, setQ] = useState('')
   const [repFilter, setRepFilter] = useState('')
@@ -41,14 +46,28 @@ export default function Approvals() {
   const willNotify = (en) => !!en.vendor_email && (notifyMap[en.id] ?? true)
   const toggleNotify = (en) => setNotifyMap(m => ({ ...m, [en.id]: !(m[en.id] ?? true) }))
 
-  const approve = async (en) => {
-    try {
-      const { data } = await api.post(`/ledger/entries/${en.id}/approve`, { notify: false })
-      const parts = data?.data?.split_parts
-      if (willNotify(en)) setEmailItems([{ kind: 'vendor_approved', label: en.payee, ctx: { to: en.vendor_email, vendorName: en.vendor_name || en.payee, invoiceNumber: en.invoice_number, amount: en.amount, currency: en.currency } }])
-      else toast(parts ? `Approved & split across ${parts} artists` : 'Approved — now in the ledger')
-      load()
-    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  // Approving opens the checklist deck — never a direct status flip. A bypass
+  // anywhere makes the checklist optional in practice, so every entry point
+  // (row button, `a`, ⇧A, "Review all", "Review selected") routes through here.
+  // No window.confirm either: the deck IS the confirm, card by card.
+  const openReview = (rows) => {
+    if (!rows.length) return
+    emailQueue.current = []
+    setDeckItems(rows)
+  }
+  // Vendor emails queue up per approval and drain into EmailPreviewModal once
+  // the deck closes (boom's queue-then-drain model — one modal, N emails).
+  const onDeckApproved = (en) => {
+    if (willNotify(en)) emailQueue.current.push({ kind: 'vendor_approved', label: en.payee, ctx: { to: en.vendor_email, vendorName: en.vendor_name || en.payee, invoiceNumber: en.invoice_number, amount: en.amount, currency: en.currency } })
+  }
+  const onDeckPatched = (id, patch) => setList(l => l.map(e => (e.id === id ? { ...e, ...patch } : e)))
+  const closeDeck = () => {
+    setDeckItems(null)
+    setSelected(new Set())
+    const queued = emailQueue.current
+    emailQueue.current = []
+    if (queued.length) setEmailItems(queued)
+    load()
   }
   const reject = async (en) => {
     const reason = window.prompt('Reason for rejection (required):')?.trim()
@@ -58,18 +77,6 @@ export default function Approvals() {
       if (willNotify(en)) setEmailItems([{ kind: 'vendor_rejected', label: en.payee, ctx: { to: en.vendor_email, vendorName: en.vendor_name || en.payee, invoiceNumber: en.invoice_number, amount: en.amount, currency: en.currency, reason } }])
       else toast('Rejected')
       load()
-    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
-  }
-  const approveMany = async (rows) => {
-    const ids = rows.map(e => e.id)
-    if (!ids.length) return
-    if (!window.confirm(`Approve ${ids.length} submission${ids.length === 1 ? '' : 's'}? They'll appear in the ledger.`)) return
-    try {
-      const { data } = await api.post('/ledger/bulk-approve', { ids })
-      const toEmail = (data.data.rows || []).filter(r => r.vendor_submitted && r.vendor_email && (notifyMap[r.id] ?? true))
-      if (toEmail.length) setEmailItems(toEmail.map(r => ({ kind: 'vendor_approved', label: r.payee, ctx: { to: r.vendor_email, vendorName: r.vendor_name || r.payee, invoiceNumber: r.invoice_number, amount: r.amount, currency: r.currency } })))
-      else toast(`Approved ${data.data.approved}`)
-      setSelected(new Set()); load()
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
 
@@ -126,10 +133,11 @@ export default function Approvals() {
     const onKey = (e) => {
       const t = e.target
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return
-      if (e.key === 'A' && e.shiftKey) { e.preventDefault(); approveMany(filtered); return }
+      if (deckItems) return
+      if (e.key === 'A' && e.shiftKey) { e.preventDefault(); openReview(selected.size ? filtered.filter(x => selected.has(x.id)) : filtered); return }
       if (e.key === 'j') setFocus(f => Math.min(f + 1, filtered.length - 1))
       else if (e.key === 'k') setFocus(f => Math.max(f - 1, 0))
-      else if (e.key === 'a' && filtered[focus]) approve(filtered[focus])
+      else if (e.key === 'a' && filtered[focus]) openReview([filtered[focus]])
       else if (e.key === 'r' && filtered[focus]) reject(filtered[focus])
     }
     window.addEventListener('keydown', onKey)
@@ -149,6 +157,7 @@ export default function Approvals() {
           Pending Approvals
           {list.length > 0 && <span className="text-sm font-bold bg-emerald-100 text-emerald-700 rounded-full px-2 py-0.5">{list.length}</span>}
         </h1>
+        <Link to="/approvals/archive" className="btn-secondary !py-1.5 text-xs"><Archive size={13} /> View archive</Link>
       </div>
       <p className="text-sm text-gray-500 mb-5">Review vendor-submitted invoices before they appear in the ledger.</p>
 
@@ -159,13 +168,13 @@ export default function Approvals() {
           <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search vendor, artist, invoice #…" className="input !pl-9" />
         </div>
         <select className="input !w-auto" value={repFilter} onChange={e => setRepFilter(e.target.value)}><option value="">All reps</option>{reps.map(r => <option key={r}>{r}</option>)}</select>
-        <select className="input !w-auto" value={catFilter} onChange={e => setCatFilter(e.target.value)}><option value="">All categories</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
+        <select className="input !w-auto" value={catFilter} onChange={e => setCatFilter(e.target.value)}><option value="">All categories</option><CategoryOptions /></select>
         <select className="input !w-auto" value={sort} onChange={e => setSort(e.target.value)}><option value="new">Newest first</option><option value="old">Oldest first</option><option value="amount">Largest amount</option></select>
         <span className="flex-1" />
         <span className="text-sm text-gray-400">{selected.size ? `${selected.size} selected` : `${filtered.length} pending`}</span>
         {filtered.length > 0 && (
-          <button onClick={() => approveMany(selected.size ? selectedRows : filtered)} className="inline-flex items-center gap-1.5 text-sm font-semibold bg-emerald-600 text-white px-3.5 py-2 rounded-lg hover:bg-emerald-700 transition">
-            <Check size={15} /> {selected.size ? `Approve selected (${selected.size})` : 'Approve All'}
+          <button onClick={() => openReview(selected.size ? selectedRows : filtered)} className="inline-flex items-center gap-1.5 text-sm font-semibold bg-emerald-600 text-white px-3.5 py-2 rounded-lg hover:bg-emerald-700 transition">
+            <Check size={15} /> {selected.size ? `Review selected (${selected.size})` : `Review all ${filtered.length}`}
           </button>
         )}
       </div>
@@ -185,7 +194,7 @@ export default function Approvals() {
                 {/* Top row */}
                 <div className="flex items-start gap-3">
                   <input type="checkbox" checked={selected.has(en.id)} onChange={() => toggleSel(en.id)} className="mt-2 flex-shrink-0" />
-                  <div className="w-9 h-9 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0"><span className="text-sm font-bold text-brand-700">{initial(en.payee)}</span></div>
+                  <div className="w-9 h-9 rounded-full bg-brand-500/15 flex items-center justify-center flex-shrink-0"><span className="text-sm font-bold text-brand-700">{initial(en.payee)}</span></div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="font-bold text-ink truncate">{en.payee}</p>
@@ -197,7 +206,7 @@ export default function Approvals() {
                     <p className="text-sm font-semibold text-brand-600 truncate mt-0.5">{en.artist || 'No artist'}{en.song ? ` — ${en.song}` : ''}</p>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
-                    <button onClick={() => patchField(en, 'cobrand', !en.cobrand)} className={`text-[11px] font-bold uppercase rounded-full px-2.5 py-1 border transition ${en.cobrand ? 'bg-brand-600 border-brand-600 text-white' : 'border-brand-300 text-brand-600 hover:bg-brand-50'}`}>{en.cobrand ? '✓' : '?'} Cobrand</button>
+                    <button onClick={() => patchField(en, 'cobrand', !en.cobrand)} className={`text-[11px] font-bold uppercase rounded-full px-2.5 py-1 border transition ${en.cobrand ? 'bg-brand-600 border-brand-600 text-white' : 'border-brand-300 text-brand-600 hover:bg-brand-500/10'}`}>{en.cobrand ? '✓' : '?'} Cobrand</button>
                     <button onClick={() => patchField(en, 'is_bulk_deal', !en.is_bulk_deal)} className={`text-[11px] font-bold uppercase rounded-full px-2.5 py-1 border transition ${en.is_bulk_deal ? 'bg-teal-600 border-teal-600 text-white' : 'border-teal-300 text-teal-600 hover:bg-teal-50'}`}>{en.is_bulk_deal ? '✓' : '?'} Bulk deal</button>
                     <div className="text-right ml-1">
                       <p className="font-bold text-rose-500 whitespace-nowrap">{money(en.amount, en.currency)}</p>
@@ -236,7 +245,7 @@ export default function Approvals() {
                   <span><span className="font-semibold text-gray-400 uppercase text-[10px] mr-1">#</span>{en.invoice_number || '—'}</span>
                   <span className="text-gray-300">·</span>
                   <span className="inline-flex items-center gap-1"><span className="font-semibold text-gray-400 uppercase text-[10px]">Cat</span>
-                    <select value={en.category || ''} onChange={e => patchField(en, 'category', e.target.value)} className="text-xs bg-page/60 border border-rule rounded px-1.5 py-0.5 text-ink cursor-pointer"><option value="">—</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
+                    <select value={en.category || ''} onChange={e => patchField(en, 'category', e.target.value)} className="text-xs bg-page/60 border border-rule rounded px-1.5 py-0.5 text-ink cursor-pointer"><option value="">—</option><CategoryOptions /></select>
                   </span>
                   <span className="text-gray-300">·</span>
                   <span><span className="font-semibold text-gray-400 uppercase text-[10px] mr-1">Rep</span>{en.rep || '—'}</span>
@@ -278,7 +287,7 @@ export default function Approvals() {
                     <div><label className="label">Invoice #</label><input className="input !py-1.5" value={draft.invoice_number} onChange={e => setDraft(d => ({ ...d, invoice_number: e.target.value }))} /></div>
                     <div><label className="label">Artist</label><input className="input !py-1.5" value={draft.artist} onChange={e => setDraft(d => ({ ...d, artist: e.target.value }))} /></div>
                     <div><label className="label">Song</label><input className="input !py-1.5" value={draft.song} onChange={e => setDraft(d => ({ ...d, song: e.target.value }))} /></div>
-                    <div><label className="label">Category</label><select className="input !py-1.5" value={draft.category} onChange={e => setDraft(d => ({ ...d, category: e.target.value }))}><option value="">—</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+                    <div><label className="label">Category</label><select className="input !py-1.5" value={draft.category} onChange={e => setDraft(d => ({ ...d, category: e.target.value }))}><option value="">—</option><CategoryOptions /></select></div>
                     <div className="col-span-2 sm:col-span-4"><label className="label">Description</label><input className="input !py-1.5" value={draft.description} onChange={e => setDraft(d => ({ ...d, description: e.target.value }))} /></div>
                     <div className="col-span-2 sm:col-span-4 flex justify-end"><button onClick={() => saveEdit(en)} className="btn-primary !py-1.5 text-xs">Save</button></div>
                   </div>
@@ -294,18 +303,19 @@ export default function Approvals() {
                   <button onClick={() => setAuditFor(auditFor === en.id ? null : en.id)} className="btn-secondary !py-1.5 text-xs"><History size={13} /> Audit</button>
                   <button onClick={() => toggleRush(en)} className={`btn-secondary !py-1.5 text-xs ${en.rush ? 'text-amber-600' : ''}`}><Zap size={13} /> {en.rush ? 'Rush on' : 'Rush'}</button>
                   <span className="flex-1" />
-                  {en.vendor_email && <button onClick={() => toggleNotify(en)} title="Toggle emailing the vendor on decision" className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border ${willNotify(en) ? 'border-brand-300 text-brand-600 bg-brand-50' : 'border-rule text-gray-400'}`}><Mail size={14} /> Notify vendor</button>}
+                  {en.vendor_email && <button onClick={() => toggleNotify(en)} title="Toggle emailing the vendor on decision" className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border ${willNotify(en) ? 'border-brand-300 text-brand-600 bg-brand-500/10' : 'border-rule text-gray-400'}`}><Mail size={14} /> Notify vendor</button>}
                   <button onClick={() => reject(en)} className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-lg border border-red-300 text-red-600 hover:bg-red-50"><X size={14} /> Reject</button>
-                  <button onClick={() => approve(en)} className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"><Check size={14} /> Approve</button>
+                  <button onClick={() => openReview([en])} className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"><Check size={14} /> Review</button>
                 </div>
               </div>
             )
           })}
-          <p className="text-[11px] text-gray-400 text-center pt-1">Shortcuts: <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>a</kbd> approve · <kbd>r</kbd> reject · <kbd>⇧A</kbd> approve all</p>
+          <p className="text-[11px] text-gray-400 text-center pt-1">Shortcuts: <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>a</kbd> review · <kbd>r</kbd> reject · <kbd>⇧A</kbd> review all</p>
         </div>
       )}
 
-      {emailItems && <EmailPreviewModal items={emailItems} onClose={() => setEmailItems(null)} onDone={() => { setEmailItems(null); load() }} />}
+      {deckItems && <ApprovalChecklistDeck items={deckItems} onApproved={onDeckApproved} onEntryPatched={onDeckPatched} onClose={closeDeck} />}
+      {emailItems && <EmailPreviewModal open items={emailItems} onClose={() => setEmailItems(null)} onDone={() => { setEmailItems(null); load() }} />}
     </div>
   )
 }

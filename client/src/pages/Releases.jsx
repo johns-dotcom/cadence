@@ -170,7 +170,7 @@ export default function Releases() {
                     <p className="text-[10px] text-gray-400 text-right pr-0.5">{cell.day}</p>
                     <div className="space-y-0.5">
                       {cell.items.slice(0, 3).map(r => (
-                        <button key={r.id} onClick={() => navigate(`/releases/${r.id}`)} title={`${r.project_name} — ${r.artist_name || ''}`} className="w-full truncate text-left text-[10px] font-medium text-brand-700 bg-brand-50 rounded px-1 py-0.5 hover:bg-brand-100">
+                        <button key={r.id} onClick={() => navigate(`/releases/${r.id}`)} title={`${r.project_name} — ${r.artist_name || ''}`} className="w-full truncate text-left text-[10px] font-medium text-brand-700 bg-brand-500/10 rounded px-1 py-0.5 hover:bg-brand-500/15">
                           {r.project_name}
                         </button>
                       ))}

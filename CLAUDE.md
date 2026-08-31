@@ -268,6 +268,252 @@ standard. Logged for later: in `tokens.css`'s `.dark` block `--color-gray-50` an
 
 ---
 
+## Finance depth build (2026-08-27) — five boom-dashboard subsystems ported
+
+Built in one pass from `~/.claude/plans/i-want-to-add-majestic-raven.md` (the
+authoritative spec + progress log). All label-scoped, all IF-NOT-EXISTS
+migrations. **Not yet deployed at time of writing** — watch the first boot for
+migration errors (categories seed, new tables). Pure-function fixtures:
+`node server/scripts/finance-fixtures.cjs` (35 assertions, all passing).
+
+**Foundations** — `server/lib/`: `usd.js` (usdOf/rowUsd/rowUsd2 — locked
+`fx_rate_to_usd` ALWAYS wins, never silent 1:1; round AT THE ROW),
+`artistKey.js` (canonical strip-all key = artist-campaigns' normKey;
+placeholder folding; "unknown" is a REAL artist by John's earlier call),
+`normalizeBankPayee.js`, `reportFingerprint.js` (dismissals/overrides survive
+statement re-uploads), `ledgerSource.js` (IS DISTINCT FROM exclusions;
+`movedMatchMethodSql`; OBBBA `reportingThresholdFor`), `bankEvidence.js`
+(label-scoped, per-label-account method compatibility, link-aware SETTLES_SQL
+behind a boot probe), `seedCategories.js`. **Categories are now DATA**: per-
+label `categories` table (kind, ui_group, report_section, contra_of,
+section_set) seeded from constants (22 expense / 9 income; order is
+load-bearing — deck 1-9 hotkeys index it); `/api/categories` (usage-first
+ordering, admin CRUD w/ in-use guard); client `hooks/useCategories` +
+`components/CategoryOptions` replaced all 14 hardcoded picker sites; the
+public vendor form gets categories via its bootstrap payload. Statement
+balances now captured (CSV column, PDF header lines, `POST
+/bank-statements/:id/reparse-balance`, manual PATCH).
+
+**Reports** (`/reports`, Approver+) — `routes/reports.js` + `lib/reportRows.js`.
+LEDGER-mastered cash basis: every live split slice summed once, family-dated
+by root (`parent_id IS NULL` filters DROP MONEY — never add one). Four tabs:
+P&L (drill-through on every cell; coverage markers per month from bank data,
+null ≠ 100%), Spend by Artist (advances as their own column; `ties_to_pnl`
+self-check — client REFUSES to render on mismatch), Balance Sheet (cash from
+captured statement balances w/ floor guard; A/R = outbound `invoices` table;
+A/P as-of-aware), Dismissed. `report_dismissals` (4 scopes, fingerprint-keyed)
++ `report_month_overrides` (report-only period moves, moved-out-of-range
+disclosed). Drill actions: recategorize / set-artist / dismiss / reassign-month.
+`rename-category` cascades transactionally + leaves a SEEDED TOMBSTONE
+(active=FALSE) so the boot seed can't resurrect the old name. Excel via
+exceljs from the same payload as the page. `buildPnl` exported for reuse.
+
+**Matcher v3** (`lib/bankReconcile.js`) — evidence ladder: invoice#/payment_ref
+(`refEvidence` w/ the MMDD guard) → email → learned map (raw + `~`-prefixed
+descriptor-normalized keys) → alias groups (symmetric Sets) → fuzzy
+best-of-aliases. Suggestions scored amount·0.55 + name·0.30 + date·0.15
+(evidenceDate = paid ? payment_date : scheduled; 0.5 neutral undated);
+calibration held by fixture: exact+name ≥0.90 paid or unpaid, amount-only
+≤0.70. One-debit-per-invoice: run-level `used` set, capacity-model 409s
+(installments allowed to the family total), `statement_match_rejections`
+(fingerprint-keyed "no" that survives re-uploads, recorded on unmatch).
+Credits book to `artist_income` (`matched_income_id`, validate-never-coerce
+income type). View-time suggestions in `lib/statementSuggest.js` (ordering
+load-bearing: uber-eats before Travel, drawdown before distributors).
+Swipe review deck: `components/ReviewDeck.jsx` (children-as-FUNCTION) +
+`statements/StatementReviewDeck.jsx` (claimed-set 409 self-heal, pointer-
+capture guard `closest('button, select, option, a, input')`).
+
+**Bank Matching** (`/bank-matching`, Admin) — `routes/bank-matching.js`. The
+work surface: all-statements queue w/ server-computed LIKELY (top ≥0.9,
+deduped by target), completion model (matched ≠ booked ≠ open; explained% vs
+invoice-backed% — different claims, both shown; `match_method='creator'` is
+explained-never-invoice-backed), reverse direction (paid ledger rows the bank
+never shows: needs_match / awaiting_statement / missing_statement partition),
+multi-invoice attach (`bank_txn_invoice_links` — deliberately NO unique on
+expense_id alone), rematch (booked→real invoice via `deleted_by='rematch#id'`
+breadcrumb), funding pairs (propose-only, dismisses the BANK leg,
+reason='funding'), split-book, duplicate pairs, artist rules (is_overhead =
+real null) + no-invoice rules (EQUALITY, never substring). Flags engine
+(`lib/statementFlags.js`, 22 checks, fingerprint acks that resurface on
+change) + monthly soft close (`statement_months`, ReconciledBadge on
+Dashboard/Financials/Reports — renders NOTHING for non-admins) + global txn
+search. `GET/DELETE /bank-statements/:id` now `(\\d+)`-constrained — new
+single-segment routes break without it.
+
+**Creator Payments** (`/creators`, Approver+) — `routes/creators.js`. A
+creator payment IS an expenses row (`entry_source='creator_payment'`,
++`paypal_handle` col). Batch = N SEPARATE rows (PayPal = one statement line
+per recipient), all-or-nothing, REQUIRED_FIELDS server-enforced. Directory
+counts W9/1099 exposure per creator per CALENDAR YEAR (OBBBA: $600→$2,000
+from 2026 — the ledger 1099 report adopted the same rule, an output change).
+payment_status+payment_date move TOGETHER; the list patches locally, never
+refetches (sorts by payment_date). Convert/unconvert flow for rows born on
+campaigns/recoupments (exact source restored from `bk_audit_log`
+field/old_value/new_value cols). Creator rows are excluded from /vendors,
+/vendor-suggest and /payables; included in 1099/recoupments/campaigns.
+
+**Artist Budgets** (`/artist-budgets`, Approver+) — `routes/artist-budgets.js`.
+The budget is SIX SECTION NUMBERS per artist (`artist_budget_sections`,
+sections = categories.ui_group); the blur-saved inputs ARE the creation flow;
+amount 0 DELETES the row. SPENT ≠ OPEN (unpaid invoices are their own
+oldest-first worklist; committed = spent+open; `over_committed` separate from
+variance, variance BLANK without a budget). Leaf rows only; rowUsd2 rounded
+at the row so both slicings tie. Four bank-evidence states from the shared
+`utils/recoupState.js` + `components/BankEvidenceDot.jsx`. Excel = two sheets
+from the same `buildSheet`.
+
+**Also**: `routes/financials.js` expense conversions now honor the locked FX
+rate (`eUsd` helper; income keeps date-based toUSD — no locked rate there).
+`db.js` TENANT_TABLES gained 19 finance tables (several pre-existing ones were
+missing). full-export gained categories/report_dismissals/artist_budget_sections.
+
+### Corrections to earlier claims in this file
+- **2026-08-31 audit corrections**: the platform console **Analytics page does
+  not exist** (the cross-tenant `/api/platform/analytics` endpoint has zero
+  client consumers — the "Platform console pages: … Analytics" claim above is
+  false). `/manual` **DOES exist** (App.jsx → `components/UserManual.jsx` +
+  `server/routes/manual.js` AI-ask) — earlier "missing /manual" notes were
+  stale. Mobile BottomNav has **no live unread badge** (the M6 claim above
+  overstates; badge exists on the desktop nav item only).
+
+### Build-order Phase 1 (2026-08-31) — runtime + safety valves
+- **Local runtime EXISTS now**: `server/.env` points at a throwaway Neon project
+  (`cadence-dev-audit` / empty-silence-85456067); NODE_ENV=production only
+  because db.js enables SSL solely in production (Neon requires TLS). Break-glass
+  `RECOVER_ADMIN_*` created dev@cadence.local as platform owner. Delete the Neon
+  project when done — never point this .env at real data.
+- **Two fresh-DB migration-ordering bugs fixed in index.js** (found on the first
+  clean boot ever — Railway never saw them because its tables pre-exist):
+  `labels.owner_user_id REFERENCES users` ALTER ran before `CREATE TABLE users`;
+  `payment_installments` proof ALTERs ran before its CREATE. Both moved below
+  their CREATEs. The whole finance-build migration chain then ran clean on a
+  fresh database (categories seeded 22/9).
+- **AR-1 P0 fixed**: `DELETE /artists/:id` is now Superadmin-only, 409s while
+  releases reference the artist, and deletes entity_files rows + R2 objects in
+  a transaction (verified live: 409 with a release, clean delete after).
+- **Approvals Archive built**: new `/approvals/archive` page (AdminRoute) over
+  the existing `GET /ledger/archive` — rejected + deleted sections, shared
+  search, restore vs back-to-pending semantics with ConfirmDialog; linked from
+  the Approvals header. `POST /ledger/entries/:id/restore` now requireAdmin.
+- **Live verification**: /api/flags 200 (RC-11 confirmed dead→alive),
+  /api/categories 22 expense + 9 income, reports P&L + balance sheet respond,
+  bank-matching/creators/artist-budgets all 200 on a fresh tenant.
+
+### Root-cause fix pass (2026-08-31) — from the parity-audit punch list
+`_audit/99-punch-list.md` is the authoritative defect register (806 defects vs
+boom-dashboard). Fixed in this pass (builds clean, NOT committed):
+- **RC-11**: `/api/flags` selected nonexistent `vendors.w9_name` → 42703 → the
+  whole /data-quality page 500'd. SELECT now `name` only; `vendor_w9_mismatch`
+  stays an always-empty list until a real W9-name source exists (aiScan JSON).
+- **RC-8**: `EmailPreviewModal` never rendered — consumers omitted the required
+  `open` prop (Approvals.jsx, Payments.jsx). Vendor decisions, payment
+  confirmations + mark-sent, and Send-for-Approval emails were silently dead.
+- **RC-1**: Inter webfont now actually imported (index.css line 1, weights
+  300–800 — same as boom); previously only listed in tailwind fontFamily.
+- **RC-5/6**: boom geometry restored on `.btn-*`/`.input`/ui kit — py-2 (was
+  2.5), ui/Input fixed h-9, font-medium (was semibold), active: states,
+  disabled:50, 150 ms transition-all, input focus border shift + brand-600/20
+  ring; cards `rounded-xl` (was 2xl). Cadence's focus-ring a11y additions kept.
+- **RC-9 (token half)**: dark `--color-gray-50`/`-100` were BOTH `31 34 44`
+  (invisible on card `#1c1f2b`) → now `37 41 54` / `41 45 58` (monotonic under
+  gray-200). All 41 `bg-brand-50` + 18 `bg-brand-100` opaque washes swept to
+  `bg-brand-500/10`/`/15` — a `.dark` brand override is impossible because
+  utils/branding.js writes brand vars as INLINE styles that beat stylesheets.
+  Remaining RC-9 per-page work: 213 raw colored tints, Recharts dark tooltips,
+  ink-on-wash text pairings.
+- **RC-7** (2026-08-31): approval-checklist subsystem ported from boom
+  end-to-end (closes APR-1 + DEF-ADDINV-01/-02; the P0s). Schema:
+  `expenses.approval_checklist JSONB` (index.js, next to cobrand/artist_campaign)
+  — deliberately NOT in the ledger PATCH `EDITABLE` allow-list; written only by
+  `server/lib/approvalChecklist.js` (`validateApprovalChecklist` /
+  `stampChecklist` / `writeApprovalChecklist`, all label-scoped). The write
+  applies the four ANSWERS to their columns: is_bulk_deal, cobrand (+ forces
+  `category='Marketing'`), recoupable, artist_campaign — artist_campaign is
+  BOOLEAN here (NULL = auto), not boom's TEXT 'Yes'/'No'. **Every approve path
+  is gated**: POST `/entries/:id/approve` (validate → write checklist → flip
+  status, so the RETURNING row feeds applyBreakdownSplits the DECIDED values),
+  POST `/bulk-approve` (per-id `checklists[id]` required — route kept + guarded
+  even though the page no longer calls it: an unguarded route IS the bypass),
+  and `createEntry` (optional `checklist` in the multipart body, validated
+  BEFORE the insert, stored only when the row lands approved — a pending row's
+  checklist belongs to the queue approver, not the submitter; response carries
+  `checklist_stored`). bkAudit rows include the stamped checklist JSON. Client:
+  `client/src/lib/approvalChecklist.js` (rules, cobrand⇒campaign+Marketing
+  implication, completeness) + `components/ApprovalChecklistFields.jsx` (4 ticks
+  w/ edit-un-ticks pending values, grouped CategoryOptions w/ off-list value
+  kept renderable + locked while cobrand, 4 Yes/No pairs nothing-pre-selected,
+  context lines) + `components/ApprovalChecklistDeck.jsx` (on cadence's
+  ReviewDeck; Skip, complete-before-approve lock, outstanding hint, per-open
+  cleared answers, PATCH-on-blur field edits). Approvals page: every entry
+  point (row button now "Review", `a`, ⇧A, "Review all/selected") opens the
+  deck — no direct flip, no window.confirm; vendor emails queue per approval
+  and drain into EmailPreviewModal on deck close. Add Invoice: approver saves
+  open a ui/Modal review with the same Fields over the FORM values (edits write
+  through + un-tick; artist/song point at split rows while splitting) + a
+  blob-URL doc preview; the payload gains `checklist`; non-approvers submit
+  straight to pending, unasked. Deviations from boom: no inline side-by-side
+  doc panel on the Approvals deck (signed-URL chips open a new tab — cadence's
+  file pattern), no socials editor / rush toggle inside the deck (rush lives on
+  the card), and boom's per-approve `notes` rider + W9 review deck (APR-10)
+  remain unported.
+- **RC-10** (2026-08-31): Financials executive depth ported (closes the three
+  financials P0s + the P1s in `_audit/pages/financials.md`). New
+  `server/lib/financeExec.js` — ONE slice pull (every live split slice joined
+  to its family root; `parent_id IS NULL` alone drops children's money) feeds
+  `computeExec` AND `rowsForBucket`, so every drill total ties to its card by
+  construction; USD via `rowUsd2` (locked FX, never boom's 1:1 fallback); due
+  dates are INVOICE-anchored (invoice_date + payment_terms Net-N parse, default
+  30 — not scheduled_payment_date); bank-born rows count as spend but are
+  excluded from the "received" intake series + the forecast's projected rate
+  (a statement upload books weeks of rows at one created_at). Endpoints
+  (financials.js): `GET /exec` (day-matched KPIs incl. unpaid pipeline, weekly
+  paid/unpaid/received buckets, aging, upcoming 7/30/60, forecast 30/60/90,
+  monthly intake cohorts, artist/song/category breakdowns + rep leaderboard,
+  category trend, all honoring from/to + artist/category/rep filters),
+  `GET /exec/rows?bucket=` (15 buckets incl. `month_YYYY-MM`; slices, capped
+  200, full-set total), `GET /filter-options`, `GET /export` (multi-sheet
+  exceljs workbook from the SAME exec payload). `/summary` + `/analytics`
+  rewritten: slice-join basis, from/to ranges (legacy `period` kept), and the
+  **paid/unpaid split on every figure** (totals, categories, vendors, monthly
+  series, per-artist). `/analytics` byArtist now groups by `artistBucketKey`
+  (fixes the roster-inner-join defect that silently vanished non-roster /
+  whitespace-variant / Unassigned money; tail rolls into "Other artists" so
+  the column ties to total expenses). Client: rebuilt `pages/Financials.jsx`
+  (range picker 3m/6m/12m/custom persisted, basis-disclosure row w/ "Cash
+  basis? See Reports →", clickable KPI cards w/ sparklines + day-matched %
+  deltas, scope filter bar, page-level error+Retry, ConfirmDialog for income
+  delete) + new `components/financials/` (WeeklyChart w/ 4-wk MA + avg
+  ReferenceLine + tri-basis tooltip + biggest-week callout, PaymentAging,
+  CashForecast, MonthlyRollup sortable w/ Peak badge + summary strip,
+  BreakdownSection w/ Artist/Song/Category/Rep toggle + paid/unpaid share
+  bars, CategoryTrend stacked area, KpiDrillModal w/ `/ledger?focus=` links).
+  `utils/money.js` gains `moneyCompact`. Deviations from boom: monthly-rollup
+  "Difference" columns dropped (degenerate — paid+unpaid=received by
+  construction under the aligned cohort recipe); `/financials/month/:month`
+  drill page NOT built (out of scope per audit — the month drill is a modal
+  bucket instead); `/exec/subbreakdown` expandable category mixes skipped
+  (drill modal + category toggle cover it); export is 8 sheets, not boom's 14
+  (velocity/method/recoupment/full-ledger sheets skipped — recoupments +
+  cash-basis detail live on their own pages); windows anchor to the server
+  date, not LA. Fixture: scratchpad exec-fixture (14 assertions, all passing —
+  split-slice sums, family counts, aging/upcoming/forecast, bank exclusions,
+  cohort tie, drill↔card ties).
+- NOT yet fixed: RC-3/RC-4 (micro-typography, icon sizes) land per-page
+  during rework by design.
+
+- **M5 "Usage analytics" was never built** — no `page_views`, no `/usage`, no
+  `/api/analytics`. The claim above is false; treat as an open gap.
+- **M3 "Invoice Search"**: `/invoices` is the outbound invoice CREATOR; no
+  search surface exists.
+- **M3 "Archive"**: `GET /ledger/archive` exists server-side with NO client UI.
+- **M3 "Bulk Upload"** = the ledger CSV import, not an AI invoice+proof batch
+  flow.
+- "Scoped out: Ledger matching" under-claimed — a tiered learning bank↔ledger
+  matcher lives in `lib/bankReconcile.js` and is now the heart of Bank Matching.
+
+---
+
 ## Stack & deploy (as built — matches spec §2 unless noted)
 
 - **Backend**: Node/Express 4, PostgreSQL via `pg` (raw parameterized SQL). JWT in

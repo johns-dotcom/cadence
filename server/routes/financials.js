@@ -4,53 +4,71 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { toUSD } = require('../lib/fx');
+// Locked-rate-honoring conversion for EXPENSE rows: the fx_rate_to_usd
+// stamped at pay time always wins; live/historical rates are the fallback.
+// Income rows have no locked rate — plain toUSD by date stays correct there.
+const { rowUsd } = require('../lib/usd');
+const eUsd = (r, date) => rowUsd({ amount: r.amount, currency: r.currency, fx_rate_to_usd: r.fx_rate_to_usd, payment_date: date });
 const { statementMonthFor } = require('../lib/statementMonth');
+const { artistBucketKey } = require('../lib/artistKey');
+const {
+  computeExec, rowsForBucket, execWorkbook, fetchSlices,
+  normFilters, isKnownBucket, isDay, todayStr, monthsBetween,
+} = require('../lib/financeExec');
 
 const router = express.Router();
 // Financials are privileged — approvers and up. Every query is label-scoped.
 router.use(authMiddleware, withTenant, requireApprover);
 
-// Map a period keyword to a SQL lower bound (NULL = all time).
-function periodStart(period) {
-  switch (period) {
-    case 'month': return "date_trunc('month', CURRENT_DATE)";
-    case 'quarter': return "date_trunc('quarter', CURRENT_DATE)";
-    case 'year': return "date_trunc('year', CURRENT_DATE)";
-    default: return null;
+const round2 = (n) => Math.round((n || 0) * 100) / 100;
+
+// Resolve the requested window: explicit from/to wins, else the legacy period
+// keyword (month|quarter|year|all), else all time.
+function resolveRange(q) {
+  const today = todayStr();
+  let from = isDay(q.from) ? q.from : null;
+  const to = isDay(q.to) ? q.to : today;
+  if (!from) {
+    const y = today.slice(0, 4);
+    const m = Number(today.slice(5, 7));
+    switch (q.period) {
+      case 'month': from = `${today.slice(0, 8)}01`; break;
+      case 'quarter': from = `${y}-${String(Math.floor((m - 1) / 3) * 3 + 1).padStart(2, '0')}-01`; break;
+      case 'year': from = `${y}-01-01`; break;
+      default: from = '1900-01-01';
+    }
   }
+  return { from, to };
 }
 
-// GET /api/financials/summary?period=month|quarter|year|all — P&L overview.
+// GET /api/financials/summary?from&to (or legacy ?period=) — P&L overview.
+// Every figure carries the PAID / UNPAID split: this is a commitment view
+// (unpaid approved invoices count), and the page must be able to say so with
+// numbers, not just prose. Split slices are summed once via the family-root
+// join in fetchSlices — a parent_id IS NULL filter drops children's money.
 router.get('/summary', async (req, res) => {
   try {
-    const start = periodStart(req.query.period);
-    const expClause = start ? `AND COALESCE(invoice_date, created_at::date) >= ${start}` : '';
-    const incClause = start ? `AND income_date >= ${start}` : '';
-
-    // Pull raw rows (amount + currency + date) and roll up in USD via FX, so
-    // multi-currency ledgers/income aggregate correctly. Excludes split-child
-    // and voided rows from totals.
-    const [expRows, incRows] = await Promise.all([
-      pool.query(
-        `SELECT COALESCE(category,'Uncategorized') AS category, amount, currency,
-                COALESCE(payment_date, invoice_date, created_at::date) AS fx_date
-         FROM expenses
-         WHERE label_id = $1 AND status = 'approved' AND (deleted = false OR deleted IS NULL)
-           AND parent_id IS NULL AND (voided = false OR voided IS NULL) ${expClause}`,
-        [req.labelId]
-      ),
+    const { from, to } = resolveRange(req.query);
+    const [slices, incRows] = await Promise.all([
+      fetchSlices(req.labelId, normFilters(req.query), from),
       pool.query(
         `SELECT COALESCE(source,'Other') AS source, amount, currency, income_date AS fx_date
-         FROM artist_income WHERE label_id = $1 ${incClause}`,
-        [req.labelId]
+         FROM artist_income WHERE label_id = $1 AND income_date BETWEEN $2 AND $3`,
+        [req.labelId, from, to]
       ),
     ]);
 
-    const byCat = {}; let expenses = 0;
-    for (const r of expRows.rows) {
-      const usd = await toUSD(r.amount, r.currency, r.fx_date);
-      byCat[r.category] = (byCat[r.category] || 0) + usd;
-      expenses += usd;
+    const byCat = new Map();
+    let paid = 0, unpaid = 0;
+    const unpaidRoots = new Set();
+    for (const s of slices) {
+      if (s.cd < from || s.cd > to) continue; // commitment-dated range scope
+      const cat = String(s.category || '').trim() || 'Uncategorized';
+      if (!byCat.has(cat)) byCat.set(cat, { category: cat, total: 0, paid: 0, unpaid: 0 });
+      const c = byCat.get(cat);
+      c.total += s.usd;
+      if (s.paid) { c.paid += s.usd; paid += s.usd; }
+      else { c.unpaid += s.usd; unpaid += s.usd; unpaidRoots.add(s.root_id); }
     }
     const bySource = {}; let income = 0;
     for (const r of incRows.rows) {
@@ -58,17 +76,24 @@ router.get('/summary', async (req, res) => {
       bySource[r.source] = (bySource[r.source] || 0) + usd;
       income += usd;
     }
-    const toSorted = (obj, key) => Object.entries(obj).map(([k, v]) => ({ [key]: k, total: Math.round(v * 100) / 100 })).sort((a, b) => b.total - a.total);
 
     res.json({
       success: true,
       data: {
         currency: 'USD',
-        income: Math.round(income * 100) / 100,
-        expenses: Math.round(expenses * 100) / 100,
-        net: Math.round((income - expenses) * 100) / 100,
-        expenseByCategory: toSorted(byCat, 'category'),
-        incomeBySource: toSorted(bySource, 'source'),
+        from, to,
+        income: round2(income),
+        expenses: round2(paid + unpaid),
+        expenses_paid: round2(paid),
+        expenses_unpaid: round2(unpaid),
+        unpaid_count: unpaidRoots.size,
+        net: round2(income - paid - unpaid),
+        expenseByCategory: Array.from(byCat.values())
+          .map((c) => ({ category: c.category, total: round2(c.total), paid: round2(c.paid), unpaid: round2(c.unpaid) }))
+          .sort((a, b) => b.total - a.total),
+        incomeBySource: Object.entries(bySource)
+          .map(([source, total]) => ({ source, total: round2(total) }))
+          .sort((a, b) => b.total - a.total),
       },
     });
   } catch (error) {
@@ -77,61 +102,180 @@ router.get('/summary', async (req, res) => {
   }
 });
 
-// GET /api/financials/analytics — 12-month trend, top vendors, per-artist P&L,
-// and this-vs-last-month deltas. All USD; voided/split-child rows excluded.
+// GET /api/financials/analytics?from&to — monthly trend (paid/unpaid split),
+// top vendors, per-artist P&L. Defaults to the trailing 12 months.
+//
+// Per-artist grouping is by artistBucketKey — NOT an exact-name join onto the
+// roster. The old inner-map silently vanished every dollar whose artist
+// string didn't exactly match a roster name (whitespace, casing beyond
+// lower(), non-roster artists, 'Unassigned'); now every dollar lands in some
+// row, including an Unassigned bucket and an "Other artists" rollup, so the
+// column ties to total expenses.
 router.get('/analytics', async (req, res) => {
   try {
-    const monthKey = (d) => { const x = new Date(d); return `${x.getUTCFullYear()}-${String(x.getUTCMonth() + 1).padStart(2, '0')}`; };
-    const [artists, exp, inc] = await Promise.all([
+    const today = todayStr();
+    const to = isDay(req.query.to) ? req.query.to : today;
+    const defFrom = `${monthsBetween(`${to.slice(0, 4) - 1}-${to.slice(5, 7)}-01`, to).slice(-12)[0]}-01`;
+    const from = isDay(req.query.from) ? req.query.from : defFrom;
+    const months = monthsBetween(from, to);
+    const fromDay = `${months[0]}-01`;
+
+    const [artists, slices, inc] = await Promise.all([
       pool.query('SELECT id, name FROM artists WHERE label_id = $1', [req.labelId]),
+      fetchSlices(req.labelId, normFilters(req.query), fromDay),
       pool.query(
-        `SELECT payee, artist, amount, currency, COALESCE(payment_date, invoice_date, created_at::date) AS d
-           FROM expenses
-          WHERE label_id = $1 AND status = 'approved' AND (deleted = false OR deleted IS NULL)
-            AND parent_id IS NULL AND (voided = false OR voided IS NULL)
-            AND COALESCE(payment_date, invoice_date, created_at::date) >= (CURRENT_DATE - INTERVAL '12 months')`,
-        [req.labelId]
-      ),
-      pool.query(
-        `SELECT artist_id, amount, currency, income_date AS d FROM artist_income
-          WHERE label_id = $1 AND income_date >= (CURRENT_DATE - INTERVAL '12 months')`,
-        [req.labelId]
+        `SELECT artist_id, amount, currency, to_char(income_date, 'YYYY-MM-DD') AS d FROM artist_income
+          WHERE label_id = $1 AND income_date BETWEEN $2 AND $3`,
+        [req.labelId, fromDay, to]
       ),
     ]);
 
-    // 12 month buckets (oldest → newest).
-    const months = [];
-    const now = new Date();
-    for (let i = 11; i >= 0; i--) { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1)); months.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`); }
-    const series = Object.fromEntries(months.map(m => [m, { month: m, income: 0, expenses: 0 }]));
-
-    const vendor = {}, spendByName = {};
-    for (const r of exp.rows) {
-      const usd = await toUSD(r.amount, r.currency, r.d);
-      const k = monthKey(r.d); if (series[k]) series[k].expenses += usd;
-      if (r.payee) vendor[r.payee] = (vendor[r.payee] || 0) + usd;
-      if (r.artist) spendByName[r.artist.toLowerCase()] = (spendByName[r.artist.toLowerCase()] || 0) + usd;
+    const series = Object.fromEntries(months.map(m => [m, { month: m, income: 0, expenses: 0, expenses_paid: 0, expenses_unpaid: 0 }]));
+    const vendor = new Map();
+    const spendByKey = new Map(); // artistBucketKey -> { label, spend, paid, unpaid }
+    for (const s of slices) {
+      if (s.cd < fromDay || s.cd > to) continue;
+      const mk = s.cd.slice(0, 7);
+      if (series[mk]) {
+        series[mk].expenses += s.usd;
+        if (s.paid) series[mk].expenses_paid += s.usd; else series[mk].expenses_unpaid += s.usd;
+      }
+      const payee = String(s.payee || '').trim();
+      if (payee) {
+        if (!vendor.has(payee)) vendor.set(payee, { vendor: payee, total: 0, paid: 0, unpaid: 0 });
+        const v = vendor.get(payee);
+        v.total += s.usd; if (s.paid) v.paid += s.usd; else v.unpaid += s.usd;
+      }
+      const key = artistBucketKey(s.artist);
+      if (!spendByKey.has(key)) spendByKey.set(key, { label: key ? String(s.artist).trim() : 'Unassigned', spend: 0, paid: 0, unpaid: 0 });
+      const a = spendByKey.get(key);
+      a.spend += s.usd; if (s.paid) a.paid += s.usd; else a.unpaid += s.usd;
     }
-    const incById = {};
+
+    // Roster lookup by bucket key so roster spelling + profile links win.
+    const rosterByKey = new Map();
+    for (const a of artists.rows) {
+      const k = artistBucketKey(a.name);
+      if (k && !rosterByKey.has(k)) rosterByKey.set(k, a);
+    }
+    const incByKey = new Map(); // bucket key ('' = unattributed) -> usd
+    const rosterById = new Map(artists.rows.map(a => [a.id, a]));
     for (const r of inc.rows) {
       const usd = await toUSD(r.amount, r.currency, r.d);
-      const k = monthKey(r.d); if (series[k]) series[k].income += usd;
-      if (r.artist_id) incById[r.artist_id] = (incById[r.artist_id] || 0) + usd;
+      const mk = String(r.d).slice(0, 7);
+      if (series[mk]) series[mk].income += usd;
+      const key = r.artist_id && rosterById.has(r.artist_id) ? artistBucketKey(rosterById.get(r.artist_id).name) : '';
+      incByKey.set(key, (incByKey.get(key) || 0) + usd);
     }
 
-    const round = (n) => Math.round((n || 0) * 100) / 100;
-    const monthlySeries = months.map(m => ({ month: m.slice(2), income: round(series[m].income), expenses: round(series[m].expenses), net: round(series[m].income - series[m].expenses) }));
-    const topVendors = Object.entries(vendor).map(([v, t]) => ({ vendor: v, total: round(t) })).sort((a, b) => b.total - a.total).slice(0, 10);
-    const byArtist = artists.rows.map(a => {
-      const spend = round(spendByName[a.name.toLowerCase()]); const income = round(incById[a.id]);
-      return { artist_id: a.id, name: a.name, spend, income, net: round(income - spend) };
-    }).filter(a => a.spend > 0 || a.income > 0).sort((a, b) => b.spend - a.spend).slice(0, 20);
+    const monthlySeries = months.map(m => ({
+      month: m,
+      income: round2(series[m].income),
+      expenses: round2(series[m].expenses),
+      expenses_paid: round2(series[m].expenses_paid),
+      expenses_unpaid: round2(series[m].expenses_unpaid),
+      net: round2(series[m].income - series[m].expenses),
+    }));
+    const topVendors = Array.from(vendor.values())
+      .map(v => ({ vendor: v.vendor, total: round2(v.total), paid: round2(v.paid), unpaid: round2(v.unpaid) }))
+      .sort((a, b) => b.total - a.total).slice(0, 10);
+
+    const allKeys = new Set([...spendByKey.keys(), ...incByKey.keys()]);
+    const rows = Array.from(allKeys).map((key) => {
+      const roster = rosterByKey.get(key);
+      const sp = spendByKey.get(key) || { label: 'Unassigned', spend: 0, paid: 0, unpaid: 0 };
+      const income = incByKey.get(key) || 0;
+      return {
+        artist_id: roster ? roster.id : null,
+        name: roster ? roster.name : (key ? sp.label : 'Unassigned'),
+        spend: round2(sp.spend), spend_paid: round2(sp.paid), spend_unpaid: round2(sp.unpaid),
+        income: round2(income), net: round2(income - sp.spend),
+      };
+    }).filter(a => a.spend !== 0 || a.income !== 0).sort((a, b) => b.spend - a.spend);
+    // Cap the table but never drop money — the tail rolls into one row.
+    const CAP = 30;
+    const byArtist = rows.slice(0, CAP);
+    if (rows.length > CAP) {
+      const rest = rows.slice(CAP);
+      byArtist.push(rest.reduce((acc, r) => ({
+        artist_id: null, name: `Other artists (${rest.length})`,
+        spend: round2(acc.spend + r.spend), spend_paid: round2(acc.spend_paid + r.spend_paid),
+        spend_unpaid: round2(acc.spend_unpaid + r.spend_unpaid),
+        income: round2(acc.income + r.income), net: round2(acc.net + r.net),
+      }), { spend: 0, spend_paid: 0, spend_unpaid: 0, income: 0, net: 0 }));
+    }
 
     const cur = monthlySeries[monthlySeries.length - 1] || { income: 0, expenses: 0, net: 0 };
     const prev = monthlySeries[monthlySeries.length - 2] || { income: 0, expenses: 0, net: 0 };
-    res.json({ success: true, data: { monthlySeries, topVendors, byArtist, deltas: { income: round(cur.income - prev.income), expenses: round(cur.expenses - prev.expenses), net: round(cur.net - prev.net) } } });
+    res.json({ success: true, data: { from: fromDay, to, monthlySeries, topVendors, byArtist, deltas: { income: round2(cur.income - prev.income), expenses: round2(cur.expenses - prev.expenses), net: round2(cur.net - prev.net) } } });
   } catch (error) {
     console.error('Financials analytics error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Executive dashboard (ported from boom /financials/exec) ────────────────
+
+// GET /api/financials/exec?from&to&artist&category&rep — KPIs (day-matched
+// comparisons), weekly cash-out/open-billing/intake, aging + upcoming due,
+// 30/60/90 cash forecast, monthly intake cohorts, breakdowns, rep leaderboard,
+// category trend. One slice scan; see lib/financeExec.js.
+router.get('/exec', async (req, res) => {
+  try {
+    const data = await computeExec(req.labelId, { from: req.query.from, to: req.query.to, filters: req.query });
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('Financials exec error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/financials/exec/rows?bucket= — the invoice slices behind one card.
+// Buckets: this_week/last_week/mtd/last_mtd/ytd/last_ytd/unpaid, aging_*,
+// upcoming_*, month_YYYY-MM. Totals tie to the cards by construction (same
+// slice pull + same window predicates).
+router.get('/exec/rows', async (req, res) => {
+  try {
+    const bucket = String(req.query.bucket || '');
+    if (!isKnownBucket(bucket)) return res.status(400).json({ success: false, error: 'Unknown bucket' });
+    const data = await rowsForBucket(req.labelId, bucket, { filters: req.query });
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('Financials exec rows error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/financials/filter-options — distinct artist/category/rep values
+// from live approved rows, for the cross-page scope dropdowns.
+router.get('/filter-options', async (req, res) => {
+  try {
+    const base = `FROM expenses WHERE label_id = $1 AND status = 'approved'
+      AND (deleted IS NULL OR deleted = FALSE) AND (voided IS NULL OR voided = FALSE)`;
+    const [a, c, r] = await Promise.all([
+      pool.query(`SELECT DISTINCT TRIM(artist) AS v ${base} AND artist IS NOT NULL AND TRIM(artist) <> '' ORDER BY 1`, [req.labelId]),
+      pool.query(`SELECT DISTINCT TRIM(category) AS v ${base} AND category IS NOT NULL AND TRIM(category) <> '' ORDER BY 1`, [req.labelId]),
+      pool.query(`SELECT DISTINCT TRIM(rep) AS v ${base} AND rep IS NOT NULL AND TRIM(rep) <> '' ORDER BY 1`, [req.labelId]),
+    ]);
+    res.json({ success: true, data: { artists: a.rows.map(x => x.v), categories: c.rows.map(x => x.v), reps: r.rows.map(x => x.v) } });
+  } catch (error) {
+    console.error('Financials filter-options error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/financials/export?from&to&artist&category&rep — multi-sheet .xlsx
+// built from the SAME exec payload the page renders (never re-derived).
+router.get('/export', async (req, res) => {
+  try {
+    const data = await computeExec(req.labelId, { from: req.query.from, to: req.query.to, filters: req.query });
+    const wb = await execWorkbook(data);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="cadence-financials-${data.range.from}_${data.range.to}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    console.error('Financials export error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
@@ -142,7 +286,7 @@ router.get('/recoupments', async (req, res) => {
     const [artists, spendRows, incRows, metaRows] = await Promise.all([
       pool.query('SELECT id, name FROM artists WHERE label_id = $1 ORDER BY name', [req.labelId]),
       pool.query(
-        `SELECT LOWER(e.artist) AS akey, e.amount, e.currency,
+        `SELECT LOWER(e.artist) AS akey, e.amount, e.currency, e.fx_rate_to_usd,
                 COALESCE(e.payment_date, e.invoice_date, e.created_at::date) AS fx_date
          FROM expenses e
          WHERE e.label_id = $1 AND e.recoupable = TRUE AND e.status = 'approved'
@@ -160,7 +304,7 @@ router.get('/recoupments', async (req, res) => {
     const spendByName = {};
     for (const r of spendRows.rows) {
       if (!r.akey) continue;
-      spendByName[r.akey] = (spendByName[r.akey] || 0) + await toUSD(r.amount, r.currency, r.fx_date);
+      spendByName[r.akey] = (spendByName[r.akey] || 0) + await eUsd(r, r.fx_date);
     }
     const incById = {};
     for (const r of incRows.rows) {
@@ -196,7 +340,7 @@ router.get('/recoupments/:artistId', async (req, res) => {
 
     const [spend, income] = await Promise.all([
       pool.query(
-        `SELECT id, payee, song, category, amount, currency, invoice_date, payment_date, payment_status,
+        `SELECT id, payee, song, category, amount, currency, fx_rate_to_usd, invoice_date, payment_date, payment_status,
                 ufr, ufr_marked_at, social_handles, created_at
            FROM expenses
           WHERE label_id = $1 AND recoupable = TRUE AND status = 'approved'
@@ -211,7 +355,7 @@ router.get('/recoupments/:artistId', async (req, res) => {
     let spendUsd = 0;
     const entries = [];
     for (const r of spend.rows) {
-      const usd = await toUSD(r.amount, r.currency, r.payment_date || r.invoice_date || r.created_at);
+      const usd = await eUsd(r, r.payment_date || r.invoice_date || r.created_at);
       spendUsd += usd;
       entries.push({ ...r, amount_usd: Math.round(usd * 100) / 100, statement_month: r.ufr ? statementMonthFor(r.ufr_marked_at) : null });
     }
@@ -237,7 +381,7 @@ router.get('/statements', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT id, payee, artist, song, amount, currency, ufr_marked_at,
-              COALESCE(payment_date, invoice_date, created_at::date) AS fx_date
+              COALESCE(payment_date, invoice_date, created_at::date) AS fx_date, fx_rate_to_usd
          FROM expenses
         WHERE label_id = $1 AND recoupable = TRUE AND ufr = TRUE
           AND (deleted = false OR deleted IS NULL) AND (voided = false OR voided IS NULL) AND parent_id IS NULL
@@ -245,7 +389,7 @@ router.get('/statements', async (req, res) => {
       [req.labelId]
     );
     const out = [];
-    for (const r of rows) out.push({ ...r, amount_usd: Math.round((await toUSD(r.amount, r.currency, r.fx_date)) * 100) / 100, statement_month: statementMonthFor(r.ufr_marked_at) });
+    for (const r of rows) out.push({ ...r, amount_usd: Math.round((await eUsd(r, r.fx_date)) * 100) / 100, statement_month: statementMonthFor(r.ufr_marked_at) });
     res.json({ success: true, data: out });
   } catch (error) {
     console.error('Statements error:', error);
@@ -275,7 +419,7 @@ router.post('/recoupments/:id/ufr', async (req, res) => {
 router.get('/planning', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id, payee, artist, song, category, amount, currency, invoice_date, payment_date, payment_status, created_at
+      `SELECT id, payee, artist, song, category, amount, currency, fx_rate_to_usd, invoice_date, payment_date, payment_status, created_at
          FROM expenses
         WHERE label_id = $1 AND recoupable = TRUE AND status = 'approved' AND (ufr = false OR ufr IS NULL)
           AND (deleted = false OR deleted IS NULL) AND parent_id IS NULL AND (voided = false OR voided IS NULL)
@@ -284,7 +428,7 @@ router.get('/planning', async (req, res) => {
       [req.labelId]
     );
     const out = [];
-    for (const r of rows) out.push({ ...r, amount_usd: Math.round((await toUSD(r.amount, r.currency, r.payment_date || r.invoice_date || r.created_at)) * 100) / 100 });
+    for (const r of rows) out.push({ ...r, amount_usd: Math.round((await eUsd(r, r.payment_date || r.invoice_date || r.created_at)) * 100) / 100 });
     res.json({ success: true, data: out });
   } catch (error) {
     console.error('Planning error:', error);
@@ -392,7 +536,7 @@ router.get('/recoupments-prior-year', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT id, payee, artist, song, category, amount, currency, prior_year_tag, payment_status,
-              COALESCE(payment_date, invoice_date, created_at::date) AS fx_date
+              COALESCE(payment_date, invoice_date, created_at::date) AS fx_date, fx_rate_to_usd
          FROM expenses
         WHERE label_id = $1 AND recoupable = TRUE AND prior_year_tag IS NOT NULL
           AND (deleted = false OR deleted IS NULL) AND parent_id IS NULL AND (voided = false OR voided IS NULL)
@@ -400,7 +544,7 @@ router.get('/recoupments-prior-year', async (req, res) => {
       [req.labelId]
     );
     const out = [];
-    for (const r of rows) out.push({ ...r, amount_usd: Math.round((await toUSD(r.amount, r.currency, r.fx_date)) * 100) / 100 });
+    for (const r of rows) out.push({ ...r, amount_usd: Math.round((await eUsd(r, r.fx_date)) * 100) / 100 });
     res.json({ success: true, data: out });
   } catch (error) {
     console.error('Prior-year list error:', error);

@@ -71,7 +71,7 @@ export default function UserManual({ open, onClose }) {
               <ol className="space-y-1.5 mb-2">
                 {s.steps.map((st, i) => (
                   <li key={i} className="flex gap-2 text-[13px] text-ink">
-                    <span className="flex-shrink-0 w-4 h-4 rounded-full bg-brand-100 text-brand-700 text-[10px] font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
+                    <span className="flex-shrink-0 w-4 h-4 rounded-full bg-brand-500/15 text-brand-700 text-[10px] font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
                     <span>{st}</span>
                   </li>
                 ))}

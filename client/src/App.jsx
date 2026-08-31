@@ -31,6 +31,12 @@ import MyWork from './pages/MyWork'
 import TeamWork from './pages/TeamWork'
 import Calendar from './pages/Calendar'
 import Financials from './pages/Financials'
+import Reports from './pages/Reports'
+import BankMatching from './pages/BankMatching'
+import LedgerArchive from './pages/LedgerArchive'
+import Creators from './pages/Creators'
+import ArtistBudgets from './pages/ArtistBudgets'
+import ArtistBudgetSheet from './pages/ArtistBudgetSheet'
 import Recoupments from './pages/Recoupments'
 import RecoupmentPlanning from './pages/RecoupmentPlanning'
 import Salary from './pages/Salary'
@@ -152,10 +158,16 @@ function AppContent() {
         <Route path="/clearances"   element={<AdminRoute><ArtistClearance /></AdminRoute>} />
         <Route path="/admin-docs"   element={<AdminRoute><AdminDocs /></AdminRoute>} />
         <Route path="/financials"   element={<AdminRoute><Financials /></AdminRoute>} />
+        <Route path="/reports"      element={<AdminRoute><Reports /></AdminRoute>} />
         <Route path="/recoupments"  element={<AdminRoute><Recoupments /></AdminRoute>} />
         <Route path="/recoupments/planning" element={<AdminRoute><RecoupmentPlanning /></AdminRoute>} />
         <Route path="/salary"       element={<AdminRoute><Salary /></AdminRoute>} />
         <Route path="/bank-statements" element={<AdminRoute><BankStatements /></AdminRoute>} />
+        <Route path="/bank-matching" element={<AdminRoute><BankMatching /></AdminRoute>} />
+        <Route path="/approvals/archive" element={<AdminRoute><LedgerArchive /></AdminRoute>} />
+        <Route path="/creators" element={<AdminRoute><Creators /></AdminRoute>} />
+        <Route path="/artist-budgets" element={<AdminRoute><ArtistBudgets /></AdminRoute>} />
+        <Route path="/artist-budgets/:artistKey" element={<AdminRoute><ArtistBudgetSheet /></AdminRoute>} />
         <Route path="/bank-statements/:id" element={<AdminRoute><BankStatements /></AdminRoute>} />
         <Route path="/data-quality" element={<AdminRoute><DataQuality /></AdminRoute>} />
         <Route path="/notifications" element={<Notifications />} />

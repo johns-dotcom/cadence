@@ -76,7 +76,7 @@ export default function PlatformOperators() {
       />
 
       {invite && (
-        <div className="card p-4 mb-6 border-brand-200 bg-brand-50/40">
+        <div className="card p-4 mb-6 border-brand-200 bg-brand-500/10/40">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-ink flex items-center gap-1.5">
@@ -141,7 +141,7 @@ export default function PlatformOperators() {
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${op.platform_role === 'owner' ? 'bg-brand-100 text-brand-700' : 'bg-indigo-100 text-indigo-700'}`}>
+                    <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${op.platform_role === 'owner' ? 'bg-brand-500/15 text-brand-700' : 'bg-indigo-100 text-indigo-700'}`}>
                       <ShieldCheck size={12} /> {op.platform_role === 'owner' ? 'Owner' : 'Workspace Admin'}
                     </span>
                   </td>
@@ -219,7 +219,7 @@ function AccessModal({ op, onClose, onSaved }) {
               <h3 className="text-sm font-bold text-ink mb-2">Workspaces they can enter</h3>
               <div className="flex gap-2 mb-2">
                 {['all', 'specific'].map(m => (
-                  <button key={m} onClick={() => setWsMode(m)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${wsMode === m ? 'bg-brand-50 border-brand-300 text-brand-700' : 'border-rule text-gray-500'}`}>{m === 'all' ? 'All workspaces' : 'Specific'}</button>
+                  <button key={m} onClick={() => setWsMode(m)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${wsMode === m ? 'bg-brand-500/10 border-brand-300 text-brand-700' : 'border-rule text-gray-500'}`}>{m === 'all' ? 'All workspaces' : 'Specific'}</button>
                 ))}
               </div>
               {wsMode === 'specific' && (
@@ -239,7 +239,7 @@ function AccessModal({ op, onClose, onSaved }) {
               <p className="text-[11px] text-gray-400 mb-2">Overview and Account are always available.</p>
               <div className="flex gap-2 mb-2">
                 {['all', 'specific'].map(m => (
-                  <button key={m} onClick={() => setPageMode(m)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${pageMode === m ? 'bg-brand-50 border-brand-300 text-brand-700' : 'border-rule text-gray-500'}`}>{m === 'all' ? 'All pages' : 'Specific'}</button>
+                  <button key={m} onClick={() => setPageMode(m)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${pageMode === m ? 'bg-brand-500/10 border-brand-300 text-brand-700' : 'border-rule text-gray-500'}`}>{m === 'all' ? 'All pages' : 'Specific'}</button>
                 ))}
               </div>
               {pageMode === 'specific' && (

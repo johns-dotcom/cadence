@@ -6,7 +6,8 @@ import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 import { formatDate } from '../utils/dates'
-import { EXPENSE_CATEGORIES, CURRENCIES } from '../constants'
+import { CURRENCIES } from '../constants'
+import CategoryOptions from '../components/CategoryOptions'
 
 const money = (n) => `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -184,7 +185,7 @@ export default function Recoupments() {
                                 <div className="card p-3 grid grid-cols-2 sm:grid-cols-5 gap-2">
                                   <input className="input !py-1.5 text-sm" placeholder="Payee / description" value={form.payee} onChange={e => setForm(f => ({ ...f, payee: e.target.value }))} />
                                   <input className="input !py-1.5 text-sm" placeholder="Song (opt)" value={form.song} onChange={e => setForm(f => ({ ...f, song: e.target.value }))} />
-                                  <select className="input !py-1.5 text-sm" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}><option value="">Category…</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
+                                  <select className="input !py-1.5 text-sm" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}><option value="">Category…</option><CategoryOptions /></select>
                                   <div className="flex gap-1">
                                     <input type="number" step="0.01" className="input !py-1.5 text-sm" placeholder="0.00" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
                                     <select className="input !py-1.5 text-sm !w-20" value={form.currency} onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select>

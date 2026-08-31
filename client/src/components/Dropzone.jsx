@@ -25,8 +25,8 @@ export default function Dropzone({ value, onChange, accept, required }) {
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
       className={`flex flex-col items-center justify-center gap-1.5 w-full px-4 py-6 rounded-lg border-2 border-dashed cursor-pointer transition-colors text-center ${
-        dragging ? 'border-brand-500 bg-brand-50'
-        : value ? 'border-brand-300 bg-brand-50/40'
+        dragging ? 'border-brand-500 bg-brand-500/10'
+        : value ? 'border-brand-300 bg-brand-500/10/40'
         : 'border-rule bg-card hover:border-brand-300 hover:bg-gray-50'
       }`}
     >

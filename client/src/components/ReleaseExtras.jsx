@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Send, Trash2, Plus, MessageSquare, Wallet } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
-import { EXPENSE_CATEGORIES } from '../constants'
+import CategoryOptions from './CategoryOptions'
 
 // Comments thread + budget (cap + line items) for a release. Both endpoints
 // are label-scoped and re-validate the release on write.
@@ -54,7 +54,7 @@ export default function ReleaseExtras({ releaseId, budgetCap, onCapChange, secti
           {!budget.items.length && <p className="text-sm text-gray-400">No line items yet.</p>}
         </div>
         <div className="flex gap-2">
-          <select value={item.category} onChange={e => setItem(s => ({ ...s, category: e.target.value }))} className="input !py-1.5 text-sm"><option value="">Category</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
+          <select value={item.category} onChange={e => setItem(s => ({ ...s, category: e.target.value }))} className="input !py-1.5 text-sm"><option value="">Category</option><CategoryOptions /></select>
           <input type="number" step="0.01" placeholder="Amount" value={item.amount} onChange={e => setItem(s => ({ ...s, amount: e.target.value }))} className="input !py-1.5 text-sm !w-28" />
           <button onClick={addItem} className="btn-primary !py-1.5 text-xs flex-shrink-0"><Plus size={13} /></button>
         </div>

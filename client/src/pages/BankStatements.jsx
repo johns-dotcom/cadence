@@ -1,20 +1,27 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { Landmark, Upload, ArrowLeft, Trash2, Search, X, Check, Link2, Undo2, Ban, RotateCcw, DollarSign, Sparkles } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 import { formatDate } from '../utils/dates'
-import { EXPENSE_CATEGORIES } from '../constants'
+import CategoryOptions from '../components/CategoryOptions'
+import StatementReviewDeck from '../components/statements/StatementReviewDeck'
+import StatementFlagsCard from '../components/statements/StatementFlagsCard'
 import { dropTarget } from '../utils/drop'
+import { INCOME_TYPES } from '../constants'
 
 const money = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
-const STATUS_CHIP = {
+export const STATUS_CHIP = {
   open: 'bg-gray-100 text-gray-600', toconfirm: 'bg-amber-100 text-amber-700', matched: 'bg-sky-100 text-sky-700',
-  booked: 'bg-emerald-100 text-emerald-700', dismissed: 'bg-gray-100 text-gray-400', credit: 'bg-violet-100 text-violet-700',
+  booked: 'bg-emerald-100 text-emerald-700', dismissed: 'bg-gray-100 text-gray-400',
+  'open-credit': 'bg-violet-100 text-violet-700', 'booked-income': 'bg-emerald-100 text-emerald-700',
 }
-const STATUS_LABEL = { open: 'Open', toconfirm: 'To confirm', matched: 'Matched', booked: 'Booked', dismissed: 'Dismissed', credit: 'Credit' }
+export const STATUS_LABEL = {
+  open: 'Open', toconfirm: 'To confirm', matched: 'Matched', booked: 'Booked', dismissed: 'Dismissed',
+  'open-credit': 'Money in', 'booked-income': 'Income',
+}
 
 export default function BankStatements() {
   const { id } = useParams()
@@ -63,6 +70,8 @@ function StatementList() {
     <div>
       <PageHeader title="Bank Statements" subtitle="Reconcile bank activity against the ledger" />
 
+      <GlobalTxnSearch navigate={navigate} />
+
       <div className="card p-5 mb-5">
         <div className="flex items-center gap-2 mb-1"><Landmark size={15} className="text-brand-600" /><h2 className="text-sm font-bold text-ink">Import a statement</h2></div>
         <p className="text-xs text-gray-400 mb-4">CSV imports instantly. PDF statements are parsed by AI in the background (may take a few minutes) — or upload the CSV export for speed.</p>
@@ -98,6 +107,48 @@ function StatementList() {
           ))}
         </div>
       )}
+
+      <StatementFlagsCard toast={toast} />
+    </div>
+  )
+}
+
+// Global search across every transaction on every statement. Clicking a hit
+// opens its statement with the mini-ledger pre-filtered to the query.
+function GlobalTxnSearch({ navigate }) {
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState(null)
+  useEffect(() => {
+    if (q.trim().length < 2) { setResults(null); return }
+    const t = setTimeout(() => {
+      api.get('/bank-statements/search', { params: { q } }).then(r => setResults(r.data.data || [])).catch(() => setResults([]))
+    }, 300)
+    return () => clearTimeout(t)
+  }, [q])
+  const go = (t) => {
+    const chip = t.direction === 'credit' ? (t.matched_income_id ? 'booked-income' : 'open-credit') : (t.dismissed ? 'dismissed' : 'all')
+    navigate(`/bank-statements/${t.statement_id}?q=${encodeURIComponent(q)}&chip=${chip}`)
+  }
+  return (
+    <div className="relative mb-4 max-w-xl">
+      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search every transaction on every statement…" className="input !pl-9" />
+      {results && (
+        <div className="absolute z-40 mt-1 w-full card shadow-modal max-h-80 overflow-y-auto p-1">
+          {results.length === 0 && <p className="text-xs text-gray-400 p-3">No transactions match.</p>}
+          {results.map(t => (
+            <button key={t.id} onClick={() => go(t)} className="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-50 flex items-center gap-3 text-sm">
+              <span className="text-xs text-gray-400 tabular-nums w-20 shrink-0">{formatDate(t.txn_date)}</span>
+              <span className="flex-1 min-w-0 truncate text-ink">{t.exp_payee || t.payee_guess || t.description || '—'}
+                <span className="block text-[11px] text-gray-400 truncate">{t.filename} · {t.account}</span>
+              </span>
+              <span className={`tabular-nums whitespace-nowrap ${t.direction === 'credit' ? 'text-violet-600' : 'text-gray-600'}`}>
+                {t.direction === 'credit' ? '+' : ''}{money(t.amount, t.currency)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -111,13 +162,15 @@ const FILTERS = [
 function StatementDetail({ id }) {
   const { toast } = useToast()
   const navigate = useNavigate()
+  const [sp] = useSearchParams()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState('all')
-  const [q, setQ] = useState('')
+  const [filter, setFilter] = useState(sp.get('chip') || 'all')
+  const [q, setQ] = useState(sp.get('q') || '')
   const [sel, setSel] = useState(new Set())
   const [matchTxn, setMatchTxn] = useState(null)
   const [entryTxn, setEntryTxn] = useState(null)
+  const [deckOpen, setDeckOpen] = useState(false)
 
   const load = useCallback(() => {
     api.get(`/bank-statements/${id}`).then(r => setData(r.data.data)).catch(() => toast('Failed to load', 'error')).finally(() => setLoading(false))
@@ -137,10 +190,11 @@ function StatementDetail({ id }) {
 
   const txns = data?.transactions || []
   const counts = useMemo(() => {
-    const c = { all: 0, open: 0, toconfirm: 0, matched: 0, booked: 0, dismissed: 0, credit: 0 }
+    const c = { all: 0, open: 0, toconfirm: 0, matched: 0, booked: 0, dismissed: 0, 'open-credit': 0, 'booked-income': 0 }
     txns.forEach(t => { if (t.direction === 'debit' && !t.dismissed) c.all++; c[t.disposition] = (c[t.disposition] || 0) + 1 })
     return c
   }, [txns])
+  const openItems = useMemo(() => txns.filter(t => t.disposition === 'open' || t.disposition === 'open-credit'), [txns])
   const debits = txns.filter(t => t.direction === 'debit')
   const credits = txns.filter(t => t.direction === 'credit')
   const shown = useMemo(() => {
@@ -168,6 +222,29 @@ function StatementDetail({ id }) {
         <div>
           <h1 className="text-2xl font-bold text-ink tracking-tight flex items-center gap-2"><Landmark size={20} /> {s.account}</h1>
           <p className="text-sm text-gray-400">{s.period_start ? `${formatDate(s.period_start)} – ${formatDate(s.period_end)} · ` : ''}{s.txn_count} transactions{s.import_summary ? ` · ${s.import_summary.auto_matched || 0} auto-matched · ${s.import_summary.dup_skipped || 0} duplicates skipped` : ''}</p>
+          <p className="text-[11px] text-gray-400 mt-0.5">
+            {s.ending_balance != null
+              ? <>Ending balance {money(s.ending_balance)}{s.beginning_balance != null ? ` · beginning ${money(s.beginning_balance)}` : ''} · </>
+              : <>No balance captured · </>}
+            <button
+              className="underline hover:text-ink"
+              onClick={async () => {
+                const v = window.prompt('Ending balance printed on this statement (leave blank to try re-reading the PDF):', s.ending_balance ?? '')
+                if (v === null) return
+                try {
+                  if (v.trim() === '') {
+                    const r = await api.post(`/bank-statements/${id}/reparse-balance`)
+                    toast(`Balance read: ${money(r.data.data.ending_balance)}`)
+                  } else {
+                    const b = window.prompt('Beginning balance (optional):', s.beginning_balance ?? '')
+                    await api.patch(`/bank-statements/${id}/balance`, { ending_balance: Number(v), beginning_balance: b && b.trim() !== '' ? Number(b) : null })
+                    toast('Balance saved')
+                  }
+                  load()
+                } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+              }}
+            >{s.ending_balance != null ? 'Edit balance' : 'Set balance'}</button>
+          </p>
         </div>
         <button onClick={async () => { if (window.confirm('Delete this statement? Booked/matched ledger entries stay.')) { try { await api.delete(`/bank-statements/${id}`); navigate('/bank-statements') } catch { toast('Failed', 'error') } } }} className="text-gray-300 hover:text-danger p-2"><Trash2 size={16} /></button>
       </div>
@@ -201,11 +278,16 @@ function StatementDetail({ id }) {
           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
           <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search…" className="input !pl-8 !py-1.5 text-sm w-48" />
         </div>
+        {openItems.length > 0 && (
+          <button onClick={() => setDeckOpen(true)} className="btn-primary !py-1.5 text-xs inline-flex items-center gap-1.5">
+            <Sparkles size={13} /> Review deck ({openItems.length})
+          </button>
+        )}
       </div>
 
       {/* Bulk bar */}
       {sel.size > 0 && (
-        <div className="sticky top-2 z-30 card shadow-modal px-4 py-2.5 mb-3 flex flex-wrap items-center gap-2 bg-brand-50 border-brand-200">
+        <div className="sticky top-2 z-30 card shadow-modal px-4 py-2.5 mb-3 flex flex-wrap items-center gap-2 bg-brand-500/10 border-brand-200">
           <span className="text-sm font-medium text-ink">{sel.size} selected</span>
           {[...selDisp].every(d => d === 'open') && <>
             <CategoryQuickSelect onPick={(cat) => bulk('book', { category: cat })} label="Book as…" />
@@ -237,7 +319,7 @@ function StatementDetail({ id }) {
                 </td>
                 <td className="px-3 py-3">
                   {t.disposition === 'open'
-                    ? <InlineCategory onPick={(cat) => act(t.id, 'book', { category: cat })} onEntry={() => setEntryTxn(t)} />
+                    ? <InlineCategory suggested={t.suggested_category} onPick={(cat) => act(t.id, 'book', { category: cat })} onEntry={() => setEntryTxn(t)} />
                     : <span className={t.exp_category ? 'text-gray-600' : 'text-amber-600'}>{t.exp_category || (t.dismissed ? '—' : 'Unorganized')}</span>}
                 </td>
                 <td className="px-3 py-3 text-ink font-medium whitespace-nowrap tabular-nums">{money(t.amount, t.currency)}{t.match_score != null && t.match_method?.startsWith('auto') && <span className="block text-[10px] text-gray-400 font-normal">{Math.round(t.match_score * 100)}% {t.match_method.replace('auto-', '')}</span>}</td>
@@ -279,14 +361,33 @@ function StatementDetail({ id }) {
         </div>
       )}
 
-      {/* Credits (collapsed) */}
+      {/* Money in — credits book to income, mirroring Categorize on debits. */}
       {credits.length > 0 && (
-        <details className="card p-5 mt-4">
-          <summary className="text-sm font-bold text-ink cursor-pointer">Credits ({credits.length})</summary>
+        <details className="card p-5 mt-4" open={credits.some(t => t.disposition === 'open-credit')}>
+          <summary className="text-sm font-bold text-ink cursor-pointer">
+            Money in ({credits.length}){counts['open-credit'] > 0 && <span className="ml-2 text-[11px] font-semibold text-violet-600">{counts['open-credit']} unanswered</span>}
+          </summary>
           <div className="divide-y divide-divider mt-2">
             {credits.map(t => (
-              <div key={t.id} className="flex items-center justify-between py-2 text-sm">
-                <div><span className="text-gray-600">{t.payee_guess || t.description || '—'}</span><span className="text-[11px] text-gray-400 ml-2">{formatDate(t.txn_date)}</span></div>
+              <div key={t.id} className="flex flex-wrap items-center gap-2 py-2 text-sm">
+                <div className="flex-1 min-w-[180px]">
+                  <span className={t.dismissed ? 'text-gray-400 line-through' : 'text-gray-600'}>{t.payee_guess || t.description || '—'}</span>
+                  <span className="text-[11px] text-gray-400 ml-2">{formatDate(t.txn_date)}{t.payee_email ? ` · ${t.payee_email}` : ''}</span>
+                  {t.disposition === 'booked-income' && <span className="block text-[11px] text-emerald-600">Income · {t.income_type}</span>}
+                </div>
+                {t.disposition === 'open-credit' && (
+                  <select
+                    className="input !py-1 !px-1.5 text-xs max-w-[180px]" value=""
+                    onChange={e => e.target.value && act(t.id, 'book-income', { income_type: e.target.value })}
+                  >
+                    <option value="">{t.suggested_income_type ? `Book as ${t.suggested_income_type}?` : 'Book as income…'}</option>
+                    {t.suggested_income_type && <option value={t.suggested_income_type}>★ {t.suggested_income_type} (suggested)</option>}
+                    {INCOME_TYPES.map(x => <option key={x} value={x}>{x}</option>)}
+                  </select>
+                )}
+                {t.disposition === 'open-credit' && <button onClick={() => act(t.id, 'dismiss', {})} title="Not income — internal movement" className="text-gray-400 hover:text-danger p-1"><Ban size={14} /></button>}
+                {t.disposition === 'booked-income' && <button onClick={() => act(t.id, 'unbook-income', {})} title="Unbook income" className="text-gray-400 hover:text-danger p-1"><Undo2 size={14} /></button>}
+                {t.dismissed && <button onClick={() => act(t.id, 'restore', {})} title="Restore" className="text-gray-400 hover:text-brand-600 p-1"><RotateCcw size={14} /></button>}
                 <span className="text-violet-600 tabular-nums">+{money(t.amount, t.currency)}</span>
               </div>
             ))}
@@ -317,16 +418,20 @@ function StatementDetail({ id }) {
 
       {matchTxn && <MatchModal txn={matchTxn} onClose={() => setMatchTxn(null)} onDone={() => { setMatchTxn(null); load() }} toast={toast} />}
       {entryTxn && <EntryModal txn={entryTxn} onClose={() => setEntryTxn(null)} onDone={() => { setEntryTxn(null); load() }} toast={toast} />}
+      {deckOpen && <StatementReviewDeck open items={openItems} onClose={() => setDeckOpen(false)} onChanged={load} toast={toast} />}
     </div>
   )
 }
 
-// Inline "Categorize…" select — picking a category BOOKS the debit immediately.
-function InlineCategory({ onPick, onEntry }) {
+// Inline "Categorize…" select — picking a category BOOKS the debit
+// immediately. A view-time suggestion leads the list; nothing books without
+// the pick.
+function InlineCategory({ onPick, onEntry, suggested }) {
   return (
-    <select className="input !py-1 !px-1.5 text-xs max-w-[150px]" value="" onChange={e => { if (e.target.value === '__entry') onEntry(); else if (e.target.value) onPick(e.target.value) }}>
-      <option value="">Categorize…</option>
-      {EXPENSE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+    <select className="input !py-1 !px-1.5 text-xs max-w-[170px]" value="" onChange={e => { if (e.target.value === '__entry') onEntry(); else if (e.target.value) onPick(e.target.value) }}>
+      <option value="">{suggested ? `Book as ${suggested}?` : 'Categorize…'}</option>
+      {suggested && <option value={suggested}>★ {suggested} (suggested)</option>}
+      <CategoryOptions />
       <option value="__entry">Custom entry…</option>
     </select>
   )
@@ -335,13 +440,14 @@ function CategoryQuickSelect({ onPick, label }) {
   return (
     <select className="input !py-1.5 text-xs max-w-[160px]" value="" onChange={e => e.target.value && onPick(e.target.value)}>
       <option value="">{label}</option>
-      {EXPENSE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+      <CategoryOptions />
     </select>
   )
 }
 
-// Match dialog — top-3 suggestions + free ledger search.
-function MatchModal({ txn, onClose, onDone, toast }) {
+// Match dialog — top-3 suggestions + free ledger search. Exported: the Bank
+// Matching page reuses it so the two surfaces cannot drift.
+export function MatchModal({ txn, onClose, onDone, toast }) {
   const [sugg, setSugg] = useState(null)
   const [q, setQ] = useState('')
   const [results, setResults] = useState([])
@@ -365,7 +471,7 @@ function MatchModal({ txn, onClose, onDone, toast }) {
             <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 mb-2">Suggestions</p>
             <div className="flex flex-col gap-1.5">
               {sugg.map(x => (
-                <button key={x.expense_id} onClick={() => pick(x.expense_id)} className="flex items-center justify-between text-left px-3 py-2 rounded-lg border border-rule hover:border-brand-400 hover:bg-brand-50/50">
+                <button key={x.expense_id} onClick={() => pick(x.expense_id)} className="flex items-center justify-between text-left px-3 py-2 rounded-lg border border-rule hover:border-brand-400 hover:bg-brand-500/10/50">
                   <span className="text-sm text-ink truncate">{x.payee}{x.invoice_number ? <span className="text-gray-400"> · {x.invoice_number}</span> : ''}</span>
                   <span className="text-xs text-gray-500 whitespace-nowrap ml-2">{money(x.amount, x.currency)} · {Math.round(x.score * 100)}%</span>
                 </button>
@@ -377,7 +483,7 @@ function MatchModal({ txn, onClose, onDone, toast }) {
         <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Payee or invoice #…" className="input mb-2" />
         <div className="flex flex-col gap-1.5 max-h-[260px] overflow-y-auto">
           {results.map(r => (
-            <button key={r.id} onClick={() => pick(r.id)} className="flex items-center justify-between text-left px-3 py-2 rounded-lg border border-rule hover:border-brand-400 hover:bg-brand-50/50">
+            <button key={r.id} onClick={() => pick(r.id)} className="flex items-center justify-between text-left px-3 py-2 rounded-lg border border-rule hover:border-brand-400 hover:bg-brand-500/10/50">
               <span className="text-sm text-ink truncate">{r.payee}{r.invoice_number ? <span className="text-gray-400"> · {r.invoice_number}</span> : ''}<span className="block text-[11px] text-gray-400">{r.payment_status} · {formatDate(r.invoice_date)}</span></span>
               <span className="text-xs text-gray-500 whitespace-nowrap ml-2">{money(r.family_amount, r.currency)}</span>
             </button>
@@ -406,7 +512,7 @@ function EntryModal({ txn, onClose, onDone, toast }) {
         <p className="text-xs text-gray-400 mb-4">{money(txn.amount, txn.currency)} · {formatDate(txn.txn_date)} — records an approved, Paid entry.</p>
         <div className="space-y-3">
           <div><label className="label">Payee</label><input className="input" value={f.payee} onChange={set('payee')} /></div>
-          <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}><option value="">—</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}><option value="">—</option><CategoryOptions /></select></div>
           <div><label className="label">Artist (optional)</label><input className="input" value={f.artist} onChange={set('artist')} /></div>
           <label className="inline-flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" checked={f.rule} onChange={set('rule')} /> Always book "{(txn.payee_guess || txn.description || '').slice(0, 40)}" as this category</label>
         </div>

@@ -222,7 +222,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
             <div className="flex items-center gap-1 px-4 py-2 border-b border-divider">
               {TABS.map(t => (
                 <button key={t.key} onClick={() => setTab(t.key)}
-                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg ${tab === t.key ? 'bg-brand-50 text-brand-700' : 'text-gray-500 hover:bg-gray-50'}`}>{t.label}</button>
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg ${tab === t.key ? 'bg-brand-500/10 text-brand-700' : 'text-gray-500 hover:bg-gray-50'}`}>{t.label}</button>
               ))}
             </div>
 
@@ -262,7 +262,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
                       <div className="flex items-center gap-1.5 mb-1.5"><Crown size={14} className="text-amber-500" /><h3 className="text-sm font-bold text-ink">Workspace owner</h3></div>
                       <p className="text-xs text-gray-500 mb-2">
                         {data.owner
-                          ? <>Currently <span className="font-medium text-ink">{data.owner.name}</span>{data.owner.is_platform_admin ? <span className="text-[10px] font-semibold bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded ml-1">Operator</span> : ` · ${data.owner.email}`}</>
+                          ? <>Currently <span className="font-medium text-ink">{data.owner.name}</span>{data.owner.is_platform_admin ? <span className="text-[10px] font-semibold bg-brand-500/15 text-brand-700 px-1.5 py-0.5 rounded ml-1">Operator</span> : ` · ${data.owner.email}`}</>
                           : 'No owner set.'}
                       </p>
                       <div className="flex items-center gap-2">
@@ -278,7 +278,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
                           <input className="input !py-1.5 text-sm" placeholder="Owner name" value={newOwner.name} onChange={e => setNewOwner(o => ({ ...o, name: e.target.value }))} />
                           <input className="input !py-1.5 text-sm" placeholder="Owner email" value={newOwner.email} onChange={e => setNewOwner(o => ({ ...o, email: e.target.value }))} />
                           <div className="sm:col-span-2 flex justify-end"><button onClick={inviteAsOwner} disabled={ownerInviteBusy} className="btn-primary !py-1.5 text-xs">{ownerInviteBusy ? 'Inviting…' : 'Invite as owner'}</button></div>
-                          {ownerInvite && <div className="sm:col-span-2 card p-2 bg-brand-50/40 border-brand-200 text-[11px]"><p className="font-medium text-ink">{ownerInvite.user.email}</p><p className="text-gray-500">{ownerInvite.email_sent ? 'Invite emailed.' : 'Email not configured — share this link:'}</p>{!ownerInvite.email_sent && <p className="font-mono text-[10px] text-gray-500 break-all">{ownerInvite.invite_link}</p>}</div>}
+                          {ownerInvite && <div className="sm:col-span-2 card p-2 bg-brand-500/10/40 border-brand-200 text-[11px]"><p className="font-medium text-ink">{ownerInvite.user.email}</p><p className="text-gray-500">{ownerInvite.email_sent ? 'Invite emailed.' : 'Email not configured — share this link:'}</p>{!ownerInvite.email_sent && <p className="font-mono text-[10px] text-gray-500 break-all">{ownerInvite.invite_link}</p>}</div>}
                         </div>
                       )}
                       {data.label.owner_user_id && opOwnerId !== '__new__' && <button onClick={() => setOperatorOwner(null)} className="text-[11px] text-gray-400 hover:text-gray-600 mt-1.5">Clear operator owner (revert to a member)</button>}
@@ -303,7 +303,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
                           <button onClick={inviteMember} disabled={inviteBusy} className="btn-primary !py-1.5 text-xs">{inviteBusy ? 'Sending…' : 'Send invite'}</button>
                         </div>
                         {inviteResult && (
-                          <div className="card p-2.5 bg-brand-50/40 border-brand-200 flex items-start justify-between gap-2">
+                          <div className="card p-2.5 bg-brand-500/10/40 border-brand-200 flex items-start justify-between gap-2">
                             <div className="text-[11px] min-w-0">
                               <p className="font-medium text-ink">{inviteResult.user.email}</p>
                               <p className="text-gray-500 truncate">{inviteResult.email_sent ? 'Invite emailed.' : 'Email not configured — share this link:'} </p>
@@ -322,7 +322,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
                       const isOwnerRow = data.owner && m.id === data.owner.id
                       return (
                         <div key={m.id} className="flex items-center gap-3 py-2 border-b border-divider last:border-0 group">
-                          <div className="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0"><span className="text-xs font-bold text-brand-700">{m.name?.charAt(0)?.toUpperCase()}</span></div>
+                          <div className="w-8 h-8 rounded-full bg-brand-500/15 flex items-center justify-center flex-shrink-0"><span className="text-xs font-bold text-brand-700">{m.name?.charAt(0)?.toUpperCase()}</span></div>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium text-ink truncate flex items-center gap-1.5">{m.name}{isOwnerRow && <Crown size={12} className="text-amber-500 flex-shrink-0" title="Owner" />}</p>
                             <p className="text-[11px] text-gray-400 truncate">{m.email}</p>
@@ -383,7 +383,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
                       <button onClick={resetOwner} className="btn-secondary !py-1.5 text-xs flex-shrink-0">Reset</button>
                     </div>
                     {handoff && (
-                      <div className="mt-2 card p-3 bg-brand-50/40 border-brand-200">
+                      <div className="mt-2 card p-3 bg-brand-500/10/40 border-brand-200">
                         <div className="flex items-start justify-between gap-2">
                           <div className="text-xs space-y-0.5">
                             <p>Email: <span className="font-medium">{handoff.owner.email}</span></p>

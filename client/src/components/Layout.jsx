@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Music, Users, UserCheck, Settings, ScrollText,
   LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2, Image as ImageIcon,
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
-  Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone,
+  Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone, FileBarChart, GitMerge, Scale,
   FileClock, Shield, Lock, FileSignature, FileSpreadsheet, Layers, PiggyBank, FilePlus2,
   MessageSquarePlus, MessageSquare, Landmark, ShieldCheck, Users2,
 } from 'lucide-react'
@@ -26,6 +26,11 @@ export const PAGE_LABELS = {
   '/team-work':  'Team Work',
   '/calendar':   'Calendar',
   '/financials': 'Financials',
+  '/reports': 'Reports',
+  '/bank-matching': 'Bank Matching',
+  '/approvals/archive': 'Approvals Archive',
+  '/creators': 'Creator Payments',
+  '/artist-budgets': 'Artist Budgets',
   '/recording-budgets': 'Recording Budgets',
   '/recoupments':'Recoupments',
   '/recoupments/planning': 'Recoupment Planning',
@@ -126,7 +131,7 @@ function ViewAsDropdown() {
                   onClick={async () => { setOpen(false); await impersonate(u.id) }}
                   className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors text-left"
                 >
-                  <div className="w-6 h-6 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0">
+                  <div className="w-6 h-6 rounded-full bg-brand-500/15 flex items-center justify-center flex-shrink-0">
                     <span className="text-[10px] font-bold text-brand-700">{u.name?.charAt(0)?.toUpperCase()}</span>
                   </div>
                   <div className="min-w-0">
@@ -277,9 +282,13 @@ export default function Layout() {
         ...(isApprover ? [{ path: '/ledger', label: 'Ledger', icon: BookOpen }] : []),
         ...(isApprover ? [{ path: '/payments', label: 'Payments', icon: CreditCard }] : []),
         ...(isAdmin ? [{ path: '/bank-statements', label: 'Bank Statements', icon: Landmark }] : []),
+        ...(isAdmin ? [{ path: '/bank-matching', label: 'Bank Matching', icon: GitMerge }] : []),
         ...(isApprover ? [{ path: '/vendors', label: 'Vendors', icon: Building2 }] : []),
+        ...(isApprover ? [{ path: '/creators', label: 'Creator Payments', icon: Users }] : []),
         ...(isApprover ? [{ path: '/invoices', label: 'Create Invoice', icon: Receipt }] : []),
         ...(isApprover ? [{ path: '/financials', label: 'Financials', icon: PieChart }] : []),
+        ...(isApprover ? [{ path: '/reports', label: 'Reports', icon: FileBarChart }] : []),
+        ...(isApprover ? [{ path: '/artist-budgets', label: 'Artist Budgets', icon: Scale }] : []),
         ...(isApprover ? [{ path: '/recording-budgets', label: 'Recording Budgets', icon: PiggyBank }] : []),
         ...(isApprover ? [{ path: '/recoupments', label: 'Recoupments', icon: Wallet }] : []),
         ...(isApprover ? [{ path: '/recoupments/planning', label: 'Recoup. Planning', icon: Layers }] : []),
@@ -350,7 +359,7 @@ export default function Layout() {
                       key={path}
                       to={path}
                       className={`group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 ${
-                        isActive ? 'bg-brand-50 text-brand-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                        isActive ? 'bg-brand-500/10 text-brand-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
                       }`}
                     >
                       <Icon size={17} strokeWidth={isActive ? 2 : 1.5}
@@ -385,7 +394,7 @@ export default function Layout() {
           )}
           {user && (
             <div className="flex items-center gap-3 px-3 py-2 mb-2">
-              <div className="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0">
+              <div className="w-8 h-8 rounded-full bg-brand-500/15 flex items-center justify-center flex-shrink-0">
                 <span className="text-sm font-semibold text-brand-700">{user.name?.charAt(0)?.toUpperCase()}</span>
               </div>
               <div className="flex-1 min-w-0">
@@ -460,7 +469,7 @@ export default function Layout() {
               {announcements.map(a => {
                 const style = a.level === 'critical' ? 'bg-red-50 text-red-800 border-red-200'
                   : a.level === 'warning' ? 'bg-amber-50 text-amber-800 border-amber-200'
-                  : 'bg-brand-50 text-brand-800 border-brand-200'
+                  : 'bg-brand-500/10 text-brand-800 border-brand-200'
                 return (
                   <div key={a.id} className={`px-4 sm:px-6 py-2.5 flex items-start gap-3 border-b ${style}`}>
                     <Megaphone size={15} className="mt-0.5 flex-shrink-0" />

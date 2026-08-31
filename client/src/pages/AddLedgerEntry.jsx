@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Loader2, Plus, X, Trash2, AtSign, Receipt } from 'lucide-react'
+import { ArrowLeft, Sparkles, Loader2, Plus, X, Trash2, AtSign, Receipt, FileText } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Dropzone from '../components/Dropzone'
+import Modal from '../components/ui/Modal'
+import ApprovalChecklistFields from '../components/ApprovalChecklistFields'
+import { answerCobrand, checklistComplete, checklistPayload, checklistOutstanding } from '../lib/approvalChecklist'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
-import { EXPENSE_CATEGORIES, PAYMENT_METHODS, CURRENCIES } from '../constants'
+import { PAYMENT_METHODS, CURRENCIES } from '../constants'
+import CategoryOptions from '../components/CategoryOptions'
 
 const SOCIAL_PLATFORMS = ['Instagram', 'TikTok', 'YouTube', 'X/Twitter', 'Facebook', 'Spotify', 'Other']
 const BLANK_SOCIAL = () => ({ platform: 'Instagram', handle: '', amount: '' })
@@ -33,6 +37,13 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
   const [currencyTouched, setCurrencyTouched] = useState(false)
   const [dup, setDup] = useState(null)
   const [reps, setReps] = useState([])
+  // The pre-save review — an approver's save files straight to `approved`, so
+  // the same checklist the Approvals deck asks gates the save here (the server
+  // stores it via the same writeApprovalChecklist, so "approved" means one
+  // thing however the invoice got there). Answers are cleared on every open —
+  // never inherited from a previous review.
+  const [review, setReview] = useState(false)
+  const [checks, setChecks] = useState({})
 
   const [form, setForm] = useState({
     invoice_date: '', payee: '', category: '', artist: '', song: '',
@@ -105,33 +116,39 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
   const total = parseFloat(form.amount) || 0
   const allocated = splits.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0)
 
-  const create = async (e) => {
-    e.preventDefault(); setSaving(true)
-    try {
-      if (!form.payee.trim()) throw new Error(isReimb ? 'Enter who to pay.' : 'Enter the payee.')
-      if (!total || total <= 0) throw new Error('Enter a valid amount.')
-      if (!form.invoice_date) throw new Error('Enter the invoice date.')
-      if (!isReimb && !form.invoice_number.trim()) throw new Error('Enter the invoice number.')
-      if (isReimb && !files.receipt_file) throw new Error('Attach the receipt for this reimbursement.')
+  // Validate the form and build the allocation (artist_breakdown). Throws on
+  // the first problem; only sent when it's a real split (multiple artists) or
+  // socials carry amounts.
+  const validateForm = () => {
+    if (!form.payee.trim()) throw new Error(isReimb ? 'Enter who to pay.' : 'Enter the payee.')
+    if (!total || total <= 0) throw new Error('Enter a valid amount.')
+    if (!form.invoice_date) throw new Error('Enter the invoice date.')
+    if (!isReimb && !form.invoice_number.trim()) throw new Error('Enter the invoice number.')
+    if (isReimb && !files.receipt_file) throw new Error('Attach the receipt for this reimbursement.')
 
-      // Build the allocation (artist_breakdown). Only sent when it's a real
-      // split (multiple artists) or socials carry amounts.
-      let splitsPayload = null
-      if (splitOn) {
-        const clean = splits
-          .map(l => ({ artist: l.artist.trim(), song: (l.song || '').trim(), amount: parseFloat(l.amount) || 0,
-            socials: (l.socials || []).map(s => ({ handle: (s.handle || '').trim(), amount: parseFloat(s.amount) || 0 })).filter(s => s.handle) }))
-          .filter(l => l.artist)
-        if (clean.length < 1) throw new Error('Add at least one artist to split across.')
-        const sum = clean.reduce((a, l) => a + l.amount, 0)
-        if (Math.abs(sum - total) > 0.01) throw new Error(`Splits (${sum.toFixed(2)}) must add up to the amount (${total.toFixed(2)}).`)
-        splitsPayload = clean
-      } else {
-        const socialLines = socials
-          .filter(s => s.handle.trim())
-          .map(s => ({ handle: [s.platform, s.handle.trim()].filter(Boolean).join(' '), amount: parseFloat(s.amount) || 0 }))
-        if (socialLines.some(s => s.amount > 0)) splitsPayload = [{ artist: form.artist.trim(), song: form.song.trim(), amount: total, socials: socialLines }]
-      }
+    let splitsPayload = null
+    if (splitOn) {
+      const clean = splits
+        .map(l => ({ artist: l.artist.trim(), song: (l.song || '').trim(), amount: parseFloat(l.amount) || 0,
+          socials: (l.socials || []).map(s => ({ handle: (s.handle || '').trim(), amount: parseFloat(s.amount) || 0 })).filter(s => s.handle) }))
+        .filter(l => l.artist)
+      if (clean.length < 1) throw new Error('Add at least one artist to split across.')
+      const sum = clean.reduce((a, l) => a + l.amount, 0)
+      if (Math.abs(sum - total) > 0.01) throw new Error(`Splits (${sum.toFixed(2)}) must add up to the amount (${total.toFixed(2)}).`)
+      splitsPayload = clean
+    } else {
+      const socialLines = socials
+        .filter(s => s.handle.trim())
+        .map(s => ({ handle: [s.platform, s.handle.trim()].filter(Boolean).join(' '), amount: parseFloat(s.amount) || 0 }))
+      if (socialLines.some(s => s.amount > 0)) splitsPayload = [{ artist: form.artist.trim(), song: form.song.trim(), amount: total, socials: socialLines }]
+    }
+    return splitsPayload
+  }
+
+  const submit = async (checklist) => {
+    setSaving(true)
+    try {
+      const splitsPayload = validateForm()
 
       const fd = new FormData()
       // When splitting, artist/song live on the allocation rows. Blank them here so
@@ -142,6 +159,9 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
       fd.append('vendor_name', form.payee)
       fd.append('is_reimbursement', isReimb ? 'true' : 'false')
       if (splitsPayload) fd.append('splits', JSON.stringify(splitsPayload))
+      // The completed review, validated server-side BEFORE the insert and
+      // stamped onto the row (who/when + answers) when it's created approved.
+      if (checklist) fd.append('checklist', JSON.stringify(checklist))
       for (const key of ['invoice_file', 'w9_file', 'proof_file', 'receipt_file']) if (files[key]) fd.append(key, files[key])
 
       const { data } = await api.post('/ledger/entries', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
@@ -150,6 +170,39 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
       navigate(isApprover ? '/ledger' : '/')
     } catch (err) { toast(err.response?.data?.error || err.message || 'Failed to save', 'error') }
     finally { setSaving(false) }
+  }
+
+  const create = async (e) => {
+    e.preventDefault()
+    if (isApprover) {
+      // An approver's save files straight to `approved` — it never reaches the
+      // Approvals queue, so THIS is where the checklist gets asked. Validate
+      // first so form errors surface before the review opens.
+      try { validateForm() } catch (err) { toast(err.message, 'error'); return }
+      setChecks({})
+      setReview(true)
+      return
+    }
+    // Non-approvers submit straight through: their row lands pending and gets
+    // its checklist from the approver in the Approvals queue.
+    await submit(null)
+  }
+
+  // What the row WILL hold — the review must show what is being confirmed.
+  // While splitting, artist/song live on the allocation rows, so their joined
+  // values are shown and edited there, not here.
+  const reviewValues = {
+    artist: splitOn ? splits.map(l => l.artist).filter(Boolean).join(', ') : form.artist,
+    song: splitOn ? splits.map(l => l.song).filter(Boolean).join(', ') : form.song,
+    amount: form.amount,
+    category: checks.cobrand === true ? 'Marketing' : form.category,
+  }
+  // Edits write through to the form and clear the field's confirmation — the
+  // tick must always refer to the value that will be saved.
+  const reviewFieldChange = (field, value) => {
+    if (splitOn && (field === 'artist' || field === 'song')) { toast('Edit artist and song on the split rows', 'error'); return }
+    setForm(f => ({ ...f, [field]: value }))
+    setChecks(p => { const n = { ...p }; delete n[field]; return n })
   }
 
   return (
@@ -201,7 +254,7 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
         <div className="card p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div><label className="label">Invoice date *</label><input type="date" className="input" value={form.invoice_date} onChange={set('invoice_date')} /></div>
           <div><label className="label">{isReimb ? 'Pay to *' : 'Payee *'}</label><input className="input" value={form.payee} onChange={set('payee')} onBlur={checkDup} /></div>
-          <div><label className="label">Category</label><select className="input" value={form.category} onChange={set('category')}><option value="">Select category</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          <div><label className="label">Category</label><select className="input" value={form.category} onChange={set('category')}><option value="">Select category</option><CategoryOptions /></select></div>
           {/* Hidden while splitting: the allocation rows below own artist + song, and
               two sets of the same fields on one form reads as a bug. The typed values
               stay in state so unchecking the box restores them, but they are NOT
@@ -274,9 +327,77 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
         <div className="flex justify-end">
           {/* Blocked mid-parse: the response would otherwise patch a form that has
               already navigated away. */}
-          <button type="submit" disabled={saving || scanning} className="btn-primary">{saving ? 'Saving…' : (isReimb ? 'Add reimbursement' : 'Add invoice')}</button>
+          <button type="submit" disabled={saving || scanning} className="btn-primary">{saving ? 'Saving…' : isApprover ? (isReimb ? 'Review & save reimbursement' : 'Review & save invoice') : (isReimb ? 'Add reimbursement' : 'Add invoice')}</button>
         </div>
       </form>
+
+      {/* The pre-save review — ApprovalChecklistFields is the SAME card the
+          Approvals deck shows, so the checklist means one thing on both
+          surfaces. The form's own values are context here, never pre-answers:
+          ticking a box on a form is not the same act as answering the question
+          that gets stored. */}
+      <Modal
+        open={review}
+        onClose={() => setReview(false)}
+        title="Review before saving"
+        size="lg"
+        footer={<>
+          <button type="button" className="btn-secondary" onClick={() => setReview(false)} disabled={saving}>Cancel</button>
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={!checklistComplete(checks) || saving}
+            onClick={() => submit(checklistPayload(checks))}
+            title={checklistComplete(checks) ? 'Save this invoice as approved' : 'Every item has to be answered first'}
+          >
+            {saving ? 'Saving…' : (isReimb ? 'Save reimbursement' : 'Save invoice')}
+          </button>
+        </>}
+      >
+        <p className="text-xs text-ink-muted mb-3">
+          This saves straight to the ledger as <b>approved</b>, so the checklist the Approvals queue asks is answered here.
+        </p>
+        <DocPreview file={files.invoice_file || files.receipt_file} />
+        <ApprovalChecklistFields
+          values={reviewValues}
+          checks={checks}
+          onCheck={(key, val) => setChecks(p => ({ ...p, [key]: val }))}
+          onCobrand={(val) => setChecks(p => answerCobrand(p, val))}
+          onFieldChange={reviewFieldChange}
+          context={{}}
+          disabled={saving}
+          fieldKey="add-invoice"
+        />
+        {!checklistComplete(checks) && (
+          <p className="text-[11px] text-ink-faint mt-3">{checklistOutstanding(checks).join(' · ')} still to answer</p>
+        )}
+      </Modal>
+    </div>
+  )
+}
+
+// Inline blob-URL preview of the not-yet-uploaded document, so the review is a
+// comparison against the invoice rather than a memory test.
+function DocPreview({ file }) {
+  const [show, setShow] = useState(false)
+  const [url, setUrl] = useState(null)
+  useEffect(() => {
+    if (!file || !show) { setUrl(null); return }
+    const u = URL.createObjectURL(file)
+    setUrl(u)
+    return () => URL.revokeObjectURL(u)
+  }, [file, show])
+  if (!file) return null
+  return (
+    <div className="mb-3">
+      <button type="button" onClick={() => setShow(v => !v)} className="btn-secondary !py-1.5 text-xs">
+        <FileText size={13} /> {show ? 'Hide document' : 'Show document'}
+      </button>
+      {show && url && (
+        file.type === 'application/pdf'
+          ? <iframe title="Document preview" src={url} className="w-full h-72 mt-2 rounded-lg border border-rule bg-card" />
+          : <img src={url} alt="Document preview" className="max-h-72 mt-2 rounded-lg border border-rule" />
+      )}
     </div>
   )
 }

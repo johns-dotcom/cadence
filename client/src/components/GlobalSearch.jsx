@@ -105,7 +105,7 @@ export default function GlobalSearch({ open, onClose }) {
                       key={`${g.key}-${row.id}`}
                       onMouseEnter={() => setActive(idx)}
                       onClick={() => go({ g, row })}
-                      className={`w-full flex items-center gap-3 px-4 py-2 text-left transition-colors ${isActive ? 'bg-brand-50' : 'hover:bg-gray-50'}`}
+                      className={`w-full flex items-center gap-3 px-4 py-2 text-left transition-colors ${isActive ? 'bg-brand-500/10' : 'hover:bg-gray-50'}`}
                     >
                       <Icon size={15} className={isActive ? 'text-brand-600' : 'text-gray-400'} />
                       <span className="flex-1 min-w-0">

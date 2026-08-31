@@ -10,7 +10,9 @@ import LedgerEntryDrawer from '../components/LedgerEntryDrawer'
 import SplitModal from '../components/SplitModal'
 import { formatDate } from '../utils/dates'
 import useIsMobile from '../hooks/useIsMobile'
-import { EXPENSE_CATEGORIES, PAYMENT_METHODS, CURRENCIES } from '../constants'
+import { PAYMENT_METHODS, CURRENCIES } from '../constants'
+import useCategories from '../hooks/useCategories'
+import CategoryOptions from '../components/CategoryOptions'
 import { dropTarget } from '../utils/drop'
 
 const STATUS_STYLES = { pending: 'bg-amber-100 text-amber-700', approved: 'bg-emerald-100 text-emerald-700', rejected: 'bg-red-100 text-red-700' }
@@ -63,6 +65,7 @@ export default function Ledger() {
   const { toast } = useToast()
   const { label, user } = useAuth()
   const isMobile = useIsMobile()
+  const { expense: expenseCats } = useCategories()
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [params] = useSearchParams()
@@ -152,7 +155,7 @@ export default function Ledger() {
     { key: 'artist', label: 'Artist', render: en => <EditCell en={en} field="artist" kind="datalist" display={<span className="text-gray-600">{en.artist || '—'}</span>} {...editProps} /> },
     { key: 'song', label: 'Song', render: en => <EditCell en={en} field="song" display={<span className="text-gray-600">{en.song || '—'}</span>} {...editProps} /> },
     { key: 'description', label: 'Description', render: en => <EditCell en={en} field="description" display={<span className="text-gray-600 truncate block max-w-[220px]">{en.description || '—'}</span>} {...editProps} /> },
-    { key: 'category', label: 'Category', render: en => <EditCell en={en} field="category" kind="select" options={EXPENSE_CATEGORIES} display={<span className="text-gray-600 whitespace-nowrap">{en.category || '—'}</span>} {...editProps} /> },
+    { key: 'category', label: 'Category', render: en => <EditCell en={en} field="category" kind="select" options={expenseCats} display={<span className="text-gray-600 whitespace-nowrap">{en.category || '—'}</span>} {...editProps} /> },
     { key: 'invoice_number', label: 'Invoice #', render: en => <EditCell en={en} field="invoice_number" display={<span className="text-gray-500 whitespace-nowrap">{en.invoice_number || '—'}</span>} {...editProps} /> },
     { key: 'amount', label: 'Amount', render: en => en.split_count > 0
       ? <span className="text-ink font-medium whitespace-nowrap tabular-nums">{money(en.family_amount ?? en.amount, en.currency)}<span className="block text-[10px] text-gray-400 font-normal">{money(en.amount, en.currency)} this slice</span></span>
@@ -377,12 +380,12 @@ export default function Ledger() {
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search payee, artist, song, invoice #…" className="input !pl-9" />
         </div>
         <input value={amountQ} onChange={e => setAmountQ(e.target.value)} placeholder="Amount: 500 · 500-1000 · >500" className="input !w-52" />
-        <select className="input !w-auto" value={fCategory} onChange={e => setFCategory(e.target.value)}><option value="">All categories</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
+        <select className="input !w-auto" value={fCategory} onChange={e => setFCategory(e.target.value)}><option value="">All categories</option><CategoryOptions /></select>
         <select className="input !w-auto" value={fPaid} onChange={e => setFPaid(e.target.value)}><option value="">Any payment</option><option>Unpaid</option><option>Partial</option><option>Paid</option></select>
         <select className="input !w-auto" value={fMethod} onChange={e => setFMethod(e.target.value)}><option value="">Any method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select>
         <select className="input !w-auto" value={fSource} onChange={e => setFSource(e.target.value)}><option value="">Any source</option><option value="vendor">Vendor-submitted</option><option value="manual">Manual</option></select>
         <button onClick={() => setFlaggedOnly(v => !v)} className={`text-xs font-semibold px-3 py-2 rounded-lg ${flaggedOnly ? 'bg-red-600 text-white' : 'text-gray-500 hover:bg-gray-100 border border-rule'}`}>⚠ Flagged</button>
-        <button onClick={() => setMoreOpen(v => !v)} className={`text-xs font-semibold px-3 py-2 rounded-lg border ${advancedActive ? 'bg-brand-50 text-brand-700 border-brand-300' : 'text-gray-500 hover:bg-gray-100 border-rule'}`}>More filters{advancedActive ? ' •' : ''}</button>
+        <button onClick={() => setMoreOpen(v => !v)} className={`text-xs font-semibold px-3 py-2 rounded-lg border ${advancedActive ? 'bg-brand-500/10 text-brand-700 border-brand-300' : 'text-gray-500 hover:bg-gray-100 border-rule'}`}>More filters{advancedActive ? ' •' : ''}</button>
         <div className="relative">
           <button onClick={() => setColMenu(v => !v)} className="btn-secondary"><SlidersHorizontal size={15} /> Columns</button>
           {colMenu && (
@@ -611,7 +614,7 @@ function EditCell({ en, field, kind = 'text', options, display, editing, draft, 
     if (kind === 'datalist') return <><input list="ledger-artists" {...common} /><datalist id="ledger-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist></>
     return <input {...common} />
   }
-  return <span onClick={() => beginEdit(en, field)} className="cursor-text hover:bg-brand-50/60 rounded px-1 -mx-1 block min-h-[1.25rem]" title="Click to edit">{display}</span>
+  return <span onClick={() => beginEdit(en, field)} className="cursor-text hover:bg-brand-500/10/60 rounded px-1 -mx-1 block min-h-[1.25rem]" title="Click to edit">{display}</span>
 }
 
 function PayeeCell({ en, onFlag, onToggleSplits, isOpen }) {
@@ -711,7 +714,7 @@ function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
           <div><label className="label">Date</label><input type="date" className="input" value={f.invoice_date} onChange={set('invoice_date')} /></div>
           <div><label className="label">Amount *</label><input type="number" step="0.01" className="input" value={f.amount} onChange={set('amount')} /></div>
           <div className="col-span-2"><label className="label">Description / paid to *</label><input className="input" value={f.payee} onChange={set('payee')} placeholder="e.g. Studio rental, office supplies" /></div>
-          <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}><option value="">Select category</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}><option value="">Select category</option><CategoryOptions /></select></div>
           <div><label className="label">Currency</label><select className="input" value={f.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
           <div><label className="label">Artist</label><input list="qx-artists" className="input" value={f.artist} onChange={set('artist')} /><datalist id="qx-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist></div>
           <div><label className="label">Song</label><input className="input" value={f.song} onChange={set('song')} /></div>
@@ -726,7 +729,7 @@ function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
               onDragOver={e => { e.preventDefault(); setDragOver(true) }}
               onDragLeave={() => setDragOver(false)}
               onDrop={e => { e.preventDefault(); setDragOver(false); takeProof(e.dataTransfer.files?.[0]) }}
-              className={`border-2 border-dashed rounded-lg px-4 py-5 text-center text-sm cursor-pointer transition ${dragOver ? 'border-brand-400 bg-brand-50 text-brand-700' : 'border-rule text-gray-400 hover:border-brand-300'}`}>
+              className={`border-2 border-dashed rounded-lg px-4 py-5 text-center text-sm cursor-pointer transition ${dragOver ? 'border-brand-400 bg-brand-500/10 text-brand-700' : 'border-rule text-gray-400 hover:border-brand-300'}`}>
               {proof
                 ? <span className="text-ink inline-flex items-center gap-2">{proof.name}<button onClick={e => { e.stopPropagation(); setProof(null) }} className="text-gray-400 hover:text-danger"><X size={14} /></button></span>
                 : <span>Drop proof of payment here, or click to choose</span>}
@@ -791,7 +794,7 @@ function EditEntryModal({ entry, artistNames, toast, onClose, onSaved }) {
           <div><label className="label">Amount *</label><input type="number" step="0.01" className="input" value={f.amount} onChange={set('amount')} /></div>
           <div><label className="label">Currency</label><select className="input" value={f.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
           <div className="col-span-2 md:col-span-3"><label className="label">Payee / description *</label><input className="input" value={f.payee} onChange={set('payee')} /></div>
-          <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}><option value="">—</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}><option value="">—</option><CategoryOptions /></select></div>
           <div><label className="label">Invoice #</label><input className="input" value={f.invoice_number} onChange={set('invoice_number')} /></div>
           <div><label className="label">Rep</label><input className="input" value={f.rep} onChange={set('rep')} /></div>
           <div><label className="label">Artist</label><input list="edit-artists" className="input" value={f.artist} onChange={set('artist')} /><datalist id="edit-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist></div>

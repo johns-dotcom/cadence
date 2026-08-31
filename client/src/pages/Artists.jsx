@@ -76,7 +76,7 @@ export default function Artists() {
               {a.image_url ? (
                 <img src={a.image_url} alt="" className="w-10 h-10 rounded-full object-cover flex-shrink-0 bg-gray-100" />
               ) : (
-                <div className="w-10 h-10 rounded-full bg-brand-100 flex items-center justify-center flex-shrink-0">
+                <div className="w-10 h-10 rounded-full bg-brand-500/15 flex items-center justify-center flex-shrink-0">
                   <span className="text-sm font-bold text-brand-700">{a.name?.charAt(0)?.toUpperCase()}</span>
                 </div>
               )}

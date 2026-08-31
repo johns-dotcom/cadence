@@ -112,7 +112,7 @@ export default function Deals() {
               onDragOver={e => { e.preventDefault(); setDragOver(stage) }}
               onDragLeave={() => setDragOver(o => (o === stage ? null : o))}
               onDrop={() => { if (dragId != null) moveToStage(dragId, stage); setDragId(null); setDragOver(null) }}
-              className={`bg-elev border rounded-2xl p-3 transition-colors ${dragOver === stage ? 'border-brand-400 bg-brand-50/40' : 'border-rule'}`}
+              className={`bg-elev border rounded-2xl p-3 transition-colors ${dragOver === stage ? 'border-brand-400 bg-brand-500/10/40' : 'border-rule'}`}
             >
               <div className="flex items-center justify-between px-1 mb-2">
                 <h3 className="text-xs font-bold text-ink uppercase tracking-wide">{stage}</h3>

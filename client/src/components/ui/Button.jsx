@@ -13,7 +13,7 @@ const SIZES = {
   md: 'h-9 px-4 text-sm',
   lg: 'h-11 px-5 text-base',
 }
-const BASE = 'inline-flex items-center justify-center gap-2 font-semibold rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400'
+const BASE = 'inline-flex items-center justify-center gap-2 font-medium rounded-lg transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400'
 
 const Button = forwardRef(function Button(
   { variant = 'primary', size = 'md', className = '', type = 'button', children, ...rest }, ref,

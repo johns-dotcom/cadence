@@ -49,6 +49,11 @@ const fullExportRoutes = require('./routes/full-export');
 const importRoutes = require('./routes/import');
 const clearancesRoutes = require('./routes/clearances');
 const chatRoutes = require('./routes/chat');
+const categoriesRoutes = require('./routes/categories');
+const reportsRoutes = require('./routes/reports');
+const bankMatchingRoutes = require('./routes/bank-matching');
+const creatorsRoutes = require('./routes/creators');
+const artistBudgetsRoutes = require('./routes/artist-budgets');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -213,6 +218,11 @@ app.use('/api/full-export', fullExportRoutes);
 app.use('/api/import', importRoutes);
 app.use('/api/clearances', clearancesRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/categories', categoriesRoutes);
+app.use('/api/reports', reportsRoutes);
+app.use('/api/bank-matching', bankMatchingRoutes);
+app.use('/api/creators', creatorsRoutes);
+app.use('/api/artist-budgets', artistBudgetsRoutes);
 
 // Unknown API route → JSON 404 (don't fall through to the SPA).
 app.use('/api', (req, res) => res.status(404).json({ success: false, error: 'Not found' }));
@@ -305,11 +315,6 @@ const runMigrations = async () => {
   // System label = the permanent home for platform operators, so no tenant
   // workspace deletion can ever cascade-delete them. Hidden from the console.
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE`);
-  // Explicit owner pointer — lets the platform owner designate ANY user
-  // (including a console operator) as a workspace's owner. When set it wins
-  // over the "most-senior Superadmin member" heuristic; SET NULL on delete
-  // falls back to that heuristic.
-  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS owner_user_id INT REFERENCES users(id) ON DELETE SET NULL`);
   // Owner-customizable workspace settings (tagline, dashboard welcome, home
   // widget config + pinned links). Shallow-merged on PATCH so each Settings
   // sub-section saves independently.
@@ -332,6 +337,14 @@ const runMigrations = async () => {
       UNIQUE (label_id, email)
     );
   `);
+
+  // Explicit owner pointer — lets the platform owner designate ANY user
+  // (including a console operator) as a workspace's owner. When set it wins
+  // over the "most-senior Superadmin member" heuristic; SET NULL on delete
+  // falls back to that heuristic. Lives AFTER the users CREATE — the FK made
+  // this ALTER fail on every fresh database when it ran earlier (found on the
+  // first clean boot, 2026-08-31).
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS owner_user_id INT REFERENCES users(id) ON DELETE SET NULL`);
   // For databases created before is_platform_admin existed.
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_platform_admin BOOLEAN DEFAULT FALSE`);
   // Platform operator tier: 'owner' (full operator) vs 'admin' (Workspace Admin —
@@ -535,6 +548,11 @@ const runMigrations = async () => {
   // category, TRUE = force in, FALSE = force out) + cobrand flag.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS artist_campaign BOOLEAN`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS cobrand BOOLEAN DEFAULT FALSE`);
+  // Approval checklist (boom parity, RC-7): the stamped record of who answered
+  // the eight approve-time questions and what they answered. Written only by
+  // lib/approvalChecklist.writeApprovalChecklist — deliberately NOT in the
+  // ledger PATCH allow-list, so it can't be edited after the fact.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS approval_checklist JSONB`);
   // Vendor-provided multi-artist allocation: [{ artist, song, amount, socials:[{handle, amount}] }].
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS artist_breakdown JSONB`);
   // Recoupment statement tracking: UFR ("un-recouped funds recovered") marker
@@ -554,8 +572,6 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS hold_by TEXT`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS hold_at TIMESTAMP`);
   // Proof-of-payment file on partial-payment installments.
-  await pool.query(`ALTER TABLE payment_installments ADD COLUMN IF NOT EXISTS proof_r2_key TEXT`);
-  await pool.query(`ALTER TABLE payment_installments ADD COLUMN IF NOT EXISTS proof_filename TEXT`);
   // Proof of PAYMENT on the entry itself, deliberately NOT reusing receipt_r2_key:
   // on a reimbursement that column holds the expense receipt being claimed (required
   // by the add form), so writing a payment proof there would destroy the document
@@ -815,6 +831,10 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_payment_installments ON payment_installments (label_id, expense_id)`);
+  // These ALTERs must follow the CREATE above — they broke every fresh boot
+  // when they ran earlier in the file (2026-08-31 clean-boot fix).
+  await pool.query(`ALTER TABLE payment_installments ADD COLUMN IF NOT EXISTS proof_r2_key TEXT`);
+  await pool.query(`ALTER TABLE payment_installments ADD COLUMN IF NOT EXISTS proof_filename TEXT`);
 
   // Vendors — contact + W9 on file, keyed by name within a label. Spend is
   // derived from the ledger; this just holds what shouldn't be re-keyed.
@@ -1605,6 +1625,222 @@ const runMigrations = async () => {
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_artist_norm_uniq ON artist_normalization_map (label_id, LOWER(pattern))`);
 
+  // Per-label category vocabulary (dropdown OPTIONS — never a constraint on
+  // stored expenses.category / artist_income.source free text; never rewrite
+  // history from it). report_section drives the Reports P&L sections;
+  // ui_group drives grouped pickers + the Artist Budgets sheet sections;
+  // section_set marks a human classification the boot seed must not overwrite.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS categories (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      kind VARCHAR(8) NOT NULL CHECK (kind IN ('expense','income')),
+      name TEXT NOT NULL,
+      active BOOLEAN DEFAULT TRUE,
+      seeded BOOLEAN DEFAULT FALSE,
+      sort_order INTEGER,
+      ui_group VARCHAR(16),
+      report_section VARCHAR(16) NOT NULL DEFAULT 'operating'
+        CHECK (report_section IN ('operating','below_line','non_recurring')),
+      contra_of TEXT,
+      section_set BOOLEAN DEFAULT FALSE,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_label_kind_name ON categories (label_id, kind, LOWER(TRIM(name)))`);
+  await require('./lib/seedCategories').seedAllLabels(pool);
+
+  // Report-level exclusions. DELIBERATELY separate from
+  // bank_transactions.dismissed: that is the statements pipeline's judgment,
+  // this is a human's report judgment. Keyed by row FINGERPRINT (see
+  // lib/reportFingerprint.js) so a dismissal survives a statement re-upload
+  // that recreates bank-booked ledger rows under new ids; expense_id /
+  // income_id are display hints, no FK, allowed to go stale.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS report_dismissals (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      scope VARCHAR(12) NOT NULL DEFAULT 'item',
+      row_fingerprint TEXT,
+      expense_id INT,
+      income_id INT,
+      cell_kind VARCHAR(16),
+      cell_key TEXT,
+      bs_ref TEXT,
+      reason TEXT,
+      dismissed_by VARCHAR(255),
+      dismissed_at TIMESTAMP DEFAULT NOW(),
+      CONSTRAINT report_dismissals_ref_shape CHECK (
+        (scope = 'item' AND row_fingerprint IS NOT NULL)
+        OR (scope = 'category' AND cell_kind IS NOT NULL AND cell_key IS NOT NULL)
+        OR (scope = 'bs_line' AND cell_key IS NOT NULL)
+        OR (scope = 'bs_item' AND bs_ref IS NOT NULL)
+      )
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS report_dismissals_item_idx ON report_dismissals (label_id, row_fingerprint) WHERE scope = 'item'`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS report_dismissals_category_idx ON report_dismissals (label_id, cell_kind, LOWER(TRIM(cell_key))) WHERE scope = 'category'`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS report_dismissals_bs_line_idx ON report_dismissals (label_id, LOWER(TRIM(cell_key))) WHERE scope = 'bs_line'`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS report_dismissals_bs_item_idx ON report_dismissals (label_id, bs_ref) WHERE scope = 'bs_item'`);
+
+  // "This July payment is really June's" — report-only month override. The
+  // ledger row keeps its real payment_date (it is evidence); only the
+  // reported bucket moves.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS report_month_overrides (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      row_fingerprint TEXT NOT NULL,
+      expense_id INT,
+      income_id INT,
+      original_month VARCHAR(7) NOT NULL,
+      target_month VARCHAR(7) NOT NULL,
+      reason TEXT,
+      moved_by VARCHAR(255),
+      moved_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE (label_id, row_fingerprint)
+    );
+  `);
+
+  // Statement balances — printed on the document, captured from CSV balance
+  // columns and the PDF parse header line. Power the balance-continuity flags
+  // and the Balance Sheet's Cash section.
+  await pool.query(`ALTER TABLE bank_statements ADD COLUMN IF NOT EXISTS ending_balance NUMERIC(18,2)`);
+  await pool.query(`ALTER TABLE bank_statements ADD COLUMN IF NOT EXISTS beginning_balance NUMERIC(18,2)`);
+
+  // Statements v2/v3 transaction columns: payee_email (banks mash
+  // "Name / email@x" into one field — PayPal especially), matched_income_id
+  // (credits book as income rows, symmetric with matched_expense_id),
+  // amount_usd (the printed USD settlement on foreign PDF rows), no_invoice
+  // (per-row "no invoice is ever coming" answer).
+  await pool.query(`ALTER TABLE bank_transactions ADD COLUMN IF NOT EXISTS payee_email TEXT`);
+  await pool.query(`ALTER TABLE bank_transactions ADD COLUMN IF NOT EXISTS matched_income_id INT REFERENCES artist_income(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE bank_transactions ADD COLUMN IF NOT EXISTS amount_usd NUMERIC(18,2)`);
+  await pool.query(`ALTER TABLE bank_transactions ADD COLUMN IF NOT EXISTS no_invoice BOOLEAN DEFAULT FALSE`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_bank_txns_income ON bank_transactions (label_id, matched_income_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_bank_txns_date ON bank_transactions (label_id, txn_date)`);
+
+  // A human's "no, these two are not the same payment" — keyed by txn
+  // FINGERPRINT (date|amount|normalized payee) so the answer survives a
+  // statement re-upload that recreates the row under a new id. Consulted by
+  // the auto-matcher and the suggestion scorer.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS statement_match_rejections (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      txn_fingerprint TEXT NOT NULL,
+      expense_root_id INT NOT NULL,
+      source VARCHAR(16),
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_stmt_match_rejections ON statement_match_rejections (label_id, txn_fingerprint, expense_root_id)`);
+
+  // One payment can settle several invoices. matched_expense_id keeps the
+  // PRIMARY; this table holds every settled invoice INCLUDING the primary.
+  // Deliberately NO unique index on expense_id alone — one invoice may be
+  // settled by several bank rows (deposit + balance); over-payment is refused
+  // by claimed-sums in code, never by the schema.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bank_txn_invoice_links (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      txn_id INT NOT NULL REFERENCES bank_transactions(id) ON DELETE CASCADE,
+      expense_id INT NOT NULL,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE (txn_id, expense_id)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_btil_expense ON bank_txn_invoice_links (label_id, expense_id)`);
+
+  // "No invoice is ever coming for this class of spend" — payroll, rent,
+  // cards. Scope 'vendor'|'category', EQUALITY match (never substring —
+  // "TONE" is inside "Tone Pay, Inc"). Ships EMPTY; suggestions only.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS statement_no_invoice_rules (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      scope VARCHAR(16) NOT NULL,
+      pattern TEXT NOT NULL,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_stmt_no_invoice_rule ON statement_no_invoice_rules (label_id, scope, LOWER(TRIM(pattern)))`);
+
+  // Standing artist attribution for booked bank rows. artist NULL with
+  // is_overhead=true is a REAL answer ("this is overhead"), not an absent one.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS statement_artist_rules (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      pattern TEXT NOT NULL,
+      artist VARCHAR(255),
+      is_overhead BOOLEAN DEFAULT FALSE,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_stmt_artist_rules_pattern ON statement_artist_rules (label_id, LOWER(pattern))`);
+
+  // Flag acknowledgements — fingerprint-keyed; when the underlying set
+  // changes the fingerprint changes and the flag RESURFACES despite the ack.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS statement_flag_acks (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      fingerprint TEXT NOT NULL,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_stmt_flag_acks ON statement_flag_acks (label_id, fingerprint)`);
+
+  // Creator payments — expenses rows with entry_source='creator_payment'.
+  // One new column; everything else (social_handles, is_bulk_deal,
+  // vendor_email, fx_rate_to_usd) already exists.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS paypal_handle TEXT`);
+  // Undoable creator-convert: the old entry_source rides the audit row.
+  await pool.query(`ALTER TABLE bk_audit_log ADD COLUMN IF NOT EXISTS field TEXT`);
+  await pool.query(`ALTER TABLE bk_audit_log ADD COLUMN IF NOT EXISTS old_value TEXT`);
+  await pool.query(`ALTER TABLE bk_audit_log ADD COLUMN IF NOT EXISTS new_value TEXT`);
+
+  // Artist spend sheets: the budget is SIX NUMBERS per artist — one row per
+  // (artist, section), budgeted at section level. NO line items, NO
+  // create-budget flow (that died three times in the reference app). Setting
+  // a section to 0 DELETES the row, so "no budget" and "a budget of nothing"
+  // stay one state and `unplanned` keeps meaning something.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS artist_budget_sections (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      artist_key TEXT NOT NULL,
+      section TEXT NOT NULL,
+      amount NUMERIC(14,2) NOT NULL,
+      currency TEXT DEFAULT 'USD',
+      note TEXT,
+      updated_by TEXT,
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE (label_id, artist_key, section)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_artist_budget_sections ON artist_budget_sections (label_id, artist_key)`);
+
+  // Monthly soft close — a person's statement that a bank month is done.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS statement_months (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      month_key VARCHAR(7) NOT NULL,
+      reconciled_by TEXT,
+      reconciled_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE (label_id, month_key)
+    );
+  `);
+
   // Helpful indexes for the hot tenant-scoped lookups.
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_releases_label ON releases (label_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_artists_label ON artists (label_id)`);
@@ -1732,6 +1968,11 @@ const server = app.listen(PORT, () => {
     .then(ensurePlatformHome)
     .then(recoverAdmin)
     .then(() => require('./lib/fxStamp').backfillPaidRows().catch(e => console.warn('fx backfill:', e.message)))
+    // Prime the FX cache so lib/usd.js usdOf() has live rates synchronously.
+    .then(() => require('./lib/fx').getRates().catch(() => {}))
+    // Probe for bank_txn_invoice_links so lib/bankEvidence.js fragments can
+    // include the link branch (degrades to primary-column-only until then).
+    .then(() => require('./lib/bankEvidence').markLinksReady(pool))
     .catch(err => console.error('Migration error:', err.message));
 });
 

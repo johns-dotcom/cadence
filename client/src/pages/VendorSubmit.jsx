@@ -235,7 +235,7 @@ export default function VendorSubmit() {
         </div>
 
         {hasDraft && step === 1 && (
-          <div className="card px-4 py-2.5 mb-4 flex items-center justify-between gap-3 bg-brand-50/40 border-brand-200">
+          <div className="card px-4 py-2.5 mb-4 flex items-center justify-between gap-3 bg-brand-500/10/40 border-brand-200">
             <span className="text-xs text-gray-600">You have a saved draft.</span>
             <span className="flex gap-2"><button onClick={resumeDraft} className="text-xs font-semibold text-brand-600 hover:underline">Resume</button><button onClick={clearDraft} className="text-xs text-gray-400 hover:text-gray-600">Start fresh</button></span>
           </div>
@@ -279,7 +279,7 @@ export default function VendorSubmit() {
             <div className="space-y-4">
               {dupWarn && <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 inline-flex items-center gap-1.5"><AlertTriangle size={13} /> {dupWarn}</div>}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Field label="Category"><select className="input" value={form.category} onChange={set('category')}><option value="">Select…</option>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></Field>
+                <Field label="Category"><select className="input" value={form.category} onChange={set('category')}><option value="">Select…</option>{(ctx?.categories?.length ? ctx.categories : EXPENSE_CATEGORIES).map(c => <option key={c}>{c}</option>)}</select></Field>
                 <Field label="Your contact at the label">
                   {ctx.reps?.length
                     ? <select className="input" value={form.rep} onChange={set('rep')}><option value="">Select…</option>{ctx.reps.map(r => <option key={r}>{r}</option>)}</select>

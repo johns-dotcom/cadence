@@ -7,7 +7,7 @@ import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 
 const ICONS = { release: Music, task: CheckSquare, contract: FileText, approval: Receipt, mention: AtSign, bulk_deal: Package }
-const SEVERITY = { danger: 'text-red-600 bg-red-50', warning: 'text-amber-600 bg-amber-50', info: 'text-brand-600 bg-brand-50' }
+const SEVERITY = { danger: 'text-red-600 bg-red-50', warning: 'text-amber-600 bg-amber-50', info: 'text-brand-600 bg-brand-500/10' }
 const FILTERS = [['all', 'All'], ['mention', 'Mentions'], ['smart', 'Smart alerts']]
 
 export default function Notifications() {

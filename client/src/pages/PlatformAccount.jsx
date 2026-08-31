@@ -38,7 +38,7 @@ export default function PlatformAccount() {
         <div className="min-w-0">
           <p className="text-base font-bold text-ink truncate">{user?.name}</p>
           <p className="text-xs text-gray-400 truncate">{user?.email}</p>
-          <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full mt-1.5 ${user?.platform_role === 'owner' ? 'bg-brand-100 text-brand-700' : 'bg-indigo-100 text-indigo-700'}`}>{roleLabel}</span>
+          <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full mt-1.5 ${user?.platform_role === 'owner' ? 'bg-brand-500/15 text-brand-700' : 'bg-indigo-100 text-indigo-700'}`}>{roleLabel}</span>
         </div>
       </div>
 

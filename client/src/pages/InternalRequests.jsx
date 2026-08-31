@@ -53,7 +53,7 @@ export default function InternalRequests() {
               {KINDS.map(k => {
                 const Icon = k.icon
                 return (
-                  <button key={k.key} onClick={() => setKind(k.key)} className={`text-left p-3 rounded-xl border transition ${kind === k.key ? 'border-brand-400 bg-brand-50/40 ring-1 ring-brand-200' : 'border-rule hover:bg-gray-50'}`}>
+                  <button key={k.key} onClick={() => setKind(k.key)} className={`text-left p-3 rounded-xl border transition ${kind === k.key ? 'border-brand-400 bg-brand-500/10/40 ring-1 ring-brand-200' : 'border-rule hover:bg-gray-50'}`}>
                     <Icon size={16} className={kind === k.key ? 'text-brand-600' : 'text-gray-400'} />
                     <p className="text-sm font-semibold text-ink mt-1.5">{k.label}</p>
                     <p className="text-[11px] text-gray-400 leading-snug mt-0.5">{k.blurb}</p>

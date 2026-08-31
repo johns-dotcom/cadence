@@ -9,7 +9,8 @@ import { useToast } from '../context/ToastContext'
 import CampaignChat from '../components/CampaignChat'
 import SplitModal from '../components/SplitModal'
 import { formatDate } from '../utils/dates'
-import { EXPENSE_CATEGORIES, CURRENCIES } from '../constants'
+import { CURRENCIES } from '../constants'
+import CategoryOptions from '../components/CategoryOptions'
 
 const usd = (n) => `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
 const money = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
@@ -92,7 +93,7 @@ export default function ArtistCampaignDetail() {
         </select>
         <button onClick={() => setMeta({ flagged: !meta.flagged, flag_reason: meta.flagged ? null : (window.prompt('Flag reason? (optional)') ?? '') })} className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg border ${meta.flagged ? 'bg-rose-50 text-rose-600 border-rose-200' : 'text-gray-500 border-rule hover:bg-gray-50'}`}><Flag size={13} /> {meta.flagged ? 'Flagged' : 'Flag'}</button>
         <button onClick={() => setMeta({ complete: !meta.complete })} className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg border ${meta.complete ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'text-gray-500 border-rule hover:bg-gray-50'}`}><Check size={13} /> Complete</button>
-        <button onClick={() => setMeta({ ready_for_planning: !meta.ready_for_planning })} className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg border ${meta.ready_for_planning ? 'bg-brand-50 text-brand-700 border-brand-200' : 'text-gray-500 border-rule hover:bg-gray-50'}`}><FolderCheck size={13} /> Ready for planning</button>
+        <button onClick={() => setMeta({ ready_for_planning: !meta.ready_for_planning })} className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg border ${meta.ready_for_planning ? 'bg-brand-500/10 text-brand-700 border-brand-200' : 'text-gray-500 border-rule hover:bg-gray-50'}`}><FolderCheck size={13} /> Ready for planning</button>
         <div className="ml-auto flex items-center gap-2">
           <button onClick={() => setAddOpen('')} className="btn-primary"><Plus size={15} /> Add expense</button>
           <button onClick={exportXlsx} className="btn-secondary"><Download size={15} /> Export</button>
@@ -207,7 +208,7 @@ export default function ArtistCampaignDetail() {
 
       {/* Bulk action bar */}
       {sel.size > 0 && (
-        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 lg:bottom-6 z-40 card shadow-modal px-4 py-2.5 flex flex-wrap items-center gap-2 bg-brand-50 border-brand-200">
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 lg:bottom-6 z-40 card shadow-modal px-4 py-2.5 flex flex-wrap items-center gap-2 bg-brand-500/10 border-brand-200">
           <span className="text-sm font-medium text-ink">{sel.size} selected</span>
           <button onClick={() => bulkSet({ cobrand: true })} className="btn-secondary !py-1.5 text-xs">Cobrand</button>
           <button onClick={() => bulkSet({ cobrand: false })} className="btn-secondary !py-1.5 text-xs">Un-cobrand</button>
@@ -338,7 +339,7 @@ function AddExpenseModal({ artist, song, onClose, onSaved, toast }) {
           <div><label className="label">Amount *</label><input type="number" step="0.01" className="input" value={f.amount} onChange={set('amount')} /></div>
           <div><label className="label">Currency</label><select className="input" value={f.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
           <div><label className="label">Date</label><input type="date" className="input" value={f.invoice_date} onChange={set('invoice_date')} /></div>
-          <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}>{EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}><CategoryOptions /></select></div>
           <div><label className="label">Song</label><input className="input" value={f.song} onChange={set('song')} /></div>
           <div><label className="label">Rep</label><input className="input" value={f.rep} onChange={set('rep')} /></div>
         </div>

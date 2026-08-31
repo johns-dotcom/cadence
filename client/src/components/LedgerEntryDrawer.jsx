@@ -131,7 +131,7 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
             const Icon = t.icon
             return (
               <button key={t.key} onClick={() => setTab(t.key)}
-                className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg ${tab === t.key ? 'bg-brand-50 text-brand-700' : 'text-gray-500 hover:bg-gray-50'}`}>
+                className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg ${tab === t.key ? 'bg-brand-500/10 text-brand-700' : 'text-gray-500 hover:bg-gray-50'}`}>
                 <Icon size={13} /> {t.label}
                 {t.badge > 0 && <span className="bg-red-500 text-white text-[9px] font-bold rounded-full px-1 leading-tight">{t.badge}</span>}
               </button>
