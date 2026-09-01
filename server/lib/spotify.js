@@ -78,6 +78,111 @@ async function artistStats(name) {
   };
 }
 
+// Artist by Spotify id — the exact lookup, used when the roster row already
+// stores a Spotify profile URL. Returns null on a 404 (permanent), throws on
+// transient failures so a batch sync can leave the row for the next run.
+async function artistById(id) {
+  if (!id) return null;
+  const t = await token();
+  const res = await fetch(`https://api.spotify.com/v1/artists/${id}`, { headers: { Authorization: `Bearer ${t}` } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Spotify ${res.status} for artist ${id}`);
+  const a = await res.json();
+  return {
+    id: a.id,
+    name: a.name,
+    spotify_followers: a.followers?.total ?? null,
+    spotify_popularity: a.popularity ?? null,
+    image_url: a.images?.[0]?.url || null,
+    spotify_url: a.external_urls?.spotify || null,
+    genres: a.genres || [],
+  };
+}
+
+// Parse an artist id out of a Spotify profile URL/URI.
+function parseArtistRef(ref) {
+  if (!ref) return null;
+  const s = String(ref).trim();
+  let m = s.match(/^spotify:artist:([A-Za-z0-9]+)/i);
+  if (m) return m[1];
+  m = s.match(/(?:https?:\/\/)?(?:open\.|play\.)?spotify\.com\/artist\/([A-Za-z0-9]+)/i);
+  return m ? m[1] : null;
+}
+
+// Full live artist surface for the profile page: profile + top tracks +
+// discography, fanned out at request time. Resolves the artist by stored URL
+// first (exact) then by name search. Returns null when nothing matches.
+//
+// Albums paginate 3 pages deep (150 items) — enough for any roster artist, and
+// bounded so one prolific act can't stall the request.
+async function artistProfile({ name, url }) {
+  let profile = null;
+  const refId = parseArtistRef(url);
+  if (refId) profile = await artistById(refId).catch(() => null);
+  if (!profile) {
+    const search = await api(`/search?type=artist&limit=1&q=${encodeURIComponent(name || '')}`);
+    const a = search.artists?.items?.[0];
+    if (!a) return null;
+    profile = {
+      id: a.id, name: a.name,
+      spotify_followers: a.followers?.total ?? null,
+      spotify_popularity: a.popularity ?? null,
+      image_url: a.images?.[0]?.url || null,
+      spotify_url: a.external_urls?.spotify || null,
+      genres: a.genres || [],
+    };
+  }
+
+  // Top tracks and albums are independent — one failing shouldn't blank the
+  // other, so each degrades to an empty list.
+  const [top, albums] = await Promise.all([
+    api(`/artists/${profile.id}/top-tracks?market=US`).catch(() => ({ tracks: [] })),
+    (async () => {
+      const out = [];
+      for (let page = 0; page < 3; page++) {
+        const r = await api(`/artists/${profile.id}/albums?include_groups=album,single&limit=50&offset=${page * 50}&market=US`);
+        out.push(...(r.items || []));
+        if (!r.next) break;
+      }
+      return out;
+    })().catch(() => []),
+  ]);
+
+  // Spotify returns the same record once per market/edition; fold by name.
+  const seen = new Set();
+  const discography = [];
+  for (const al of albums) {
+    const key = (al.name || '').toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    discography.push({
+      id: al.id,
+      name: al.name,
+      group: al.album_group || al.album_type,
+      release_date: al.release_date || null,
+      image_url: al.images?.[0]?.url || null,
+      url: al.external_urls?.spotify || null,
+    });
+  }
+  discography.sort((a, b) => String(b.release_date || '').localeCompare(String(a.release_date || '')));
+
+  return {
+    ...profile,
+    markets: profile.markets ?? null,
+    top_tracks: (top.tracks || []).slice(0, 10).map(t => ({
+      id: t.id,
+      name: t.name,
+      popularity: t.popularity ?? 0,
+      album: t.album?.name || null,
+      image_url: t.album?.images?.[t.album.images.length - 1]?.url || null,
+      url: t.external_urls?.spotify || null,
+    })),
+    tracks_found: (top.tracks || []).length,
+    discography: discography.slice(0, 18),
+    album_count: discography.filter(d => d.group === 'album').length,
+    single_count: discography.filter(d => d.group === 'single').length,
+  };
+}
 
 // ---- Bulk artwork sync helpers (two-phase, used by POST /releases/sync-artwork) ----
 // Contract: return the image URL on success, null when the miss is PERMANENT
@@ -139,4 +244,4 @@ async function searchArtwork(artist, title) {
   return null; // no confident match across either index — permanent
 }
 
-module.exports = { isEnabled, coverArt, artistStats, parseRef, artworkByRef, searchArtwork };
+module.exports = { isEnabled, coverArt, artistStats, artistById, artistProfile, parseRef, parseArtistRef, artworkByRef, searchArtwork };

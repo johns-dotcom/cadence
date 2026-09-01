@@ -40,6 +40,7 @@ const { logActivity } = require('../middleware/activityLogger');
 const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
 const { artistKeyOf, namesAnArtist } = require('../lib/artistKey');
 const { excludeBankRows } = require('../lib/ledgerSource');
+const { cascadeArtistName } = require('../lib/artistCascade');
 
 const router = express.Router();
 // Reads are role-split INSIDE the handler (see ROLE GATING below); mutations
@@ -959,11 +960,20 @@ router.post('/merge-artists', requireAdmin, async (req, res) => {
       for (const t of ['releases', 'contracts', 'artist_income', 'campaigns', 'artist_dev_log']) {
         await client.query(`UPDATE ${t} SET artist_id = $1 WHERE artist_id = $2 AND label_id = $3`, [targetId, source.id, req.labelId]);
       }
-      // String-keyed references. deals.artist_name is a live column the
-      // normalization endpoint already rewrites — leaving it behind means the
-      // pipeline still carries a deleted artist's name.
-      await client.query('UPDATE expenses SET artist = $1 WHERE LOWER(TRIM(artist)) = LOWER(TRIM($2)) AND label_id = $3', [target.name, source.name, req.labelId]);
-      await client.query('UPDATE deals SET artist_name = $1 WHERE LOWER(TRIM(artist_name)) = LOWER(TRIM($2)) AND label_id = $3', [target.name, source.name, req.labelId]);
+      // String-keyed references (expenses.artist, deals.artist_name,
+      // recording_budgets.artist, influencer_campaigns.artist) — one shared
+      // list in lib/artistCascade so merge, rename and PATCH can't drift.
+      // Leaving any of them behind means the surface still carries a deleted
+      // artist's name and the survivor's numbers under-report.
+      await cascadeArtistName(client, req.labelId, source.name, target.name);
+      // Attachments move to the survivor rather than being deleted: the source
+      // row is about to disappear, and entity_files rows pointing at a gone
+      // entity_id are orphans whose R2 objects nothing will ever clean up.
+      await client.query(
+        `UPDATE entity_files SET entity_id = $1
+          WHERE label_id = $2 AND entity_type = 'artist' AND entity_id = $3`,
+        [targetId, req.labelId, source.id]
+      );
       await client.query('DELETE FROM artists WHERE id = $1 AND label_id = $2', [source.id, req.labelId]);
     }
     await client.query('COMMIT');
@@ -996,8 +1006,7 @@ router.post('/rename-artist', requireAdmin, async (req, res) => {
     const clash = await client.query('SELECT 1 FROM artists WHERE label_id = $1 AND LOWER(TRIM(name)) = LOWER(TRIM($2)) AND id <> $3', [req.labelId, name, id]);
     if (clash.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ success: false, error: 'Another artist already has that name — merge them instead' }); }
     await client.query('UPDATE artists SET name = $1 WHERE id = $2 AND label_id = $3', [name, id, req.labelId]);
-    await client.query('UPDATE expenses SET artist = $1 WHERE LOWER(TRIM(artist)) = LOWER(TRIM($2)) AND label_id = $3', [name, old, req.labelId]);
-    await client.query('UPDATE deals SET artist_name = $1 WHERE LOWER(TRIM(artist_name)) = LOWER(TRIM($2)) AND label_id = $3', [name, old, req.labelId]);
+    await cascadeArtistName(client, req.labelId, old, name);
     await client.query('COMMIT');
     await logActivity(req, 'Renamed artist', `${old} → ${name}`);
     res.json({ success: true });
@@ -1020,7 +1029,21 @@ router.post('/merge-releases', requireAdmin, async (req, res) => {
     if (rows.length !== sourceIds.length + 1) { await client.query('ROLLBACK'); return res.status(404).json({ success: false, error: 'Release not found in this workspace' }); }
     let target = rows.find(r => r.id === targetId);
     const sources = rows.filter(r => r.id !== targetId);
-    const fillable = ['upc', 'isrc', 'spotify_uri', 'artist_id', 'genre', 'release_date', 'cover_art_url', 'notes', 'producer', 'featured_artists', 'release_type'];
+    const fillable = [
+      'upc', 'isrc', 'spotify_uri', 'artist_id', 'genre', 'subgenre', 'release_date', 'cover_art_url',
+      'notes', 'producer', 'featured_artists', 'release_type', 'priority', 'assigned_to',
+      'apple_id', 'presave_link', 'presave_analytics', 'ugc_link', 'apple_music_link',
+      'distributor_notes', 'cover_art_status', 'budget_cap',
+    ];
+    // Checklist flags are ORed, never COALESCEd: if ANY of the duplicate rows
+    // says the work was done, the work was done. Dropping them (the old
+    // behaviour) silently reset a fully-prepped release to 0%.
+    const checklist = [
+      'cover_art_received', 'audio_uploaded', 'pitched_spotify', 'pitched_apple',
+      'marketing_plan', 'content_ready', 'dsp_email_sent', 'lyrics_submitted',
+      'pitched_amazon', 'pitched_pandora', 'youtube_video', 'official_thread',
+      'musixmatch', 'recoup_setup',
+    ];
     for (const source of sources) {
       // Survivor keeps its own values and fills only its blanks — a merge
       // must never overwrite a field somebody filled in.
@@ -1028,6 +1051,10 @@ router.post('/merge-releases', requireAdmin, async (req, res) => {
       for (const f of fillable) {
         if (target[f] === undefined) continue;
         if ((target[f] === null || target[f] === '') && source[f] != null && source[f] !== '') { vals.push(source[f]); sets.push(`${f} = $${vals.length}`); target = { ...target, [f]: source[f] }; }
+      }
+      for (const f of checklist) {
+        if (target[f] === undefined) continue;
+        if (target[f] !== true && source[f] === true) { vals.push(true); sets.push(`${f} = $${vals.length}`); target = { ...target, [f]: true }; }
       }
       if (sets.length) { vals.push(targetId, req.labelId); await client.query(`UPDATE releases SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND label_id = $${vals.length}`, vals); }
       await client.query(
@@ -1038,11 +1065,24 @@ router.post('/merge-releases', requireAdmin, async (req, res) => {
       await client.query('DELETE FROM dsp_submissions WHERE release_id = $1 AND label_id = $2', [source.id, req.labelId]);
       await client.query('UPDATE tasks SET release_id = $1 WHERE release_id = $2 AND label_id = $3', [targetId, source.id, req.labelId]);
       await client.query('UPDATE expenses SET release_id = $1 WHERE release_id = $2 AND label_id = $3', [targetId, source.id, req.labelId]);
+      // release_comments / release_budget_items / release_audit_log CASCADE off
+      // `releases`, so without an explicit reassignment the DELETE below
+      // destroys the source's discussion, budget and history.
+      await client.query('UPDATE release_comments SET release_id = $1 WHERE release_id = $2 AND label_id = $3', [targetId, source.id, req.labelId]);
+      await client.query('UPDATE release_budget_items SET release_id = $1 WHERE release_id = $2 AND label_id = $3', [targetId, source.id, req.labelId]);
+      await client.query('UPDATE release_audit_log SET release_id = $1 WHERE release_id = $2 AND label_id = $3', [targetId, source.id, req.labelId]).catch(() => {});
       await client.query('DELETE FROM releases WHERE id = $1 AND label_id = $2', [source.id, req.labelId]);
     }
     await client.query('COMMIT');
-    await logActivity(req, 'Merged releases', `${sources.map(s => s.project_name).join(', ')} → ${target.project_name}`);
-    res.json({ success: true, data: { merged: sources.length } });
+    await logActivity(req, 'Merged releases', `${sources.map(s => s.project_name).join(', ')} → ${target.project_name} (release #${targetId})`);
+    // Return the survivor so the caller can patch state without a refetch.
+    const { rows: merged } = await pool.query(
+      `SELECT r.*, a.name AS artist_name, u.name AS assignee_name
+         FROM releases r
+         LEFT JOIN artists a ON a.id = r.artist_id AND a.label_id = r.label_id
+         LEFT JOIN users u ON u.id = r.assigned_to AND u.label_id = r.label_id
+        WHERE r.id = $1 AND r.label_id = $2`, [targetId, req.labelId]);
+    res.json({ success: true, data: { merged: sources.length, release: merged[0] || null } });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('Merge releases error:', error);

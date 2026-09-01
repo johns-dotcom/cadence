@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
+const { BULK_DEALS_SQL, deriveDeal } = require('../lib/bulkDeals');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -50,15 +51,14 @@ router.get('/', async (req, res) => {
          ORDER BY due_date ASC LIMIT 25`,
         [req.labelId, req.user.id]
       ),
-      // Stalled bulk deals — is_bulk_deal rows still unpaid 21+ days after entry.
-      isApprover ? pool.query(
-        `SELECT id, payee, amount, currency, created_at FROM expenses
-         WHERE label_id = $1 AND is_bulk_deal = TRUE AND status = 'approved'
-           AND payment_status IN ('Unpaid','Partial') AND (deleted = false OR deleted IS NULL) AND parent_id IS NULL
-           AND created_at < NOW() - INTERVAL '21 days'
-         ORDER BY created_at ASC LIMIT 25`,
-        [req.labelId]
-      ) : Promise.resolve({ rows: [] }),
+      // Stalled bulk deals. The old rule here was "approved and still unpaid
+      // after 21 days", which is an accounts-payable nag, not a delivery risk —
+      // it fired on deals nobody had paid a cent for (no exposure) and stayed
+      // silent on the case that actually costs money: paid in full, nothing
+      // delivered. Now it's the same rule the /bulk-deals tracker draws its
+      // Stalled badge from — money out, still under-delivered, nothing received
+      // in 30+ days — via lib/bulkDeals, so the bell and the page agree.
+      isApprover ? pool.query(BULK_DEALS_SQL, [req.labelId]) : Promise.resolve({ rows: [] }),
     ];
     if (isAdmin) {
       queries.push(pool.query(
@@ -116,7 +116,21 @@ router.get('/', async (req, res) => {
     const smart = [];
     for (const r of releases) if (!cleared(r.created_at)) smart.push({ type: 'release', key: `release-${r.id}`, title: [r.artist_name, r.project_name].filter(Boolean).join(' — '), detail: 'Checklist incomplete', date: r.release_date, link: `/releases/${r.id}`, severity: 'warning' });
     for (const t of tasks) { if (cleared(t.created_at)) continue; const overdue = t.is_overdue; smart.push({ type: 'task', key: `task-${t.id}`, title: t.description, detail: overdue ? 'Task overdue' : 'Task due soon', date: t.due_date, link: '/my-work', severity: overdue ? 'danger' : 'warning' }); }
-    for (const b of bulkDeals) if (!cleared(b.created_at)) smart.push({ type: 'bulk_deal', key: `bulkdeal-${b.id}`, title: `${b.payee || 'Bulk deal'} · ${fmt(b.amount, b.currency)}`, detail: 'Bulk deal stalled (21+ days unpaid)', date: b.created_at, link: `/ledger?focus=${b.id}`, severity: 'warning' });
+    // Derived here rather than in SQL: `stalled` depends on the paid figure,
+    // which depends on installments-vs-status precedence. One JS rule, shared
+    // with the tracker, beats a second SQL rule that can drift from it.
+    const nowMs = Date.now();
+    for (const raw of bulkDeals) {
+      if (cleared(raw.created_at)) continue;
+      const b = deriveDeal(raw, nowMs);
+      if (!b.stalled) continue;
+      smart.push({
+        type: 'bulk_deal', key: `bulkdeal-${b.id}`,
+        title: `${b.payee || 'Bulk deal'} · ${fmt(b.deal_total, b.currency)}`,
+        detail: `Stalled — ${b.paid_pct}% paid, ${b.delivered}/${b.contracted || '?'} ${b.bulk_deal_unit || 'deliverables'} received, nothing new in ${b.stalled_days} days`,
+        date: b.invoice_date, link: '/bulk-deals', severity: 'danger',
+      });
+    }
     for (const c of contracts) if (!cleared(c.created_at)) smart.push({ type: 'contract', key: `contract-${c.id}`, title: [c.artist_name, c.type].filter(Boolean).join(' '), detail: 'Contract expiring', date: c.expiration_date, link: '/renewals', severity: 'warning' });
     for (const e of approvals) if (!cleared(e.created_at)) smart.push({ type: 'approval', key: `approval-${e.id}`, title: `${e.payee || 'Vendor'} · ${fmt(e.amount, e.currency)}`, detail: e.vendor_submitted ? 'Vendor submission' : 'Awaiting approval', date: null, link: '/ledger', severity: 'info' });
     for (const r of reminders) smart.push({ type: 'reminder', key: `reminder-${r.id}`, title: r.title, detail: 'Reminder due', date: r.next_due, link: r.link || '/bank-statements', severity: 'info' });

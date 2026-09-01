@@ -2583,6 +2583,473 @@ diverge from every other table.
 
 ---
 
+## Phase 6 — releases + catalog (2026-09-01)
+
+Boom parity for `_audit/pages/releases.md` (30 rows), `release-detail.md` and
+`catalog.md` (17 rows). **Zero new deps.**
+
+**The headline: there is now ONE release workspace, mounted two ways.**
+`components/ReleaseWorkspace.jsx` owns all 7 tabs (Checklist · Metadata & Links ·
+DSP · Budget · Activity · Comments · Details) and renders either **inline inside
+an expanded list row** (`variant="inline"`, boom's model) or as the body of
+`/releases/:id` (`variant="page"`). The parent owns the release object and takes
+server responses through `onPatched(row)`, so an inline edit updates the row
+behind the workspace with no refetch. Any future tab lands in both surfaces or
+neither — that is the whole point of the split.
+
+- **Catalog membership is a FLAG again** (CAT-1/REL-21): `releases.in_catalog`
+  + `catalog_locked`, with a boot backfill (past-dated & unarchived → in, future
+  → out) that **skips `catalog_locked` rows**. Boom's backfill silently reverted
+  "move back to tracker" on the next boot; the lock column is the fix.
+  `PUT /:id/catalog` and `PUT /:id/archive` are NOT-toggles with their own
+  endpoints (atomic — two people clicking Archive can't both read `false`), both
+  `logActivity` + audit.
+- **List scope + params** (REL-03/REL-22): `GET /releases` defaults to the
+  PIPELINE — unarchived AND not-cataloged — ordered soonest-first when
+  `upcoming=true`, newest-first otherwise. Params: `status, q|search`
+  (project·artist·**ISRC·UPC**), `month(YYYY|YYYY-MM)`, `date_from/to`, `artist`,
+  `genre`, `priority`, `release_type|type` (all case-insensitive), `upcoming`,
+  `archived (true|false|any)`, `in_catalog (true|any)`, `limit`. **Two callers
+  had to opt out of the new default**: `Dashboard.jsx` (`in_catalog=any`) and
+  `AdAllocation.jsx` (`archived=any&in_catalog=any`) — anything else reading
+  `/releases` for a picker must do the same or silently lose rows.
+- **`release_audit_log`** (REL-18/REL-28) — per-release history written by PATCH
+  (core fields + checklist, old→new), archive, catalog and create. `/:id/audit`
+  serves it; `/:id/activity` now merges it with activity_log rows matched on
+  **`release #<id>`**, not `ILIKE %project_name%` (which pulled unrelated rows
+  and orphaned history on rename).
+- **Merge** (REL-05, `flags.js`): still N-way, now **ORs the 14 checklist
+  booleans** and reassigns `release_comments` / `release_budget_items` /
+  `release_audit_log` before deleting the source — all three CASCADE off
+  `releases`, so without the explicit UPDATE the merge destroyed the source's
+  discussion, budget and history. Fills 22 columns (was 10) and returns the
+  survivor row. A floating select-bar + keep-one modal now lives on the list
+  (admin-gated); `/data-quality` is unchanged.
+- **Other server**: `DELETE /:id` is `requireAdmin` (was ungated — any member
+  could permanently delete); comment delete is author-or-Admin (label scope is
+  not authorization when every member is in the label); `PUT /:id/budget/items/
+  :itemId`; create requires `release_date` and accepts `artist_name`
+  (find-or-create in-tenant), as does PATCH — so a release's artist is editable
+  again (REL-19).
+- **New columns**: `in_catalog`, `catalog_locked`, `subgenre`, `apple_id`,
+  `presave_link`, `presave_analytics`, `ugc_link`, `apple_music_link`,
+  `distributor_notes`, `cover_art_status` (+ `release_audit_log` table + index;
+  `db.js` TENANT_TABLES; releases.csv in full-export). The boot backfills carry
+  `/* no-tenant */` — they are cross-label by construction.
+- **List UI**: 7 filters (Year·Month·Genre·Priority·Type·Status·Upcoming/Past)
+  in a pipe bar + Archived scope toggle + Clear; 300ms-debounced search that
+  **bypasses the filters at ≥2 chars** behind a fetch-generation guard;
+  collapsible banner (only `pct < 100`, colour-coded countdown, chip →
+  clear-dates + expand + Checklist + scroll); 9 columns incl. merge checkbox,
+  Genre, Priority badge, Assigned pill, emerald-at-100% bar and inline Archive;
+  "N releases" header; hotkeys `n v j k Enter 1–7`; `Skeleton.PageHeader +
+  Table`.
+- **Calendar** (REL-06/REL-11): buckets by `parseLocalDate` (the bare
+  `new Date('YYYY-MM-DD')` is UTC midnight → wrong day west of UTC), chips
+  coloured by completion/priority with a legend, today marker, no chip cap,
+  driven by `shown` so filters apply, click jumps to the expanded row.
+- **Catalog**: server-side filtering again (`in_catalog=true`, or
+  `archived=true&in_catalog=any` for the archived view — CAT-2, so a delayed /
+  never-released project is findable); artist typeahead with most-common-spelling
+  dedup; 6 time presets incl. 6-mo and Custom range, plus Year+Month drill,
+  mutually exclusive with the presets; hotkeys `s` + `1–6`; whole-card click
+  carrying `state.from='catalog'` (the detail page's back link reads it);
+  Spotify/Apple hover overlay; per-type badge tints; labelled UPC/ISRC; error
+  state; live counts + sync status text.
+- **CAT-3 was already done** — Phase 2 built the general
+  `POST /releases/sync-artwork` (2-phase, `not_found` sentinel, `remaining`,
+  `days/force/retry`, 50/100ms pacing, `disabled:true` when Spotify is off).
+  Catalog now DRIVES it with boom's ≤30-batch loop, no-progress guard and 500ms
+  gaps instead of its own 40-row per-id loop. Nothing was rebuilt.
+- **`utils/releases.js`** (new, pure): `progressOf`, `parseLocalDate`,
+  `countdownOf`, `priorityToneOf`, `spotifyUrl`, `hasArtwork`. The list, the
+  calendar and the workspace share it so they can't disagree about a percentage.
+  `constants.js` gained `GENRE_OPTIONS`, `BUDGET_CATEGORIES` (release
+  workstreams — deliberately NOT the expense chart), `COVER_ART_STATUSES`,
+  `PRIORITY_TONES`.
+- **Budget tab** (REL-15/24/27): summary bar (planned / cap / remaining
+  over-or-left / 80%-amber 100%-red progress), grouped by the 9 budget
+  categories with per-category totals, 2-decimal money, Description input, edit
+  route.
+- **Checklist** is optimistic again — `flushSync` + rollback + in-flight
+  disable (REL-23).
+
+**release-detail rows** (`release-detail.md`, the 18 page-specific RD-N): the
+back-link is catalog-aware again (`state.from==='catalog'`, set by the Catalog
+card), the header carries priority/type/archived/in-catalog pills + a colour-coded
+countdown, completion has the big % + ring with a 100% green state, History merges
+audit + activity with humanized field lines, comments return `user_id` so the
+client delete gate mirrors the server, Archive is a race-safe server toggle with a
+busy state, and loading is a real skeleton. Also fixed: **RD-2** — PATCH now
+rejects a blank `project_name` (it's NOT NULL and is how the record is found;
+saving an empty Metadata box used to blank it); **RD-9** — stored links render as
+actual link chips (Spotify URI via `spotifyUrl`, Apple Music, pre-save, analytics,
+UGC), which nothing in the app did before; **RD-17** — Escape on the detail page
+confirms before discarding unsaved Metadata edits (`onDirtyChange`).
+
+**Deliberately not done, with reasons:**
+- **RD-1 (boom's 4-tab + 296px sidebar detail architecture)** — directly
+  contradicts REL-01, which wants the 7-tab workspace to be THE model on both
+  surfaces. Re-forking the detail page is the drift the shared component
+  exists to prevent. The Details tab does now render core fields read-mode
+  with an Edit toggle, which is the part of RD-1 that was really missing.
+- **RD-8 (Budget tab vs `recording_budgets`)** — reconciling the release
+  budget store with the Recording Budgets feature is a cross-feature money-path
+  change, out of scope for a releases pass. `release_budget_items` +
+  `releases.budget_cap` remain the release-tab store.
+- **RD-18** — no analog needed: cadence computes `artists.total_releases` in
+  SQL rather than storing it, so nothing can drift out of sync.
+- **REL-04 (checklist key set)** — boom's 14 keys vs cadence's 14 differ by
+  name and grouping. Renaming 14 boolean columns is a destructive migration
+  that changes every completion % and buys nothing; cadence's set is a
+  considered redesign. Left as-is.
+- **REL-14 platform rename** — order now matches boom (TIDAL → Pandora →
+  Deezer) and the Submitted/Approved colours are swapped to boom's
+  (Submitted = info blue, Approved = amber "accepted but not live"). The
+  `iHeartRadio` spelling is KEPT: it's the brand's own, and renaming would
+  orphan every existing `dsp_submissions` row.
+- **Releases keep `release_comments`, not `ObjectDiscussion`** — that store
+  predates this phase and already feeds `recordMentions` + the notification
+  bell. Adding ObjectDiscussion here would create a *second* comment store for
+  the same entity.
+
+---
+
+## Phase 6 — artists + profile + calendar (2026-09-01)
+
+Boom parity for `_audit/pages/artists.md` (22 AR rows), `artist-profile.md`
+(24 AP rows) and `calendar.md` (25 C rows). **Zero new deps.**
+
+**Releases-default audit (the flagged risk) — CLEAN, nothing was silently
+shrunk.** Neither surface reads `GET /releases`: the artist aggregate queries
+the `releases` TABLE on `(label_id, artist_id)` and the calendar feed queries it
+on `(label_id, release_date IS NOT NULL)`. Verified live — `GET /releases`
+returns 3 (pipeline), `?archived=any&in_catalog=any` returns 6, and the calendar
+feed carries all 6 release events; the artist aggregate returns all 3 of Test
+Artist's releases. The only `/releases` client callers remain Releases, Catalog,
+Dashboard, AdAllocation and ReleaseDetail.
+
+### The security fix worth naming
+**AR-2 / AP-4 — contracts were leaking to every workspace member.**
+`GET /artists/:id` returned `royalty_split` and `advance` to anyone in the label.
+Now gated at BOTH layers, the way boom had it: the server returns `[]` below
+Approver and ships `contracts_visible`, and the client hides the tab on
+`contracts_visible && canView('/contracts')` — hiding a tab is presentation, not
+authorization, so neither layer is load-bearing alone. Verified live: a
+role=User token gets `contracts: []`, an Approver and a Superadmin get the row.
+
+### Artists roster — a 95-line grid became the workstation
+- **AR-1 was already closed** (Phase 1: Superadmin-only DELETE + 409 while
+  releases exist + `entity_files`/R2 cleanup). Re-verified live, not rebuilt.
+- **`GET /artists`** gained `?search` (ILIKE), `?page/?limit` + unpaged `total`,
+  and the derived **`has_recent_release`** — a release in the past 365 days OR
+  any future date, one comparison covering both. That flag is the whole basis of
+  the Active-only filter and the Active Roster stat; without it neither can
+  exist (AR-5/9/16).
+- **`GET /artists/export`** → ExcelJS XLSX. `?genres` (comma, case-insensitive)
+  + `?since_days`. `last_release_date` is computed for EVERY row regardless of
+  the window, so the reader can see WHY a row qualified. Declared **before**
+  `/:id` or Express matches "export" as an id. Client: modal with a 3x2 window
+  grid (All/1/3/6/12/24 mo), a genre checkbox list with live counts, and a
+  summary-composing download button (AR-3).
+- **`POST /artists/sync-images`** reuses the `POST /releases/sync-artwork`
+  contract rather than inventing a third loop: `disabled:true` no-op when
+  Spotify is off, a `'not_found'` sentinel so permanent misses are never retried
+  forever, `remaining` so the client's batch loop terminates, 100ms pacing.
+  Link-first — a stored `artists.spotify_url` resolves by ID (exact) via the new
+  `spotify.artistById`, name search is only the fallback. Approver-gated: it
+  writes every row on the roster (AR-4).
+- **Client**: 4 stat cards · genre dropdown with embedded search + per-genre
+  counts + check marks · All/Has/No-releases segment · Active-only toggle ·
+  4-option sort · 300ms-debounced search with a **fetch-generation guard** and
+  an inline spinner (the list stays on screen while refetching instead of
+  flipping to "Loading…") · collapsible **Archived** section with optimistic
+  archive/restore and exact rollback · genre colour chips (`GENRE_COLORS` +
+  `genreTone()` with partial-match fallback) · 2-letter initials · ChevronRight ·
+  hover lift · live filter-aware subtitle · skeleton + a real error state with
+  Retry (AR-6/7/8/14/15/19/21).
+
+### The rename cascade (AR-10 / AR-11) — one list, three call sites
+`artists.name` is a foreign key in string form for four tables. Renaming the
+roster row without rewriting them detaches the artist from their own money: the
+spend query matches `LOWER(TRIM(artist))`, so fixing a typo used to zero the
+Spends tab. New **`server/lib/artistCascade.js`** owns the list
+(`expenses.artist`, `deals.artist_name`, `recording_budgets.artist`,
+`influencer_campaigns.artist`) and is called by `PATCH /artists/:id`,
+`flags.js rename-artist` AND `flags.js merge-artists`, so they cannot drift.
+PATCH is now transactional and 409s on a collision ("merge them instead"),
+checked **unconditionally** — the two spellings in a duplicate pair usually
+differ only in case or whitespace, which the unique index folds, so a
+"did the name change" gate skips exactly the case that then 500s.
+Merge additionally **reassigns** source `entity_files` to the survivor instead
+of deleting them (boom deleted; an orphaned row is an R2 object nothing will
+ever clean up). Verified live: rename held 10 expenses / $3,306.67, and a merge
+moved the attachment plus all four string references.
+**Deliberately NOT cascaded**: `artist_budget_sections.artist_key` (that is the
+canonical strip-all key under a UNIQUE constraint — a colliding rename needs
+section-by-section merging, which belongs to the artist-budgets surface) and
+`statement_artist_rules.artist` (rewriting a learned bank rule changes
+reconciliation history). `artist_income` is id-keyed in cadence, so it needs
+nothing.
+
+### Archive gets its provenance back (AR-22 / AP-23)
+New `artists.archived_at` + `archived_by`, written by a dedicated
+**`PATCH /artists/:id/archive`** (boolean-validated, `logActivity`). `archived`
+was REMOVED from the generic PATCH allow-list — routing it through the field
+PATCH is exactly how the stamps went missing.
+
+### Artist profile
+- **AP-1 Spotify tab is live again.** New `GET /artists/:id/spotify` +
+  `spotify.artistProfile()` (resolve by stored URL first, else name search;
+  top-tracks and 3-page album pagination fanned out in parallel, each degrading
+  to an empty list; duplicate editions folded by name). Renders a banded
+  **PopularityRing**, followers / tracks-found / releases / monthly-listeners
+  cards, genre chips, Open-on-Spotify, top tracks with per-track popularity bars
+  and an 18-cover discography. Fetched **lazily on first tab open**, and the
+  route returns a *typed renderable state* — `{disabled:true}` with no
+  credentials, `{found:false}` with a reason — never a 500. Verified live with
+  Spotify unconfigured: clean "isn't configured" card.
+- **AP-3 Spends** is a real surface again: Total / Unpaid / Top-category strip,
+  then the approved-expense table (Date · Payee · Song · Category · Amount ·
+  Status) with Paid/Partial/Unpaid pills, RECOUP + COBRAND badges and a
+  `canView('/ledger')`-gated `Ledger →` `?focus=` deep link.
+- **AP-12 cross-currency fabrication removed.** The aggregate now groups spend
+  by `(category, currency)` and the client renders one string per currency.
+  Summing GBP into USD and printing a `$` invents a number nobody can reconcile.
+- **AP-11 budget** prefers the artist-level **recording budget** (line items x
+  (1 + contingency%), non-draft only) and falls back to `SUM(budget_cap)` —
+  `budgetSource` is returned so the card can say which. Three bands, not two:
+  >80% amber, >100% red. A bar that only turns red after the money is gone is a
+  report, not a warning.
+- **AP-13** upcoming is `daysUntilLocal(...) >= 0` — a release dropping today is
+  upcoming, and the boundary no longer shifts a day west of UTC.
+- Also: per-row release archive with optimistic toggle (AP-7); checklist
+  completion bars, which needed the aggregate to select `r.*` instead of 6
+  columns (AP-8); Deal History card (AP-9); contract `notes` + file chip +
+  the amber "expiring within 60 days" third tone + `expiration_date ASC` order
+  (AP-10); header link chips (AP-14); a real Documents panel with
+  size · date · uploader, drag-active state, upload spinner, error banner and
+  confirm-on-delete — the columns already existed, the route just never wrote
+  `file_size`/`uploaded_by` (AP-15); skeleton (AP-16); Back-to-roster (AP-17);
+  devlog date input + real `<form>` + server-side `entry_type` whitelist
+  (AP-18); live tab counts (AP-19); `'not_found'` sentinel handled everywhere
+  (AP-20); `formatDate` throughout (AP-21); `LOWER(TRIM(artist))` (AP-22);
+  `ui/Modal` + `ui/ConfirmDialog` replacing the hand-rolled overlay and the
+  bare `window.confirm`s, and the dead `PageHeader` import removed (AP-24).
+- **AP-5 devlog delete is author-or-admin** at both layers (server 403s, client
+  hides the trash). Being in the label is not authorization when every member is
+  in the label. `POST /:id/log` now re-reads the row through the list query so
+  the returned shape carries `author` and the client can prepend instead of
+  refetching.
+- **AP-6**: the delete button is now Superadmin-only client-side too, mirroring
+  the server gate — a button that always 403s is worse than no button.
+- File uploads: 10MB (was 25) + a MIME allow-list (was none) — AR-17.
+
+### Calendar
+- **C-7 `safeQuery`**: each of the six sources degrades to an empty bucket
+  instead of 500-ing the whole month, and the response carries `degraded: []`
+  so the page can say "some sources couldn't load" rather than quietly showing
+  a thinner month.
+- **C-4 tasks are OWN tasks again** (`t.user_id = $1`). A workspace-wide task
+  feed turns every teammate's due dates into your calendar and exposes work
+  assigned outside your department, which the task surface itself gates.
+  Verified live: role=User sees 0 task events, the admin sees 1.
+- **C-3 `dsp_submitted` is back** — `dsp_submissions.submitted_date` was stored
+  and never fed, hiding half the distribution timeline. Now two kinds
+  (`dsp_live` / `dsp_submitted`) from one query.
+- **C-6 Approver** is inside the contract-date gate again: an approver signs off
+  on the money those contracts govern and can't do it blind to renewal dates.
+- **C-23** `calendar_events.event_type` restored (+ whitelist on POST/PATCH),
+  surfaced as the event's subtitle and offered in the add form.
+- **C-21** the feed carries `subtitle`/`meta` again (artist, "Assigned to X",
+  release_type, priority, DSP status) and dates are normalised server-side from
+  the pg Date's LOCAL parts — `toISOString()` shifts the day east of UTC.
+- **Client**: sidebar is back (`xl:grid-cols-4`, grid spans 3) with a
+  **selected-day panel** (day cells clickable, descriptions visible, explicit
+  trash) OR the **Upcoming (14 days)** list with Today/Tomorrow/Nd badges and
+  jump-to-day, plus a **Legend** card (C-1/2/14). Month nav moved back inside
+  the grid card; **needed-weeks-only** geometry with inert pad cells, so an
+  adjacent month's events can never masquerade as this month's (C-18/20).
+  Per-type lucide icons (C-12), 5 grouped filter chips (C-13), 3-chip cap
+  (C-16), past-day dimming (C-17), live "N events" count (C-15), a header
+  **Add event** button with a real date picker (C-5), hotkeys **← → t n**
+  (C-8), `Skeleton` + error state with Retry (C-10), `ui/Modal` +
+  `ui/ConfirmDialog` (C-11).
+- **C-9 fixed**: clicking a manual event chip no longer *deletes* it. Chip click
+  navigates (or selects the day); deleting is an explicit trash in the day
+  panel. View-click and destroy-click must never be the same gesture.
+
+**Deliberately not done, with reasons:**
+- **AR-12 / half of AP-2 — the `artist_links` table.** Cadence stores socials as
+  fixed columns on `artists`; adding a parallel many-rows-per-platform table is
+  architecture churn, and the one thing it uniquely bought boom (link-first
+  Spotify ID lookup) is already served by `artists.spotify_url`. The other half
+  of AP-2 WAS built: the Links tab now aggregates **release links** across
+  `spotify_uri`/`apple_music_link`/`presave_link`/`presave_analytics`/`ugc_link`
+  with a link back to each release — the URLs anyone actually wants.
+- **AP-10's embedded per-contract `FilesPanel`** — contract documents live on
+  the Contracts surface; the tab shows the filename as a chip that routes there
+  rather than forking a second file UI onto the profile.
+- **AP-18's 8-type devlog list** — cadence's 7-type set (`constants.js` +
+  `lib/constants.js`) is now server-validated and shared; re-adding
+  "Follow-up"/"Email" would orphan nothing but split the vocabulary for no gain.
+- **C-22 (`releases.status != 'Archived'`, expiring contracts `status =
+  'Active'`)** — kept. These are the improvements the audit called plausible;
+  reverting them puts dead rows back on a planning surface.
+- **C-24's `PATCH /api/calendar/:id`** — kept and now validated, but still has
+  no client consumer. It is a legitimate API, not dead weight; an edit UI in
+  the day panel is the obvious next step.
+- **C-25 chip navigation** — kept (boom's chips were inert); with C-9 fixed the
+  semantics are now consistent: chips navigate, trash deletes.
+
+**Verification**: client build clean; `node --check` on every touched server
+file; **finance fixtures 120/120**; all 25 new/changed tint classes confirmed
+present in the emitted CSS (no `bg-elev/NN`, no `bg-page/NN`, no `/12`, no
+`dark:`, no raw grays in the three pages); `no-undef`/`no-unused-vars` lint
+clean on all three.
+
+---
+
+## Phase 6 — deals + bulk deals (2026-09-01)
+
+Boom parity for `_audit/pages/deals.md` (20 rows) and the `missing--bulk-deals.md`
+P1 port. **Zero new deps.**
+
+### The type collision, resolved by NOT resolving it
+`expenses.bulk_deal_completed` is an **INT delivered-COUNT** in cadence (written
+by `artist-campaigns.js`, rendered as `n/quantity` in `ArtistCampaignDetail`).
+Boom used a same-named **BOOLEAN** as its "move to the Completed archive" flag.
+Coercing one into the other reads a delivered-count of 3 as `true` and archives
+every partially-delivered deal, so **archiving got its own column:
+`bulk_deal_archived BOOLEAN DEFAULT FALSE`**. Nothing in the new code writes
+`bulk_deal_completed` — it stays the campaigns' count, and `lib/bulkDeals.js`
+reads it only as the *fallback* delivered figure for deals with no checklist
+(items win when any exist, which is the precedence ArtistCampaignDetail already
+rendered). Proven live: setting the count to 3 leaves `archived=false` and shows
+3/5 delivered; archiving and restoring leaves the count at 3 untouched. Two
+fixtures pin it.
+
+### `server/lib/bulkDeals.js` (new) — one rule, two readers
+The rollup SQL and every derivation live together because the **tracker page**
+and the **notification bell** both read them; boom duplicated the JS rule in two
+files and they drifted. Money rules, all fixture-held:
+**CONTRACTED beats LOGGED** (`bulk_deal_quantity` vs checklist length — the
+larger wins, so an unlogged deliverable still counts against the vendor);
+**ITEMS beat the MANUAL COUNT**; **INSTALLMENTS beat STATUS** (never summed —
+an installment plan on a Paid row would double-count the deal);
+**paid is CLAMPED to the family total**. Amounts are **never cross-currency
+summed** — the page rolls up per currency. Every derived figure (contracted /
+delivered / paid / stalled / paid-ahead / unit_cost / effective_unit_cost) is
+computed SERVER-side and shipped down; `BulkDeals.jsx` formats, it does not decide.
+
+### Bulk Deals — the surface
+`GET /api/ledger/bulk-deals` (label-scoped in all four scans, incl. the
+sub-aggregates) + `/bulk-deals` page (Approver+, nav under Bookkeeping).
+Split children come back **attached to their parent** (`splits`,
+`family_artists`) rather than as a second round trip — the parent holds the
+first slice, so rendering only the children would drop a real artist and a real
+slice of the money. Card: payee/artist/N-artists/category/socials chips,
+**Stalled Nd** (danger) and **Paid ahead** (warning, suppressed when Stalled
+already says it louder), two progress bars (delivered + paid — *the gap between
+them IS the exposure*), per-unit cost, Complete at 100%. Expanded: blur-saved
+quantity/unit, socials editor (`ui/Modal` + the existing `SocialHandlesEditor`,
+saving JSONB `social_handles` through the normal ledger PATCH), read-only split
+view, deliverables checklist with platform + link, and **ghost slots** —
+contracted-but-unlogged rows as dashed placeholders with a "Log" button, capped
+at 25, writing no DB rows until clicked. Completed section with **effective
+rate** (total ÷ what actually arrived — the only honest per-unit number on a
+deal closed under-delivered) and Restore.
+
+- **Split editing was deliberately NOT rebuilt here.** Splitting rewrites the
+  parent's amount and creates child expense rows; a third surface that can
+  rewrite a family is a third place for it to go wrong. The section shows the
+  family and links to the ledger entry, which owns the endpoints.
+- **Schema**: `expenses.bulk_deal_archived`, `bulk_deal_items.platform`,
+  `deals.added_date`. No new tables — `bulk_deal_items`/`deals`/`entity_files`
+  were already in `db.js` TENANT_TABLES. full-export gained
+  `bulk_deal_items.csv` and six more `deals.csv` columns.
+- **`bulk_deal_stalled` notification replaced the old rule.** It used to be
+  "approved and still unpaid after 21 days" — an accounts-payable nag that fired
+  on deals with *no* exposure and stayed silent on the case that costs money
+  (paid in full, nothing delivered). Now it runs `deriveDeal` over the same
+  rollup, links to `/bulk-deals`, and is `severity: danger`.
+- **Bugs found on the way**: `PATCH /ledger/bulk-items/:id` numbered its
+  placeholders off `fields.length`, but the `completed` branch pushes a literal
+  `completed_at = NOW()` clause with no parameter behind it — so any PATCH
+  sending `completed` **alongside a second field** died on a missing `$n`. Now
+  numbered off `values.length`. And `POST` auto-position via
+  `COALESCE($n,$m)` 42804s (both placeholders untyped); resolved in JS instead.
+
+### Deals pipeline — 18 of 20 rows
+**Already closed before this pass**: nothing in the register — the drag-drop,
+drawer, `n` hotkey, `contact`/`links` and ObjectDiscussion noted in CLAUDE.md are
+the INT-1…INT-8 *additive* divergences, not defects.
+
+- **DEAL_TYPES was the release vocabulary** (`Single/EP/Album/…`) on a page about
+  *agreements*. Now boom's six contract shapes (`360 Deal / Master License /
+  Single License / Distribution / Publishing / Other`), mirrored in
+  `server/lib/constants.js` and **enforced server-side** — a dropdown is a
+  convenience, the column is the contract. `withLegacy()` appends a stored
+  out-of-list value as an extra `<option>` so an old row renders instead of
+  showing blank and being deleted by the next save.
+- **Server validation is back** on `stage` / `priority` / `deal_type` for POST
+  *and* PATCH, with `undefined` = untouched and `null`/`''` = an intentional
+  clear. Without it an API client (or a stale bundle) writes a stage no column
+  renders and the card vanishes.
+- **Deal documents, end to end** — `entity_files`-backed `POST/GET/DELETE
+  /deals/:id/files` + signed-URL GET, a Documents panel in the drawer with
+  drag-drop, and the paperclip+count back on the card. DELETE of a deal now
+  sweeps its `entity_files` rows **and** the R2 objects (otherwise the objects
+  outlive every row that knows their keys). multer rejects are converted to a
+  JSON 400 — they were reaching Express's default handler as a 500 HTML page, so
+  the client could only say "Upload failed" with no reason.
+- **Six columns** (`grid-cols-2 md:3 lg:6`) — a funnel capped at three is two
+  half-funnels stacked. Skeleton now matches at `cols={6}`.
+- **Stage colour system** (dot + tinted header + count chip hidden at 0) built
+  from the semantic palette, not raw hex: Scouting/Passed neutral, Meeting info,
+  Offer warning, Negotiation brand, Signed success.
+- **Priority is a WORD again**, not an unlabelled 6px dot; **follow-up is amber
+  ONLY when overdue** (`isPastLocal`) in short "Follow up: Jun 12" form —
+  colouring every follow-up amber makes "overdue" mean nothing.
+- **Drag plumbing**: `dragCounters` ref (dragenter/leave fire per child element,
+  so a bare leave→clear flickers), `effectAllowed`/`dropEffect`, and
+  **`isDifferentStage` gating** so the card's own column is not a drop target and
+  the dashed "Drop here" only appears during a real drag (it used to be a
+  permanent label on every empty column).
+- **Failed save keeps the drawer OPEN** with an inline "Save failed — your edits
+  are still here"; it used to `.then(onClose)` through a resolved-false and throw
+  the edits away. Inline `Saved ✓` restored.
+- **Drawer regained**: Last Contact (the payload always sent it, no input ever
+  set it), Spotify Monthly Listeners (column + allow-list existed, no field),
+  `$`-prefixed offer, tinted priority select, the **Move Stage pill row**, and
+  "Added <date>".
+- **Per-card "Next ›"** one-click advance (hidden on Passed) — drag is the
+  expressive move, this is the one people make 90% of the time and the only one
+  that works on touch.
+- **`deals.added_date`** is back and **orders the board**; `updated_at DESC`
+  reshuffled every card the moment anyone edited one. `?stage=` filter and
+  `DELETE → data.id` restored. A **0 offer survives** save (`x || null` collapsed
+  "cleared" and "zero"). Add form regained Cancel/✕, `required`, the
+  `Priority: X` labels and "(optional)" on deal type. `window.confirm` →
+  `ui/ConfirmDialog`; error state with Retry.
+
+**Deliberately not done**: DEF-DEALS-20 (drawer shell cosmetics) — cadence's
+dimmed `bg-overlay` / `max-w-md` / `z-[60]` is the app-wide drawer convention;
+reverting one drawer to a transparent `max-w-sm` backdrop is drift, not parity.
+DEF-DEALS-18's `border-gray-150` hover tones — that palette does not exist here
+and the token equivalents are already applied.
+
+**Verification**: client build clean; `node --check` on all 8 touched server
+files; **finance fixtures 140/140** (the prior 120 unchanged + 20 new bulk-deal
+money assertions); no `bg-elev/NN`, `bg-page/NN`, `/12`, `dark:` or raw grays in
+either page, and every new tint confirmed present in the emitted CSS. Exercised
+live on :3001 — vocabulary 400s, stage moves, `?stage=`, 0-offer round trip,
+deal-file MIME 400, the bulk-deals rollup, combined bulk-item PATCH, ghost-slot
+titles, a split/unsplit family round trip (combined 1200 = parent 700 + child
+500), stalled at 60 days with the bell reporting the identical sentence, and
+archive silencing it.
+
+---
 ## Standing invariants already honored (keep honoring)
 - Every query scoped by `label_id`; client FKs re-validated against the label.
 - `useEffect(() => { load() }, [])` — never `useEffect(load, [])` (Promise-as-cleanup crash).

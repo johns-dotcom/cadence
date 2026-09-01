@@ -35,6 +35,7 @@ import Reports from './pages/Reports'
 import BankMatching from './pages/BankMatching'
 import LedgerArchive from './pages/LedgerArchive'
 import Creators from './pages/Creators'
+import BulkDeals from './pages/BulkDeals'
 import ArtistBudgets from './pages/ArtistBudgets'
 import ArtistBudgetSheet from './pages/ArtistBudgetSheet'
 import Recoupments from './pages/Recoupments'
@@ -178,6 +179,7 @@ function AppContent() {
         <Route path="/bank-ledger" element={<AdminRoute><Ledger bank /></AdminRoute>} />
         <Route path="/approvals/archive" element={<AdminRoute><LedgerArchive /></AdminRoute>} />
         <Route path="/creators" element={<AdminRoute><Creators /></AdminRoute>} />
+        <Route path="/bulk-deals" element={<AdminRoute><BulkDeals /></AdminRoute>} />
         <Route path="/artist-budgets" element={<AdminRoute><ArtistBudgets /></AdminRoute>} />
         <Route path="/artist-budgets/:artistKey" element={<AdminRoute><ArtistBudgetSheet /></AdminRoute>} />
         <Route path="/bank-statements/:id" element={<AdminRoute><BankStatements /></AdminRoute>} />

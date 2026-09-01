@@ -13,9 +13,12 @@ const RELEASE_TYPES = ['Single', 'EP', 'Album', 'Compilation', 'Mixtape'];
 
 const RELEASE_STATUSES = ['Draft', 'Scheduled', 'Released', 'Archived'];
 
+// Order matches boom's tracker (TIDAL → Pandora → Deezer). 'iHeartRadio' keeps
+// the brand's own one-word spelling rather than boom's 'iHeart Radio'; renaming
+// it would orphan every existing dsp_submissions row for no gain.
 const DSP_PLATFORMS = [
   'Spotify', 'Apple Music', 'Amazon Music', 'YouTube Music',
-  'TIDAL', 'Deezer', 'Pandora', 'iHeartRadio', 'Audiomack',
+  'TIDAL', 'Pandora', 'Deezer', 'iHeartRadio', 'Audiomack',
 ];
 
 const DSP_STATUSES = ['Not Submitted', 'Submitted', 'Approved', 'Live', 'Rejected'];
@@ -32,7 +35,19 @@ const PRIORITIES = ['High', 'Medium', 'Low'];
 // out of. Validated on POST/PATCH /api/team.
 const DEPARTMENTS = ['Executive', 'A&R', 'Marketing', 'Operations', 'Finance', 'Legal'];
 
+// Deal pipeline. Stages are ordered — the card's one-click advance and the
+// board's column order both index this array, so reordering it reorders the
+// funnel.
+const DEAL_STAGES = ['Scouting', 'Meeting', 'Offer', 'Negotiation', 'Signed', 'Passed'];
+
+// What KIND OF AGREEMENT is on the table. This is deliberately not the release
+// vocabulary (Single/EP/Album) — a deal is a contract shape, not a format, and
+// the pipeline used to offer release types here, which meant the field could
+// never answer the question anyone asks of it.
+const DEAL_TYPES = ['360 Deal', 'Master License', 'Single License', 'Distribution', 'Publishing', 'Other'];
+
 module.exports = {
   ROLES, CURRENCIES, RELEASE_TYPES, RELEASE_STATUSES, DSP_PLATFORMS, DSP_STATUSES,
   DEV_LOG_TYPES, TASK_STATUSES, PRIORITIES, DEPARTMENTS,
+  DEAL_STAGES, DEAL_TYPES,
 };

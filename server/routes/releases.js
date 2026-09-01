@@ -1,7 +1,7 @@
 const express = require('express');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
-const { withTenant } = require('../middleware/tenant');
+const { withTenant, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { recordMentions } = require('../lib/mentions');
 const activityBot = require('../lib/activityBot');
@@ -9,6 +9,51 @@ const spotify = require('../lib/spotify');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
+
+// Per-release audit trail. Fire-and-forget: an audit write must never fail the
+// mutation it is recording. Separate from activity_log because the release
+// Activity tab needs a PRECISE per-entity history — matching activity_log's
+// free-text `detail` by project name pulls in unrelated rows and orphans
+// history on rename.
+function auditRelease(req, releaseId, action, field, oldValue, newValue) {
+  pool.query(
+    `INSERT INTO release_audit_log (label_id, release_id, user_id, user_name, action, field, old_value, new_value)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [req.labelId, releaseId, req.user?.id || null, req.user?.name || null, action, field || null,
+      oldValue == null ? null : String(oldValue), newValue == null ? null : String(newValue)]
+  ).catch(() => {});
+}
+
+// Find-or-create an artist BY NAME inside this label. Returns null for a blank
+// name. Case-insensitive so "Nova" never becomes a second "nova".
+async function resolveArtistByName(labelId, rawName) {
+  const name = String(rawName || '').trim();
+  if (!name) return null;
+  const { rows } = await pool.query(
+    'SELECT id FROM artists WHERE label_id = $1 AND LOWER(name) = LOWER($2) LIMIT 1', [labelId, name]
+  );
+  if (rows.length) return rows[0].id;
+  const created = await pool.query(
+    'INSERT INTO artists (label_id, name, created_at) VALUES ($1,$2,NOW()) RETURNING id', [labelId, name]
+  );
+  return created.rows[0].id;
+}
+
+// Re-read a release with its joined artist + assignee names, so every mutating
+// route returns exactly the shape the list endpoint returns.
+async function fullRelease(id, labelId) {
+  const { rows } = await pool.query(
+    `SELECT r.*, a.name AS artist_name, u.name AS assignee_name
+       FROM releases r
+       LEFT JOIN artists a ON a.id = r.artist_id AND a.label_id = r.label_id
+       LEFT JOIN users u ON u.id = r.assigned_to AND u.label_id = r.label_id
+      WHERE r.id = $1 AND r.label_id = $2`,
+    [id, labelId]
+  );
+  return rows[0] || null;
+}
+
+const isAdminRole = (req) => ['Superadmin', 'Admin'].includes(req.user?.role);
 
 // POST /api/releases/sync-artwork — bulk cover-art sync (label-scoped).
 // Two-phase server batch, called in a loop by the Dashboard's Latest Releases
@@ -144,21 +189,66 @@ router.post('/:id/sync-artwork', async (req, res) => {
   }
 });
 
-// GET /api/releases — release pipeline for the current label
+// GET /api/releases — release pipeline for the current label.
+//
+// Default scope is the PIPELINE: unarchived and not-yet-cataloged. Callers that
+// want a wider set opt in explicitly:
+//   archived    'true' archived only · 'false' unarchived only · 'any' both
+//               (default: unarchived only)
+//   in_catalog  'true' catalog only  · 'any' both  (default: pipeline only)
+// Other params: status, q/search (project · artist · ISRC · UPC), month
+// (YYYY or YYYY-MM), date_from, date_to, artist (substring), genre, priority,
+// release_type (alias `type`) — all matched case-insensitively — upcoming
+// ('true' future-dated, 'false' past-dated) and limit.
+//
+// Ordering follows the scope: upcoming reads soonest-first, everything else
+// newest-first, because a pipeline is a countdown and a catalog is a history.
 router.get('/', async (req, res) => {
   try {
-    const { status, q, archived, date_from } = req.query;
+    const {
+      status, q, search, month, date_from, date_to, artist, genre, priority,
+      release_type, type, upcoming, archived, in_catalog,
+    } = req.query;
     const params = [req.labelId];
     let where = 'r.label_id = $1';
+    const eq = (col, val) => { params.push(val); where += ` AND LOWER(${col}) = LOWER($${params.length})`; };
+
+    if (in_catalog === 'true') where += ' AND r.in_catalog = true';
+    else if (in_catalog !== 'any') where += ' AND (r.in_catalog = false OR r.in_catalog IS NULL)';
+
+    if (archived === 'true') where += ' AND r.archived = true';
+    else if (archived !== 'any') where += ' AND (r.archived = false OR r.archived IS NULL)';
+
     if (status) { params.push(status); where += ` AND r.status = $${params.length}`; }
-    if (q) { params.push(`%${q}%`); where += ` AND (r.project_name ILIKE $${params.length} OR a.name ILIKE $${params.length})`; }
-    // Optional flags used by the Dashboard's Latest Releases row.
-    if (archived === 'false') where += ' AND (r.archived = false OR r.archived IS NULL)';
-    else if (archived === 'true') where += ' AND r.archived = true';
-    if (date_from && /^\d{4}-\d{2}-\d{2}$/.test(String(date_from))) {
-      params.push(date_from);
-      where += ` AND r.release_date >= $${params.length}`;
+
+    // `q` (cadence) and `search` (boom) are the same 4-field search.
+    const term = search || q;
+    if (term) {
+      params.push(`%${term}%`);
+      where += ` AND (r.project_name ILIKE $${params.length} OR a.name ILIKE $${params.length}`
+             + ` OR r.isrc ILIKE $${params.length} OR r.upc ILIKE $${params.length})`;
     }
+
+    if (month && /^\d{4}(-\d{2})?$/.test(String(month))) {
+      params.push(month);
+      where += ` AND TO_CHAR(r.release_date, '${month.length === 4 ? 'YYYY' : 'YYYY-MM'}') = $${params.length}`;
+    }
+    if (date_from && /^\d{4}-\d{2}-\d{2}$/.test(String(date_from))) { params.push(date_from); where += ` AND r.release_date >= $${params.length}`; }
+    if (date_to && /^\d{4}-\d{2}-\d{2}$/.test(String(date_to))) { params.push(date_to); where += ` AND r.release_date <= $${params.length}`; }
+    if (artist) { params.push(`%${artist}%`); where += ` AND a.name ILIKE $${params.length}`; }
+    if (genre) eq('r.genre', genre);
+    if (priority) eq('r.priority', priority);
+    if (release_type || type) eq('r.release_type', release_type || type);
+
+    const isUpcoming = upcoming === 'true';
+    if (isUpcoming) where += ' AND r.release_date >= CURRENT_DATE';
+    else if (upcoming === 'false') where += ' AND r.release_date < CURRENT_DATE';
+
+    const order = isUpcoming
+      ? 'r.release_date ASC NULLS LAST, r.created_at DESC'
+      : 'r.release_date DESC NULLS LAST, r.created_at DESC';
+    // Sanitized int — safe to interpolate.
+    const limit = Math.max(0, Math.min(2000, parseInt(req.query.limit, 10) || 0));
 
     const { rows } = await pool.query(
       `SELECT r.*, a.name AS artist_name, u.name AS assignee_name
@@ -166,7 +256,7 @@ router.get('/', async (req, res) => {
        LEFT JOIN artists a ON a.id = r.artist_id AND a.label_id = r.label_id
        LEFT JOIN users u ON u.id = r.assigned_to AND u.label_id = r.label_id
        WHERE ${where}
-       ORDER BY r.release_date DESC NULLS LAST, r.created_at DESC`,
+       ORDER BY ${order}${limit ? ` LIMIT ${limit}` : ''}`,
       params
     );
     res.json({ success: true, data: rows });
@@ -195,38 +285,50 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// POST /api/releases
+// POST /api/releases — create. Accepts either `artist_id` (re-validated
+// in-tenant) or a free-text `artist_name`, which is found-or-created inside
+// this label so the Add Release form can type a brand-new artist.
 router.post('/', async (req, res) => {
   try {
-    const { artist_id, project_name, release_date, release_type, genre, status } = req.body;
+    const { artist_id, artist_name, project_name, release_date } = req.body;
     if (!project_name || !project_name.trim()) {
       return res.status(400).json({ success: false, error: 'Project name is required' });
+    }
+    if (!release_date) {
+      return res.status(400).json({ success: false, error: 'Release date is required' });
     }
 
     // If an artist_id is supplied, verify it belongs to THIS label before
     // linking — never trust a client-supplied foreign key across tenants.
+    let finalArtistId = null;
     if (artist_id) {
       const { rows: a } = await pool.query('SELECT 1 FROM artists WHERE id = $1 AND label_id = $2', [artist_id, req.labelId]);
       if (!a.length) return res.status(400).json({ success: false, error: 'Artist not found in this workspace' });
+      finalArtistId = artist_id;
+    } else if (artist_name) {
+      finalArtistId = await resolveArtistByName(req.labelId, artist_name);
     }
 
-    const { rows } = await pool.query(
-      `INSERT INTO releases (label_id, artist_id, project_name, release_date, release_type, genre, status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, 'Draft'), NOW(), NOW())
-       RETURNING *`,
-      [req.labelId, artist_id || null, project_name.trim(), release_date || null, release_type || null, genre || null, status]
-    );
-    await logActivity(req, 'Created release', project_name.trim());
-    let artistName = null;
-    if (rows[0].artist_id) {
-      const a = await pool.query('SELECT name FROM artists WHERE id = $1 AND label_id = $2', [rows[0].artist_id, req.labelId]).catch(() => null);
-      artistName = a?.rows[0]?.name || null;
+    const cols = ['label_id', 'artist_id', 'project_name', 'release_date'];
+    const vals = [req.labelId, finalArtistId, project_name.trim(), release_date];
+    for (const k of ['release_type', 'genre', 'subgenre', 'priority', 'producer', 'featured_artists',
+      'upc', 'isrc', 'spotify_uri', 'apple_music_link', 'presave_link', 'distributor_notes',
+      'notes', 'cover_art_status', 'status']) {
+      if (req.body[k] !== undefined && req.body[k] !== '') { cols.push(k); vals.push(req.body[k]); }
     }
+    const { rows } = await pool.query(
+      `INSERT INTO releases (${cols.join(', ')}, created_at, updated_at)
+       VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')}, NOW(), NOW()) RETURNING id`,
+      vals
+    );
+    const created = await fullRelease(rows[0].id, req.labelId);
+    await logActivity(req, 'Created release', `${project_name.trim()} (release #${created.id})`);
+    auditRelease(req, created.id, 'created', null, null, created.project_name);
     activityBot.postEvent(req.labelId, {
-      text: `💿 New release added: ${artistName ? `*${artistName}* — ` : ''}*${rows[0].project_name}*`,
-      icon: 'disc', link: `/releases/${rows[0].id}`,
+      text: `💿 New release added: ${created.artist_name ? `*${created.artist_name}* — ` : ''}*${created.project_name}*`,
+      icon: 'disc', link: `/releases/${created.id}`,
     });
-    res.status(201).json({ success: true, data: rows[0] });
+    res.status(201).json({ success: true, data: created });
   } catch (error) {
     console.error('Create release error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -235,55 +337,174 @@ router.post('/', async (req, res) => {
 
 // Columns the client is allowed to patch. Anything else in the body is
 // ignored — keeps an updatable allowlist instead of trusting arbitrary keys.
-const UPDATABLE = [
-  'project_name', 'release_date', 'release_type', 'genre', 'status',
-  'upc', 'isrc', 'spotify_uri', 'cover_art_url', 'priority', 'notes',
-  'producer', 'featured_artists', 'budget_cap', 'assigned_to',
+const CHECKLIST_COLUMNS = [
   'cover_art_received', 'audio_uploaded', 'pitched_spotify', 'pitched_apple',
   'marketing_plan', 'content_ready', 'dsp_email_sent', 'lyrics_submitted',
   'pitched_amazon', 'pitched_pandora', 'youtube_video', 'official_thread',
-  'musixmatch', 'recoup_setup', 'archived',
+  'musixmatch', 'recoup_setup',
 ];
+const UPDATABLE = [
+  'artist_id', 'project_name', 'release_date', 'release_type', 'genre', 'subgenre', 'status',
+  'upc', 'isrc', 'spotify_uri', 'cover_art_url', 'priority', 'notes',
+  'producer', 'featured_artists', 'budget_cap', 'assigned_to',
+  'apple_id', 'presave_link', 'presave_analytics', 'ugc_link', 'apple_music_link',
+  'distributor_notes', 'cover_art_status',
+  ...CHECKLIST_COLUMNS, 'archived',
+];
+// Core fields worth a human-readable line in the release's history. Checklist
+// toggles are audited too, but under their own action so the Activity tab can
+// tell "renamed the project" from "ticked Musixmatch".
+const AUDITED = ['project_name', 'release_date', 'release_type', 'genre', 'subgenre', 'priority', 'status', 'artist_id', 'assigned_to', 'archived'];
 
 // PATCH /api/releases/:id — partial update of any allowed field(s).
 router.patch('/:id', async (req, res) => {
   try {
-    const keys = Object.keys(req.body).filter(k => UPDATABLE.includes(k));
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ success: false, error: 'Bad release id' });
+
+    const body = { ...req.body };
+    // `artist_name` is a convenience alias — find-or-create, then fall through
+    // to the normal artist_id path so the tenant check below still applies.
+    if (body.artist_name !== undefined && body.artist_id === undefined) {
+      body.artist_id = await resolveArtistByName(req.labelId, body.artist_name);
+      delete body.artist_name;
+    }
+
+    // A release must always have a name. An empty Metadata field means "clear
+    // this", but project_name is NOT NULL and is how the record is identified
+    // everywhere — blanking it would leave an unfindable row.
+    if ('project_name' in body) {
+      const name = String(body.project_name || '').trim();
+      if (!name) return res.status(400).json({ success: false, error: 'Project name cannot be blank' });
+      body.project_name = name;
+    }
+
+    const keys = Object.keys(body).filter(k => UPDATABLE.includes(k));
     if (keys.length === 0) {
       return res.status(400).json({ success: false, error: 'No updatable fields provided' });
     }
 
-    // Never trust a client-supplied assignee across tenants.
-    if (req.body.assigned_to) {
-      const { rows: u } = await pool.query('SELECT 1 FROM users WHERE id = $1 AND label_id = $2', [req.body.assigned_to, req.labelId]);
+    // Never trust a client-supplied assignee or artist across tenants.
+    if (body.assigned_to) {
+      const { rows: u } = await pool.query('SELECT 1 FROM users WHERE id = $1 AND label_id = $2', [body.assigned_to, req.labelId]);
       if (!u.length) return res.status(400).json({ success: false, error: 'Assignee not found in this workspace' });
     }
+    if (body.artist_id) {
+      const { rows: a } = await pool.query('SELECT 1 FROM artists WHERE id = $1 AND label_id = $2', [body.artist_id, req.labelId]);
+      if (!a.length) return res.status(400).json({ success: false, error: 'Artist not found in this workspace' });
+    }
+
+    // Read the row FIRST so the audit trail can carry real old→new values.
+    const before = await fullRelease(id, req.labelId);
+    if (!before) return res.status(404).json({ success: false, error: 'Release not found' });
 
     const setClauses = keys.map((k, i) => `${k} = $${i + 1}`);
-    const values = keys.map(k => req.body[k]);
-    values.push(parseInt(req.params.id, 10), req.labelId);
+    const values = keys.map(k => body[k]);
+    values.push(id, req.labelId);
 
     const { rows } = await pool.query(
       `UPDATE releases SET ${setClauses.join(', ')}, updated_at = NOW()
-       WHERE id = $${values.length - 1} AND label_id = $${values.length} RETURNING *`,
+       WHERE id = $${values.length - 1} AND label_id = $${values.length} RETURNING id`,
       values
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Release not found' });
-    res.json({ success: true, data: rows[0] });
+    const after = await fullRelease(id, req.labelId);
+
+    // Record what actually changed. Without this the Activity tab starves:
+    // checklist, archive, status, priority and owner edits all flow through
+    // this one route and were previously invisible.
+    for (const k of keys) {
+      if (String(before[k] ?? '') === String(after[k] ?? '')) continue;
+      if (CHECKLIST_COLUMNS.includes(k)) {
+        const label = k.replace(/_/g, ' ');
+        auditRelease(req, id, 'checklist', label, before[k] ? 'checked' : 'unchecked', after[k] ? 'checked' : 'unchecked');
+        logActivity(req, 'Release checklist', `${after[k] ? 'Checked' : 'Unchecked'} "${label}" on release #${id}`);
+      } else if (AUDITED.includes(k)) {
+        auditRelease(req, id, 'updated', k, before[k], after[k]);
+        logActivity(req, 'Updated release', `Changed ${k.replace(/_/g, ' ')} on release #${id} (${after.project_name})`);
+      } else {
+        auditRelease(req, id, 'updated', k, before[k], after[k]);
+      }
+    }
+    res.json({ success: true, data: after });
   } catch (error) {
     console.error('Update release error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
-// DELETE /api/releases/:id
-router.delete('/:id', async (req, res) => {
+// PUT /api/releases/:id/archive — NOT-toggle the archived flag.
+// Its own endpoint (rather than a PATCH) so the toggle is atomic: two people
+// clicking Archive at once can't both read `false` and both write `true`.
+router.put('/:id/archive', async (req, res) => {
   try {
-    const { rowCount } = await pool.query(
-      'DELETE FROM releases WHERE id = $1 AND label_id = $2',
-      [parseInt(req.params.id, 10), req.labelId]
+    const id = parseInt(req.params.id, 10);
+    const { rows } = await pool.query(
+      `UPDATE releases SET archived = NOT COALESCE(archived, false), updated_at = NOW()
+        WHERE id = $1 AND label_id = $2 RETURNING id, archived, project_name`,
+      [id, req.labelId]
     );
-    if (!rowCount) return res.status(404).json({ success: false, error: 'Release not found' });
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Release not found' });
+    const { archived } = rows[0];
+    await logActivity(req, archived ? 'Archived release' : 'Unarchived release', `release #${id} (${rows[0].project_name})`);
+    auditRelease(req, id, 'archive', 'archived', !archived, archived);
+    res.json({ success: true, data: await fullRelease(id, req.labelId) });
+  } catch (error) {
+    console.error('Archive release error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PUT /api/releases/:id/catalog — NOT-toggle catalog membership ("Mark as
+// Released" one way, "Move back to tracker" the other). Also sets
+// catalog_locked so the date-based boot backfill never reverses a human call.
+router.put('/:id/catalog', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { rows } = await pool.query(
+      `UPDATE releases SET in_catalog = NOT COALESCE(in_catalog, false), catalog_locked = TRUE, updated_at = NOW()
+        WHERE id = $1 AND label_id = $2 RETURNING id, in_catalog, project_name`,
+      [id, req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Release not found' });
+    const { in_catalog } = rows[0];
+    await logActivity(req, in_catalog ? 'Moved release to catalog' : 'Moved release to pipeline', `release #${id} (${rows[0].project_name})`);
+    auditRelease(req, id, 'catalog', 'in_catalog', !in_catalog, in_catalog);
+    res.json({ success: true, data: await fullRelease(id, req.labelId) });
+  } catch (error) {
+    console.error('Catalog release error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/releases/:id/audit — the precise per-release history.
+router.get('/:id/audit', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!(await releaseInLabel(id, req.labelId))) return res.status(404).json({ success: false, error: 'Release not found' });
+    const { rows } = await pool.query(
+      `SELECT id, action, field, old_value, new_value, user_name, created_at
+         FROM release_audit_log WHERE label_id = $1 AND release_id = $2
+        ORDER BY created_at DESC LIMIT 100`,
+      [req.labelId, id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Release audit error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/releases/:id — permanent, so Admin-only (matches the merge bar).
+router.delete('/:id', requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { rows } = await pool.query(
+      'DELETE FROM releases WHERE id = $1 AND label_id = $2 RETURNING id, project_name',
+      [id, req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Release not found' });
+    await logActivity(req, 'Deleted release', `"${rows[0].project_name}" (release #${id})`);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete release error:', error);
@@ -298,21 +519,48 @@ async function releaseInLabel(id, labelId) {
   return rows.length > 0;
 }
 
-// GET /api/releases/:id/activity — best-effort activity feed for this release,
-// drawn from the workspace activity_log by matching the release name. Not a
-// per-entity audit trail; a lightweight recent-changes view.
+// GET /api/releases/:id/activity — this release's history.
+//
+// Sourced from `release_audit_log` (precise, per-entity) plus the workspace
+// activity_log rows that name this release by ID. Matching on `release #<id>`
+// rather than the project NAME matters: a name match pulls in unrelated rows
+// whenever a title is short or common, and orphans the whole history the
+// moment somebody renames the project.
 router.get('/:id/activity', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const { rows: rel } = await pool.query('SELECT project_name FROM releases WHERE id = $1 AND label_id = $2', [id, req.labelId]);
-    if (!rel.length) return res.status(404).json({ success: false, error: 'Release not found' });
-    const { rows } = await pool.query(
-      `SELECT al.id, al.action, al.detail, al.created_at, u.name AS user_name
-         FROM activity_log al LEFT JOIN users u ON u.id = al.user_id AND u.label_id = al.label_id
-        WHERE al.label_id = $1 AND al.detail ILIKE $2
-        ORDER BY al.created_at DESC LIMIT 40`,
-      [req.labelId, `%${rel[0].project_name}%`]
-    );
+    if (!Number.isFinite(id)) return res.status(400).json({ success: false, error: 'Bad release id' });
+    if (!(await releaseInLabel(id, req.labelId))) return res.status(404).json({ success: false, error: 'Release not found' });
+
+    const [log, audit] = await Promise.all([
+      pool.query(
+        `SELECT al.id, al.action, al.detail, al.created_at, u.name AS user_name
+           FROM activity_log al LEFT JOIN users u ON u.id = al.user_id AND u.label_id = al.label_id
+          WHERE al.label_id = $1 AND al.detail ILIKE $2
+          ORDER BY al.created_at DESC LIMIT 40`,
+        [req.labelId, `%release #${id}%`]
+      ),
+      pool.query(
+        `SELECT id, action, field, old_value, new_value, user_name, created_at
+           FROM release_audit_log WHERE label_id = $1 AND release_id = $2
+          ORDER BY created_at DESC LIMIT 40`,
+        [req.labelId, id]
+      ),
+    ]);
+
+    // One merged, newest-first stream. Audit rows are rendered from their
+    // field/old/new triple; activity rows keep their free-text detail.
+    const rows = [
+      ...log.rows.map(r => ({ ...r, kind: 'activity', key: `a${r.id}` })),
+      ...audit.rows.map(r => ({
+        key: `d${r.id}`, kind: 'audit', id: r.id, user_name: r.user_name, created_at: r.created_at,
+        action: r.action, field: r.field, old_value: r.old_value, new_value: r.new_value,
+        detail: r.action === 'checklist'
+          ? `${r.new_value === 'checked' ? 'Checked' : 'Unchecked'} "${r.field}"`
+          : `${(r.field || 'record').replace(/_/g, ' ')}: ${r.old_value || '—'} → ${r.new_value || '—'}`,
+      })),
+    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 60);
+
     res.json({ success: true, data: rows });
   } catch (error) {
     console.error('Release activity error:', error);
@@ -326,7 +574,7 @@ router.get('/:id/activity', async (req, res) => {
 router.get('/:id/comments', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT c.id, c.body, c.created_at, u.name AS author
+      `SELECT c.id, c.body, c.created_at, c.user_id, u.name AS author, u.role AS author_role
        FROM release_comments c LEFT JOIN users u ON u.id = c.user_id AND u.label_id = c.label_id
        WHERE c.label_id = $1 AND c.release_id = $2 ORDER BY c.created_at ASC`,
       [req.labelId, parseInt(req.params.id, 10)]
@@ -350,21 +598,29 @@ router.post('/:id/comments', async (req, res) => {
       [req.labelId, id, req.user.id, body]
     );
     try { await recordMentions({ labelId: req.labelId, actorId: req.user.id, body, source: 'release_comment', sourceId: id, link: `/releases/${id}` }); } catch (e) { /* mentions are best-effort */ }
-    res.status(201).json({ success: true, data: { ...rows[0], author: req.user.name } });
+    res.status(201).json({ success: true, data: { ...rows[0], user_id: req.user.id, author: req.user.name } });
   } catch (error) {
     console.error('Create comment error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
-// DELETE /api/releases/:id/comments/:commentId
+// DELETE /api/releases/:id/comments/:commentId — author or Admin only.
+// Label scope alone is not authorization here: every member is inside the
+// label, so scope-only meant anyone could delete anyone's comment.
 router.delete('/:id/comments/:commentId', async (req, res) => {
   try {
-    const { rowCount } = await pool.query(
-      'DELETE FROM release_comments WHERE id = $1 AND release_id = $2 AND label_id = $3',
-      [parseInt(req.params.commentId, 10), parseInt(req.params.id, 10), req.labelId]
+    const commentId = parseInt(req.params.commentId, 10);
+    const releaseId = parseInt(req.params.id, 10);
+    const { rows } = await pool.query(
+      'SELECT user_id FROM release_comments WHERE id = $1 AND release_id = $2 AND label_id = $3',
+      [commentId, releaseId, req.labelId]
     );
-    if (!rowCount) return res.status(404).json({ success: false, error: 'Comment not found' });
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Comment not found' });
+    if (rows[0].user_id !== req.user.id && !isAdminRole(req)) {
+      return res.status(403).json({ success: false, error: 'You can only delete your own comments' });
+    }
+    await pool.query('DELETE FROM release_comments WHERE id = $1 AND label_id = $2', [commentId, req.labelId]);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete comment error:', error);
@@ -402,6 +658,27 @@ router.post('/:id/budget/items', async (req, res) => {
     res.status(201).json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Create budget item error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PUT /api/releases/:id/budget/items/:itemId — edit a line item in place.
+router.put('/:id/budget/items/:itemId', async (req, res) => {
+  try {
+    const fields = ['category', 'description', 'amount'].filter(k => k in req.body);
+    if (!fields.length) return res.status(400).json({ success: false, error: 'No fields to update' });
+    const values = fields.map(k => (k === 'amount' ? parseFloat(req.body.amount) || 0 : (req.body[k] || null)));
+    values.push(parseInt(req.params.itemId, 10), parseInt(req.params.id, 10), req.labelId);
+    const { rows } = await pool.query(
+      `UPDATE release_budget_items SET ${fields.map((k, i) => `${k} = $${i + 1}`).join(', ')}
+        WHERE id = $${values.length - 2} AND release_id = $${values.length - 1} AND label_id = $${values.length}
+        RETURNING *`,
+      values
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Item not found' });
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Update budget item error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

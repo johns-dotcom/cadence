@@ -338,7 +338,7 @@ function NewCampaignModal({ month, onClose, onCreated }) {
   const [err, setErr] = useState('')
   useEffect(() => {
     api.get('/artists').then((r) => setArtists(r.data?.data || [])).catch(() => {})
-    api.get('/releases').then((r) => setAllReleases(r.data?.data || [])).catch(() => {})
+    api.get('/releases?archived=any&in_catalog=any').then((r) => setAllReleases(r.data?.data || [])).catch(() => {})
   }, [])
   // /releases takes no artist_id filter, so narrow here rather than passing one
   // that would be silently ignored and list EVERY release under one artist.

@@ -429,4 +429,67 @@ assert('a category rule answers for everything in it, whatever the payee',
 assert('no rules means no pool — the page says so rather than inventing one',
   LL.rulesFrom([]).size === 0 && !LL.rulesFrom([]).has('Meta Platforms', 'Marketing'));
 
+// ── Bulk deals: contracted vs delivered vs paid ──────────────────────────────
+// These are the rules a vendor argument turns on ("we delivered everything" /
+// "you still owe us"), so they get held here rather than living only in a page.
+const BD = require('../lib/bulkDeals');
+const DAY = 86400000;
+const NOW = Date.parse('2026-09-01T12:00:00Z');
+const deal = (o) => ({
+  amount: 1000, combined_amount: null, currency: 'USD', payment_status: 'Unpaid',
+  bulk_deal_quantity: null, bulk_deal_unit: 'videos', bulk_deal_completed: 0,
+  bulk_deal_archived: false, total_items: 0, completed_items: 0, last_delivery_at: null,
+  installments_paid: 0, installment_count: 0, status_paid_total: 0,
+  invoice_date: '2026-08-30', ...o,
+});
+
+assert('contracted quantity BEATS a shorter logged checklist — 2 logged of 10 bought is not 100%',
+  BD.contractedOf(deal({ bulk_deal_quantity: 10, total_items: 2 })) === 10);
+assert('a longer checklist than the contract wins — you cannot un-deliver what arrived',
+  BD.contractedOf(deal({ bulk_deal_quantity: 3, total_items: 5 })) === 5);
+assert('checklist rows are the delivered figure once ANY exist',
+  BD.deliveredOf(deal({ total_items: 4, completed_items: 1, bulk_deal_completed: 9 })) === 1);
+assert('with no checklist, the campaigns INT count is the fallback (same precedence the campaign page renders)',
+  BD.deliveredOf(deal({ total_items: 0, bulk_deal_completed: 3 })) === 3);
+
+assert('installments are the paid figure when they exist — status is NOT added on top',
+  BD.paidOf(deal({ payment_status: 'Paid', installment_count: 2, installments_paid: 400, status_paid_total: 1000 })).paid === 400);
+assert('with no installments, the family status sum is the paid figure',
+  BD.paidOf(deal({ payment_status: 'Paid', status_paid_total: 1000 })).paid === 1000);
+assert('paid is clamped to the family total — an overpayment is a reconciliation bug, not 130% pressure',
+  BD.paidOf(deal({ installment_count: 1, installments_paid: 1300 })).pct === 100);
+assert('a split family is measured against parent + children, not the parent slice',
+  BD.paidOf(deal({ amount: 400, combined_amount: 1000, status_paid_total: 500 })).pct === 50);
+
+assert('paid-ahead needs a 25-point gap AND unfinished delivery',
+  BD.deriveDeal(deal({ bulk_deal_quantity: 4, total_items: 4, completed_items: 1, status_paid_total: 1000, payment_status: 'Paid' }), NOW).paid_ahead === true);
+assert('a 100%-delivered deal is never paid-ahead however early the money went out',
+  BD.deriveDeal(deal({ bulk_deal_quantity: 4, total_items: 4, completed_items: 4, status_paid_total: 1000, payment_status: 'Paid' }), NOW).paid_ahead === false);
+
+assert('stalled needs MONEY OUT — an unpaid late deal is an AP question, not a delivery risk',
+  BD.stalledOf(deal({ invoice_date: new Date(NOW - 90 * DAY).toISOString(), bulk_deal_quantity: 5 }), NOW).stalled === false);
+assert('paid + under-delivered + nothing received in 30 days = stalled',
+  BD.stalledOf(deal({ invoice_date: new Date(NOW - 45 * DAY).toISOString(), bulk_deal_quantity: 5, status_paid_total: 1000, payment_status: 'Paid' }), NOW).stalled === true);
+assert('a recent delivery resets the clock — last_delivery_at outranks invoice_date',
+  BD.stalledOf(deal({ invoice_date: new Date(NOW - 200 * DAY).toISOString(), last_delivery_at: new Date(NOW - 3 * DAY).toISOString(), bulk_deal_quantity: 5, total_items: 5, completed_items: 1, status_paid_total: 1000, payment_status: 'Paid' }), NOW).stalled === false);
+assert('29 days is not yet stalled — the boundary is 30',
+  !BD.stalledOf(deal({ invoice_date: new Date(NOW - 29 * DAY).toISOString(), bulk_deal_quantity: 5, status_paid_total: 1000, payment_status: 'Paid' }), NOW).stalled);
+assert('an ARCHIVED deal never alarms — archiving is the answer to the alarm',
+  BD.stalledOf(deal({ bulk_deal_archived: true, invoice_date: new Date(NOW - 90 * DAY).toISOString(), bulk_deal_quantity: 5, status_paid_total: 1000, payment_status: 'Paid' }), NOW).stalled === false);
+
+// The type collision that motivated bulk_deal_archived: a DELIVERED COUNT of 3
+// must never be read as "archived". If these ever agree, the INT got coerced.
+assert('a delivered-count of 3 does NOT archive the deal (bulk_deal_completed is an INT, not a flag)',
+  BD.deriveDeal(deal({ bulk_deal_completed: 3, bulk_deal_quantity: 5 }), NOW).bulk_deal_archived === false);
+assert('deriveDeal never writes bulk_deal_completed',
+  BD.deriveDeal(deal({ bulk_deal_completed: 3 }), NOW).bulk_deal_completed === 3);
+
+assert('per-unit cost is CONTRACTED rate while live, EFFECTIVE rate against what arrived',
+  (() => { const d = BD.deriveDeal(deal({ bulk_deal_quantity: 10, total_items: 10, completed_items: 4, status_paid_total: 1000, payment_status: 'Paid' }), NOW);
+    return d.unit_cost === 100 && d.effective_unit_cost === 250; })());
+assert('a deal with no quantity and no items has no per-unit cost to invent',
+  BD.deriveDeal(deal({}), NOW).unit_cost === null);
+assert('singularUnit trims the plural for "$100/video"',
+  BD.singularUnit('videos') === 'video' && BD.singularUnit('') === 'item');
+
 console.log(process.exitCode ? '\nFIXTURES FAILED' : '\nAll fixtures pass.');

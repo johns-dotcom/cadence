@@ -23,7 +23,7 @@ if (process.env.NODE_ENV !== 'production' && process.env.DISABLE_TENANT_ASSERT !
     'invoices', 'campaigns', 'clearances', 'ndas', 'label_waivers', 'admin_docs',
     'salary_employees', 'salary_payments', 'artist_income', 'payment_installments',
     'bulk_deal_items', 'ledger_history', 'dsp_submissions', 'release_comments',
-    'release_budget_items', 'user_page_permissions', 'user_visible_reps',
+    'release_budget_items', 'release_audit_log', 'user_page_permissions', 'user_visible_reps',
     'user_login_logs', 'entity_files', 'reps', 'artist_dev_log',
     // Finance / reconciliation tables (some predate this list — all tenant-scoped).
     'categories', 'bank_statements', 'bank_transactions', 'statement_payee_map',

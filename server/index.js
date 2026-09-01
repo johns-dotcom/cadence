@@ -415,6 +415,56 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS archived BOOLEAN DEFAULT FALSE`);
   // Release owner — the team member responsible for shepherding it out.
   await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS assigned_to INT REFERENCES users(id) ON DELETE SET NULL`);
+  // Distribution links + secondary metadata surfaced on the Metadata tab.
+  for (const [col, type] of [
+    ['subgenre', 'VARCHAR(100)'], ['apple_id', 'VARCHAR(100)'],
+    ['presave_link', 'VARCHAR(500)'], ['presave_analytics', 'VARCHAR(500)'],
+    ['ugc_link', 'VARCHAR(500)'], ['apple_music_link', 'VARCHAR(500)'],
+    ['distributor_notes', 'TEXT'], ['cover_art_status', "VARCHAR(50) DEFAULT 'Pending'"],
+  ]) {
+    await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS ${col} ${type}`);
+  }
+  // Catalog membership is an explicit FLAG, not an inference from the date.
+  // `in_catalog` is what the Catalog page reads and what the release pipeline
+  // excludes; `catalog_locked` records that a human moved the release across
+  // that line by hand, so the date-based boot backfill below never undoes it.
+  await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS in_catalog BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE releases ADD COLUMN IF NOT EXISTS catalog_locked BOOLEAN DEFAULT FALSE`);
+  // Backfill: past-dated live releases belong in the catalog, future-dated ones
+  // belong in the pipeline. Rows a human moved by hand (catalog_locked) are
+  // left alone — otherwise "move back to tracker" would silently revert on the
+  // next boot, which is the one bug the flag model exists to prevent.
+  await pool.query(`
+    UPDATE releases SET in_catalog = TRUE /* no-tenant */
+     WHERE release_date < CURRENT_DATE
+       AND (archived = FALSE OR archived IS NULL)
+       AND (in_catalog = FALSE OR in_catalog IS NULL)
+       AND (catalog_locked = FALSE OR catalog_locked IS NULL)
+  `);
+  await pool.query(`
+    UPDATE releases SET in_catalog = FALSE /* no-tenant */
+     WHERE release_date >= CURRENT_DATE AND in_catalog = TRUE
+       AND (catalog_locked = FALSE OR catalog_locked IS NULL)
+  `);
+
+  // Per-release audit trail — a precise, per-entity history that the fuzzy
+  // activity_log text match can't provide. Written by core-field, checklist,
+  // assignment, archive and catalog changes.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS release_audit_log (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      release_id INT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+      user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      user_name VARCHAR(255),
+      action VARCHAR(50),
+      field VARCHAR(100),
+      old_value TEXT,
+      new_value TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_release_audit ON release_audit_log (label_id, release_id, created_at DESC)`);
   // Soft-archive an artist without deleting (keeps historical references).
   await pool.query(`ALTER TABLE artists ADD COLUMN IF NOT EXISTS archived BOOLEAN DEFAULT FALSE`);
 
@@ -443,6 +493,11 @@ const runMigrations = async () => {
   // Card-detail fields for the pipeline: primary contact + freeform links.
   await pool.query(`ALTER TABLE deals ADD COLUMN IF NOT EXISTS contact TEXT`);
   await pool.query(`ALTER TABLE deals ADD COLUMN IF NOT EXISTS links TEXT`);
+  // When the deal entered the pipeline. This — not updated_at — orders the
+  // board: an updated_at ordering reshuffles every card the moment anyone edits
+  // one. Postgres backfills existing rows from the DEFAULT, so old deals sort
+  // by the day the column landed rather than sorting last.
+  await pool.query(`ALTER TABLE deals ADD COLUMN IF NOT EXISTS added_date DATE DEFAULT CURRENT_DATE`);
 
   // Contracts (per-artist agreements; files stored in R2 via entity_files).
   await pool.query(`
@@ -695,7 +750,17 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS flagged_at TIMESTAMP`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS bulk_deal_quantity INT`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS bulk_deal_unit TEXT`);
+  // NOTE THE TYPES — these two are NOT the same idea.
+  //   bulk_deal_completed  INT     — how many deliverables have ARRIVED. Written
+  //                                  by Artist Campaigns, rendered as `n/qty`.
+  //   bulk_deal_archived   BOOLEAN — "this deal is done, move it to the
+  //                                  Completed section of /bulk-deals".
+  // The reference app used one BOOLEAN named `bulk_deal_completed` for the
+  // archive flag. Repurposing this column would read a delivered-count of 3 as
+  // `true` and archive every partially-delivered deal, so archiving got its own
+  // column instead. Nothing writes booleans into the INT.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS bulk_deal_completed INT DEFAULT 0`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS bulk_deal_archived BOOLEAN DEFAULT FALSE`);
   // Phase-3 ledger parity (boom): QuickBooks reconciliation tracking, tone
   // labels (recoupment statement grouping), the unsplit guard that stops a
   // comma-in-title song from re-splitting on the next edit, and settlement
@@ -935,6 +1000,10 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_bulk_deal_items ON bulk_deal_items (label_id, expense_id)`);
+  // Where the deliverable was posted. Travels with the evidence link into the
+  // Artist Campaigns reconciliation view — "a link" and "an Instagram Reel" are
+  // not the same claim when checking a creator actually delivered.
+  await pool.query(`ALTER TABLE bulk_deal_items ADD COLUMN IF NOT EXISTS platform TEXT`);
 
   // Payment installments — partial payments against one expense, each with its
   // own proof-of-payment reference.
@@ -1363,6 +1432,11 @@ const runMigrations = async () => {
   ]) {
     await pool.query(`ALTER TABLE artists ADD COLUMN IF NOT EXISTS ${col} ${type}`);
   }
+  // Archive provenance. `archived` alone answers "is it hidden"; these answer
+  // "who hid it and when", which is the only way to review a roster cleanup
+  // after the fact. Written by PATCH /artists/:id/archive.
+  await pool.query(`ALTER TABLE artists ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE artists ADD COLUMN IF NOT EXISTS archived_by INT REFERENCES users(id) ON DELETE SET NULL`);
 
   // Artist development log — A&R timeline of meetings, demos, offers, notes.
   await pool.query(`
@@ -1668,6 +1742,9 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_calendar_events_label ON calendar_events (label_id, event_date)`);
+  // Manual events carry a kind so the calendar can colour/filter them like the
+  // derived feeds ('manual' | 'meeting' | 'deadline' | 'travel' | 'other').
+  await pool.query(`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS event_type VARCHAR(30) DEFAULT 'manual'`);
 
   // ── Chat / messaging (the Slack-replacement core) ───────────────────────
   // Channels are either named group channels ('channel') or 1:1/group direct

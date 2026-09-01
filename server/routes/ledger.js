@@ -20,6 +20,7 @@ const bankEvidence = require('../lib/bankEvidence');
 const { excludeBankRows, excludeCreatorRows, BANK_SOURCE } = require('../lib/ledgerSource');
 const { validateApprovalChecklist, stampChecklist, writeApprovalChecklist } = require('../lib/approvalChecklist');
 const activityBot = require('../lib/activityBot');
+const { BULK_DEALS_SQL, deriveDeal } = require('../lib/bulkDeals');
 const ExcelJS = require('exceljs');
 const { buildZip, toCsv } = require('../lib/zip');
 
@@ -120,7 +121,9 @@ const EDITABLE = [
   'is_reimbursement', 'recoupable', 'rep', 'notes', 'payment_status',
   'payment_terms', 'scheduled_payment_date', 'cobrand', 'is_bulk_deal',
   'vendor_email', 'payment_ref', 'vendor_address', 'vendor_bank',
-  'bulk_deal_quantity', 'bulk_deal_unit', 'bulk_deal_completed', 'social_handles',
+  // bulk_deal_completed is an INT delivered-COUNT; bulk_deal_archived is the
+  // boolean "move it to the Completed section" flag. See lib/bulkDeals.js.
+  'bulk_deal_quantity', 'bulk_deal_unit', 'bulk_deal_completed', 'bulk_deal_archived', 'social_handles',
   // Boom-parity vocabulary (LED-6): who paid, UFR + campaign markers, tone
   // labels, catalog link, QuickBooks reconciliation.
   'paid_by', 'ufr', 'artist_campaign', 'recoupment_label', 'release_id',
@@ -346,6 +349,7 @@ const LEDGER_VIEW_COLS = `e.id, e.label_id, e.parent_id, e.invoice_date, e.payee
   e.payment_status, e.payment_date, e.paid_by, e.payment_ref, e.payment_terms, e.scheduled_payment_date,
   e.is_reimbursement, e.recoupable, e.rep, e.notes, e.vendor_email, e.vendor_address, e.vendor_bank,
   e.cobrand, e.is_bulk_deal, e.bulk_deal_quantity, e.bulk_deal_unit, e.bulk_deal_completed,
+  e.bulk_deal_archived,
   e.vendor_submitted, e.entry_source, e.campaign_id, e.artist_campaign, e.ufr, e.ufr_marked_at,
   e.recoupment_label, e.release_id, e.social_handles, e.artist_breakdown, e.voided, e.voided_by,
   e.rush, e.on_hold, e.flagged, e.flag_reason, e.flagged_by, e.flagged_at, e.approved_by, e.created_at,
@@ -4172,6 +4176,53 @@ async function expenseInLabel(id, labelId) {
   return rows.length > 0;
 }
 
+// GET /api/ledger/bulk-deals — the delivery-tracking rollup behind /bulk-deals.
+//
+// One payment buying N deliverables. Every derived figure (contracted,
+// delivered, paid, stalled, paid-ahead, per-unit) is computed HERE via
+// lib/bulkDeals so the tracker and the notification bell cannot disagree about
+// which deals are in trouble — the client only formats.
+//
+// Split children come back attached to their parent rather than as a second
+// round trip: the split editor needs them, and so does the socials editor's
+// "For artist" picker.
+router.get('/bulk-deals', async (req, res) => {
+  try {
+    const { rows } = await pool.query(BULK_DEALS_SQL, [req.labelId]);
+    const now = Date.now();
+    const deals = rows.map(r => deriveDeal(r, now));
+
+    if (deals.length) {
+      const { rows: kids } = await pool.query(
+        `SELECT id, parent_id, artist, song, amount FROM expenses
+          WHERE label_id = $1 AND parent_id = ANY($2::int[])
+            AND (deleted = false OR deleted IS NULL) AND (voided = false OR voided IS NULL)
+          ORDER BY id`,
+        [req.labelId, deals.map(d => d.id)]
+      );
+      const byParent = new Map();
+      for (const k of kids) {
+        if (!byParent.has(k.parent_id)) byParent.set(k.parent_id, []);
+        byParent.get(k.parent_id).push({ id: k.id, artist: k.artist, song: k.song, amount: Number(k.amount) });
+      }
+      for (const d of deals) {
+        const children = byParent.get(d.id) || [];
+        // The PARENT holds the first slice — a split family is parent + kids, so
+        // rendering only the children would drop a real artist and a real slice
+        // of the money from the editor.
+        d.splits = children.length
+          ? [{ id: d.id, artist: d.artist, song: d.song, amount: Number(d.amount) }, ...children]
+          : [];
+        d.family_artists = [...new Set(d.splits.map(s => (s.artist || '').trim()).filter(Boolean))];
+      }
+    }
+    res.json({ success: true, data: deals });
+  } catch (error) {
+    console.error('Bulk deals rollup error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 // GET /api/ledger/entries/:id/bulk-items
 router.get('/entries/:id/bulk-items', async (req, res) => {
   try {
@@ -4195,10 +4246,21 @@ router.post('/entries/:id/bulk-items', async (req, res) => {
     const title = (req.body.title || '').trim();
     if (!title) return res.status(400).json({ success: false, error: 'Title is required' });
     await pool.query('UPDATE expenses SET is_bulk_deal = TRUE WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    // Auto-position at the end when the caller doesn't say. Every row landing on
+    // position 0 makes the checklist order an id accident, which the ghost-slot
+    // "Log" flow (Video 1, Video 2, …) reads as arbitrary.
+    const { rows: pos } = await pool.query(
+      'SELECT COALESCE(MAX(position), -1) + 1 AS next_pos FROM bulk_deal_items WHERE label_id = $1 AND expense_id = $2',
+      [req.labelId, id]
+    );
+    // Resolved in JS, not `COALESCE($n,$m)`: both placeholders arrive untyped, so
+    // a null caller-position leaves Postgres unable to infer the type (42804).
+    const asked = parseInt(req.body.position, 10);
+    const position = Number.isFinite(asked) ? asked : pos[0].next_pos;
     const { rows } = await pool.query(
-      `INSERT INTO bulk_deal_items (label_id, expense_id, title, url, position)
-       VALUES ($1,$2,$3,$4,COALESCE($5,0)) RETURNING *`,
-      [req.labelId, id, title, req.body.url || null, req.body.position]
+      `INSERT INTO bulk_deal_items (label_id, expense_id, title, url, platform, position)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [req.labelId, id, title, req.body.url || null, req.body.platform || null, position]
     );
     res.status(201).json({ success: true, data: rows[0] });
   } catch (error) {
@@ -4212,9 +4274,23 @@ router.patch('/bulk-items/:itemId', async (req, res) => {
   try {
     const fields = [];
     const values = [];
-    if (typeof req.body.completed === 'boolean') { fields.push(`completed = $${fields.length + 1}`); values.push(req.body.completed); fields.push(`completed_at = ${req.body.completed ? 'NOW()' : 'NULL'}`); }
-    if (typeof req.body.title === 'string' && req.body.title.trim()) { fields.push(`title = $${fields.length + 1}`); values.push(req.body.title.trim()); }
-    if (req.body.url !== undefined) { fields.push(`url = $${fields.length + 1}`); values.push(req.body.url || null); }
+    // Placeholders number off VALUES, not off `fields` — `completed` pushes a
+    // literal `completed_at = NOW()` clause with no parameter behind it, so
+    // numbering from fields.length skipped a slot and any PATCH that sent
+    // `completed` alongside a second field died on a missing $n.
+    const set = (col, v) => { values.push(v); fields.push(`${col} = $${values.length}`); };
+    if (typeof req.body.completed === 'boolean') {
+      set('completed', req.body.completed);
+      fields.push(`completed_at = ${req.body.completed ? 'NOW()' : 'NULL'}`);
+    }
+    if (typeof req.body.title === 'string' && req.body.title.trim()) set('title', req.body.title.trim());
+    if (req.body.url !== undefined) set('url', req.body.url || null);
+    if (req.body.platform !== undefined) set('platform', req.body.platform || null);
+    if (req.body.position !== undefined) {
+      const p = parseInt(req.body.position, 10);
+      if (!Number.isFinite(p)) return res.status(400).json({ success: false, error: 'Bad position' });
+      set('position', p);
+    }
     if (!fields.length) return res.status(400).json({ success: false, error: 'No updatable fields provided' });
     values.push(parseInt(req.params.itemId, 10), req.labelId);
     const { rows } = await pool.query(

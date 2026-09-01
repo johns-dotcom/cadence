@@ -172,7 +172,7 @@ export default function Dashboard() {
         api.get('/dashboard/widgets'),
         api.get('/dashboard/chart'),
         api.get('/dashboard/notifications').catch(() => ({ data: { data: [] } })),
-        api.get(`/releases?archived=false&date_from=${localDateStr(from)}`).catch(() => ({ data: { data: [] } })),
+        api.get(`/releases?archived=false&in_catalog=any&date_from=${localDateStr(from)}`).catch(() => ({ data: { data: [] } })),
         api.get('/tasks').catch(() => null),
       ])
 
