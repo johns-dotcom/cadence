@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Building2, ShieldCheck, ShieldAlert, X, Upload, ExternalLink, Pencil, GitMerge, Tag, Trash2, Plus, Sparkles, AlertTriangle, CreditCard } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
@@ -273,7 +274,16 @@ export default function Vendors() {
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const [vendors, setVendors] = useState([])
   const [loading, setLoading] = useState(true)
-  const [selected, setSelected] = useState(null)
+  // ?vendor=<name> IS the per-vendor deep link — there is no /vendors/:name
+  // route. `components/PayeeLink` opens it in a new tab from the review
+  // surfaces, and keeping it in the URL means that tab can be shared or
+  // reloaded onto the same drawer.
+  const [params, setParams] = useSearchParams()
+  const selected = params.get('vendor') || null
+  const setSelected = (name) => setParams(
+    (p) => { const n = new URLSearchParams(p); if (name) n.set('vendor', name); else n.delete('vendor'); return n },
+    { replace: true }
+  )
   const [scanning, setScanning] = useState(false)
   const [scanResults, setScanResults] = useState(null)
 

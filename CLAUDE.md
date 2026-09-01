@@ -1776,6 +1776,597 @@ the parent's `missing_song` flag disappear; dismissals survive rescans in both k
 formats. Client build clean, `node --check` on both touched server files,
 `server/scripts/finance-fixtures.cjs` 55/55.
 
+## Phase 5 — recoupments (2026-09-01) — parity defect pass
+
+Closed the `_audit/pages/recoupments.md` §7 register (36 rows). The page went from
+a 270-line table with an inline expander to an index of per-artist cards plus a
+routed, URL-addressable artist page — and, more importantly, from a spend total
+nobody could defend to one stated on a **bank basis**.
+
+**The gate (DEF-RECOUP-01, the P1 that mattered).** `recoupable` is
+`BOOLEAN DEFAULT TRUE` and `bookDebitAsEntry` writes statement-born rows
+approved + Paid without touching it, so every bank debit naming a rostered artist
+was landing on that artist's recoupable spend on the strength of a **column
+default**. New `expenses.recoup_reviewed / _at / _by`; `lib/recoupments.js`
+`recoupBaseSql()` folds the gate INTO the base predicate (not a filter a caller
+can forget), and `GET/POST /financials/recoupments/review` is the queue where the
+decision — plus the artist, since a recoupable cost is recoupable *against
+somebody* — actually gets made. Answering "no" clears `recoupable` too. Verified
+live: 52 items with 4 pending → 53 after one yes, queue 3; a "no" leaves the
+total at 53. Class rules were not ported in that pass; they arrived with the
+audit below, and now filter this queue, its count tile and the pile alike.
+
+**New shared server libs.** `lib/recoupments.js` — `recoupBaseSql` /
+`recoupReviewedSql`, the four-state `recoupStateOf` (a character-for-character
+mirror of `client/src/utils/recoupState.js`, held by fixture), `recoupCounted`,
+`isProvableUnclaimed`, `normalizePriority` (closed vocabulary — an unrecognized
+priority is a **400**, not a band nobody can select), `bestSpelling`.
+`lib/statementMonth.js` gained `statementStampFor(ym)` (noon UTC on the 1st —
+day 1 is ≤20 in every timezone, so the stamp reads back as the month asked for)
+and `statementWindowLabel`, and now returns **null for a null stamp** instead of
+defaulting to *now* (DEF-RECOUP-33 — that default filed unstamped claims into
+whichever month the page happened to be opened in, and made the client's
+"Unstamped" bucket unreachable).
+
+**UFR timestamp integrity (DEF-RECOUP-11/12).** `ufr-bulk` was an unscoped
+`SET ufr = TRUE, ufr_marked_at = NOW()`: a replayed or stale-client commit
+silently MOVED already-claimed items off the statement a partner had received.
+Now: re-read server-side under `recoupBaseSql`, capped at 2000, **PRESERVE** on
+re-claim, both directions (`ufr` defaults to true so Planning's existing
+ids-only POST keeps working; a non-boolean is a 400), rich
+`{ufr,changed,already,requested,skipped}` **plus `committed`** because
+`RecoupmentPlanning.jsx` reads that field. Single-row `/:id/ufr` got the same
+scoping + `COALESCE(ufr_marked_at, NOW())`. Moving between statements is now its
+own explicit action — `POST /recoupments/move-month {ids, month}`, the ONLY
+writer allowed to overwrite an existing stamp, eligible on claimed rows only,
+no-ops reported rather than counted as moves. All of it writes `bk_audit_log`.
+
+**Other new endpoints** (all `label_id`-scoped, all under the existing
+router-wide `requireApprover`): `/recoupments/labels` (the upload-batch
+vocabulary → datalist), `/recoupments/set-label {ids,label,mark_ufr}`,
+`/recoupments/notes` GET+POST (per-song + the shared index scratchpad under the
+sentinel key `__recoupments_index__`; empty note DELETES), `/recoupments/song-status`
+(the SAME `song_campaign_status` rows Artist Campaigns writes), `/recoupments/export`
+(exceljs, groupBy-aware sections, subtotals + grand total), and
+`GET /recoupments/artist/:key` which **replaces `/recoupments/:artistId`** — the
+surface has to be able to open a bucket with no roster row, including Unassigned
+(key `-`).
+
+**Index is expenses-driven, not roster-driven (DEF-RECOUP-22/23).** Buckets key
+on `artistBucketKey`, so misspellings, punctuation variants and unattributed rows
+all get a card instead of vanishing. Consequence worth knowing: **`artist_meta`
+now keys on `artistKeyOf`** — financials used to write `lower(name)` while
+artist-campaigns wrote the strip-all key, so "Life/Line" carried a meta row per
+page and neither could see the other's priority. A boot migration re-keys the
+stragglers and **leaves collisions alone** (the campaigns-canonical row wins).
+
+**Client.** `pages/Recoupments.jsx` rewritten (collapsible stat tiles on a bank
+basis w/ the 3-way note; the emerald **claim-the-provable** band w/ Upload-all-N
+and per-artist rows behind a ConfirmDialog that states the stamp-decides-the-
+statement rule; bank-review band; shared scratchpad; filter bar w/ 4 sort modes
++ ready filter + dismissed partition; priority subtabs that render **only once a
+priority exists**, with counts and a No-priority band; artist cards w/ priority
+rail + H/M/L + ready + dismiss, bank strip, items-uploaded and $-uploaded bars,
+cobrand pill). New `pages/RecoupmentArtist.jsx` (`/recoupments/artist/:key`,
+`?statement=` tabs — Total / Pending / Uploaded / one per month with window
+tooltips — four tone-coded state sections **unverified first**, song|category
+grouping with case-folded keys, best-spelling names, pinned Advance/Marketing and
+recoupment-label sub-buckets, per-song Finished/Ready/note, per-row editor modal
++ split + flag + file preview + prior-year + delete-with-undo + UFR month picker,
+a bulk bar with per-currency totals / Set label / Set label & mark UFR / Move to
+month / Un-claim, the non-recoupable promote panel, and a deal card from
+`contracts.financial_terms`). `RecoupmentPlanning` learned `?artist=` so the
+artist page's Planning link lands scoped.
+
+**Three new reusable primitives**: `hooks/useCollapsed` (localStorage-persisted
+fold memory + Collapse/Expand-all), `hooks/useFocusRefetch` (throttled SILENT
+refetch on focus/visibility — finance pages are worked by several admins at once
+and a stale screen invites a second claim), `utils/statements.js`
+(`statementLabel` / `statementWindowLabel` / `recentStatementMonths` +
+token-based `STATE_TONE`). Presentation only — the month RULE stays server-side.
+
+**Schema added** (all IF-NOT-EXISTS, after the expenses CREATE):
+`expenses.recoup_reviewed/_at/_by`; `song_campaign_status.ready_for_planning/
+ready_at/ready_by`; table `recoupment_notes (label_id, artist_key, song_key,
+note, updated_by, updated_at)` + its unique index; the `artist_meta` re-key
+UPDATE. `recoupment_label`, `ufr`, `ufr_marked_at`, `entry_source`,
+`prior_year_tag`, `social_handles` and `artist_meta.dismissed` **already existed**
+(ledger + campaigns campaigns) — only the review columns were missing.
+`db.js` TENANT_TABLES and `full-export.js` gained `recoupment_notes`.
+
+**Fixtures: 55 → 71**, all passing. The new 16 hold the day-20/21 cutoff in both
+directions incl. the December year roll, null-in-null-out, the move stamp
+round-tripping through `statementMonthFor`, junk months refused, the
+release-to-release window label, the four states + `recoupCounted` excluding
+unverified, `isProvableUnclaimed`, the closed priority vocabulary, the gate being
+part of the base predicate, and `bestSpelling`.
+
+**Deliberately not closed** (small residue, all cosmetic or a subsystem of its
+own): ~~reference-app `recoupment_class_rules`~~ (BUILT — see the planning +
+audit entry below); comment threads on recoupment rows
+(the ledger drawer owns those); the secondary-axis (opposite-of-groupBy) bucket
+level; the group-rename pencil / breadcrumb suppression; add-expense's release
+dropdown + receipt upload; the Complete-on-Campaigns chip. Prior-year still asks
+for the year via `window.prompt`, but now takes a whole bucket at a time.
+
+## Phase 5 — planning + recoupments audit (2026-09-01)
+
+Two surfaces: `_audit/pages/recoupments-planning.md` §7 (27 rows) and the
+`missing--recoupments-audit.md` port. **Fixtures 71 → 90.**
+
+### (A) Recoupment Planning — the staged plan comes back
+
+The page was a *full-pool browser*: it showed every eligible row and the only
+expression of "which of these belong to this month's batch" was a checkbox
+selection that `load()` reset. Curation done today evaporated on reload.
+
+**The working set** (`client/src/lib/recoupmentPlan.js`) — `{expenseId: label}`
+in localStorage, plus a persisted saved-for-later Set. Client-side ON PURPOSE:
+a plan is a DRAFT of a decision, nothing has happened to the ledger, and an
+abandoned half-thought persisted server-side reads as shared state to the next
+admin. Written by **Add to plan** on the artist page's bulk bar and by the
+per-artist Plan link on the index; rehydrated on window focus so a second tab
+staging rows shows up here.
+
+**Reconciliation instead of eligibility rules.** `GET /financials/planning` IS
+the eligibility rule (`recoupBaseSql` + not-claimed + not-prior-year); anything
+staged that is not in the response was claimed/deleted/un-recouped elsewhere and
+prunes itself. That prune runs in an EFFECT, never in the `useMemo` that finds
+it — it writes to both state and localStorage. The same trick gives **exact
+per-item commit failures**: commit, re-read, and whatever is still eligible did
+not go through, stays staged, and is named in the banner. No 6-way per-item
+worker pool, no trusting a response code.
+
+**Commit** is one request per label bucket (`set-label … mark_ufr:true`) plus one
+for the unlabeled bucket (`ufr-bulk`). Unlabeled rows deliberately do NOT go
+through `set-label`, which would CLEAR a label the row already carried. Verified
+live: a replayed commit reports `changed:0, already:1` and **moves no stamp**.
+
+**Server**: `/financials/planning` lost `AND e.artist <> ''` — 19 artist-less
+recoupable rows in the dev workspace were invisible on the one surface meant to
+catch unclaimed money — and gained `meta.artist_meta` + `meta.song_status`, the
+ready-for-planning markers that were set on Recoupments/Campaigns and read
+nowhere. `RECOUP_COLS` gained `invoice_number`. The notes sentinel generalized to
+`noteKeyFor()` so Planning gets its own scratchpad key
+(`__recoupments_planning__`) alongside the index's.
+
+**Closed** (24 of 27): 01 staged plan · 02 batch labels end-to-end (chips,
+portalled anchored menu w/ existing-batch ✓ + New batch + Clear, bulk Move to
+batch, By-batch grouping, unlabeled counters, label stamped at commit) · 04
+artist cards → `?artist=` drill-down w/ By song / By batch + Recoupments
+cross-link · 05 summary strip · 06 page-note scratchpad · 07 per-row UFR
+(carrying its batch label — the bulk path stamps it and a per-row button that
+dropped it landed the item on the statement unlabeled) + per-row not-recoupable ·
+08 cobrand · 09 split (reuses `SplitModal`) · 10 invoice preview · 11 flags at
+both grains · 13 soft-delete w/ undo · 14 bulk Set song · 15 plan-wide Done +
+failure banner + deferred disclosure + navigate-on-clean · 16 persisted
+save-for-later, deferred artists still visible with totals · 17 `?focus=` (scroll
++ expiring spotlight) · 18 Copy list · 19 socials chips · 20 ready markers
+(badges on cards and song headers, ready artists PINNED above the money sort) ·
+21 fetch failure has its own state + Retry · 22 select-all at page / artist /
+section / category grain · 23 collapsible sections via `useCollapsed` · 24
+ordering (artists ready-then-USD-desc, songs spend-desc, `(no song)` sunk) · 25
+per-currency totals with a ≈USD suffix at every level, artist-less rows planned ·
+26 tone (Unpaid reads `danger`, amounts `text-sm font-bold`, commit `bg-success`,
+floating bulk pill) · 27 back-to-Recoupments pill.
+
+**Already closed** by the recoupments campaign: **DEF-RPLAN-03** (`ufr-bulk`
+re-reads under `recoupBaseSql`, caps at 2000, PRESERVEs stamps, audits) — the
+only §7 row that needed nothing. Partially pre-closed: 02's schema + endpoints,
+17's `?artist=`, 06's table.
+
+**Not closed — DEF-RPLAN-12 (comment threads).** Deliberate, and the same call
+the recoupments campaign made: cadence's comment model is `ObjectDiscussion` on
+the ledger entry, and a second per-row comment store with its own bulk-fetch
+endpoint would be two homes for one conversation. The row links to the ledger.
+
+### (B) Recoupments audit — `/recoupments/audit`, five integrity checks
+
+Not an audit-trail browser. Five predicates in ONE endpoint
+(`GET /financials/recoupment-audit`), because a predicate about money that lives
+in two places disagrees with itself eventually. Two find money NOT claimed, one
+finds money never judged either way, two find money claimed wrongly — and they
+are **never summed into one exposure headline**, since they need opposite
+actions. Deliberately excluded: "claimed with no bank line", which already has a
+tile on the Recoupments index.
+
+**Every check still bites — none was made structurally impossible by the new
+base-predicate gate**, and check 5 is now *more* dangerous than in the reference
+app:
+
+1. **Advances waiting for an artist** — bank-born, unanswered, no artist, in a
+   category whose `ui_group` is `artist` or `record` (read from the per-label
+   `categories` table, not a hardcoded list, so a workspace's own categories stay
+   covered). This is a prioritized slice of the existing bank-review queue plus
+   the two things that queue does not have: **`artist_proposal`** (an artist the
+   payee contains, 4-char floor, longest key first — a convenience on a row a
+   human is already reading, never applied for them) and **`ledger_twin`** (an
+   invoice-side row at the same payee AND amount — answering "recoupable" there
+   claims the same cost twice). Verified live: a $5,000 bank Advance surfaced its
+   already-claimed invoice twin, and a `Zeke Bleu Touring LLC` payee proposed
+   `Zeke Bleu`. Both computed ONCE per request, never per row.
+2. **The bank pile, by category** — with `recoupment_class_rules`. This is the P2
+   the port called out: per-row review cannot finish a pile whose long tail is
+   card fees. Unlike the reference app, rules DO apply to check 1 as well,
+   because `ui_group` is coarser than its hand-picked list (Royalties rides in
+   `artist`). Rules also now filter the **existing** `/recoupments/review` queue
+   AND the index's `review_pending` tile, so the pile total and the queue length
+   are the same number by construction (verified: 3/$1,001 → 1/$100 on both).
+3. **Possibly claimed twice** — `payee + normalizeInvoiceNum`, groups > 1,
+   cross-artist first. A SENSOR, not a verdict, and the footer says so.
+4. **Claimed with no document** — `has_doc` ORs the PARENT's file columns (a
+   split child's invoice lives on its parent) and both storage paths; receipts
+   count too, since a reimbursement's document IS a receipt. Grouped by artist,
+   because the conversation this protects is one artist asking to see what they
+   were charged for.
+5. **Half a payment claimed** — and in cadence this is reachable by an ordinary
+   sequence: **claim an entry, then split it.** `POST /ledger/entries/:id/split`
+   gives the PARENT the first slice and inserts children without `ufr`, so the
+   parent stays claimed at a smaller amount and the rest of the payment becomes
+   unclaimed money that **no recoupment surface can show** — `recoupBaseSql` is
+   `parent_id IS NULL` by design so a family counts once. Proved live: claiming
+   #73 ($300) then splitting it 150/150 left #85 claimed by nobody and absent
+   from `/planning` entirely. The finding names those `hidden_ids` explicitly.
+
+**`POST /recoupments/claim-family {root_id}`** is check 5's fix and is its own
+named writer rather than a loosening of `ufr-bulk`: that endpoint re-reads under
+`recoupBaseSql`, and the rows needing a claim here are precisely the children.
+Family-scoped, recoupable/approved/live only, non-bank, and it implements the
+same timestamp rule — stamp on the transition in, **PRESERVE** on a row already
+claimed. Verified: root's stamp unchanged, child's newly set.
+
+**New server libs** — `lib/recoupClass.js` (`loadRecoupmentClassRules` /
+`rulesFrom` / `notClassRuledSql`; EQUALITY never substring, both sides
+lower+trim+collapse-whitespace, label-scoped inside the NOT EXISTS),
+`lib/recoupContext.js` (proposals + twins, both pure-indexable),
+`lib/recoupAudit.js` (`sumUsd` rounds ONCE at the end — the deliberate contrast
+with `lib/usd.js` `rowUsd2`, which rounds AT THE ROW for sheets that slice the
+same rows twice — plus `groupDoubleClaims` / `partialFamilies` /
+`groupNoDocument`).
+
+**Schema added** (IF-NOT-EXISTS, after `recoupment_notes`): table
+`recoupment_class_rules (label_id, scope, rule_key, reason, created_by,
+created_at)` + unique `(label_id, scope, LOWER(TRIM(rule_key)))`.
+`expenses.recoup_reviewed` already existed. `db.js` TENANT_TABLES and
+`full-export.js` both registered.
+
+**Fixtures: 71 → 90.** The 19 new ones hold: a `Salary` rule leaving
+`Salary (Felipe)` alone (and the SQL using `=`, not LIKE, and carrying
+`rcr.label_id`); vendor rules crossing categories; the proposal's 4-char floor
+("3ee" inside "Three Fifteen Media"), longest-key-first, never-onto-a-named-row;
+the twin key being payee+amount to the cent; `sumUsd` rounding once (three
+half-cents are $0.02, not $0.03) and honoring a locked FX rate; invoice-number
+normalization grouping `INV-001` with `001` while a blank number groups nothing;
+cross-artist sorting first even when smaller; partial families requiring BOTH a
+claim and an open slice, and naming the child slices as hidden.
+
+**Live verification** (dev workspace 2): each check was made to fire by creating
+its condition, then cleared by its own remediation — advance answered
+recoupable-with-artist moved $2,500 onto Zeke Bleu (12→13 items) and answering
+"no" cleared `recoupable`; a class rule dropped pile+queue+tile together and
+DELETE restored all three; two spellings of one invoice number grouped
+cross-artist and un-claiming one dissolved the group; un-claiming an
+undocumented row dropped check 4 by exactly its amount; claim-family closed
+check 5 without moving the root's stamp.
+
+**Known, not fixed here**: split families are counted at the root only while the
+root holds just its FIRST slice, so a cross-artist split under-attributes on
+Recoupments. That is a ledger-model question, not an audit one — the audit now
+measures it instead of leaving it silent.
+
+---
+
+## Phase 5 — artist campaigns + ad pool (2026-09-01)
+
+Two coupled deliverables: the `_audit/pages/artist-campaigns.md` §7 register (21 rows)
+and the `missing--ad-allocation.md` port that the 2026-08-27 plan deferred. **Fixtures
+90 → 115.**
+
+### (A) Artist Campaigns — two layers, and one of them was double-counting
+
+**The headline (DEF-ACAM-01) needed a change of basis, not a port.** The reference app
+guards its two layers with `bank_evidence IS NOT NULL`, because ITS P&L is
+STATEMENT-mastered: a row is settled exactly when a bank line shows it. Cadence's P&L is
+LEDGER-mastered cash (approved + Paid, family-dated by the root), so a paid row with no
+bank line is ALREADY in the settled layer. Porting that predicate verbatim double-counts
+it — caught on the first live run: Zeke Bleu read $1,200 settled and $1,200 "awaiting",
+the same money twice.
+
+So the guard here is **set MEMBERSHIP**: `buildPnl` gained `opts.collectCountedIds`, a Set
+of every `expenses.id` it counted as operating expense, and `S.partitionByLayer(rows,
+countedIds)` (pure, fixtured) splits the in-scope members into Settled and Committed with
+every row on exactly one side. A predicate reconstructing "approved and Paid and dated in
+range and not report-dismissed and not month-moved" drifts the first time either side
+changes; a set cannot. Live: `double_counted_prevented: 9`, and Settled + Committed now
+add up.
+
+Consequence worth knowing — **the Committed sub-buckets are cadence's, not the reference
+app's**: unpaid / paid-outside-range. "Paid with no bank line" moved to where it actually
+belongs, as a QUALITY statement about the Settled layer (`settled_with_bank_line` /
+`settled_awaiting_statement` / `flagged_no_bank_line`), and the card renders it under
+Settled. Same information, attached to the layer it describes.
+
+**Scope is now a disclosed per-label category LIST** (DEF-ACAM-05): `categories` rows with
+`ui_group = 'campaign'` — the workspace's own "Campaign & promotion" classification, the
+same one Artist Budgets sections on — replacing the undisclosed regex
+`market|advertis|promo|influenc|public|social`, which swept in any free-text category
+containing "public" or "social". Both layers scope on category ALONE, on purpose: the
+Settled layer comes from `by_artist.by_category`, which has no per-row dimension, so a
+per-row include/exclude would scope the two layers differently and they could not be
+added. `expenses.artist_campaign` survives as the MARKER other surfaces read, and is now
+kept in step by dismiss / restore / not-a-campaign (DEF-ACAM-19: FALSE on exclusion, NULL
+on restore — restoring is not the same as asserting yes).
+
+**New `server/lib/campaignScope.js`** — one definition of scope, the two flag_dismissal
+kinds, `songKeyOf`/`NO_SONG_KEY`, `bestOf` (most-used spelling, ties alphabetically), and
+`partitionByLayer`. Every consumer discloses the resolved list in `meta.scope`.
+
+**Closed, all 21 non-[INT] rows.** 01 two layers (above) · 02 the catch-up **QUEUE**
+(`?view=queue` inside the same route so it inherits the page permission;
+`GET /queue` with the PROBLEMS array as the single definition behind chips, filters and
+counts; 5 sorts, search, header totals reduced over the SHOWN list, invoice-side
+disclaimer, `unlinkable` orphan disclosure, mark-complete) · 03 **attribute-unattributed**
+(`UnattributedModal` drills `/reports/pnl/detail?kind=artist&key=&drillCategory=` per
+campaign category — the SAME buildPnl the figure came from, so list and number tie by
+construction — writes `/reports/set-artist` on **PART ids**, offers vendors → label-level
+rule, discloses recoveries and truncation; plus the `unassigned` pseudo-artist page) ·
+04 disclosure meta (`campaign_total`, `coverage_pct`, `label_level`, `excluded`,
+`recoveries`, `scope.basis`, `ties_to_pnl`) · 06 status universe back to
+`IN ('approved','pending')` · 07 `excludeBankRows` on the family ROOT (a split child has
+no `entry_source`, so a member-level test lets a bank-born slice through) · 08
+**rename-song** as ONE transaction across three places (ledger + `releases.project_name` +
+the `song_campaign_status` key move with a collision rule, plus `recoupment_notes`) and a
+UI that calls it · 09 export fidelity (per-song section bands w/ release meta and a
+Finished/In-progress rail, a **Bank** column, the Invoiced · Unsettled · Unpaid subtitle,
+Notes, banding, status tints, autofilter, real date cells, per-currency numFmt, datestamped
+filename) · 10 card anatomy (complete-toggle circle, flag button w/ rolled-up song-flag
+count + reason modal, reconciled chip, campaign-count line, **three discrete H/M/L
+buttons** replacing the native `<select>` the reference app abandoned for touch quirks,
+two-layer money rail) · 11 review assignment UI + `/reviewers` + a badge that counts
+exactly what the tray renders + open threads rendered · 12 campaign link/unlink UI ·
+13 `bulk_deal_items` rollup + evidence links · 14 dismissed tray (`?include_dismissed`,
+per-row Restore, undo toast) · 15 the leaf-only `NOT EXISTS` is gone entirely — every
+family member carries its own slice · 16 parent socials inherited for display (marked as
+inherited) · 17 `__no-song__` slug + display spelling in crumbs and headers · 18
+`useFocusRefetch` · 20 songs ordered spend-desc then release-date, group totals labelled
+**Invoiced** · 21 the export header takes `labels.accent_color`, not a copied brand red.
+
+**Detail is UNSCOPED with a FLAG, not a filter**: every row for the artist arrives
+carrying `in_scope` and `family_source`, and only `counted` rows move the totals — which
+is what lets those totals agree with the card while Legal and Recording rows stay visible
+for context. Out-of-scope rows are disclosed by count and total.
+
+### (B) Allocate Advertising — `/ad-allocation`, the ad pool
+
+**What it does.** Ad-platform charges carry no artist evidence at all (merchant-id
+descriptors repeated on every charge), so nothing can be attributed FROM them. The page
+allocates a month's REAL bank charges to **campaigns** — and so to artists — by writing
+real ledger split families whose slices are marked `recoup_reviewed` + `recoupable` +
+`entry_source` (inherited) + `campaign_id`. Four columns the shared split writer does not
+set, each load-bearing; that is why this does not call it. An allocation that wrote to a
+side table would be invisible to Recoupments, the spend sheets and the recoupment audit,
+which is exactly why a ledger-external ad pool goes unused.
+
+**Math guarantees, all fixtured.** `lib/adAllocate.js` is pure, cents-only:
+`apportion` is largest-remainder and sums EXACTLY ($422.00 three ways is not $422.01;
+$500 → 166.67/166.67/166.66), deterministic on ties so a dry run cannot disagree with the
+write; `drawMany` is greedy oldest-first and SEQUENTIAL, so the sum of all slices can never
+exceed the month, and an unfundable request is NAMED rather than trimmed; `familySlices`
+puts the unallocated remainder FIRST so the pool row keeps the parent's identity, and
+THROWS on over-allocation. The write additionally **asserts the family still sums to the
+charge to the cent** before committing, and the per-slice undo asserts the total is
+unchanged. Preview and write share `planAdAllocation` — one derivation, so what is
+approved is what is written.
+
+**The pool is declared, not guessed.** New `label_level_spend_rules` (vendor|category,
+EQUALITY never substring, both sides lower+trim+collapse-whitespace — modelled on
+`recoupment_class_rules`) + `lib/labelLevel.js`. `buildPnl` gained `opts.collectLabelLevel`
+so the page lists precisely the rows the label-level test fired on; a second query with its
+own idea of label-level is how a drill-through starts disagreeing with its report.
+**Deliberate divergence from the reference app:** there label-level is a THIRD bucket
+beside attributed and unattributed. Cadence's `by_artist.ties_to_pnl` is a shipped contract
+the Reports client REFUSES to render on, so here label-level is a disclosed SUBSET of
+unattributed — a row qualifies only when it already names nobody. Nothing moves buckets,
+`ties_to_pnl` is untouched, and `label_level.total <= unattributed.total` by construction.
+Also deliberately NOT unified with `statement_artist_rules.is_overhead`: that answers "do
+not GUESS an artist for this bank descriptor" at booking time, a different question. The
+rules modal offers unattributed-vendor candidates as suggestions instead.
+
+**Endpoints** (`routes/reports.js`, label-scoped, under the router-wide `requireApprover`):
+`GET /ad-months` (ONE buildPnl over the whole range grouped by the collector's stamped
+month — not 18 P&Ls and not a cheaper second query), `GET /ad-charges?month`,
+`POST /ad-allocate` (`{campaign_id, amount}` or `{allocations[]}` + `proportional` for an
+Ads Manager import, `dry_run` for the preview), `DELETE /ad-allocate/:expenseId` (per-slice
+undo — the grain the mistake is made at; folds back into the open sibling, or strips the
+labels in place when the slice IS the root and deleting it would destroy the bank match),
+and `GET/POST/DELETE /label-level-rules`. `adMonthState()` is shared by the listing, the
+dry run and the write so all three agree by construction, re-adds fully-allocated charges
+the collector no longer sees, orders on `adDay()` (a JS Date stringifies to a WEEKDAY NAME
+— that trap once made the greedy draw consume the wrong charge), and names every reason a
+charge cannot be restructured rather than filtering it out.
+
+**Client**: `pages/AdAllocation.jsx` + `components/adalloc/{ChargeTable, AllocatePanel,
+ImportMapper}.jsx` — month nav opening on the OLDEST month with pool, a backlog bar strip,
+a three-number reconciliation line with a rose "listing vs report" warning above 2¢,
+campaigns card + inline New campaign, preview→apply, per-slice undo behind `ConfirmDialog`,
+and a CSV importer that assumes NO schema (header row is read and pointed at, mapping
+remembered per platform, quoted-comma-safe splitter) treating the file's numbers as
+WEIGHTS only. Nav: Reports group → "Allocate Ads", Approver+.
+
+### Schema (all IF-NOT-EXISTS)
+`label_level_spend_rules (label_id, scope, rule_key, reason, created_by, created_at)` +
+unique `(label_id, scope, LOWER(TRIM(rule_key)))`; `campaigns.release_id` (so an
+allocation carries a song — added after the `releases` CREATE, per the FK-ordering
+landmine); `idx_expenses_campaign`. `expenses.campaign_id` already existed and points at
+`campaigns`, which is why the ad pool allocates to that table and not to
+`influencer_campaigns` (the per-artist creator campaigns the hub links the other way).
+`db.js` TENANT_TABLES and `full-export.js` both registered.
+
+### Live verification (dev workspace 2)
+Double-count guard: a row settled AND in scope is counted once —
+`double_counted_prevented: 9`, Zeke Bleu $1,200 settled / $3,369.57 committed (was
+$4,569.57 with $1,200 duplicated). Allocation: two vendor rules gave a $500 pool;
+1:1:1 weights apportioned 166.67 / 166.67 / 166.66 = **$500.00 exactly**; the family
+summed to 50,000¢ after the write; `pool_usd === open_usd === 0`; the P&L expense total
+was **unchanged** at $7,771.50 with `ties_to_pnl` still true, and $500 moved out of
+unattributed onto three artists. Slices verified carrying `entry_source` inherited,
+`recoup_reviewed`, `recoupable`, `campaign_id`. Per-slice undo returned $166.67 with the
+family total unchanged. `/reports/ad-months` total ($265.67) equals the campaigns index's
+`meta.label_level.total` — two surfaces, one derivation. rename-song moved 8 ledger rows +
+1 release + the status row (finished and notes preserved). dismiss → `artist_campaign =
+false`, restore → NULL. `review-assign` rejected an out-of-workspace user id (1 of 2).
+
+### Not done
+Nothing from the §7 register. [INT] rows skipped as marked: tenancy + the Approver floor,
+generic error bodies, chat mentions via `recordMentions`, header-auth export blobs, and the
+`artist_campaign` boolean mechanism. The legacy `ad_pool_allocations` table was
+deliberately NOT ported (the spec says build v2 and skip it). Known and unchanged: split
+families are still counted at the root on Recoupments while the root holds only its first
+slice — the Artist Campaigns layers do NOT have that bug (every family member carries its
+own slice here), but this work did not make the Recoupments ledger-model question
+decidable, so it stays as the audit measures it.
+
+---
+
+## Phase 5 — creators + artist budgets (2026-09-01)
+
+The two pages built on 2026-08-27, closed against `_audit/pages/creators.md` §7
+(17 rows) and `_audit/pages/artist-budgets.md` §7 (17 rows). **Fixtures 115 → 120.**
+
+### The P2 that mattered — unconvert was laundering undocumented rows
+
+`match_method='creator'` is the disposition that says **explained, never
+invoice-backed** (`bank-matching.js` buckets it away from `matched`, which
+`invoice_backed_pct` reduces over). Converting a campaign/recoupment row into
+Creator Payments relabels its live bank matches to it. Unconvert then reset
+**every** such match to `'manual'` **unconditionally** — and `'manual'` IS
+invoice-backed. So the round trip *created* a claim: an undocumented row came
+back out of Creator Payments asserting a document it never had.
+
+It is not fixable by guessing, because the prior method is real information
+(`auto-email` / `auto-alias` / `rematch` / NULL / …). So **convert now audits it**:
+one `bk_audit_log` row per bank transaction (`field='match_method'`,
+`old_value=<prior>`, `detail='bank_txn:<id>'`), written in the same transaction as
+the `entry_source` audit it already wrote. `lib/ledgerSource.js`
+`restoreMatchPlan(auditRows)` is the pure reader (fixtured), and unconvert scopes
+to rows with `id >` that conversion's `entry_source` audit row, so an older
+convert/unconvert cycle cannot supply a stale method. Three rules, all held by
+fixture and proved live:
+
+- the audited method comes back **exactly** — `auto-email` → `creator` → `auto-email`;
+- a match that carried **NULL** goes back to NULL, never to an invented `'manual'`;
+- a match made **after** the conversion has no audit row and **stays `'creator'`** —
+  explained-not-invoice-backed over-states nothing, which is the safe direction.
+
+Live (workspace 2, expense #80 with three matches): `invoice_backed_pct`
+34.5 → 31.2 → 34.5 across convert/unconvert, `explained_pct` **unchanged at 47.8
+throughout** (a creator match is still explained), and the post-convert match
+stayed `creator` — `{restored:1, matches_restored:2, matches_left_creator:1}`.
+Convert also gained the dry-run detail it was missing (`would_relabel_matches` +
+per-row `{id,payee,from}`), reads the txn set **once** from the same predicate the
+UPDATE uses, and 404s when nothing is eligible.
+
+### Creators — the rest
+
+Closed: **03** directory regains Socials (first-non-empty-wins) + Last paid + a
+sorted artist list — that tab is where the move-in queue's gaps get filled, and it
+could not show them · **04** the move-in queue gets its `summary` (convert/review
+counts and values, already-matched count) and the **universal-gaps banner**: gaps
+shared by *every* mover are hoisted into one line and only the per-row deltas stay
+on the row, because those pages never collected contact details and printing that
+on all N rows buries the 5 that are missing a song. Plus the Category column,
+`already_matched` tag and the amber review tint · **06** the selection re-derives
+on reload (a `useState` initializer left ghost ids and the "Move N in" count lied)
+· **07** search is a **server** query again (the list is capped at 1000, so
+filtering the fetched page quietly searched a subset), `vendor_email` added to the
+`?q` fields, and the total is displayed beside it · **09** the W9 test honours
+`w9_filename` (it was SELECTed and ignored) · **10** `by_year` accumulates raw and
+rounds once — a per-add round can flip $599.995 either way against a threshold ·
+**11** `payingId` in-flight guard (a double-click re-stamped `paid_marked_at` and
+re-fired the FX stamp) · **12** delete moved to `ConfirmDialog` and names the USD
+figure · **13** dry-run detail (above) · **14** "Another creator" carries the
+previous row's artist and song forward · **15** batch footer gets the running total
+and the first-gap hint · **16** `scan-w9s` excludes creator rows, matching the
+`/vendors` exclusion it renders against · **17** `ufr` joins the PUT whitelist,
+booleans **validated not coerced** (a string `"false"` through a boolean column
+reads TRUE), and claiming **PRESERVES** an existing `ufr_marked_at` — the same rule
+`/recoupments/ufr-bulk` implements.
+
+**Skipped, with reasons.** **DEF-CRE-05** (payments queue excludes creator rows) is
+a **prior-phase contract**, verified still holding along with the `/vendors` and
+`/vendor-suggest` exclusions and the 1099/recoupments/campaigns *inclusions*
+(live: Ava Loops at $2,300 appears in the 2026 1099 report under the OBBBA $2,000
+threshold and in `/financials/planning`; absent from all three exclusion surfaces).
+**DEF-CRE-08** (list total sums row-rounded figures rather than rounding once) is
+now *more* clearly right, not less: closing DEF-CRE-07 put that total on screen
+**beside the rows it is made of**, so it has to equal what a reader can add up.
+Round-at-the-row is the shipped convention (`lib/usd.js`). **DEF-CRE-02** (OLD
+page-grants marketing below Approver) needs a `requirePagePermission` middleware
+cadence does not have; every finance route in the app sits on `requireApprover`,
+and lowering exactly one of them is a hole, not a permission model.
+
+### Artist Budgets — and two date bugs the audit could not see
+
+Closed all 17. Server: per-artist `count`/`open_count` and totals
+`with_budget`/`committed`/`open_count` (**04**, **06**); sections gain
+`categories[]` **with counts**, `updated_at`/`updated_by_name` (**11**, **12**); a
+**globally** oldest-first `open_rows` (**07**) — the client was flat-mapping
+sections, so the copy promised an ordering the page did not have. Export (**01**,
+**02**, **03**, **17**): a **Note** column carrying the section note *and* the
+unplanned / over-committed conditions that otherwise exist only as a colour; the
+**OPEN · UNPAID INVOICES** block with per-invoice rows, a thin-ruled STILL TO PAY
+and a double-ruled COMMITTED; the four **state-split prose rows** ("Of that spent —
+confirmed on a bank statement…"), because the recipient of this file has no legend
+and no hover; and the filename is the artist's **display spelling**
+(`Zeke Bleu - budget vs actual.xlsx`), taken by the client from
+`Content-Disposition` rather than re-derived from the mangled key.
+
+Client: the sheet is **one table** again (**14**) — section, category and expense
+rows share columns, so a figure at any depth aligns with the one above it and the
+`tfoot` SPENT band is visibly the column's sum; headline gains the over-committed
+warning line and the "of what has been spent" state strip. `PayeeLink` (**09**,
+new shared component) opens `/vendors?vendor=` **in a new tab** — `Vendors.jsx`
+gained that query param as its deep link, since there is no `/vendors/:name` route
+— so a side-trip does not cost your place on the sheet. Non-USD rows show the
+original amount again (**10**). Index `StateBar` gets its text sublabel back
+(**05**): a bar with no numbers can only be hovered, and "how much of this spend is
+provable to a partner" was a fact you had to go looking for. Empty sections are
+dimmed but still live (**13**) — that input is how a budget gets set at all. The
+Age chip is suppressed under 30 days and anchored at **noon UTC**. An unusable
+budget **toasts** instead of silently snapping back. Sheet load failure gets a real
+error card with Retry and a back-link (**16**) instead of an eternal skeleton.
+
+**The `note` field the audit asked about: neither side had UI for it** — it reached
+only the export. It now has an inline per-section input, because a field only an
+export can read is a field nobody fills. `PUT` already accepted it; the amount-save
+still passes `note` through, so cadence keeps the corrected behaviour (OLD's client
+wipes the note on every amount save).
+
+**Two date bugs found while verifying, not in either register.** node-pg returns
+`DATE` as a **JS Date**, and `String(aDate)` is `"Sun Jun 01 2025 …"` — a **weekday
+name**. The new global `open_rows` sorted on that and ordered the worklist by
+*day of week*: a 2025-04-03 invoice sat below five 2025-06-01 ones. The same trap
+put `"Thu Apr 03"` into the workbook's date cells. Everything comparing or printing
+a date in `artist-budgets.js` now goes through one `isoDay()` helper. (This is the
+same trap `lib/adAllocate.js`'s `adDay()` exists for — third sighting.)
+
+Also worth knowing: **`bg-elev/60` emits nothing.** `elev`/`page`/`card` are plain
+`var()` tokens, so Tailwind cannot apply an alpha to them — only the *function*
+colours (`success`/`warning`/`danger`/`info`) route `/NN` through `color-mix`. The
+new code uses the tokens straight. The repo-wide `bg-page/50` on ~every table
+`thead` is dead for the same reason; left alone here rather than making two pages
+diverge from every other table.
+
+### Files touched
+`server/routes/creators.js`, `server/routes/artist-budgets.js`,
+`server/routes/ledger.js` (scan-w9s), `server/lib/ledgerSource.js`
+(`restoreMatchPlan` + `CREATOR_MATCH_DETAIL`), `server/scripts/finance-fixtures.cjs`
+(+5); `client/src/pages/Creators.jsx`, `ArtistBudgets.jsx`, `ArtistBudgetSheet.jsx`,
+`Vendors.jsx` (`?vendor=` deep link), new `client/src/components/PayeeLink.jsx`.
+**No schema change, no new deps.**
+
+---
+
 ## Stack & deploy (as built — matches spec §2 unless noted)
 
 - **Backend**: Node/Express 4, PostgreSQL via `pg` (raw parameterized SQL). JWT in

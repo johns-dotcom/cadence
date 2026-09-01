@@ -707,6 +707,17 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS no_auto_split BOOLEAN DEFAULT FALSE`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS settlement_group_id INT`);
 
+  // ── The recoupment bank-review gate (Phase 5) ────────────────────────────
+  // `recoupable` is BOOLEAN DEFAULT TRUE and bookDebitAsEntry writes bank rows
+  // approved + Paid without touching it, so every statement-born debit naming
+  // a rostered artist would otherwise land on that artist's recoupable spend
+  // on the strength of a column default. A default is not a decision: these
+  // three columns record the decision, and lib/recoupments.js keeps unanswered
+  // bank rows off every recoupment surface until it exists.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS recoup_reviewed BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS recoup_reviewed_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS recoup_reviewed_by TEXT`);
+
   // Per-artist metadata (keyed by a normalized artist key).
   await pool.query(`
     CREATE TABLE IF NOT EXISTS artist_meta (
@@ -739,6 +750,79 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_song_status_uniq ON song_campaign_status (label_id, artist_key, song_key)`);
+  // Song-level ready-for-planning, the per-song twin of artist_meta's flag.
+  await pool.query(`ALTER TABLE song_campaign_status ADD COLUMN IF NOT EXISTS ready_for_planning BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE song_campaign_status ADD COLUMN IF NOT EXISTS ready_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE song_campaign_status ADD COLUMN IF NOT EXISTS ready_by TEXT`);
+
+  // Recoupment notes: per-song (song_key = the lowercased song) and per-artist
+  // (song_key = ''), plus the shared index scratchpad under the sentinel key
+  // '__recoupments_index__'. artist_meta.notes stays the artist-level note the
+  // cards render; this table is what the detail page's song rows write.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS recoupment_notes (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      artist_key TEXT NOT NULL,
+      song_key TEXT NOT NULL DEFAULT '',
+      note TEXT,
+      updated_by TEXT,
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_recoup_notes_uniq ON recoupment_notes (label_id, artist_key, song_key)`);
+
+  // Never-recoupable CLASSES of spend (the recoupment audit's check 2).
+  // Per-row review cannot finish a bank pile whose long tail is card fees:
+  // a rule says "Salary is never an artist's cost" once instead of 63 times.
+  // It writes nothing to the ledger and moves no money — `recoupable` is left
+  // alone — so DELETE is a complete undo and the rows return to the queue.
+  // Matching is EQUALITY, never substring: `Salary` and `Salary (Felipe)` are
+  // two live categories and a rule on one must leave the other alone.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS recoupment_class_rules (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      scope TEXT NOT NULL,
+      rule_key TEXT NOT NULL,
+      reason TEXT,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_recoup_class_rules_uniq ON recoupment_class_rules (label_id, scope, LOWER(TRIM(rule_key)))`);
+
+  // Spend that bills the LABEL, not a release — the ad pool's vocabulary.
+  // Same shape and the same EQUALITY semantics as recoupment_class_rules; see
+  // lib/labelLevel.js for why it is declared rather than guessed, and why it is
+  // deliberately NOT unified with statement_artist_rules.is_overhead.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS label_level_spend_rules (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      scope TEXT NOT NULL,
+      rule_key TEXT NOT NULL,
+      reason TEXT,
+      created_by TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_label_level_rules_uniq ON label_level_spend_rules (label_id, scope, LOWER(TRIM(rule_key)))`);
+
+  // One artist key, not two. Recoupments used to write artist_meta under
+  // lower(name) while Artist Campaigns wrote the strip-all key, so "Life/Line"
+  // carried a row per page and neither could see the other's priority. Re-key
+  // the stragglers; rows that would collide with the campaigns-canonical row
+  // are left alone rather than clobbering it.
+  await pool.query(`
+    UPDATE artist_meta m
+       SET artist_key = regexp_replace(LOWER(m.artist_key), '[^a-z0-9]', '', 'g')
+     WHERE m.artist_key <> regexp_replace(LOWER(m.artist_key), '[^a-z0-9]', '', 'g')
+       AND NOT EXISTS (
+         SELECT 1 FROM artist_meta o
+          WHERE o.label_id = m.label_id
+            AND o.artist_key = regexp_replace(LOWER(m.artist_key), '[^a-z0-9]', '', 'g'))
+  `);
 
   // Per-expense reclassification: 'artist_campaign' (hidden) or
   // 'artist_campaign_not_campaign' (visible-but-segregated).
@@ -1396,6 +1480,11 @@ const runMigrations = async () => {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_campaigns_label ON campaigns (label_id, artist_id)`);
   // Now that campaigns exists, link ledger rows to campaigns (reconciliation).
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS campaign_id INT REFERENCES campaigns(id) ON DELETE SET NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_expenses_campaign ON expenses (label_id, campaign_id) WHERE campaign_id IS NOT NULL`);
+  // A campaign can name the SONG it promoted, so an ad allocation carries one
+  // onto its ledger slices (Allocate Advertising). Added here because `releases`
+  // is created before `campaigns` — a FK ALTER must follow its target's CREATE.
+  await pool.query(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS release_id INT REFERENCES releases(id) ON DELETE SET NULL`);
 
   // Pending contracts — agreements awaiting signature (a lightweight queue
   // separate from executed contracts).

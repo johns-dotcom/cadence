@@ -39,6 +39,8 @@ import ArtistBudgets from './pages/ArtistBudgets'
 import ArtistBudgetSheet from './pages/ArtistBudgetSheet'
 import Recoupments from './pages/Recoupments'
 import RecoupmentPlanning from './pages/RecoupmentPlanning'
+import RecoupmentArtist from './pages/RecoupmentArtist'
+import RecoupmentAudit from './pages/RecoupmentAudit'
 import Salary from './pages/Salary'
 import BankStatements from './pages/BankStatements'
 import DataQuality from './pages/DataQuality'
@@ -48,6 +50,7 @@ import RecordingBudgets from './pages/RecordingBudgets'
 import Campaigns from './pages/Campaigns'
 import ArtistCampaigns from './pages/ArtistCampaigns'
 import ArtistCampaignDetail from './pages/ArtistCampaignDetail'
+import AdAllocation from './pages/AdAllocation'
 import Ledger from './pages/Ledger'
 import InvoiceSearch from './pages/InvoiceSearch'
 import Approvals from './pages/Approvals'
@@ -163,6 +166,8 @@ function AppContent() {
         <Route path="/reports"      element={<AdminRoute><Reports /></AdminRoute>} />
         <Route path="/recoupments"  element={<AdminRoute><Recoupments /></AdminRoute>} />
         <Route path="/recoupments/planning" element={<AdminRoute><RecoupmentPlanning /></AdminRoute>} />
+        <Route path="/recoupments/artist/:key" element={<AdminRoute><RecoupmentArtist /></AdminRoute>} />
+        <Route path="/recoupments/audit" element={<AdminRoute><RecoupmentAudit /></AdminRoute>} />
         <Route path="/salary"       element={<AdminRoute><Salary /></AdminRoute>} />
         <Route path="/bank-statements" element={<AdminRoute><BankStatements /></AdminRoute>} />
         <Route path="/bank-matching" element={<AdminRoute><BankMatching /></AdminRoute>} />
@@ -184,6 +189,7 @@ function AppContent() {
         <Route path="/artist-campaigns" element={<AdminRoute><ArtistCampaigns /></AdminRoute>} />
         <Route path="/artist-campaigns/:artist" element={<AdminRoute><ArtistCampaignDetail /></AdminRoute>} />
         <Route path="/artist-campaigns/:artist/:song" element={<AdminRoute><ArtistCampaignDetail /></AdminRoute>} />
+        <Route path="/ad-allocation" element={<AdminRoute><AdAllocation /></AdminRoute>} />
         <Route path="/approvals"    element={<AdminRoute><Approvals /></AdminRoute>} />
         <Route path="/ledger"       element={<AdminRoute><Ledger /></AdminRoute>} />
         {/* Search-oriented invoices index — distinct from /invoices (outbound creator) */}

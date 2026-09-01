@@ -25,6 +25,8 @@ const { logActivity } = require('../middleware/activityLogger');
 const { usdOf, round2 } = require('../lib/usd');
 const { artistBucketKey, artistLabel } = require('../lib/artistKey');
 const { fingerprintOfExpense, fingerprintOfIncome, ymd } = require('../lib/reportFingerprint');
+const { loadLabelLevelRules, SCOPES: LL_SCOPES, norm: llNorm } = require('../lib/labelLevel');
+const { toCents, fromCents, apportion, drawMany } = require('../lib/adAllocate');
 const activityBot = require('../lib/activityBot');
 
 const router = express.Router();
@@ -185,11 +187,30 @@ function placeRow(row, fp, physDate, wanted, overrides, dismissed, cellKind, cel
 }
 
 // ── buildPnl ─────────────────────────────────────────────────────────────────
-async function buildPnl(labelId, from, to, artist) {
+/**
+ * @param {object} opts
+ * @param {Array} [opts.collectLabelLevel]  an array to push the individual rows
+ *   the label-level test fired on. Allocate Advertising has to LIST the charges
+ *   making up the ad pool, and `/pnl/detail` deliberately drops nothing into a
+ *   label-level bucket — so the only alternative would be a second query with
+ *   its own idea of what label-level means. Collecting HERE, at the one call
+ *   site that makes the decision, is what guarantees the page lists precisely
+ *   the money the pool says it holds. Off unless asked for.
+ * @param {Set} [opts.collectCountedIds]  every `expenses.id` this report counted
+ *   as OPERATING expense. Artist Campaigns' second layer has to state what the
+ *   P&L has NOT yet counted, and a predicate reconstructing that condition
+ *   ("approved and Paid and dated in range and not dismissed and not moved…")
+ *   drifts the moment either side changes. Set MEMBERSHIP cannot drift: the
+ *   double-count guard is literally "was this row in the first layer".
+ */
+async function buildPnl(labelId, from, to, artist, opts = {}) {
   const months = monthsBetween(from, to);
   const wanted = new Set(months);
-  const [{ sectionFor, contraOf }, dismissed, overrides] = await Promise.all([
+  const collectLL = Array.isArray(opts.collectLabelLevel) ? opts.collectLabelLevel : null;
+  const countedIds = opts.collectCountedIds instanceof Set ? opts.collectCountedIds : null;
+  const [{ sectionFor, contraOf }, dismissed, overrides, llRules] = await Promise.all([
     reportSections(labelId), dismissedSets(labelId), monthOverrides(labelId),
+    loadLabelLevelRules(pool, labelId),
   ]);
   const extra = extraFetchMonths(overrides, wanted);
   const [eRows, iRows, coverage, artists, categoryUsage] = await Promise.all([
@@ -216,6 +237,11 @@ async function buildPnl(labelId, from, to, artist) {
   let advOther = 0; // below-line expense NOT in ADVANCE_CATEGORIES — disclosed
   const dismissedRows = [];
   const movedOut = [];
+  // Spend a RULE says bills the label, not a release — the ad pool. A disclosed
+  // SUBSET of the unattributed bucket (see lib/labelLevel.js for why it is not a
+  // third bucket the way the reference app has it): a row qualifies only when it
+  // already names nobody, so nothing moves and ties_to_pnl is untouched.
+  const labelLevel = { cats: {}, total: 0, count: 0 };
   let reassignedCount = 0, reassignedTotal = 0;
   let opExpenseRaw = 0; // UNROUNDED accumulator — ties_to_pnl compares on this
 
@@ -249,10 +275,23 @@ async function buildPnl(labelId, from, to, artist) {
     } else {
       bump(op.expenses, cat, placed.report_month, usd);
       opExpenseRaw += usd;
+      if (countedIds) countedIds.add(r.id);
       const key = artistBucketKey(r.artist);
       const entry = noteSpelling(byArtist, key, r.artist);
       entry.total += usd;
       entry.by_category[cat] = (entry.by_category[cat] || 0) + usd;
+      if (key === '' && llRules.has(r.payee, cat)) {
+        labelLevel.cats[cat] = (labelLevel.cats[cat] || 0) + usd;
+        labelLevel.total += usd;
+        labelLevel.count += 1;
+        if (collectLL) {
+          collectLL.push({
+            expense_id: r.id, root_id: r.root_id, parent_id: r.parent_id,
+            month: placed.report_month, usd, category: cat,
+            payee: r.payee, date: r.payment_date, artist: r.artist,
+          });
+        }
+      }
     }
   }
 
@@ -380,7 +419,17 @@ async function buildPnl(labelId, from, to, artist) {
     coverage,
     artists,
     category_usage: categoryUsage,
-    by_artist: { rows: artistRows, total: round2(byArtistRawTotal), ties_to_pnl: tiesToPnl },
+    by_artist: {
+      rows: artistRows, total: round2(byArtistRawTotal), ties_to_pnl: tiesToPnl,
+      // Disclosed on its own so a coverage figure beside it can mean "of the
+      // money that CAN name an artist" without hiding anything.
+      label_level: {
+        total: round2(labelLevel.total),
+        count: labelLevel.count,
+        rule_count: llRules.size,
+        by_category: Object.fromEntries(Object.entries(labelLevel.cats).map(([c, n]) => [c, round2(n)])),
+      },
+    },
     advances: {
       total: round2([...advByArtist.values()].reduce((s, e) => s + e.total, 0)),
       other_total: round2(advOther),
@@ -1191,5 +1240,657 @@ router.get('/balance-sheet/export', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Allocate Advertising — the ad pool, charge by charge
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ── What "unallocated" means, and why it comes from buildPnl ──
+// A charge is in the pool because `label_level_spend_rules` says its vendor (or
+// its category) bills the label, AND no part of it names an artist. That test
+// lives at ONE call site — the operating branch of buildPnl — and this page
+// lists exactly the rows it fired on, via `collectLabelLevel`. A second query
+// with its own idea of label-level is the shape that puts a drill-through at one
+// number against a report saying something else.
+//
+// Bank is the money, Ads Manager is the basis: only real charges are ever
+// apportioned. An import supplies proportions and nothing else, so there is no
+// reconciliation remainder to park anywhere.
+
+const AD_MONTH_RE = /^\d{4}-\d{2}$/;
+
+// pg hands back a JS Date for DATE columns, and `String(aDate)` is
+// "Tue May 04 2032 …" — so comparing those strings sorts by WEEKDAY NAME. Not
+// hypothetical: in the reference app it put the 10th before the 4th and the
+// greedy draw then consumed the wrong charge first. Everything below orders on
+// this.
+const adDay = (d) => {
+  if (!d) return '';
+  if (d instanceof Date) return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return String(d).slice(0, 10);
+};
+
+/** A family's live members, root first — the one shape every step below reads. */
+async function famRows(client, labelId, root) {
+  const { rows } = await client.query(
+    `SELECT id, parent_id, amount::float8 AS amount, COALESCE(currency,'USD') AS currency,
+            fx_rate_to_usd, artist, song, category, campaign_id, payee, payment_date,
+            payment_method, entry_source, invoice_date, description,
+            status, approved_by, approved_at, payment_status, rep, recoupable
+       FROM expenses
+      WHERE label_id = $1 AND (id = $2 OR parent_id = $2)
+        AND (deleted IS NULL OR deleted = FALSE) AND (voided IS NULL OR voided = FALSE)
+      ORDER BY (parent_id IS NULL) DESC, id ASC`,
+    [labelId, root]
+  );
+  return rows;
+}
+
+/**
+ * Keep the parent's `artist_breakdown` in step with the family. It is the
+ * denormalized copy `DELETE /ledger/entries/:id/splits` restores from, which is
+ * what makes unsplit work for free. A one-member family is not a split, so the
+ * copy is cleared rather than left describing a division that no longer exists.
+ */
+async function writeAdBreakdown(client, labelId, root, fam) {
+  if (fam.length < 2) {
+    await client.query('UPDATE expenses SET artist_breakdown = NULL WHERE id = $1 AND label_id = $2', [root, labelId]);
+    return;
+  }
+  const bd = fam.map((m) => ({
+    artist: m.artist || null, song: m.song || null,
+    amount: round2(Number(m.amount)), campaign_id: m.campaign_id || null,
+  }));
+  await client.query('UPDATE expenses SET artist_breakdown = $1::jsonb WHERE id = $2 AND label_id = $3',
+    [JSON.stringify(bd), root, labelId]);
+}
+
+/**
+ * One month of the ad pool: its charges, what is already allocated on each, and
+ * what is left. Shared by the listing, the dry run and the write, so all three
+ * agree about what is available BY CONSTRUCTION.
+ */
+async function adMonthState(labelId, month) {
+  const collected = [];
+  const pnl = await buildPnl(labelId, monthStart(month), monthEnd(month), null, { collectLabelLevel: collected });
+
+  // ── charges this page has ALREADY finished ──
+  // A fully-allocated charge is by definition no longer label-level: every slice
+  // names an artist, so the collector never sees it. Listing only what the
+  // collector returns would make a completed charge VANISH and take its
+  // allocation out of `allocated_cents` with it, so the page would under-report
+  // its own work. "Which charges did we allocate in this month" is a different
+  // and purely factual question, not a second opinion about label-level.
+  const { rows: doneRoots } = await pool.query(
+    `SELECT DISTINCT COALESCE(e.parent_id, e.id) AS root
+       FROM expenses e
+      WHERE e.label_id = $1 AND e.campaign_id IS NOT NULL
+        AND TO_CHAR(e.payment_date, 'YYYY-MM') = $2
+        AND (e.deleted IS NULL OR e.deleted = FALSE)
+        AND (e.voided IS NULL OR e.voided = FALSE)`,
+    [labelId, month]
+  );
+
+  const rootIds = [...new Set([
+    ...collected.map((x) => x.root_id).filter((x) => x != null),
+    ...doneRoots.map((r) => r.root),
+  ])];
+  // The ledger rows the label-level test actually fired on: the parts still
+  // belonging to nobody. This SET, not a re-derived predicate, is what "open"
+  // means everywhere below.
+  const openIds = new Set(collected.map((x) => x.expense_id).filter((x) => x != null));
+  const usdByPart = new Map(collected.map((x) => [x.expense_id, x.usd]));
+
+  let members = [];
+  if (rootIds.length) {
+    const { rows } = await pool.query(
+      `SELECT e.id, e.parent_id, e.amount::float8 AS amount, COALESCE(e.currency,'USD') AS currency,
+              e.fx_rate_to_usd, e.artist, e.song, e.category, e.campaign_id, e.payee,
+              e.payment_date, e.description, e.entry_source,
+              -- A member carrying a document must not be restructured: for the
+              -- legacy inline path that blob is the ONLY copy of the file.
+              (e.receipt_r2_key IS NOT NULL OR e.receipt_filename IS NOT NULL
+                OR e.invoice_r2_key IS NOT NULL OR e.invoice_filename IS NOT NULL) AS has_file,
+              c.name AS campaign_name
+         FROM expenses e
+         LEFT JOIN campaigns c ON c.id = e.campaign_id AND c.label_id = e.label_id
+        WHERE e.label_id = $1 AND (e.id = ANY($2::int[]) OR e.parent_id = ANY($2::int[]))
+          AND (e.deleted IS NULL OR e.deleted = FALSE)
+          AND (e.voided IS NULL OR e.voided = FALSE)
+        ORDER BY (e.parent_id IS NULL) DESC, e.id ASC`,
+      [labelId, rootIds]
+    );
+    members = rows;
+  }
+  const famOf = new Map();
+  for (const m of members) {
+    const root = m.parent_id || m.id;
+    if (!famOf.has(root)) famOf.set(root, []);
+    famOf.get(root).push(m);
+  }
+  const firstPartOf = new Map();
+  for (const d of collected) if (d.root_id != null && !firstPartOf.has(d.root_id)) firstPartOf.set(d.root_id, d);
+
+  const charges = [];
+  for (const rootId of rootIds) {
+    const fam = famOf.get(rootId) || [];
+    if (!fam.length) continue;
+    const rootRow = fam.find((m) => !m.parent_id) || fam[0];
+    const d = firstPartOf.get(rootId) || {
+      date: rootRow.payment_date, month, payee: rootRow.payee,
+      category: rootRow.category, root_id: rootId,
+    };
+    const open = fam.filter((m) => openIds.has(m.id));
+    const chargeCents = fam.reduce((s, m) => s + toCents(m.amount), 0);
+    const openCents = open.reduce((s, m) => s + toCents(m.amount), 0);
+    // Every reason a charge cannot be restructured, NAMED rather than filtered
+    // out — a page that silently omits a charge is a page whose total nobody can
+    // reproduce.
+    const blocked = [];
+    if (rootRow.parent_id) blocked.push('family root missing');
+    if (fam.some((m) => m.has_file)) blocked.push('a slice carries a document');
+    if (open.length > 1) blocked.push(`${open.length} unattributed slices — split by hand, needs sorting out first`);
+    if (!openCents) blocked.push('nothing unallocated');
+    charges.push({
+      root_id: rootId,
+      date: d.date, month: d.month, payee: d.payee,
+      description: rootRow.description, category: d.category,
+      currency: rootRow.currency || 'USD',
+      charge_cents: chargeCents,
+      open_cents: openCents,
+      open_expense_id: open.length === 1 ? open[0].id : null,
+      // What the P&L scores the open part at. Equal to `open_cents` for a USD
+      // charge, and shown beside it rather than assumed: a foreign charge is
+      // allocated in its own currency and reported in dollars.
+      open_usd: round2(open.reduce((s, m) => s + (usdByPart.get(m.id) || 0), 0)),
+      allocations: fam.filter((m) => m.campaign_id).map((m) => ({
+        expense_id: m.id, campaign_id: m.campaign_id, campaign_name: m.campaign_name,
+        artist: m.artist, song: m.song, cents: toCents(m.amount),
+      })),
+      // Named by somebody through the Reports drill rather than by this page.
+      // Not ours to move, and counted so the arithmetic on the row adds up.
+      attributed: fam.filter((m) => !m.campaign_id && String(m.artist || '').trim()).map((m) => ({
+        expense_id: m.id, artist: m.artist, song: m.song, cents: toCents(m.amount),
+      })),
+      allocatable: blocked.length === 0,
+      blocked,
+    });
+  }
+  charges.sort((a, b) => adDay(a.date).localeCompare(adDay(b.date)) || a.root_id - b.root_id);
+
+  const ll = pnl.by_artist?.label_level || {};
+  return {
+    month, charges,
+    open_cents: charges.reduce((s, c) => s + c.open_cents, 0),
+    allocatable_cents: charges.filter((c) => c.allocatable).reduce((s, c) => s + c.open_cents, 0),
+    allocated_cents: charges.reduce((s, c) => s + c.allocations.reduce((t, a) => t + a.cents, 0), 0),
+    // The pool as the REPORT states it, so the page can never quietly disagree
+    // with the P&L it is drawing from.
+    pool_usd: round2(Number(ll.total) || 0),
+    open_usd: round2(charges.reduce((s, c) => s + c.open_usd, 0)),
+    by_category: ll.by_category || {},
+    rule_count: ll.rule_count || 0,
+  };
+}
+
+// GET /ad-months?from=&to= — how much pool each month holds, so the page can
+// open on the OLDEST month with money in it and show the backlog at a glance.
+// ONE buildPnl over the whole range, grouped by the month the collector already
+// stamps on each row — not a call per month, and not a cheaper query of its own
+// (that would be a second idea of what label-level means, and navigation
+// drifting from money is how a page starts lying).
+router.get('/ad-months', async (req, res) => {
+  try {
+    const to = isValidDay(req.query.to) ? req.query.to : ymd(new Date());
+    const from = isValidDay(req.query.from) ? req.query.from : `${Number(to.slice(0, 4)) - 2}-01-01`;
+    const problem = rangeProblem(from, to);
+    if (problem) return res.status(400).json({ success: false, error: problem });
+    const collected = [];
+    await buildPnl(req.labelId, from, to, null, { collectLabelLevel: collected });
+    const by = new Map();
+    for (const c of collected) {
+      if (!by.has(c.month)) by.set(c.month, { month: c.month, usd: 0, charges: 0 });
+      const m = by.get(c.month);
+      m.usd += c.usd;
+      m.charges += 1;
+    }
+    const months = [...by.values()]
+      .map((m) => ({ ...m, usd: round2(m.usd) }))
+      .filter((m) => m.charges > 0)
+      .sort((a, b) => a.month.localeCompare(b.month));
+    res.json({ success: true, data: { from, to, months, total: round2(months.reduce((s, m) => s + m.usd, 0)) } });
+  } catch (e) { console.error('ad-months error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+// GET /ad-charges?month=YYYY-MM — the pool, charge by charge, plus the campaigns.
+router.get('/ad-charges', async (req, res) => {
+  try {
+    const month = AD_MONTH_RE.test(String(req.query.month || '')) ? req.query.month : null;
+    if (!month) return res.status(400).json({ success: false, error: 'month must be YYYY-MM' });
+    const state = await adMonthState(req.labelId, month);
+
+    // Campaigns dated in this month, plus any campaign already holding money
+    // from it — a campaign run in June and paid for in July must not disappear
+    // from the month whose charges funded it.
+    const { rows: campaigns } = await pool.query(
+      `SELECT c.id, c.name, c.platform, c.status, c.start_date, c.release_id,
+              c.planned_budget::float8 AS planned_budget, c.artist_id,
+              a.name AS artist, r.project_name AS song,
+              COALESCE(al.cents, 0)::int AS allocated_cents,
+              COALESCE(tot.cents, 0)::int AS allocated_cents_all_time
+         FROM campaigns c
+         LEFT JOIN artists a ON a.id = c.artist_id AND a.label_id = c.label_id
+         LEFT JOIN releases r ON r.id = c.release_id AND r.label_id = c.label_id
+         LEFT JOIN (
+           SELECT e.campaign_id, ROUND(SUM(e.amount) * 100)::int AS cents
+             FROM expenses e
+            WHERE e.label_id = $1 AND e.campaign_id IS NOT NULL
+              AND (e.deleted IS NULL OR e.deleted = FALSE) AND (e.voided IS NULL OR e.voided = FALSE)
+              AND TO_CHAR(e.payment_date, 'YYYY-MM') = $2
+            GROUP BY e.campaign_id) al ON al.campaign_id = c.id
+         LEFT JOIN (
+           SELECT e.campaign_id, ROUND(SUM(e.amount) * 100)::int AS cents
+             FROM expenses e
+            WHERE e.label_id = $1 AND e.campaign_id IS NOT NULL
+              AND (e.deleted IS NULL OR e.deleted = FALSE) AND (e.voided IS NULL OR e.voided = FALSE)
+            GROUP BY e.campaign_id) tot ON tot.campaign_id = c.id
+        WHERE c.label_id = $1
+          AND (TO_CHAR(c.start_date, 'YYYY-MM') = $2 OR COALESCE(al.cents, 0) > 0)
+        ORDER BY a.name NULLS LAST, c.name`,
+      [req.labelId, month]
+    );
+    res.json({ success: true, data: { ...state, campaigns } });
+  } catch (e) { console.error('ad-charges error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+/**
+ * Resolve the requested allocations against a month, WITHOUT writing.
+ * Returns the exact plan a write would perform, so `dry_run` and the apply share
+ * one derivation — a preview computed differently from the write is a preview
+ * that lies, and this page's whole safety story is that you approve what you see.
+ */
+async function planAdAllocation(labelId, month, requests) {
+  const state = await adMonthState(labelId, month);
+  const ids = [...new Set(requests.map((r) => r.campaign_id))];
+  const { rows: camps } = await pool.query(
+    `SELECT c.id, c.name, c.platform, c.release_id, a.name AS artist, r.project_name AS song
+       FROM campaigns c
+       LEFT JOIN artists a ON a.id = c.artist_id AND a.label_id = c.label_id
+       LEFT JOIN releases r ON r.id = c.release_id AND r.label_id = c.label_id
+      WHERE c.label_id = $1 AND c.id = ANY($2::int[])`,
+    [labelId, ids]
+  );
+  const campById = new Map(camps.map((c) => [c.id, c]));
+  const missing = ids.filter((i) => !campById.has(i));
+  if (missing.length) return { error: `Unknown campaign${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}` };
+  // A campaign with no artist cannot attribute anything, which is the entire
+  // point of allocating. Refused here rather than writing a slice that names
+  // nobody and looks allocated.
+  const nameless = camps.filter((c) => !String(c.artist || '').trim());
+  if (nameless.length) {
+    return { error: 'These campaigns have no artist, so allocating to them would attribute nothing: '
+      + nameless.map((c) => c.name).join(', ') };
+  }
+
+  const allocatable = state.charges.filter((c) => c.allocatable);
+  const draw = drawMany(
+    allocatable.map((c) => ({ id: c.root_id, remaining_cents: c.open_cents })),
+    requests.map((r) => ({ campaign_id: r.campaign_id, cents: r.cents }))
+  );
+
+  if (draw.short_total > 0) {
+    const blockedCents = state.charges.filter((c) => !c.allocatable).reduce((s, c) => s + c.open_cents, 0);
+    return {
+      error: `${month} has ${fromCents(state.allocatable_cents).toFixed(2)} of unallocated ad charges`
+        + ` — ${fromCents(requests.reduce((s, r) => s + r.cents, 0)).toFixed(2)} would over-allocate it by`
+        + ` ${fromCents(draw.short_total).toFixed(2)}.`
+        + (blockedCents > 0 ? ` A further ${fromCents(blockedCents).toFixed(2)} is in charges that cannot be restructured.` : '')
+        + ' Reduce the amount, or allocate from another month.',
+      data: { allocatable: fromCents(state.allocatable_cents), short: fromCents(draw.short_total) },
+    };
+  }
+
+  // Regroup by charge: one write per family, whatever it was drawn for.
+  const byRoot = new Map();
+  for (const p of draw.plan) {
+    const c = campById.get(p.campaign_id);
+    for (const s of p.slices) {
+      if (!byRoot.has(s.id)) byRoot.set(s.id, []);
+      byRoot.get(s.id).push({
+        campaign_id: p.campaign_id, campaign_name: c.name,
+        artist: c.artist, song: c.song || null, cents: s.cents,
+      });
+    }
+  }
+  const chargeById = new Map(state.charges.map((c) => [c.root_id, c]));
+  const per_charge = [...byRoot.entries()].map(([root, slices]) => {
+    const c = chargeById.get(root);
+    const take = slices.reduce((s, x) => s + x.cents, 0);
+    return {
+      root_id: root, date: c.date, payee: c.payee, category: c.category,
+      charge: fromCents(c.charge_cents), open_before: fromCents(c.open_cents),
+      allocating: fromCents(take), open_after: fromCents(c.open_cents - take),
+      whole_charge: take === c.open_cents,
+      slices: slices.map((x) => ({ ...x, amount: fromCents(x.cents) })),
+    };
+  }).sort((a, b) => adDay(a.date).localeCompare(adDay(b.date)) || a.root_id - b.root_id);
+
+  return {
+    month,
+    per_campaign: draw.plan.map((p) => ({
+      campaign_id: p.campaign_id, campaign_name: campById.get(p.campaign_id).name,
+      artist: campById.get(p.campaign_id).artist, song: campById.get(p.campaign_id).song || null,
+      amount: fromCents(p.cents), charges: p.slices.length,
+    })),
+    per_charge,
+    total: fromCents(draw.total),
+    open_before: fromCents(state.allocatable_cents),
+    open_after: fromCents(state.allocatable_cents - draw.total),
+    state, byRoot,
+  };
+}
+
+// POST /ad-allocate
+//   { month, campaign_id, amount, dry_run }                  one campaign
+//   { month, allocations: [{campaign_id, amount}], dry_run }  an import
+//
+// Writes a real split family per charge. The slices carry `entry_source`,
+// `recoup_reviewed`, `recoupable` and `campaign_id` EXPLICITLY — see the comment
+// on the INSERT, which is why this does not call the shared split writer.
+router.post('/ad-allocate', async (req, res) => {
+  try {
+    const month = AD_MONTH_RE.test(String(req.body.month || '')) ? req.body.month : null;
+    if (!month) return res.status(400).json({ success: false, error: 'month must be YYYY-MM' });
+
+    const raw = Array.isArray(req.body.allocations) && req.body.allocations.length
+      ? req.body.allocations
+      : [{ campaign_id: req.body.campaign_id, amount: req.body.amount }];
+    // Two rows for one campaign are ONE allocation — otherwise the second would
+    // silently draw from what the first left and the campaign would show a total
+    // nobody asked for.
+    const merged = new Map();
+    for (const r of raw) {
+      const id = Number(r.campaign_id);
+      const cents = toCents(Math.abs(Number(r.amount) || 0));
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ success: false, error: 'each allocation needs a campaign_id' });
+      if (cents <= 0) return res.status(400).json({ success: false, error: 'each allocation needs an amount greater than zero' });
+      merged.set(id, (merged.get(id) || 0) + cents);
+    }
+    let requests = [...merged.entries()].map(([campaign_id, cents]) => ({ campaign_id, cents }));
+
+    // ── proportional: an Ads Manager export ──
+    // The file gives per-campaign SPEND, which will not equal the bank. Rather
+    // than allocating the report's figures and parking a difference, its numbers
+    // are treated as WEIGHTS and the month's actual charges are divided by them:
+    // 100% of the real money is apportioned, so the tie-out holds by
+    // construction and there is no remainder to explain.
+    if (req.body.proportional) {
+      const state = await adMonthState(req.labelId, month);
+      if (!state.allocatable_cents) return res.status(400).json({ success: false, error: `${month} has no unallocated ad charges to apportion` });
+      const cents = apportion(state.allocatable_cents, requests.map((r) => r.cents));
+      requests = requests.map((r, i) => ({ campaign_id: r.campaign_id, cents: cents[i] })).filter((r) => r.cents > 0);
+      if (!requests.length) return res.status(400).json({ success: false, error: 'the weights given all resolve to zero — nothing to allocate' });
+    }
+
+    const plan = await planAdAllocation(req.labelId, month, requests);
+    if (plan.error) return res.status(400).json({ success: false, error: plan.error, data: plan.data || null });
+
+    const publicPlan = {
+      month: plan.month, per_campaign: plan.per_campaign, per_charge: plan.per_charge,
+      total: plan.total, open_before: plan.open_before, open_after: plan.open_after,
+    };
+    if (req.body.dry_run) return res.json({ success: true, data: { ...publicPlan, dry_run: true } });
+
+    const client = await pool.connect();
+    const written = { charges: 0, slices: 0, expense_ids: [] };
+    try {
+      await client.query('BEGIN');
+      for (const [root, slices] of plan.byRoot) {
+        const charge = plan.state.charges.find((c) => c.root_id === root);
+        const fam = await famRows(client, req.labelId, root);
+        const openRow = fam.find((m) => m.id === charge.open_expense_id);
+        if (!openRow) throw new Error(`charge ${root} has no single unallocated slice to draw from`);
+
+        const take = slices.reduce((s, x) => s + x.cents, 0);
+        const remainder = toCents(openRow.amount) - take;
+        if (remainder < 0) throw new Error(`charge ${root} would be over-allocated`);
+
+        let toInsert = slices;
+        if (remainder > 0) {
+          await client.query('UPDATE expenses SET amount = $1 WHERE id = $2 AND label_id = $3',
+            [fromCents(remainder), openRow.id, req.labelId]);
+        } else {
+          // Fully allocated: the row cannot be left at zero and cannot be deleted
+          // when it is the family root (that would destroy the bank match), so it
+          // BECOMES the last slice. One fewer child row, and the charge keeps its
+          // identity either way.
+          const last = slices[slices.length - 1];
+          toInsert = slices.slice(0, -1);
+          await client.query(
+            `UPDATE expenses
+                SET amount = $1, artist = $2, song = $3, campaign_id = $4,
+                    recoupable = TRUE, recoup_reviewed = TRUE, recoup_reviewed_at = NOW(),
+                    recoup_reviewed_by = $5, artist_campaign = TRUE
+              WHERE id = $6 AND label_id = $7`,
+            [fromCents(last.cents), last.artist, last.song, last.campaign_id, req.user.name, openRow.id, req.labelId]
+          );
+          written.expense_ids.push(openRow.id);
+        }
+
+        for (const s of toInsert) {
+          // ── Why this INSERT is here and not in the shared split writer ──
+          // Four columns that writer does not set, each load-bearing:
+          //   entry_source     inherited from the root. The shared writer omits
+          //                    the column, so children come out NULL and read as
+          //                    hand-entered invoices — a slice of a bank-born
+          //                    payment leaking onto the recoupment surfaces
+          //                    through the hole the gate was built to close.
+          //   recoup_reviewed  the gate itself (lib/recoupments.js
+          //                    recoupBaseSql). Without it, "marked reviewed and
+          //                    recoupable" would write to a column nobody reads.
+          //   recoupable       the answer that gate carries.
+          //   campaign_id      the basis. A campaign's spend has to be a query.
+          // Teaching the shared writer these semantics would change behaviour for
+          // the Ledger and Add-Invoice flows, which call it for something else.
+          const { rows: [ins] } = await client.query(
+            `INSERT INTO expenses
+               (label_id, parent_id, invoice_date, payee, description, category, artist, song, amount,
+                currency, payment_method, status, approved_by, approved_at,
+                payment_status, payment_date, fx_rate_to_usd, rep,
+                entry_source, campaign_id,
+                recoupable, recoup_reviewed, recoup_reviewed_at, recoup_reviewed_by,
+                artist_campaign, created_by, created_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+                     TRUE,TRUE,NOW(),$21,TRUE,$21,NOW())
+             RETURNING id`,
+            [req.labelId, root, openRow.invoice_date, openRow.payee, openRow.description,
+              openRow.category, s.artist, s.song, fromCents(s.cents),
+              openRow.currency, openRow.payment_method, openRow.status,
+              openRow.approved_by, openRow.approved_at,
+              openRow.payment_status, openRow.payment_date, openRow.fx_rate_to_usd, openRow.rep,
+              openRow.entry_source, s.campaign_id, req.user.name]
+          );
+          written.slices += 1;
+          written.expense_ids.push(ins.id);
+        }
+
+        // The family must still add up to the charge. ASSERTED, not assumed: the
+        // shared split writer performs no such check, and a cent per charge is
+        // exactly the drift that breaks a spend sheet's tie-out.
+        const after = await famRows(client, req.labelId, root);
+        const sum = after.reduce((s, m) => s + toCents(m.amount), 0);
+        if (sum !== charge.charge_cents) {
+          throw new Error(`charge ${root}: slices sum to ${fromCents(sum)} but the charge is `
+            + `${fromCents(charge.charge_cents)} — refusing to leave the ledger out by `
+            + `${fromCents(sum - charge.charge_cents)}`);
+        }
+        await writeAdBreakdown(client, req.labelId, root, after);
+        written.charges += 1;
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally { client.release(); }
+
+    for (const c of plan.per_campaign) {
+      await pool.query(
+        `INSERT INTO bk_audit_log (label_id, expense_id, action, detail, actor)
+         VALUES ($1, NULL, 'ad_allocated', $2, $3)`,
+        [req.labelId,
+          `Allocated ${Number(c.amount).toFixed(2)} of ${month} ad charges to ${c.artist}`
+          + (c.song ? ` — ${c.song}` : '') + ` across ${c.charges} charge${c.charges === 1 ? '' : 's'}`
+          + ' — ledger slices, marked reviewed and recoupable',
+          req.user.name]
+      ).catch(() => {});
+    }
+    await logActivity(req, 'Allocated ad spend', `${month} · ${plan.total} across ${plan.per_campaign.length} campaign(s)`);
+
+    res.json({ success: true, data: { ...publicPlan, written } });
+  } catch (e) {
+    console.error('ad-allocate error:', e);
+    res.status(500).json({ success: false, error: e.message || 'Allocation failed' });
+  }
+});
+
+// DELETE /ad-allocate/:expenseId — hand ONE slice back to the pool. Per-slice
+// rather than per-charge, because that is the grain the mistake is made at.
+router.delete('/ad-allocate/:expenseId', async (req, res) => {
+  try {
+    const id = Number(req.params.expenseId);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ success: false, error: 'bad id' });
+
+    const { rows: [slice] } = await pool.query(
+      `SELECT e.id, e.parent_id, e.amount::float8 AS amount, e.artist, e.campaign_id, e.payee, c.name AS campaign_name
+         FROM expenses e LEFT JOIN campaigns c ON c.id = e.campaign_id AND c.label_id = e.label_id
+        WHERE e.id = $1 AND e.label_id = $2 AND (e.deleted IS NULL OR e.deleted = FALSE)`,
+      [id, req.labelId]
+    );
+    if (!slice) return res.status(404).json({ success: false, error: 'Entry not found' });
+    if (!slice.campaign_id) return res.status(400).json({ success: false, error: 'That row is not an ad allocation — nothing to return' });
+    const root = slice.parent_id || slice.id;
+
+    const client = await pool.connect();
+    let outcome;
+    try {
+      await client.query('BEGIN');
+      const fam = await famRows(client, req.labelId, root);
+      const before = fam.reduce((s, m) => s + toCents(m.amount), 0);
+      // The row the money goes back to: the family's unallocated slice, if it
+      // has one. Identified by carrying neither an artist nor a campaign — the
+      // same thing the pool's own test means by "belonging to nobody".
+      const open = fam.find((m) => m.id !== id && !m.campaign_id && !String(m.artist || '').trim());
+
+      if (open && slice.parent_id) {
+        await client.query('UPDATE expenses SET amount = $1 WHERE id = $2 AND label_id = $3',
+          [fromCents(toCents(open.amount) + toCents(slice.amount)), open.id, req.labelId]);
+        await client.query('DELETE FROM expenses WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+        outcome = 'folded back into the charge';
+      } else {
+        // No unallocated slice to merge into — or this IS the root, which cannot
+        // be deleted without destroying the bank match that points at it. Strip
+        // the labels instead: same money, back to belonging to nobody.
+        await client.query(
+          `UPDATE expenses
+              SET artist = NULL, song = NULL, campaign_id = NULL, artist_campaign = NULL,
+                  recoup_reviewed = FALSE, recoup_reviewed_at = NULL, recoup_reviewed_by = NULL
+            WHERE id = $1 AND label_id = $2`,
+          [id, req.labelId]
+        );
+        outcome = 'returned to the pool in place';
+      }
+
+      const after = await famRows(client, req.labelId, root);
+      const sum = after.reduce((s, m) => s + toCents(m.amount), 0);
+      if (sum !== before) throw new Error(`undo changed the charge total from ${fromCents(before)} to ${fromCents(sum)}`);
+      await writeAdBreakdown(client, req.labelId, root, after);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally { client.release(); }
+
+    await pool.query(
+      `INSERT INTO bk_audit_log (label_id, expense_id, action, detail, actor) VALUES ($1,$2,'ad_unallocated',$3,$4)`,
+      [req.labelId, id,
+        `Returned ${Number(slice.amount).toFixed(2)} from ${slice.campaign_name || 'a campaign'}`
+        + ` (${slice.artist || 'no artist'}) to the ad pool — ${outcome}`, req.user.name]
+    ).catch(() => {});
+
+    res.json({ success: true, data: { expense_id: id, root_id: root, amount: slice.amount, outcome } });
+  } catch (e) {
+    console.error('ad-unallocate error:', e);
+    res.status(500).json({ success: false, error: e.message || 'Undo failed' });
+  }
+});
+
+// ── Label-level spend rules — the pool's vocabulary ──────────────────────────
+// Also the destination of Artist Campaigns' "these vendors bill the label"
+// action on the unattributed queue.
+router.get('/label-level-rules', async (req, res) => {
+  try {
+    const rules = await loadLabelLevelRules(pool, req.labelId);
+    // Candidates: unattributed campaign-ish spend NOT already covered, so the
+    // page can offer the vendors worth ruling instead of an empty box.
+    let candidates = [];
+    try {
+      const to = isValidDay(req.query.to) ? req.query.to : ymd(new Date());
+      const from = isValidDay(req.query.from) ? req.query.from : `${Number(to.slice(0, 4)) - 1}-01-01`;
+      const { rows } = await pool.query(
+        `SELECT TRIM(e.payee) AS payee, COUNT(*)::int AS n,
+                SUM(CASE WHEN e.fx_rate_to_usd > 0 THEN e.amount / e.fx_rate_to_usd ELSE e.amount END)::float8 AS usd
+           FROM expenses e
+           JOIN expenses r ON r.id = COALESCE(e.parent_id, e.id) AND r.label_id = e.label_id
+          WHERE e.label_id = $1 AND TRIM(COALESCE(e.artist, '')) = ''
+            AND r.status = 'approved' AND r.payment_status = 'Paid'
+            AND r.payment_date BETWEEN $2 AND $3
+            AND (e.deleted IS NULL OR e.deleted = FALSE) AND (e.voided IS NULL OR e.voided = FALSE)
+            AND (r.deleted IS NULL OR r.deleted = FALSE) AND (r.voided IS NULL OR r.voided = FALSE)
+            AND TRIM(COALESCE(e.payee, '')) <> ''
+          GROUP BY 1 ORDER BY 3 DESC LIMIT 40`,
+        [req.labelId, from, to]
+      );
+      candidates = rows
+        .filter((r) => !rules.vendors.has(llNorm(r.payee)))
+        .map((r) => ({ payee: r.payee, count: r.n, usd: round2(r.usd) }));
+    } catch { /* advisory only */ }
+    res.json({ success: true, data: { rules: rules.rows, candidates } });
+  } catch (e) { console.error('label-level-rules error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+router.post('/label-level-rules', async (req, res) => {
+  try {
+    const scope = LL_SCOPES.includes(req.body.scope) ? req.body.scope : null;
+    if (!scope) return res.status(400).json({ success: false, error: 'scope must be vendor or category' });
+    const keys = (Array.isArray(req.body.rule_keys) ? req.body.rule_keys : [req.body.rule_key])
+      .map((k) => String(k || '').trim()).filter(Boolean);
+    if (!keys.length) return res.status(400).json({ success: false, error: 'rule_key required' });
+    if (keys.length > 200) return res.status(400).json({ success: false, error: 'Too many rules at once (max 200)' });
+    let added = 0;
+    for (const k of keys) {
+      const r = await pool.query(
+        `INSERT INTO label_level_spend_rules (label_id, scope, rule_key, reason, created_by)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (label_id, scope, LOWER(TRIM(rule_key))) DO NOTHING RETURNING id`,
+        [req.labelId, scope, k, req.body.reason || null, req.user.name]
+      );
+      if (r.rows.length) added += 1;
+    }
+    await logActivity(req, 'Added label-level spend rule', `${scope}: ${keys.join(', ')}`);
+    res.json({ success: true, data: { added, requested: keys.length } });
+  } catch (e) { console.error('label-level-rule add error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+router.delete('/label-level-rules/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `DELETE FROM label_level_spend_rules WHERE id = $1 AND label_id = $2 RETURNING scope, rule_key`,
+      [parseInt(req.params.id, 10), req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'No such rule' });
+    await logActivity(req, 'Removed label-level spend rule', `${rows[0].scope}: ${rows[0].rule_key}`);
+    res.json({ success: true });
+  } catch (e) { console.error('label-level-rule delete error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
 module.exports = router;
-module.exports.buildPnl = buildPnl; // reused by Artist Campaigns later
+module.exports.buildPnl = buildPnl; // reused by Artist Campaigns (the Settled layer)

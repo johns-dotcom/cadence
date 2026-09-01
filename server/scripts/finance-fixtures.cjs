@@ -20,7 +20,8 @@ const { artistKeyOf, artistBucketKey, namesAnArtist } = require('../lib/artistKe
 const { usdOf, round2 } = require('../lib/usd');
 const { pairReversals } = require('../lib/reversalPairs');
 const { proposeFundingPairs, namesRecipient } = require('../lib/fundingPairs');
-const { excludeBankRows, isCreatorRow, reportingThresholdFor } = require('../lib/ledgerSource');
+const { excludeBankRows, isCreatorRow, reportingThresholdFor,
+  restoreMatchPlan, CREATOR_MATCH_DETAIL } = require('../lib/ledgerSource');
 
 // ── Evidence (V3 A7) ─────────────────────────────────────────────────────────
 assert('invoice # in wire text', !!R.refEvidence({ description: 'WIRE PMT DET: INV 003' }, { invoice_number: '#003' }));
@@ -89,6 +90,37 @@ assert('short-prefix recipient refused', namesRecipient('PAYPAL INST XFER DG', '
 assert('exclusion uses IS DISTINCT FROM (null-safe)', excludeBankRows('e').includes('IS DISTINCT FROM'));
 assert('inclusion uses plain equality', isCreatorRow('e').includes("= 'creator_payment'"));
 assert('OBBBA thresholds', reportingThresholdFor(2025) === 600 && reportingThresholdFor(2026) === 2000);
+
+// Undoing a creator conversion. `match_method='creator'` is
+// explained-never-invoice-backed; an earlier build reset every relabelled match
+// to 'manual' unconditionally, and 'manual' IS counted as invoice-backed — so
+// unconverting promoted an undocumented row into the one bucket the creator
+// disposition exists to keep it out of.
+const auditRows = [
+  { detail: `${CREATOR_MATCH_DETAIL}77`, old_value: 'auto-email' },
+  { detail: `${CREATOR_MATCH_DETAIL}78`, old_value: null },
+  { detail: 'Moved to Creator Payments from recoupment', old_value: 'recoupment' },
+];
+const plan = restoreMatchPlan(auditRows);
+assert('unconvert restores the AUDITED prior method, never a default "manual"',
+  plan.length === 2 && plan[0].txn_id === 77 && plan[0].match_method === 'auto-email'
+  && !plan.some((p) => p.match_method === 'manual'));
+assert('a match that carried NO method goes back to NULL, not to an invented one',
+  plan[1].txn_id === 78 && plan[1].match_method === null);
+assert('the entry_source audit row is not mistaken for a match',
+  !plan.some((p) => Number.isNaN(p.txn_id)));
+assert('newest audit wins per transaction, and junk ids are dropped',
+  (() => {
+    const p2 = restoreMatchPlan([
+      { detail: `${CREATOR_MATCH_DETAIL}77`, old_value: 'auto-alias' },
+      { detail: `${CREATOR_MATCH_DETAIL}77`, old_value: 'manual' },
+      { detail: `${CREATOR_MATCH_DETAIL}abc`, old_value: 'manual' },
+      { detail: `${CREATOR_MATCH_DETAIL}-3`, old_value: 'manual' },
+    ]);
+    return p2.length === 1 && p2[0].match_method === 'auto-alias';
+  })());
+assert('no audit means no restore — the match stays "creator", which over-states nothing',
+  restoreMatchPlan([]).length === 0 && restoreMatchPlan(null).length === 0);
 
 // ── Statement lens (the bank half's tie-out) ────────────────────────────────
 const L = require('../lib/statementLens');
@@ -159,5 +191,242 @@ assert('matched lines are always extra here — their invoice lives on the other
 assert('the credit side is never in the money-out list, and is in the money-in one',
   !L.extraTransactions(txns, onScreen, 'out').some((t) => t.id === 4)
   && L.extraTransactions(txns, onScreen, 'in').map((t) => t.id).includes(4));
+
+// ── Recoupment statements (Phase 5) ─────────────────────────────────────────
+// The 20th cutoff decides which partner statement a claim lands on, and the
+// stamp is the only input. Both directions of the boundary are held here.
+const SM = require('../lib/statementMonth');
+const RC = require('../lib/recoupments');
+
+assert('day 20 stays in its own statement', SM.statementMonthFor('2026-03-20T23:00:00Z') === '2026-03');
+assert('day 21 rolls into the next statement', SM.statementMonthFor('2026-03-21T00:00:00Z') === '2026-04');
+assert('Dec 21 rolls the YEAR too', SM.statementMonthFor('2026-12-21T12:00:00Z') === '2027-01');
+assert('no stamp = no statement, never "this month"',
+  SM.statementMonthFor(null) === null && SM.statementMonthFor(undefined) === null && SM.statementMonthFor('') === null);
+assert('a move stamp round-trips to the month asked for',
+  SM.statementMonthFor(SM.statementStampFor('2026-04')) === '2026-04'
+  && SM.statementMonthFor(SM.statementStampFor('2026-12')) === '2026-12');
+assert('a move stamp is noon UTC on the 1st — day 1 is <= 20 in every timezone',
+  SM.statementStampFor('2026-04').toISOString() === '2026-04-01T12:00:00.000Z');
+assert('junk months are refused, not silently stamped as now',
+  SM.statementStampFor('2026-13') === null && SM.statementStampFor('nope') === null && SM.statementStampFor('') === null);
+assert('the window a statement covers is release-to-release, not calendar',
+  SM.statementWindowLabel('2026-06') === 'May 21, 2026 – Jun 20, 2026');
+
+// The four bank-evidence states must mean the same thing on the server as in
+// client/src/utils/recoupState.js — a row cannot read verified on one screen
+// and unverified on another.
+const paidNoLine = { payment_status: 'Paid', bank_evidence: null, bank_expected: true };
+assert('paid + a covering statement + no line = the one discrepancy',
+  RC.recoupStateOf(paidNoLine) === 'unverified' && RC.bankUnverified(paidNoLine));
+assert('paid with no statement in yet is counted, not a problem',
+  RC.recoupStateOf({ payment_status: 'Paid', bank_evidence: null, bank_expected: false }) === 'awaiting_statement'
+  && RC.recoupCounted({ payment_status: 'Paid', bank_evidence: null, bank_expected: false }));
+assert('unverified spend is NOT in the counted headline',
+  !RC.recoupCounted(paidNoLine));
+assert('unpaid beats "expected" — nothing left the bank',
+  RC.recoupStateOf({ payment_status: 'Unpaid', bank_expected: true }) === 'unpaid');
+assert('provable-and-unclaimed is verified AND not yet claimed',
+  RC.isProvableUnclaimed({ bank_evidence: { id: 1 }, payment_status: 'Paid', ufr: false })
+  && !RC.isProvableUnclaimed({ bank_evidence: { id: 1 }, payment_status: 'Paid', ufr: true })
+  && !RC.isProvableUnclaimed(paidNoLine));
+assert('priority is a closed vocabulary — anything else is rejected, not stored',
+  RC.normalizePriority('High') === 'high' && RC.normalizePriority('l') === 'low'
+  && RC.normalizePriority('') === null && RC.normalizePriority('urgent') === undefined);
+assert('the bank-review gate is part of the base predicate, not an optional filter',
+  RC.recoupBaseSql('e').includes('recoup_reviewed') && RC.recoupBaseSql('e').includes('parent_id IS NULL'));
+assert('best spelling keeps the most-used name, ties to the longest',
+  RC.bestSpelling(['LIFELINE', 'Life/Line', 'Life/Line']) === 'Life/Line'
+  && RC.bestSpelling(['Oxis', 'Oxis Music']) === 'Oxis Music');
+
+
+// ── Recoupment integrity audit (Phase 5) ────────────────────────────────────
+// Five checks whose whole value is that they are RIGHT about small numbers.
+const RCLS = require('../lib/recoupClass');
+const RCTX = require('../lib/recoupContext');
+const RAUD = require('../lib/recoupAudit');
+
+// Class rules: equality, never substring. Two live categories differ only by a
+// suffix, and a `Salary` rule that swallowed `Salary (Felipe)` would take
+// $191,646 of somebody else's decision off the queue silently.
+const rules = RCLS.rulesFrom([
+  { scope: 'category', rule_key: 'Salary' },
+  { scope: 'vendor', rule_key: '  Tone  Pay, Inc ' },
+]);
+assert('a category rule covers its own category and NOT a suffixed sibling',
+  rules.has('anyone', 'Salary') && !rules.has('anyone', 'Salary (Felipe)'));
+assert('a vendor rule covers that payee whatever the category, and only that payee',
+  rules.has('Tone Pay, Inc', 'Marketing') && !rules.has('Tone Pay Media', 'Marketing'));
+assert('rule keys normalize whitespace + case on BOTH sides',
+  rules.has('tone   pay, inc', 'x') && rules.has('x', 'salary'));
+assert('the rule predicate is label-scoped and matches on equality, not LIKE',
+  RCLS.notClassRuledSql('e', '$1').includes('rcr.label_id = $1')
+  && !/LIKE/i.test(RCLS.notClassRuledSql('e', '$1')));
+
+// Artist proposals: a convenience on a row somebody is already reading. A wrong
+// proposal is worse than none, because it invites a click.
+const prop = RCTX.buildProposalIndex([
+  { artist: 'Oxis', n: 5 }, { artist: 'May Zoean', n: 2 }, { artist: '3ee', n: 40 },
+]);
+assert('the payee proposes the artist it contains',
+  prop.propose('Oxis Music, LLC') === 'Oxis' && prop.propose('MAY ZOEAN') === 'May Zoean');
+assert('short keys never propose — "3ee" is inside "Three Fifteen Media" once squashed',
+  prop.propose('Three Fifteen Media') === null);
+assert('a payee that names nobody proposes nothing rather than guessing',
+  prop.propose('FIRESTARTER LLC') === null);
+assert('a row that already names an artist is never given a proposal',
+  RCTX.attachRecoupContext(
+    [{ id: 1, payee: 'Oxis Music, LLC', artist: 'Someone', amount: 10, currency: 'USD' }],
+    { proposals: prop, twins: { find: () => null } })[0].artist_proposal === null);
+
+// Ledger twins: payee + amount to the cent, and nothing tighter.
+const twins = RCTX.buildTwinIndex([
+  { id: 7, payee: 'Oxis Music, LLC', amount: '10000.00', artist: 'Oxis', ufr: true },
+  { id: 8, payee: 'Oxis Music LLC', amount: 10000, artist: 'Oxis', ufr: false },
+]);
+assert('an invoice row at the same payee and amount is a twin, punctuation and all',
+  (twins.find('OXIS MUSIC LLC', 10000) || []).length === 2);
+assert('a cent apart is not a twin, and a missing amount asks nothing',
+  !twins.find('Oxis Music, LLC', 10000.01) && !twins.find('Oxis Music, LLC', null));
+
+// USD: round ONCE at the end. Three thirds of a cent round to 0.01 each and sum
+// to 0.03 — the audit must report 0.02, which is what the money actually is.
+const thirds = [1, 2, 3].map(() => ({ amount: 0.005, currency: 'USD' }));
+assert('audit sums round once at the end, not per row',
+  RAUD.sumUsd(thirds) === 0.02);
+assert('a foreign row is summed at its LOCKED rate, never at face value',
+  RAUD.sumUsd([{ amount: 200, currency: 'EUR', fx_rate_to_usd: 2 }]) === 100);
+
+// Check 3 — a sensor, not a verdict.
+const claimed = [
+  { id: 1, payee: 'Vendor A', invoice_number: 'INV-001', artist: 'Alpha', amount: 100, currency: 'USD' },
+  { id: 2, payee: 'vendor a', invoice_number: '001', artist: 'Beta', amount: 100, currency: 'USD' },
+  { id: 3, payee: 'Vendor B', invoice_number: 'X9', artist: 'Alpha', amount: 900, currency: 'USD' },
+  { id: 4, payee: 'Vendor B', invoice_number: 'X9', artist: 'Alpha', amount: 900, currency: 'USD' },
+  { id: 5, payee: 'Vendor C', invoice_number: null, artist: 'Alpha', amount: 5000, currency: 'USD' },
+  { id: 6, payee: 'Vendor C', invoice_number: '', artist: 'Beta', amount: 5000, currency: 'USD' },
+];
+const dc = RAUD.groupDoubleClaims(claimed);
+assert('the same invoice number normalizes across spellings into one group',
+  dc.length === 2 && dc.every(g => g.rows.length === 2));
+assert('no invoice number is not evidence of anything — those rows never group',
+  !dc.some(g => g.rows.some(r => r.id === 5 || r.id === 6)));
+assert('a cross-artist group sorts first even when it is the smaller one',
+  dc[0].cross_artist === true && dc[0].usd === 200 && dc[1].cross_artist === false);
+
+// Check 5 — half a payment claimed. Reachable by claiming an entry and THEN
+// splitting it: `/ledger/entries/:id/split` gives the parent the first slice and
+// creates children without `ufr`.
+const fam = RAUD.partialFamilies([
+  { id: 10, parent_id: null, ufr: true, payee: 'Studio', artist: 'Alpha', amount: 300, currency: 'USD' },
+  { id: 11, parent_id: 10, ufr: false, payee: 'Studio', artist: 'Beta', amount: 300, currency: 'USD' },
+  { id: 12, parent_id: 10, ufr: false, payee: 'Studio', artist: 'Gamma', amount: 400, currency: 'USD' },
+  { id: 20, parent_id: null, ufr: true, payee: 'Whole', artist: 'Alpha', amount: 50, currency: 'USD' },
+  { id: 21, parent_id: 20, ufr: true, payee: 'Whole', artist: 'Alpha', amount: 50, currency: 'USD' },
+  { id: 30, parent_id: null, ufr: false, payee: 'Untouched', artist: 'Alpha', amount: 9, currency: 'USD' },
+  { id: 31, parent_id: 30, ufr: false, payee: 'Untouched', artist: 'Alpha', amount: 9, currency: 'USD' },
+]);
+assert('only families with a claim AND an open slice are findings',
+  fam.length === 1 && fam[0].root_id === 10);
+assert('the finding separates what was claimed from what is still open',
+  fam[0].claimed_usd === 300 && fam[0].open_usd === 700 && fam[0].open_ids.join(',') === '11,12');
+assert('open slices below the root are named as unreachable from the root-only surfaces',
+  fam[0].hidden_ids.join(',') === '11,12');
+
+// Check 4 — grouped by artist, because that is the conversation it protects.
+const nodoc = RAUD.groupNoDocument([
+  { id: 1, artist: 'Alpha', amount: 10, currency: 'USD' },
+  { id: 2, artist: '  ', amount: 500, currency: 'USD' },
+  { id: 3, artist: 'Alpha', amount: 20, currency: 'USD' },
+]);
+assert('undocumented claims group by artist, biggest exposure first, blanks named',
+  nodoc.length === 2 && nodoc[0].artist === '— no artist' && nodoc[1].list.length === 2 && nodoc[1].usd === 30);
+// ── Artist Campaigns: the two-layer double-count guard (Phase 5) ─────────────
+// The page states Settled and Committed and ADDS them, so no row may be in both.
+// The guard is set MEMBERSHIP of what buildPnl reported it counted — never a
+// re-derived predicate, because "approved and Paid and dated in range and not
+// report-dismissed and not month-moved" drifts the first time either side moves.
+const CS = require('../lib/campaignScope');
+const layerRows = [
+  { id: 1, amount: 100, payment_status: 'Paid' },
+  { id: 2, amount: 250, payment_status: 'Unpaid' },
+  { id: 3, amount: 700, payment_status: 'Paid' },
+];
+const part = CS.partitionByLayer(layerRows, new Set([1, 3]));
+assert('a row the P&L counted lands in Settled ONLY',
+  part.settled.map(r => r.id).join(',') === '1,3' && part.committed.map(r => r.id).join(',') === '2');
+assert('the two layers PARTITION the rows — every row exactly once',
+  part.settled.length + part.committed.length === layerRows.length
+  && new Set([...part.settled, ...part.committed].map(r => r.id)).size === layerRows.length);
+assert('the layers sum to the whole, so Settled + Committed is the total',
+  part.settled.reduce((s, r) => s + r.amount, 0) + part.committed.reduce((s, r) => s + r.amount, 0)
+    === layerRows.reduce((s, r) => s + r.amount, 0));
+assert('a row duplicated by a join contributes ONCE, not twice',
+  CS.partitionByLayer([...layerRows, { id: 2, amount: 250 }], new Set([1])).committed
+    .reduce((s, r) => s + r.amount, 0) === 950);
+assert('an empty counted set puts everything in Committed (the pre-report state)',
+  CS.partitionByLayer(layerRows, new Set()).committed.length === 3);
+
+// Campaign scope is a disclosed category LIST, never a regex over free text.
+const campCats = CS.catKeys(['Marketing', 'Music Video']);
+assert('campaign scope matches a category exactly, case- and space-insensitively',
+  CS.inScope(' marketing ', campCats) && CS.inScope('Music Video', campCats));
+assert('scope does NOT sweep in free text that merely contains a scoped word',
+  !CS.inScope('Social Security', campCats) && !CS.inScope('Public Relations', campCats));
+assert('(no song) is a real bucket key, not an absence',
+  CS.songKeyOf('') === '__no_song__' && CS.songKeyOf('  Intro ') === 'intro');
+assert('best spelling is most-used, ties alphabetically',
+  CS.bestOf(new Map([['zeke bleu', 1], ['Zeke Bleu', 3]])) === 'Zeke Bleu'
+  && CS.bestOf(new Map([['B', 2], ['A', 2]])) === 'A');
+
+// ── Ad allocation arithmetic (lib/adAllocate.js) ─────────────────────────────
+const AD = require('../lib/adAllocate');
+assert('apportion sums EXACTLY — $422.00 three ways is not $422.01',
+  AD.apportion(42200, [1, 1, 1]).reduce((a, b) => a + b, 0) === 42200);
+assert('the residue is PLACED, largest remainder first, deterministic on ties',
+  AD.apportion(50000, [1, 1, 1]).join(',') === '16667,16667,16666');
+assert('apportion is weight-proportional and still exact',
+  AD.apportion(10000, [70, 30]).join(',') === '7000,3000'
+  && AD.apportion(10001, [1, 1]).reduce((a, b) => a + b, 0) === 10001);
+assert('zero weights split evenly rather than losing the money',
+  AD.apportion(1000, [0, 0, 0]).reduce((a, b) => a + b, 0) === 1000);
+assert('drawing is greedy oldest-first, whole charges before the next',
+  AD.drawFromCharges([{ id: 1, remaining_cents: 3000 }, { id: 2, remaining_cents: 9000 }], 5000)
+    .slices.map(s => `${s.id}:${s.cents}`).join(',') === '1:3000,2:2000');
+const drawn = AD.drawMany(
+  [{ id: 1, remaining_cents: 5000 }, { id: 2, remaining_cents: 5000 }],
+  [{ campaign_id: 10, cents: 6000 }, { campaign_id: 11, cents: 6000 }]);
+assert('drawMany is SEQUENTIAL — the sum of all slices can never exceed the month',
+  drawn.total === 10000 && drawn.short_total === 2000);
+assert('a request the month could not fund is NAMED, not silently trimmed',
+  drawn.plan[1].short === 2000 && drawn.plan[1].requested === 6000);
+const chargesIn = [{ id: 1, remaining_cents: 5000 }];
+AD.drawMany(chargesIn, [{ campaign_id: 1, cents: 5000 }]);
+assert('drawMany never mutates the caller’s charge listing',
+  chargesIn[0].remaining_cents === 5000);
+const adFam = AD.familySlices(50000, [{ campaign_id: 1, artist: 'A', song: null, cents: 20000 }]);
+assert('the unallocated remainder LEADS, so the pool row keeps the parent identity',
+  adFam.remainder === 30000 && adFam.slices[0].allocated === false && adFam.slices[0].cents === 30000);
+assert('a family always sums to the charge, to the cent',
+  adFam.slices.reduce((s, x) => s + x.cents, 0) === 50000);
+assert('a fully allocated charge yields no leading remainder slice',
+  AD.familySlices(50000, [{ campaign_id: 1, artist: 'A', cents: 50000 }]).slices.length === 1);
+assert('over-allocating THROWS rather than writing a family that does not add up',
+  (() => { try { AD.familySlices(100, [{ campaign_id: 1, artist: 'A', cents: 200 }]); return false; } catch { return true; } })());
+
+// ── Label-level (ad pool) rules: EQUALITY, never substring ───────────────────
+const LL = require('../lib/labelLevel');
+const llRules = LL.rulesFrom([
+  { scope: 'vendor', rule_key: '  Meta   Platforms ' },
+  { scope: 'category', rule_key: 'Advertisements' },
+]);
+assert('a vendor rule matches the WHOLE payee, whitespace-collapsed',
+  llRules.has('meta platforms', 'Marketing') && llRules.has('Meta  Platforms', 'Anything'));
+assert('a vendor rule is not a substring rule — "Meta Platforms Ireland" is a different vendor',
+  !llRules.has('Meta Platforms Ireland', 'Marketing'));
+assert('a category rule answers for everything in it, whatever the payee',
+  llRules.has('Some Agency', 'advertisements'));
+assert('no rules means no pool — the page says so rather than inventing one',
+  LL.rulesFrom([]).size === 0 && !LL.rulesFrom([]).has('Meta Platforms', 'Marketing'));
 
 console.log(process.exitCode ? '\nFIXTURES FAILED' : '\nAll fixtures pass.');

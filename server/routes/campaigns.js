@@ -26,7 +26,7 @@ router.post('/parse', upload.single('screenshot'), async (req, res) => {
 });
 
 const UPDATABLE = [
-  'artist_id', 'name', 'platform', 'status', 'planned_budget',
+  'artist_id', 'release_id', 'name', 'platform', 'status', 'planned_budget',
   'actual_spend', 'currency', 'start_date', 'end_date', 'handles', 'notes',
 ];
 
@@ -34,6 +34,12 @@ const UPDATABLE = [
 async function checkArtist(artistId, labelId) {
   if (!artistId) return true;
   const { rows } = await pool.query('SELECT 1 FROM artists WHERE id = $1 AND label_id = $2', [artistId, labelId]);
+  return rows.length > 0;
+}
+// Same for release_id — the FK is label-blind, so the tenant check is ours.
+async function checkRelease(releaseId, labelId) {
+  if (!releaseId) return true;
+  const { rows } = await pool.query('SELECT 1 FROM releases WHERE id = $1 AND label_id = $2', [releaseId, labelId]);
   return rows.length > 0;
 }
 
@@ -60,14 +66,17 @@ router.post('/', async (req, res) => {
     if (!name) return res.status(400).json({ success: false, error: 'Campaign name is required' });
     const artistId = req.body.artist_id ? parseInt(req.body.artist_id, 10) : null;
     if (!(await checkArtist(artistId, req.labelId))) return res.status(400).json({ success: false, error: 'Artist not found in this workspace' });
+    const releaseId = req.body.release_id ? parseInt(req.body.release_id, 10) : null;
+    if (!(await checkRelease(releaseId, req.labelId))) return res.status(400).json({ success: false, error: 'Release not found in this workspace' });
     const { rows } = await pool.query(
-      `INSERT INTO campaigns (label_id, artist_id, name, platform, status, planned_budget, actual_spend, currency, start_date, end_date, handles, notes)
-       VALUES ($1,$2,$3,$4,COALESCE($5,'Planned'),$6,$7,COALESCE($8,'USD'),$9,$10,$11,$12) RETURNING *`,
+      `INSERT INTO campaigns (label_id, artist_id, release_id, name, platform, status, planned_budget, actual_spend, currency, start_date, end_date, handles, notes)
+       VALUES ($1,$2,$13,$3,$4,COALESCE($5,'Planned'),$6,$7,COALESCE($8,'USD'),$9,$10,$11,$12) RETURNING *`,
       [
         req.labelId, artistId, name, req.body.platform || null, req.body.status || null,
         parseFloat(req.body.planned_budget) || 0, parseFloat(req.body.actual_spend) || 0,
         req.body.currency || null, req.body.start_date || null, req.body.end_date || null,
         req.body.handles || null, req.body.notes || null,
+        releaseId,
       ]
     );
     await logActivity(req, 'Added campaign', name);
@@ -83,6 +92,9 @@ router.patch('/:id', async (req, res) => {
   try {
     if (req.body.artist_id && !(await checkArtist(parseInt(req.body.artist_id, 10), req.labelId))) {
       return res.status(400).json({ success: false, error: 'Artist not found in this workspace' });
+    }
+    if (req.body.release_id && !(await checkRelease(parseInt(req.body.release_id, 10), req.labelId))) {
+      return res.status(400).json({ success: false, error: 'Release not found in this workspace' });
     }
     const keys = Object.keys(req.body).filter(k => UPDATABLE.includes(k));
     if (!keys.length) return res.status(400).json({ success: false, error: 'No updatable fields provided' });

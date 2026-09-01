@@ -13,7 +13,8 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
-const { isCreatorRow, CREATOR_SOURCE, reportingThresholdFor } = require('../lib/ledgerSource');
+const { isCreatorRow, CREATOR_SOURCE, reportingThresholdFor,
+  restoreMatchPlan, CREATOR_MATCH_DETAIL: MATCH_DETAIL_PREFIX } = require('../lib/ledgerSource');
 const { rowUsd2, round2 } = require('../lib/usd');
 const { stampFxRateAsync } = require('../lib/fxStamp');
 const bankEvidence = require('../lib/bankEvidence');
@@ -72,7 +73,8 @@ router.get('/', async (req, res) => {
     if (req.query.to) where += ` AND COALESCE(e.payment_date, e.invoice_date) <= ${put(req.query.to)}`;
     if (req.query.q) {
       const like = put(`%${String(req.query.q).toLowerCase()}%`);
-      where += ` AND (LOWER(e.payee) LIKE ${like} OR LOWER(COALESCE(e.artist,'')) LIKE ${like} OR LOWER(COALESCE(e.song,'')) LIKE ${like} OR LOWER(COALESCE(e.paypal_handle,'')) LIKE ${like})`;
+      where += ` AND (LOWER(e.payee) LIKE ${like} OR LOWER(COALESCE(e.artist,'')) LIKE ${like} OR LOWER(COALESCE(e.song,'')) LIKE ${like}
+                   OR LOWER(COALESCE(e.paypal_handle,'')) LIKE ${like} OR LOWER(COALESCE(e.vendor_email,'')) LIKE ${like})`;
     }
     const { rows } = await pool.query(
       `SELECT e.id, e.payee, e.vendor_email, e.paypal_handle, e.social_handles, e.artist, e.song,
@@ -86,12 +88,16 @@ router.get('/', async (req, res) => {
         LIMIT 1000`,
       params
     );
+    // Round AT THE ROW, then sum the rounded figures. The reference app sums
+    // raw and rounds once; here the total is printed BESIDE the rows it is made
+    // of, so it has to equal what a reader can add up on screen. Same rule the
+    // spend sheets use (lib/usd.js rowUsd2).
     let total = 0;
     for (const r of rows) {
       r.amount_usd_calc = await rowUsd2(r);
       total += r.amount_usd_calc;
     }
-    res.json({ success: true, data: { rows, total: round2(total) } });
+    res.json({ success: true, data: { rows, total: round2(total), count: rows.length } });
   } catch (e) { console.error('creators list error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
 
@@ -101,9 +107,10 @@ router.get('/', async (req, res) => {
 router.get('/directory', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT e.id, e.payee, e.vendor_email, e.paypal_handle, e.artist, e.amount,
+      `SELECT e.id, e.payee, e.vendor_email, e.paypal_handle, e.social_handles, e.artist, e.amount,
               COALESCE(e.currency, 'USD') AS currency, e.fx_rate_to_usd,
-              e.payment_status, e.payment_date, e.invoice_date, e.w9_r2_key, e.w9_filename
+              e.payment_status, e.payment_date, e.invoice_date,
+              (e.w9_r2_key IS NOT NULL OR e.w9_filename IS NOT NULL) AS has_w9
          FROM expenses e WHERE ${LIVE}`,
       [req.labelId]
     );
@@ -114,33 +121,49 @@ router.get('/directory', async (req, res) => {
       if (d instanceof Date) return String(d.getFullYear());
       return String(d).slice(0, 4);
     };
+    const dayOf = (d) => {
+      if (!d) return null;
+      if (d instanceof Date) return d.toISOString().slice(0, 10);
+      return String(d).slice(0, 10);
+    };
     const byCreator = new Map();
+    // A W9 belongs to the PERSON. It is shared across their rows by payee and —
+    // broader than the reference app — across payee spellings by email, since
+    // one creator invoiced under two names is the normal case here.
     const w9ByEmail = new Set();
-    for (const r of rows) if (r.w9_r2_key && r.vendor_email) w9ByEmail.add(String(r.vendor_email).toLowerCase());
+    for (const r of rows) if (r.has_w9 && r.vendor_email) w9ByEmail.add(String(r.vendor_email).toLowerCase());
     for (const r of rows) {
       const key = String(r.payee || '').trim().toLowerCase();
       const c = byCreator.get(key) || {
-        key, name: r.payee, email: null, paypal_handle: null, artists: new Set(),
-        by_year: {}, total: 0, n: 0, w9_on_file: false,
+        key, name: r.payee, email: null, paypal_handle: null, social_handles: null,
+        artists: new Set(), by_year: {}, total: 0, n: 0, w9_on_file: false, last_payment: null,
       };
+      // First non-empty wins — a later blank row must not erase contact details
+      // somebody already recorded.
       c.email = c.email || r.vendor_email;
       c.paypal_handle = c.paypal_handle || r.paypal_handle;
+      if (!c.social_handles && Array.isArray(r.social_handles) && r.social_handles.length) c.social_handles = r.social_handles;
       if (r.artist) c.artists.add(String(r.artist).trim());
       const usd = await rowUsd2(r);
       c.total += usd; c.n += 1;
       if (r.payment_status === 'Paid') {
         const y = yearOf(r.payment_date) || yearOf(r.invoice_date);
-        if (y) c.by_year[y] = round2((c.by_year[y] || 0) + usd);
+        // Accumulate RAW, round once per year at the end — the threshold is a
+        // dollar figure and a per-add round can flip $599.995 either way.
+        if (y) c.by_year[y] = (c.by_year[y] || 0) + usd;
+        const day = dayOf(r.payment_date);
+        if (day && (!c.last_payment || day > c.last_payment)) c.last_payment = day;
       }
-      if (r.w9_r2_key || (r.vendor_email && w9ByEmail.has(String(r.vendor_email).toLowerCase()))) c.w9_on_file = true;
+      if (r.has_w9 || (r.vendor_email && w9ByEmail.has(String(r.vendor_email).toLowerCase()))) c.w9_on_file = true;
       byCreator.set(key, c);
     }
     const creators = [...byCreator.values()].map((c) => {
-      const yearsOver = Object.entries(c.by_year)
+      const byYear = Object.fromEntries(Object.entries(c.by_year).map(([y, v]) => [y, round2(v)]));
+      const yearsOver = Object.entries(byYear)
         .filter(([y, v]) => v >= reportingThresholdFor(Number(y)))
         .map(([y, v]) => ({ year: y, total: v, threshold: reportingThresholdFor(Number(y)) }));
       return {
-        ...c, artists: [...c.artists], total: round2(c.total),
+        ...c, artists: [...c.artists].sort(), by_year: byYear, total: round2(c.total),
         years_over: yearsOver,
         w9_required: yearsOver.length > 0,
         w9_missing: yearsOver.length > 0 && !c.w9_on_file,
@@ -234,8 +257,18 @@ router.post('/batch', async (req, res) => {
 // payment_date are handled together, outside the whitelist loop.
 router.put('/:id(\\d+)', async (req, res) => {
   try {
+    // `ufr` is here because a creator payment is recoupable spend like any
+    // other and gets claimed on a statement; without it the only way to claim
+    // one was to leave this API. Booleans are validated, never coerced — a
+    // string "false" through a boolean column reads as TRUE.
     const WHITELIST = ['payee', 'vendor_email', 'paypal_handle', 'artist', 'song', 'amount', 'currency',
-      'category', 'description', 'notes', 'rep', 'recoupable'];
+      'category', 'description', 'notes', 'rep', 'recoupable', 'ufr'];
+    const BOOLS = ['recoupable', 'ufr'];
+    for (const key of BOOLS) {
+      if (req.body[key] !== undefined && typeof req.body[key] !== 'boolean') {
+        return res.status(400).json({ success: false, error: `${key} must be true or false` });
+      }
+    }
     const sets = [];
     const params = [req.labelId, parseInt(req.params.id, 10)];
     const statusMoving = req.body.payment_status === 'Paid' || req.body.payment_status === 'Unpaid';
@@ -244,6 +277,11 @@ router.put('/:id(\\d+)', async (req, res) => {
       params.push(req.body[key]);
       sets.push(`${key} = $${params.length}`);
     }
+    // Claiming stamps the statement month; PRESERVE an existing stamp, the
+    // same rule /recoupments/ufr-bulk implements — a re-claim must not move an
+    // item off a statement a partner has already received.
+    if (req.body.ufr === true) sets.push(`ufr_marked_at = COALESCE(ufr_marked_at, NOW())`);
+    if (req.body.ufr === false) sets.push(`ufr_marked_at = NULL`);
     if (req.body.social_handles !== undefined) {
       if (!Array.isArray(req.body.social_handles)) return res.status(400).json({ success: false, error: 'social_handles must be an array' });
       params.push(JSON.stringify(req.body.social_handles));
@@ -322,7 +360,25 @@ router.get('/convertible', async (req, res) => {
       if (!String(r.artist || '').trim()) missing.push('artist');
       out.push({ ...r, usd, proposed: reasons.length ? 'review' : 'convert', review_reasons: reasons, missing_info: missing });
     }
-    res.json({ success: true, data: { rows: out } });
+    const conv = out.filter((r) => r.proposed === 'convert');
+    const review = out.filter((r) => r.proposed === 'review');
+    res.json({
+      success: true,
+      data: {
+        rows: out,
+        // The counts and values the queue is judged on. Computed here, from the
+        // same array the rows come from, so the banner cannot describe a
+        // different set than the table under it.
+        summary: {
+          total: out.length,
+          convert: conv.length,
+          convert_value: round2(conv.reduce((t, r) => t + r.usd, 0)),
+          review: review.length,
+          review_value: round2(review.reduce((t, r) => t + r.usd, 0)),
+          already_matched: out.filter((r) => r.already_matched).length,
+        },
+      },
+    });
   } catch (e) { console.error('convertible error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
 
@@ -333,10 +389,30 @@ router.post('/convert', async (req, res) => {
     if (!ids.length) return res.status(400).json({ success: false, error: 'No rows selected' });
     await client.query('BEGIN');
     const rows = (await client.query(
-      `SELECT id, entry_source FROM expenses WHERE id = ANY($1::int[]) AND label_id = $2 AND entry_source = ANY($3) FOR UPDATE`,
+      `SELECT id, payee, entry_source FROM expenses WHERE id = ANY($1::int[]) AND label_id = $2 AND entry_source = ANY($3) FOR UPDATE`,
       [ids, req.labelId, SOURCE_PAGES]
     )).rows;
-    if (req.body.dry_run) { await client.query('ROLLBACK'); return res.json({ success: true, data: { would_convert: rows.length } }); }
+    if (!rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ success: false, error: 'None of those rows can be moved in' }); }
+    const targetIds = rows.map((r) => r.id);
+    // The live matches that would change disposition. Read BEFORE the write in
+    // both the dry run and the real one, from the same predicate as the UPDATE.
+    const txns = (await client.query(
+      `SELECT id, matched_expense_id, match_method FROM bank_transactions
+        WHERE label_id = $1 AND matched_expense_id = ANY($2::int[]) AND dismissed = FALSE
+          AND match_method IS DISTINCT FROM 'created'`,
+      [req.labelId, targetIds]
+    )).rows;
+    if (req.body.dry_run) {
+      await client.query('ROLLBACK');
+      return res.json({
+        success: true, dry_run: true,
+        data: {
+          would_convert: rows.length,
+          would_relabel_matches: txns.length,
+          rows: rows.map((r) => ({ id: r.id, payee: r.payee, from: r.entry_source })),
+        },
+      });
+    }
     // Audit the OLD source per row BEFORE the write — unconvert restores the
     // exact original (9-of-131 came from a different page in the reference data).
     for (const r of rows) {
@@ -346,17 +422,28 @@ router.post('/convert', async (req, res) => {
         [req.labelId, r.id, `Moved to Creator Payments from ${r.entry_source}`, req.user.name, r.entry_source, CREATOR_SOURCE]
       );
     }
+    // And audit each MATCH's prior method the same way, one row per bank txn.
+    // `match_method='creator'` is explained-never-invoice-backed, so this write
+    // is not reversible by guessing: unconvert has to put back the exact method
+    // the match carried, and 'manual' is invoice-backed. The txn id rides in
+    // `detail` because bk_audit_log keys on expense_id.
+    for (const t of txns) {
+      await client.query(
+        `INSERT INTO bk_audit_log (label_id, expense_id, action, detail, actor, field, old_value, new_value)
+         VALUES ($1, $2, 'creator_convert', $3, $4, 'match_method', $5, 'creator')`,
+        [req.labelId, t.matched_expense_id, `${MATCH_DETAIL_PREFIX}${t.id}`, req.user.name, t.match_method]
+      );
+    }
     const conv = await client.query(
       `UPDATE expenses SET entry_source = $3, payment_method = COALESCE(payment_method, 'PayPal')
         WHERE id = ANY($1::int[]) AND label_id = $2 RETURNING id`,
-      [rows.map((r) => r.id), req.labelId, CREATOR_SOURCE]
+      [targetIds, req.labelId, CREATOR_SOURCE]
     );
     // Relabel existing bank matches so they stop counting as invoice-backed.
     const relabelled = await client.query(
       `UPDATE bank_transactions SET match_method = 'creator'
-        WHERE label_id = $1 AND matched_expense_id = ANY($2::int[]) AND dismissed = FALSE
-          AND match_method IS DISTINCT FROM 'created' RETURNING id`,
-      [req.labelId, rows.map((r) => r.id)]
+        WHERE label_id = $1 AND id = ANY($2::int[]) RETURNING id`,
+      [req.labelId, txns.map((t) => t.id)]
     );
     await client.query('COMMIT');
     await logActivity(req, 'Converted rows to creator payments', `${conv.rows.length} rows, ${relabelled.rows.length} matches relabelled`);
@@ -375,29 +462,57 @@ router.post('/unconvert', async (req, res) => {
     if (!ids.length) return res.status(400).json({ success: false, error: 'No rows selected' });
     await client.query('BEGIN');
     let restored = 0;
+    let matchesRestored = 0;
+    let matchesLeftCreator = 0;
     for (const id of ids) {
       // The exact original source comes from the audit row — never guess it.
-      const audit = (await client.query(
-        `SELECT old_value FROM bk_audit_log
-          WHERE label_id = $1 AND expense_id = $2 AND action = 'creator_convert'
-          ORDER BY created_at DESC LIMIT 1`,
+      const src = (await client.query(
+        `SELECT id, old_value FROM bk_audit_log
+          WHERE label_id = $1 AND expense_id = $2 AND action = 'creator_convert' AND field = 'entry_source'
+          ORDER BY id DESC LIMIT 1`,
         [req.labelId, id]
       )).rows[0];
-      if (!audit?.old_value) continue;
+      if (!src?.old_value) continue;
       const r = await client.query(
         `UPDATE expenses e SET entry_source = $3 WHERE e.id = $2 AND e.label_id = $1 AND ${isCreatorRow('e')} RETURNING e.id`,
-        [req.labelId, id, audit.old_value]
+        [req.labelId, id, src.old_value]
       );
-      if (r.rows.length) {
-        restored += 1;
-        await client.query(
-          `UPDATE bank_transactions SET match_method = 'manual' WHERE label_id = $1 AND matched_expense_id = $2 AND match_method = 'creator'`,
-          [req.labelId, id]
+      if (!r.rows.length) continue;
+      restored += 1;
+
+      // Put each match back to the method it carried BEFORE that conversion.
+      // Scoped to audit rows written by THIS conversion (id > the entry_source
+      // row it opened with), so an older convert/unconvert cycle can't supply a
+      // stale method. Only rows still sitting at 'creator' are touched — a
+      // method changed since is somebody's later decision.
+      const auditRows = (await client.query(
+        `SELECT detail, old_value FROM bk_audit_log
+          WHERE label_id = $1 AND expense_id = $2 AND action = 'creator_convert'
+            AND field = 'match_method' AND id > $3
+          ORDER BY id DESC`,
+        [req.labelId, id, src.id]
+      )).rows;
+      const plan = restoreMatchPlan(auditRows);
+      for (const p of plan) {
+        const u = await client.query(
+          `UPDATE bank_transactions SET match_method = $3
+            WHERE label_id = $1 AND id = $2 AND matched_expense_id = $4 AND match_method = 'creator' RETURNING id`,
+          [req.labelId, p.txn_id, p.match_method, id]
         );
+        matchesRestored += u.rows.length;
       }
+      // Anything still 'creator' was matched after the conversion and has no
+      // audited prior method. It STAYS 'creator' — explained, not invoice-backed.
+      const left = await client.query(
+        `SELECT COUNT(*)::int AS n FROM bank_transactions
+          WHERE label_id = $1 AND matched_expense_id = $2 AND match_method = 'creator' AND dismissed = FALSE`,
+        [req.labelId, id]
+      );
+      matchesLeftCreator += left.rows[0].n;
     }
     await client.query('COMMIT');
-    res.json({ success: true, data: { restored } });
+    await logActivity(req, 'Moved rows back out of creator payments', `${restored} rows, ${matchesRestored} matches restored`);
+    res.json({ success: true, data: { restored, of: ids.length, matches_restored: matchesRestored, matches_left_creator: matchesLeftCreator } });
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('unconvert error:', e);

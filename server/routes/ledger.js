@@ -17,7 +17,7 @@ const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
 const paymentCrypto = require('../lib/paymentCrypto');
 const aiScan = require('../lib/aiScan');
 const bankEvidence = require('../lib/bankEvidence');
-const { excludeBankRows, BANK_SOURCE } = require('../lib/ledgerSource');
+const { excludeBankRows, excludeCreatorRows, BANK_SOURCE } = require('../lib/ledgerSource');
 const { validateApprovalChecklist, stampChecklist, writeApprovalChecklist } = require('../lib/approvalChecklist');
 const activityBot = require('../lib/activityBot');
 const ExcelJS = require('exceljs');
@@ -2453,12 +2453,17 @@ router.delete('/vendors/aliases/:id', async (req, res) => {
 router.post('/vendors/scan-w9s', requireAdmin, async (req, res) => {
   try {
     if (!claude.isEnabled()) return res.status(400).json({ success: false, error: 'AI is not configured on the server' });
-    // One representative W9-bearing entry per payee.
+    // One representative W9-bearing entry per payee. Creator rows are excluded
+    // for the same reason they never enter the vendors directory: a creator is
+    // not a vendor, their W9 exposure is per calendar YEAR and is answered on
+    // /creators. Sweeping them in here puts them in a batch whose results are
+    // rendered against a vendor list they are absent from.
     const { rows } = await pool.query(
       `SELECT DISTINCT ON (LOWER(payee)) id, payee, w9_r2_key, w9_filename
-         FROM expenses
+         FROM expenses e
         WHERE label_id = $1 AND w9_r2_key IS NOT NULL AND payee IS NOT NULL
           AND (deleted = false OR deleted IS NULL)
+          AND ${excludeCreatorRows('e')}
         ORDER BY LOWER(payee), id DESC`,
       [req.labelId]
     );

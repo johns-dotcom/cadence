@@ -68,6 +68,16 @@ async function sheetRows(labelId, accounts) {
   return rows;
 }
 
+// node-pg hands DATE back as a JS Date, and `String(aDate)` is
+// "Sun Jun 01 2025 …" — a WEEKDAY NAME. Sorting on that orders by day-of-week,
+// which is how a worklist that promises "oldest first" silently doesn't.
+// Everything that compares a date here goes through this.
+const isoDay = (d) => {
+  if (!d) return '';
+  if (d instanceof Date) return d.toISOString().slice(0, 10);
+  return String(d).slice(0, 10);
+};
+
 const stateOf = (r) => {
   if (r.bank_evidence) return 'verified';
   if (r.payment_status !== 'Paid') return 'unpaid';
@@ -92,7 +102,8 @@ async function buildSheet(labelId, artistKey) {
 
   const budgets = new Map(
     (await pool.query(
-      `SELECT section, amount::float8 AS amount, note FROM artist_budget_sections WHERE label_id = $1 AND artist_key = $2`,
+      `SELECT section, amount::float8 AS amount, note, updated_at, updated_by
+         FROM artist_budget_sections WHERE label_id = $1 AND artist_key = $2`,
       [labelId, artistKey]
     )).rows.map((r) => [r.section, r])
   );
@@ -100,8 +111,12 @@ async function buildSheet(labelId, artistKey) {
   const sections = Object.fromEntries(SECTION_KEYS.map((k) => [k, {
     key: k, label: SECTION_LABELS[k],
     budget: budgets.get(k)?.amount || 0, note: budgets.get(k)?.note || null,
+    // Provenance: a number six people can type needs to say who typed it.
+    // `updated_by` is stored as the actor's NAME, so it is already displayable.
+    updated_at: budgets.get(k)?.updated_at || null,
+    updated_by_name: budgets.get(k)?.updated_by || null,
     verified: 0, awaiting: 0, unverified: 0, unpaid: 0,
-    by_category: {}, items: [], open_items: [],
+    cat_acc: new Map(), items: [], open_items: [],
   }]));
 
   for (const r of rows) {
@@ -114,37 +129,59 @@ async function buildSheet(labelId, artistKey) {
       category: r.category, usd, amount: Number(r.amount), currency: r.currency,
       state, recoupable: r.recoupable, entry_source: r.entry_source,
       bank_evidence: r.bank_evidence, bank_expected: r.bank_expected,
-      invoice_date: r.invoice_date,
+      invoice_date: r.invoice_date, section: sec.key, section_label: sec.label,
     };
     if (state === 'unpaid') sec.open_items.push(item);
     else {
       sec.items.push(item);
-      sec.by_category[r.category || 'Uncategorized'] = round2((sec.by_category[r.category || 'Uncategorized'] || 0) + usd);
+      // Categories describe SPENT only, so they still sum to the section's
+      // spent figure. A count rides along: "$4,200 over 3 invoices" and
+      // "$4,200 over 40" are different facts about the same number.
+      const cat = r.category || 'Uncategorized';
+      const c = sec.cat_acc.get(cat) || { category: cat, actual: 0, count: 0 };
+      c.actual = round2(c.actual + usd); c.count += 1;
+      sec.cat_acc.set(cat, c);
     }
   }
 
-  const totals = { budget: 0, spent: 0, open: 0, committed: 0, verified: 0, awaiting: 0, unverified: 0 };
+  const totals = { budget: 0, spent: 0, open: 0, committed: 0, verified: 0, awaiting: 0, unverified: 0, unpaid: 0, count: 0, open_count: 0 };
   const out = SECTION_KEYS.map((k) => {
     const s = sections[k];
     // Section figures DERIVED from the states — the partition holds by construction.
     const spent = round2(s.verified + s.awaiting + s.unverified);
     const open = round2(s.unpaid);
     const committed = round2(spent + open);
-    s.items.sort((a, b) => (String(b.date) > String(a.date) ? 1 : -1));
-    s.open_items.sort((a, b) => (String(a.invoice_date || a.date) > String(b.invoice_date || b.date) ? 1 : -1)); // oldest first — a worklist
+    s.items.sort((a, b) => isoDay(b.date).localeCompare(isoDay(a.date)));                        // newest first
+    s.open_items.sort((a, b) => isoDay(a.invoice_date || a.date).localeCompare(isoDay(b.invoice_date || b.date))); // oldest first — a worklist
     totals.budget += s.budget; totals.spent += spent; totals.open += open; totals.committed += committed;
-    totals.verified += s.verified; totals.awaiting += s.awaiting; totals.unverified += s.unverified;
+    totals.verified += s.verified; totals.awaiting += s.awaiting; totals.unverified += s.unverified; totals.unpaid += open;
+    totals.count += s.items.length; totals.open_count += s.open_items.length;
+    const { cat_acc, ...rest } = s;
+    const categories = [...cat_acc.values()].sort((a, b) => b.actual - a.actual);
     return {
-      ...s,
+      ...rest,
+      categories,
+      // Kept as a map too — the by-category chip line and the workbook both read it.
+      by_category: Object.fromEntries(categories.map((c) => [c.category, c.actual])),
       verified: round2(s.verified), awaiting: round2(s.awaiting), unverified: round2(s.unverified), unpaid: open,
       spent, open, committed,
+      count: s.items.length, open_count: s.open_items.length,
       variance: s.budget > 0 ? round2(s.budget - spent) : null, // blank without a budget
       over_committed: s.budget > 0 && committed > s.budget,
       unplanned: s.budget === 0 && committed > 0,
     };
   });
   for (const k of Object.keys(totals)) totals[k] = round2(totals[k]);
-  return { artist_key: artistKey, artist: display, sections: out, totals };
+  totals.count = out.reduce((t, s) => t + s.count, 0);
+  totals.open_count = out.reduce((t, s) => t + s.open_count, 0);
+  totals.variance = totals.budget > 0 ? round2(totals.budget - totals.spent) : null;
+  totals.over_committed = totals.budget > 0 && totals.committed > totals.budget;
+  // Every open invoice across all six sections, GLOBALLY oldest-first. The
+  // worklist's whole claim is "the oldest is the one most likely to be a
+  // surprise", and a client flatMap over sections orders by section instead.
+  const openRows = out.flatMap((s) => s.open_items)
+    .sort((a, b) => isoDay(a.invoice_date || a.date).localeCompare(isoDay(b.invoice_date || b.date)));
+  return { artist_key: artistKey, artist: display, sections: out, open_rows: openRows, totals };
 }
 
 // ── Index — every artist with a budget OR spend (never hidden behind a
@@ -161,7 +198,7 @@ router.get('/', async (req, res) => {
 
     const artists = new Map();
     const entry = (key) => {
-      const e = artists.get(key) || { key, spellings: new Map(), budget: 0, verified: 0, awaiting: 0, unverified: 0, unpaid: 0 };
+      const e = artists.get(key) || { key, spellings: new Map(), budget: 0, verified: 0, awaiting: 0, unverified: 0, unpaid: 0, count: 0, open_count: 0 };
       artists.set(key, e);
       return e;
     };
@@ -172,7 +209,11 @@ router.get('/', async (req, res) => {
       const e = entry(key);
       const s = String(r.artist).trim();
       e.spellings.set(s, (e.spellings.get(s) || 0) + 1);
-      e[stateOf(r)] += await rowUsd2(r);
+      const state = stateOf(r);
+      e[state] += await rowUsd2(r);
+      // Counts alongside the money: "$8,700 over 2 items" and "over 200" are
+      // different pictures, and the Open cell's tooltip names its worklist.
+      if (state === 'unpaid') e.open_count += 1; else e.count += 1;
     }
     const data = [...artists.values()].map((e) => {
       let name = e.key, n = -1;
@@ -186,6 +227,7 @@ router.get('/', async (req, res) => {
         variance: e.budget > 0 ? round2(e.budget - spent) : null,
         has_budget: e.budget > 0,
         over_committed: e.budget > 0 && committed > e.budget,
+        count: e.count, open_count: e.open_count,
       };
     }).sort((a, b) => b.committed - a.committed);
     res.json({
@@ -195,9 +237,14 @@ router.get('/', async (req, res) => {
         sections: SECTION_KEYS.map((k) => ({ key: k, label: SECTION_LABELS[k] })),
         totals: {
           artists: data.length,
+          // `with_budget` is what makes "N with no budget set yet" sayable, and
+          // that count is the page's actual call to action on a fresh workspace.
+          with_budget: data.filter((a) => a.has_budget).length,
           spent: round2(data.reduce((s, a) => s + a.spent, 0)),
           open: round2(data.reduce((s, a) => s + a.open, 0)),
           budget: round2(data.reduce((s, a) => s + a.budget, 0)),
+          committed: round2(data.reduce((s, a) => s + a.committed, 0)),
+          open_count: data.reduce((s, a) => s + a.open_count, 0),
         },
       },
     });
@@ -244,27 +291,76 @@ router.get('/:artistKey([a-z0-9]+)/export', async (req, res) => {
     const ExcelJS = require('exceljs');
     const wb = new ExcelJS.Workbook();
     const MONEY = '"$"#,##0.00;[Red]("$"#,##0.00)';
+    const t = sheet.totals;
     const ws = wb.addWorksheet('Budget vs spent');
-    ws.getColumn(1).width = 30;
+    ws.getColumn(1).width = 34;
     for (let i = 2; i <= 6; i++) ws.getColumn(i).width = 14;
+    ws.getColumn(7).width = 44;
     ws.addRow([`${sheet.artist} — budget vs spent`]).font = { bold: true, size: 13 };
-    const head = ws.addRow(['Section', 'Budget', 'Spent', 'Variance', 'Open', 'Committed']);
+    const head = ws.addRow(['Section', 'Budget', 'Spent', 'Variance', 'Open', 'Committed', 'Note']);
     head.font = { bold: true };
+    const moneyCells = (r) => r.eachCell((c, i) => { if (i >= 2 && i <= 6) c.numFmt = MONEY; });
     for (const s of sheet.sections) {
       if (!s.budget && !s.committed) continue;
-      const r = ws.addRow([s.label, s.budget || null, s.spent, s.budget > 0 ? s.variance : null, s.open, s.committed]);
-      r.eachCell((c, i) => { if (i >= 2) c.numFmt = MONEY; });
-      for (const [cat, v] of Object.entries(s.by_category)) {
-        const cr = ws.addRow([`    ${cat}`, null, v]);
+      // The Note column carries the section's own note AND the two conditions
+      // that would otherwise only exist as a colour on the screen. Without it
+      // the workbook — which is what leaves the company — says nothing about
+      // unplanned or over-committed spend.
+      const noteText = s.over_committed ? 'over-committed once open invoices are paid'
+        : s.unplanned ? 'unplanned — no budget set'
+          : (s.note || '');
+      const r = ws.addRow([s.label.toUpperCase(), s.budget || null, s.spent, s.budget > 0 ? s.variance : null, s.open, s.committed, noteText]);
+      r.font = { bold: true };
+      moneyCells(r);
+      for (const c of s.categories) {
+        const cr = ws.addRow([`    ${c.category}`, null, c.actual, null, null, null, `${c.count} item${c.count === 1 ? '' : 's'}`]);
         cr.getCell(3).numFmt = MONEY;
         cr.font = { color: { argb: 'FF6B7280' }, size: 9 };
       }
     }
-    const tot = ws.addRow(['SPENT / COMMITTED', sheet.totals.budget || null, sheet.totals.spent, sheet.totals.budget > 0 ? round2(sheet.totals.budget - sheet.totals.spent) : null, sheet.totals.open, sheet.totals.committed]);
-    tot.font = { bold: true };
-    tot.eachCell((c, i) => { if (i >= 2) c.numFmt = MONEY; });
     ws.addRow([]);
-    const note = ws.addRow(['Spent is money that has left the bank; open invoices are counted separately and added into the committed total.']);
+    const tot = ws.addRow(['SPENT', t.budget || null, t.spent, t.budget > 0 ? t.variance : null, null, null, `${t.count} paid item${t.count === 1 ? '' : 's'}`]);
+    tot.font = { bold: true };
+    tot.border = { top: { style: 'thin' } };
+    moneyCells(tot);
+    ws.addRow([]);
+
+    // ── Open, unpaid invoices ─────────────────────────────────────────────
+    // NOT in Spent above — an invoice sitting in a drawer is not an
+    // expenditure. Its own block, then the two added into COMMITTED.
+    if (sheet.open_rows.length) {
+      ws.addRow(['OPEN · UNPAID INVOICES']).font = { bold: true };
+      for (const o of sheet.open_rows) {
+        const r = ws.addRow([`    ${o.payee || '—'}`, null, null, null, o.usd, null,
+          [isoDay(o.invoice_date) || null, o.category, o.song].filter(Boolean).join(' · ')]);
+        r.getCell(5).numFmt = MONEY;
+      }
+      const ot = ws.addRow(['STILL TO PAY', null, null, null, t.open, null, `${t.open_count} invoice${t.open_count === 1 ? '' : 's'}`]);
+      ot.font = { bold: true };
+      ot.border = { top: { style: 'thin' } };
+      moneyCells(ot);
+      ws.addRow([]);
+    }
+    const ct = ws.addRow(['COMMITTED (spent + open)', t.budget || null, null, t.budget > 0 ? round2(t.budget - t.committed) : null, null, t.committed,
+      t.over_committed ? 'over budget once the open invoices are paid' : '']);
+    ct.font = { bold: true };
+    ct.border = { top: { style: 'double' } };
+    moneyCells(ct);
+    ws.addRow([]);
+
+    // The state split, spelled out in words rather than left to a colour — the
+    // recipient of this file has no legend and no hover.
+    for (const [label, v] of [
+      ['Of that spent — confirmed on a bank statement', t.verified],
+      ['Of that spent — paid, statement not uploaded yet', t.awaiting],
+      ['Of that spent — paid, but no matching bank line', t.unverified],
+      ['Open — not paid yet', t.unpaid],
+    ]) {
+      const r = ws.addRow([label, null, v]);
+      r.getCell(3).numFmt = MONEY;
+    }
+    ws.addRow([]);
+    const note = ws.addRow(['Expenses land in a section by their category — nothing is assigned by hand. Spent is money that has left the bank; open invoices are counted separately and added into the committed total.']);
     note.font = { italic: true, size: 9, color: { argb: 'FF6B7280' } };
 
     const ws2 = wb.addWorksheet('Expenses');
@@ -276,7 +372,7 @@ router.get('/:artistKey([a-z0-9]+)/export', async (req, res) => {
     for (const s of sheet.sections) {
       for (const it of [...s.items, ...s.open_items]) {
         const r = ws2.addRow([
-          it.date ? String(it.date).slice(0, 10) : '', it.payee, it.category, s.label, it.song,
+          isoDay(it.date), it.payee, it.category, s.label, it.song,
           it.amount, it.currency, it.usd, stateWord[it.state], it.recoupable ? 'yes' : 'no',
         ]);
         r.getCell(6).numFmt = '#,##0.00';
@@ -284,8 +380,12 @@ router.get('/:artistKey([a-z0-9]+)/export', async (req, res) => {
       }
     }
     const buf = await wb.xlsx.writeBuffer();
+    // The DISPLAY spelling, not the mangled bucket key — this file is opened by
+    // people who have never seen an artist_key, and "jerri.xlsx" in a mail
+    // thread about Jerri Cole is a file nobody can find again.
+    const safe = String(sheet.artist).replace(/[^A-Za-z0-9 _-]/g, '').trim() || sheet.artist_key || 'artist';
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="artist-budget-${sheet.artist_key}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${safe} - budget vs actual.xlsx"`);
     res.send(Buffer.from(buf));
   } catch (e) { console.error('budget export error:', e); res.status(500).json({ success: false, error: 'Export failed' }); }
 });
