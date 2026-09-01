@@ -71,10 +71,16 @@ export default {
         'rule-light': 'var(--color-border-light)',
         divider:      'var(--color-divider)',
 
-        success: 'var(--color-success)',
-        warning: 'var(--color-warning)',
-        danger:  'var(--color-danger)',
-        info:    'var(--color-info)',
+        // Semantic status colors are theme-flipped HEX vars, so Tailwind's
+        // rgb(var()/<alpha-value>) trick can't apply. Function colors route
+        // opacity modifiers (bg-danger/10, border-warning/30…) through
+        // color-mix instead — same floor the repo already accepted for
+        // bg-selected (Chrome 111 / Safari 16.2 / FF 113). Without this the
+        // /NN variants silently emit NOTHING.
+        success: ({ opacityValue }) => opacityValue === undefined ? 'var(--color-success)' : `color-mix(in srgb, var(--color-success) ${opacityValue * 100}%, transparent)`,
+        warning: ({ opacityValue }) => opacityValue === undefined ? 'var(--color-warning)' : `color-mix(in srgb, var(--color-warning) ${opacityValue * 100}%, transparent)`,
+        danger:  ({ opacityValue }) => opacityValue === undefined ? 'var(--color-danger)' : `color-mix(in srgb, var(--color-danger) ${opacityValue * 100}%, transparent)`,
+        info:    ({ opacityValue }) => opacityValue === undefined ? 'var(--color-info)' : `color-mix(in srgb, var(--color-info) ${opacityValue * 100}%, transparent)`,
 
         overlay: 'var(--color-overlay)',
       },

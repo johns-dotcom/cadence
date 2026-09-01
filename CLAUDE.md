@@ -1224,6 +1224,558 @@ Bookkeeping group + Bookkeeping/AP preset. Verified: build clean, node --check,
 fixtures 35/35, live on dev Neon (default/ranged analytics, plain + normalized
 search, basis-week filtering, rejected list, family totals on a split).
 
+---
+
+## Phase 4 — bank-statements (2026-09-01) — parity defect pass
+
+Closed the `_audit/pages/bank-statements.md` §7 register (21 of 24 DEF-BST rows
+closed; 03/23 partial as noted). Files: `routes/bank-statements.js` (~1,900 ln),
+`lib/bankReconcile.js`, `pages/BankStatements.jsx` (~1,100 ln), NEW
+`lib/statementPdfText.js` + `lib/statementAudit.js`, plus `index.js`
+(migrations + nightly sweep), `notifications.js` (due reminders in the bell),
+`db.js` (TENANT_TABLES).
+
+- **Deterministic parser (DEF-BST-11, the L item)** — `lib/statementPdfText.js`:
+  boom's layout parsers + reconciliation gates ported VERBATIM (BofA sections vs
+  printed totals; PayPal per-currency Activity Summary brackets; net proves,
+  gross stores), but text extraction is a **dependency-free zlib-based PDF
+  reader** (object scan incl. /ObjStm, page-tree walk, ToUnicode CMaps, Td/Tm
+  line+column reconstruction with boom's 4.6/7 thresholds — pdfjs-dist NOT
+  added). Account-agnostic: both layouts tried; only a parse that RECONCILES
+  wins, else AI fallback. The gate is the safety argument: a bad extraction
+  fails arithmetic, never corrupts data. LIMITATION (honest): reads digitally-
+  generated unencrypted PDFs whose fonts carry ToUnicode; scans/encrypted → AI.
+  Verified live: synthetic statement PDF ingested `parse_method:'rules'` with
+  AI unconfigured, balances captured, audit line written.
+- **Currency (DEF-BST-12/13)** — PDF prompt v3 (CURRENCY + AMOUNT_USD +
+  INDN/TRANSFER payee rules — INDN is OUR account holder, never a 1099 vendor);
+  `parsePipeLines` reads v1/v2/v3 tolerant; `parseCsv` reads currency/status/
+  type columns (PayPal non-Completed rows never ingest). Detail rows carry
+  `usd` (printed amount_usd wins, else cached rates); catTotals/coverage sum
+  USD. `extractCsvBalances` accepts "Running Bal.".
+- **Ingest (DEF-BST-14/15)** — refactored into `buildIngestCtx`+`ingestOne` so
+  /reparse runs the identical pipeline. Within-statement dedupe collapses ONLY
+  on a real reference (30 identical same-day $1 fees ingest as 30); refs
+  backfilled via `refFromDescription` (TRN/Confirmation#, never ID:/CO ID:).
+  `import_summary.reasons` = the matcher's own decline verdicts (`matchTxn`
+  gained an optional `why` out-param — purely observational; fixtures 35/35).
+- **Re-match lifecycle (DEF-BST-16)** — freshness re-run on detail open (10-min
+  per-statement throttle), `POST /rematch-all` (per-statement report, 409-not-
+  zero via a per-label busy set), `POST /reset-matching` (auto+manual cleared;
+  booked/income/dismissals sacred; `manual_not_recovered` reported), nightly
+  per-label pass in index.js via exported `router.runMatcherPass`.
+- **Verification machinery (DEF-BST-07/08/09)** — `POST /:id/reparse` strictly
+  additive (`lib/statementAudit.js` `diffReparseRows`: identity = date+amount+
+  direction+CURRENCY, counts not sets; PDF backgrounds into
+  `import_summary.reparse`, CSV sync; rules-verified balances persisted; client
+  reports added/already-present/other-statement/only-in-db + the ≥1.5× doubling
+  warning). Extras audit: `GET /extras` (portfolio, 429 single-flight) +
+  `GET/:id/extras` + `POST /:id/extras/remove` with the missingCount>0
+  "relabelled, not duplicated" refusal (the guard that saved 206 real PayPal
+  rows in boom) + booked-income block + affected-expense reporting. Misfiled:
+  `GET /:id/misfiled` + `POST /:id/misfiled/repair` (reference-repeat detection
+  inside one identity group, payee-only rewrite keeping id/date/amount, match
+  released only when the payee changes, invented bookings soft-deleted guarded
+  on entry_source, `unclear` left alone). All three require the stored file and
+  degrade with named reasons when R2 is off (dev).
+- **Library (DEF-BST-01/02/04/05/06/21)** — month-grouped "Statements by month"
+  card: X/Y-reconciled header, coverage bars (≥95/≥60 tiers), open-count/clear,
+  missing-account + overlaps badges, expandable per-statement rows (copy N,
+  period, per-stmt bar, matched/debits, extras/misfiled badges, hover
+  view-file/re-parse/delete), Mark-reconciled gated on open_debits=0 AND no
+  missing account + unlock hint, un-reconcile ✕. List payload gains debits/
+  matched/dismissed/open_debits/open_credits/open_value + `overlaps_with`;
+  `/months` gains `missing_accounts` — and a REAL bugfix: month_key was
+  `String(Date).slice(0,7)` = "Wed Aug" (pg returns DATE as a JS Date), now
+  `to_char` in SQL; this also fixes Bank Matching's month strip labels. Batch
+  upload (`multiple`, {done,total,phase} line, per-file failure banner,
+  parse-poll, single-ready auto-open); page-wide depth-counted drag-drop
+  overlay naming the target account; error rows show inline
+  `parse failed — {error}` + Delete; `GET /:id/file` streams the original via
+  `sendFileSafely` (client opens a blob URL).
+- **Sweeps & guards (DEF-BST-17/18/19/20/22/24)** — list sweeps throttled to
+  10 min/label, never concurrent; added retro internal unlink+dismiss
+  (`INTERNAL_RE.source` via `~*`), orphaned-booking soft-delete, currency
+  repair from the description suffix, and a **capacity-aware** over-claim sweep
+  replacing rank-1-only (verified live: two installments on one family survive
+  a list load; a third 409s). DELETE soft-deletes entries booked FROM the
+  statement (entry_source-guarded, audited, `entries_removed` returned) so
+  re-upload + re-book can't double-count. Dismiss refuses matched/booked rows
+  (bulk skips them in the WHERE and returns the real count); records the deck's
+  `rejected_expense_id`; an always-rule sweeps existing open rows immediately
+  and `dismissed_reason` names the pattern (`rule: <x>`; column widened to
+  VARCHAR(160) in migrations). `paidNoEvidence`: ±3-day pad, FAMILY totals,
+  account-method compatibility filter, per-entry `bank_candidates` (one-click
+  match chips). Balance backfill: deterministic-first (CSV column / rules
+  parse), focused AI last, 2/cycle fire-and-forget + skip-set;
+  `reparse-balance` uses the same ladder.
+- **Reminders (DEF-BST-10)** — `statement_reminders` table (label+user scoped;
+  monthly/weekly/once; day-of-month clamped next_due), CRUD under
+  `/bank-statements/reminders`, Done advances from TODAY, due reminders surface
+  in the notification bell (`notifications.js` type 'reminder'). Collapsible
+  card + default day-5 seed button. Email delivery NOT built (no hourly email
+  sweep infra) — bell only, documented.
+- **Also fixed (found in review)**: `activityBot` was used but never required
+  in bank-statements.js (month reconcile/reopen threw → 500); the 409
+  over-capacity message printed "Wed Aug 12" (Date-object slice).
+- **DEF-BST-03 partial**: the correct gate ships in THIS page's month library
+  and `/months.missing_accounts` makes the fix trivial elsewhere — Bank
+  Matching's own strip still gates on open_debits alone (that page belongs to
+  the bank-matching campaign). **DEF-BST-23 partial**: per-row `usd`, reversal
+  pairing (`reversed_by`/`reversal_of` chips via lib/reversalPairs) and
+  `categoryUsage` shipped; `group_proposal` + `vendor_hint` are deck/matching
+  consumers judged in the bank-matching audit (pointer).
+- **Verified**: fixtures 35/35; client build clean; node --check all touched;
+  live on dev Neon over HTTP — CSV + PDF ingest, same-statement dedupe,
+  capacity model vs sweep, dismiss guards, immediate rule sweep, reset/rematch,
+  reminders + bell, months, paidNoEvidence pad/method-filter.
+
+## Phase 4 — bank-matching (2026-09-01) — parity defect pass
+
+Closed the `_audit/pages/bank-matching.md` §7 register (37 of 42 rows closed,
+3 partial, 2 skipped as deliberate) plus the flags-engine checks the finance
+build deferred. Files: `pages/BankMatching.jsx` (rewritten, ~1,470 ln),
+`components/statements/StatementReviewDeck.jsx` (rewritten),
+`StatementFlagsCard.jsx`, `routes/bank-matching.js`, `routes/bank-statements.js`,
+`lib/statementFlags.js`, `lib/statementLinks.js`, `lib/fundingPairs.js`, NEW
+`lib/groupProposal.js` + `lib/bankVendors.js`, `index.js` (two columns).
+**Zero new deps.** Every matcher contract preserved — fixtures 35/35.
+
+- **The completion model was answering about a different set of money than the
+  queue underneath it** (§7-8/9/21/37/38/39). `/completion` now narrows its
+  BUCKETS to `?statement_id`, not just the left-counts, and reports
+  `workspace_total` beside the narrowed total so the card says which set it is
+  describing. Five dispositions, not four: `creator` is its own figure again
+  (explained, never invoice-backed). Buckets renamed to what they mean —
+  `needs_invoice` / `no_invoice_expected` — with `booked_expected` /
+  `booked_not_expected` kept as aliases carrying **boom's** meanings (expected =
+  still waiting), because NEW had them inverted and any parity consumer would
+  have read the opposite of the truth. `by_statement.left` = open PLUS
+  created-and-unanswered (the anti-146×-drift definition); `left_all` /
+  `left_all_value` drive the header headline; percentages to 0.1%.
+- **Three answers, not two** (§7-3). Open rows book from the table (inline
+  category + Book), in bulk (bulk bar), and vendor-by-vendor (§7-4 batch view:
+  `?view=batch`, groups from the shared bank-vendor aggregation, per-row and
+  uniform category, select-all, apply with a progress counter and a per-row
+  failure ledger — refused rows are named, never folded into a count).
+- **Attribution exists** (§7-1/2). A Category⇄Artist column lens (`?by=artist`),
+  `GET /artist-names` (artists table ∪ names the ledger actually carries),
+  artist pickable BEFORE booking and editable on booked rows
+  (`POST /tx/:id/artist`, refused on real-invoice entries — that belongs to the
+  Ledger), click-a-value-to-filter, and a by-construction empty state for the
+  artist+open combination.
+- **Multi-invoice settlement is reachable** (§7-7, and DEF-BST-23's
+  `group_proposal`). NEW `lib/groupProposal.js` searches candidate subsets for a
+  vendor whose family totals land on the debit, under two rules that make it
+  safe to OFFER: **ambiguity is a refusal** (two different sets that both fit →
+  nothing is pre-selected) and **one vendor per set** (alias groups count as one
+  vendor; the learned map does not — it is an inference, not a fact). Surfaced
+  in `/queue` (budget 40/request, only where no single invoice scores ≥0.85, so
+  the page never offers two contradictory answers to one row) and settled
+  through the existing `/tx/:id/attach` capacity model via a new AttachModal
+  with free ledger search on top.
+- **DEF-BST-23's `vendor_hint`** shipped as `lib/bankVendors.js`
+  `vendorHintFor` — the ledger vendor a descriptor is KNOWN to mean, with
+  provenance in confidence order (a person's override > learned lesson > alias >
+  this descriptor's own past matches). Rendered on the row, used to resolve the
+  split-book payee, and fed to the funding-pair naming test.
+- **DEF-BST-03 closed**: the month strip now gates Mark-reconciled on
+  `open_debits === 0` **AND** `missing_accounts.length === 0`, with the unlock
+  hint naming which account's statement is missing — a month can read 100%
+  coverage while an entire account was never uploaded. The silent 14-month cap
+  became a "show all N months" toggle.
+- **One-click that files money against the wrong invoice is gone** (§7-26). The
+  suggestion ARMS a comparison panel (one row at a time, radio + a deliberate
+  "Match X", near-identical warning when two candidates score within a hair,
+  per-candidate amount-difference callout). Every consequence-bearing action now
+  confirms with copy naming what moves (§7-30) — 14 sites.
+- **The prepayment guard stopped being a dead end** (§7-12): row match, attach
+  and the deck all catch `prepayment_possible` and offer the retry.
+- **"No invoice coming" became an ANSWER** (§7-11). On an open row it BOOKS
+  (category required) rather than flagging a row `/completion` still counts as
+  unfinished; it is refused on rows matched to a real invoice (a contradiction);
+  it carries an already-paid-invoice 409 speed bump with `confirm_new`; the bulk
+  gate lives in the WHERE with a named skip reason. Booking goes through a new
+  exported `router.bookOpenTxn` with an **atomic claim that rolls back the
+  invented entry on a lost race** — otherwise the ledger keeps an entry no bank
+  line points at.
+- **Reachable-but-uncallable endpoints now have callers**: unrematch (§7-13),
+  split-book (§7-14, hardened: 2-6 parts, category REQUIRED per part, payee
+  resolved-never-defaulted with an explicit refusal, `payment_method` derived
+  from the account, `learnPayee`, fx stamped per slice), funding-pair undo
+  (§7-20), unattach.
+- **detachTxn restores the booking a rematch displaced** (§7-18,
+  `restoreDisplacedBooking`, shared by unmatch / bulk-unmatch / unrematch).
+  Without it an unmatched ex-rematch row landed OPEN with its only answer
+  soft-deleted — a state nothing in the UI could exit.
+- **Rematch panel** (§7-19): greedy assignment now RETURNS the pairs that lose
+  it ("N contested" — silently discarding them made the panel look complete),
+  exact-cents-then-fee-then-fx tiers with the cross-currency arithmetic shown,
+  statement scoping, gap-days + evidence method + document presence, confirm,
+  and a per-row undo.
+- **Funding pairs** (§7-20): three tiers where the difference is what the
+  evidence PROVES — `exact` (arithmetic), `fx` (band **and** the pull names the
+  recipient, now including alias/learned/override names), `unproven` (band
+  alone). Unproven pairs are returned separately, excluded from the bulk, and
+  demand `confirm_unnamed`; `close-all` reports each failure; already-paired
+  legs list with a "put it back". Summary counts + the dollars that would
+  otherwise count twice.
+- **Duplicate merge** (§7-36): ±0.01 amount tolerance (two records of one
+  payment routinely differ by a rounded cent), `lock_timeout` beside the
+  statement timeout, **moved≥1 verification** (nothing to move → 409 instead of
+  archiving a record while proving nothing), and it carries the twin's **UFR
+  mark + recoupment label** — cadence has a UFR model, so archiving the row that
+  carries it silently changed an artist statement. `recoupable` is deliberately
+  NOT carried: it defaults TRUE, so forcing it would overwrite a deliberate no.
+- **Also**: flag-for-review (`flagged` column + chip + deck `F`); currency
+  correction (`/tx/:id/currency`, refused while matched, clears the stale
+  `amount_usd`); vendor override (`vendor_override` column, per-row + bulk,
+  `confirm_new` unknown-vendor gate, teaches the matcher); Match-again /
+  Reset-matching in the page menu; full bulk bar (book / mark-paid / dismiss /
+  restore / unbook / no-invoice / unmatch / vendor); sortable headers with
+  confidence-then-amount as the open-pile default; URL mirrors
+  statement/filter/q/view/by; persisted direction toggle; lead+more chips with
+  `Open` = open **plus** needs-invoice (so the number can honestly reach zero);
+  ≈USD sub-amounts, bank-differs / description / dismissed-reason sub-lines,
+  "N of M" + "show 200 more" footers; auto-decisions gained a days picker,
+  per-payee grouping (with a "matched to N different vendors" warning) and
+  ledger links; the ledger-side panel gained a real loading/error state, a
+  refresh, cap disclosure, invoice#/no-file/method columns, both exits, and
+  **one-click "found in bank?" candidates** (§7-32) computed with the same
+  ±fee-tolerance / 7-day / method-compatibility rules the matcher uses.
+- **`/ledger-search` stopped hiding partially-settled invoices** (§7-31): it now
+  returns `claimed` / `remaining` / `partially_settled` and drops only families
+  with no room left — the capacity model allows installments, so hiding them
+  made a real invoice unfindable.
+- **Review deck** (§7-5/6/33/34/35): 7 card kinds (match / choose / rematch /
+  book / income / no-invoice / keep) instead of 2; booked-rows-awaiting-a-
+  document are back in the deck; open credits that pair as reversals are OUT (a
+  reversal is money returned, never revenue); match-first ordering with skip
+  DEMOTION rather than removal; **⌫ undo with a per-kind server inverse** for
+  every accept; `F` flag, `N` no-invoice, `S` inline ledger search, `B` force
+  book over a match, and a hint line naming every key — a key nobody can see is
+  a key nobody uses. Dismiss passes `rejected_expense_id`, so the deck's "no"
+  now survives a statement re-upload (§7-42, closing the client half of a fix
+  the statements campaign made server-side). Re-review mode (⋯ menu) feeds
+  answered rows through, and the `keep` card refuses to offer "book" on a row
+  already tied to a real invoice.
+- **Flags engine — the four deferred checks**, all with working one-click
+  actions: **suspect-currency** (a PayPal USD row ≥$500 whose exact amount
+  repeats as a same-day conversion row — the signature of a foreign payment
+  parsed as USD); **booked-duplicate** (a debit booked as a new entry while the
+  vendor's real invoice sits unclaimed → `unbook-rematch`, which is the existing
+  rematch endpoint, breadcrumb and all); **stolen-match** (the same shape, but
+  the original is held by an auto-match whose bank name shares nothing with the
+  vendor — unmatching the thief is what makes the duplicate fixable, and the
+  next pass then offers the fix); **lesson-disagreement / vendor-link** over the
+  shared `aggregateBankVendors` grouping, with a new `POST /rules/relink` that
+  rewrites what the matcher LEARNS without touching a single existing match.
+  3+ groups disagreeing about one ledger vendor COLLAPSE into one card with one
+  bulk repoint (a card processor minting a vendor per charge). `vendor-link`
+  requires NAME EVIDENCE, never bare co-occurrence — offering a link on the
+  strength of a wrong match would cement that error into every future statement.
+  `double-booked` gained the one-click unbook it never had. An explicit
+  `vendor_override` is exempt from both lesson checks: disagreeing with the
+  matches is that person's decision, not a defect.
+- **Tokens-only** on every touched surface: the page, the deck and the flags
+  card lost their raw `gray-*` / `rose-50` / `amber-50` classes for
+  `text-ink`/`ink-muted`/`ink-faint`, `bg-elev`, `bg-selected`,
+  `text-success|warning|danger|info` and `bg-danger/10`-style color-mix tints
+  (the fixed `-50` shades went near-white in dark).
+- **Not closed, deliberately**: ×N identical-row grouping in the table (§7-27
+  partial — the cap footer, sub-lines and ≈USD shipped); a document preview
+  panel in the deck (§7-35 partial — bank txns carry no document to preview;
+  inline search, force-book and the hint line shipped); a dedicated funding-pair
+  DECK (§7-20 partial — the panel gained tiers, bulk, undo and summary);
+  per-row "funding pair · $X" annotation on open PayPal rows; split-book's
+  displaced-booking race restore; the auto-decisions document indicator; sort
+  order in the URL.
+- **Already closed before this pass** (verified against current code, not
+  re-fixed): §7-10 and the server half of §7-42 — the bank-statements campaign
+  had already made dismiss refuse matched/booked rows and record
+  `rejected_expense_id`; §7-15's server endpoints (`/rematch-all`,
+  `/reset-matching`) existed with no caller on this page, which is what this
+  pass added.
+- **Verified live** on dev Neon over HTTP with AI/R2/email unconfigured:
+  completion scoping + narrowed percentages; group proposal → attach → capacity
+  409 → unattach; ledger-search `remaining` on a partially-settled invoice;
+  no-invoice category gate, paid-candidate 409 and `confirm_new`; bulk
+  no-invoice skipping a real-invoice match and a booked row succeeding;
+  split-book refusals (no category / 7 parts / sum mismatch) and the good path
+  writing `payment_method` + resolved payee across the family; rematch →
+  unrematch → rematch → bulk-unmatch restoring the booking; duplicate merge
+  carrying the UFR mark and refusing a second merge; funding pairs across all
+  three tiers incl. the unproven refusal, confirm, undo and close-all; vendor
+  override unknown-vendor gate; currency refusal while matched; months
+  `missing_accounts`; and the full stolen-match → unmatch → booked-duplicate →
+  one-click-fix chain. Fixtures 35/35, client build clean, `node --check` on
+  every touched server file.
+
+## Phase 4 — bank-ledger port (2026-09-01)
+
+Ported OLD's `/bk/bank-ledger` — **the bank half of the ledger with a statement
+lens**. `_audit/pages/missing--bank-ledger.md` P1 + P2. No new deps, no new
+columns, no migration.
+
+**Placement: a `bank` prop on `Ledger.jsx` at `/bank-ledger`, NOT a tab on
+`/bank-matching`.** The punch-list wanted every ledger row seen from the bank's
+side — full column set, inline edit, bulk edits, 20-deep undo, splits,
+per-currency totals, incremental render. That IS the ledger component; building
+it inside BankMatching would be a second copy of ~1,500 lines of money-editing
+UI, which is exactly the drift this file keeps warning about. The two surfaces
+also ask different questions: `/bank-matching` is a *decision queue* (what
+should this line become?), `/bank-ledger` is a *register* (what did the month do,
+and does it add up?). And the lens's extra-lines list is defined against **this
+page's filtered row set** — it only means anything where the ledger rows are.
+Registered exactly like its siblings: `AdminRoute`, Layout Bookkeeping group,
+`PAGE_LABELS`. Deliberately NOT in `constants/pages.js` — `/bank-statements` and
+`/bank-matching` aren't either; admin surfaces are role-gated, not
+permission-matrix-gated, and adding a toggle `AdminRoute` ignores would lie.
+
+**`?source=` — the partition** (`routes/ledger.js`). `sourceClause()` reuses
+`lib/ledgerSource.js`: `bank` → `entry_source = 'bank_statement'` (equality —
+NULL genuinely is "no"); `invoices` → `excludeBankRows()` i.e. **IS DISTINCT
+FROM**, never `<>`, or every hand-entered NULL row drops out and the page
+EMPTIES instead of narrowing. `invoices` is the COMPLEMENT of `bank`, never a
+second whitelist — that is what makes the halves partition (verified live:
+26 = 2 + 24 on both the list and the CSV). **Opt-in**: absent `?source=` behaves
+exactly as before, because a dozen callers read `/ledger/entries`. A bad value
+is a **400, not ignored** — on the list AND on `/export`, `/export-xlsx`,
+`/export-invoices-zip`, `/export-w9s-zip` (shared `exportFilters`, which now
+returns null and `exportRows` throws `BadSource`; a null returned into three
+call sites is one unchecked site away from `WHERE null`). The export carries the
+source so a workbook contains **exactly** the page it came from — that one goes
+to the accountant.
+
+**Bank-mode columns** — scoped to `source=bank` rather than added to
+`LEDGER_VIEW_COLS` (four pages read that): `bankEvidenceCols()` for
+`bank_evidence`/`bank_expected`, plus `no_invoice_expected` = `bool_or` over the
+family root's live matched transactions (`bank_transactions.no_invoice`;
+`COALESCE(parent_id, id)`, matching how bank_evidence resolves, so a split slice
+shows its family's line). Client adds three columns offered **only** on this
+half — Statement / Bank line / Inv wanted? — plus a one-click **"Hide what a
+bank row never fills"** preset (invoice #, the four document cells, vendor
+contact, terms/due, the Y/N markers, Source). Preset, not default: the document
+cells are where a late-arriving invoice goes. Separate versioned localStorage key
+per half (`ledger-cols:bank:…`) — one key would make hiding a column on one half
+rearrange the other.
+
+**`server/lib/statementLens.js` (new, pure, CJS, fixture-held).** Put on the
+SERVER, not the client as OLD had it, because `dispositionOf` **already existed
+here twice and had drifted**: `bank-matching.js` treated `match_method='created'`
+as booked, `bank-statements.js` did not — so a created-from-rule row read
+`booked` on one page and `matched` on the other, i.e. an undocumented row
+counted as invoice-backed depending on which page you were on. One definition
+now; both routes import it; widened to the union (correct direction — a booking
+is not a match). Cadence's disposition vocabulary is a shipped contract
+(`booked` / `matched` / `toconfirm` / `dismissed` / `open` / `booked-income` /
+`open-credit`, switched on by three components) and is **unchanged**; `creator`
+is a SUMMARY-ONLY bucket (`lensBucketOf`) so the tie-out can keep creator
+payments out of "invoice-backed" without dropping them from two pages' matched
+chips. Also `txUsd` (request-time `usd` → stored `amount_usd` → face; ABS, so a
+negatively-stored debit can't subtract from the debit total) and
+`summariseStatement`: per-direction counts + USD by bucket, and the tie-out
+`beginning + credits − debits = ending` against the statement's own printed
+balances. **Rounds ONCE at the end** (a TOTAL, not a row — rounding parts first
+invents a cent) and compares the ROUNDED drift `=== 0` exactly. `hasBalances`
+is false for accounts parsed without them (0/0 PayPal): a check that always
+fails for a non-problem trains people to ignore the check.
+
+**`GET /bank-statements/:id/lens`** — deliberately not `GET /:id`, which re-runs
+auto-matching on open and carries suggestions, paid-no-evidence candidates and
+12-month category usage. A read-only tie-out must not have a side effect. Returns
+`{ statement, transactions (slim, each with the server's `disposition` + per-row
+`usd`), lens }`. The client therefore **never re-derives** the disposition rule —
+its extras list is a set difference over server-decided facts.
+
+**The lens UI** (bank half only): statement picker (`Jun 2026 · BOFA`, ready
+statements only), direction picker, the tie-out line (`opened · in · out ·
+closed · ✓ ties` / `off by $x`), a per-bucket breakdown of the chosen side, and
+an "N credits unanswered" jump. Selecting a statement **also narrows the ledger
+rows** (`bank_evidence.statement_id`) — otherwise the header would describe a
+month sitting above every month's rows. Below the table: **the lines with no
+editable row on this page** — everything except booked-lines-whose-row-is-on-
+screen, built against the FILTERED set so a filter-hidden row's line resurfaces
+rather than vanishing. Verified live: money-out extras + booked-with-row ==
+total money-out lines, on every seeded statement. Those rows are deliberately
+NOT ledger rows (no expense id → no inline editors, no bulk checkbox); their
+buttons act on the TRANSACTION through endpoints `/bank-matching` already owns
+(dismiss / restore / unbook-income), and anything needing a real decision links
+out to `/bank-matching?statement=…` rather than growing a second matcher.
+
+**Cross-half `?focus`**: a deep link landing in the wrong half redirects once
+(`xhalf=1` caps it at one hop — without a marker an unknown id ping-pongs
+forever) and then says "it lives on the other half" instead of dying silently.
+Only the NARROWED views can be wrong-half; "All spend" excludes nothing, so a
+row missing there is missing for another reason and must not be bounced.
+
+**View switch** All spend / Invoices / Bank items on both routes. "All spend"
+stays the default on `/ledger` — it is what the page has always shown, and
+narrowing it silently is a change nobody asked for. The invoice-creation CTAs
+(Add invoice/reimbursement, vendor link, CSV import) are hidden on the bank half:
+they all make an INVOICED row, so filing one from here would look like the button
+did nothing.
+
+**Ledger-matching judgment (`missing--ledger-matching.md` P2): not built, and
+none of it falls out free here.** That page diffs the ledger against an external
+bookkeeper's xlsx — a third dataset cadence never ingests — and nothing on this
+surface touches `bank_transactions`' counterpart. Its `lib/vendorMatch.js` is a
+tiered *vendor-name* matcher with human-readable reasons; cadence's
+`lib/bankReconcile.js` scoring is calibrated for bank *descriptors* and held by
+fixtures, so conflating them would decalibrate the shipped matcher. It stays its
+own port.
+
+**Verification**: fixtures **55/55** (35 pre-existing + 20 new lens assertions —
+disposition order, the created/booked drift, creator-is-summary-only, round-once
+at 0.005+0.005, drift reported not swallowed, 0/0 = nothing to tie against,
+extras set-difference incl. the filter-hidden-row case); client build clean;
+`node --check` on every touched server file; live against the dev workspace —
+partition 26 = 2 + 24 on list and CSV, 400 on a bad source across all four export
+routes, `bank_evidence` + `no_invoice_expected` populated, `/lens` on three
+statements, and `/bank-statements/:id` vs `/lens` dispositions now agree row-for-
+row on statements carrying `match_method='created'`.
+
+
+## Phase 4 — data quality (2026-09-01) — parity defect pass
+
+`_audit/pages/flags-data-quality.md` §7 (1 P0 + 7 P1 + 13 P2 + 7 P3). The P0 was
+already closed by the root-cause pass (the `vendors.w9_name` 42703 that 500'd the
+whole page); everything else was open. **`server/routes/flags.js` and
+`client/src/pages/DataQuality.jsx` are both rewrites.** Zero new deps.
+
+**The two rules the rewrite is built on.** (1) *Two figures, never one.* A check
+either says something is WRONG (a decision) or that a field is EMPTY (data
+entry). Every category now ships `nature` ('problem'|'completeness') + `group`
+(Money→Ledger→Catalog→Artists) + `severity`, so the header's "N need a decision ·
+M fields incomplete", the rail, the overview and the body all derive from one
+filtered list and cannot disagree. (2) *A placeholder is not a name.*
+`namesAnArtist` (lib/artistKey.js) runs BEFORE every artist detector — without it
+`likely_typo` offers "n/a" as a 2-edit typo of a real artist, `multi_name` offers
+to split a row into "N" and "A", and `variants` elects "n/a" as a canonical
+spelling. "unknown" stays a REAL artist name.
+
+**Server — 23 categories where there were 6.** Ported from boom: six catalog /
+artist completeness checks (`releases_missing_genre|upc|isrc|spotify`,
+`artists_missing_genre|spotify`) with sentinel-value guards ("n/a" in a UPC field
+is a missing UPC), released-date gating, and `getCompletenessTotals` supplying
+`of_total` denominators **plus the UNCAPPED count** — the item lists LIMIT 500 and
+a capped count would report a 900-row gap as 500, i.e. more complete than it is.
+Detectors gained `artist_likely_typo` (Levenshtein ≤2 vs roster, with the
+suggestion), `artist_placeholder`, and `artist_variants` (canonical = the
+roster's EXACT spelling, else most-frequent; matching on the folded key is
+circular and elected "zeke bleu" over "Zeke Bleu" — caught in live test).
+`artist_multi_normalize` auto-detects collab strings with row count + total spend
++ parsed candidates. Ledger detectors are now scoped to `status='approved'`
+(pending vendor submissions and rejected rows fed every flag and doubled the
+Approvals queue); `ARTIST_REQUIRED_CATEGORIES` is boom's 10, `missing_song` gained
+the reimbursement exclusion and the **child-carries-song exemption** (a split
+parent with a blank song is the family container, not a gap), `missing_socials`
+gained `cobrand = TRUE`.
+
+**Invoice dupes are four tiers again** (1 same vendor+#+amount / 2a amount
+mismatch / 2b blank-# ±7-day union-find chain / 3 cross-vendor, gated on same
+amount AND number length ≥ 4 — without both guards "1"/"2"/"3" collide across
+every vendor and flood the section). Vendor aliases resolve into one bucket;
+`entry_source = 'bank_statement'` rows are excluded via `excludeBankRows`
+(lib/ledgerSource.js) because they never had an invoice number and a bank charging
+five identical fees in a day is normal. Split slices need no special case here —
+cadence splits are parent+child, and the query is already `parent_id IS NULL`.
+**Vendor dupes** use NFKD-folded Levenshtein union-find with pairs already linked
+in `vendor_aliases` excluded, and carry invoice count / spend / W9 / first+last
+invoice, canonical-first. **Release dupes key on `artist_id|name`**, never name
+alone — two artists both having an "Intro" is not a duplicate.
+
+**`w9_name` decision: wired, not deleted.** Nothing ever populated a
+`vendors.w9_name` column and none exists. The real W9 name lives in
+`expenses.w9_scan->>'w9_name'` (lib/aiScan.js), so `vendor_w9_mismatch` reads it
+from there, deduped per payee, linking the entry that holds the W9.
+
+**Access is layered, not all-or-nothing.** The router is `authMiddleware +
+withTenant` only. Catalog/artist sections serve every role; ledger + vendor +
+invoice sections need Approver+; `flagged_transactions` needs Admin+ (matching the
+Statements split); every mutation carries `requireAdmin` on the route. `/data-quality`
+lost its `AdminRoute` and its `isAdmin` nav gate — the blanket lockout took the whole
+inbox from Approvers. Verified live: Approver sees 22 sections, User sees 8, both 403
+on merge.
+
+**Mutations.** All three merges take `source_ids` / `source_names` ARRAYS and fold
+a whole group in ONE transaction behind ONE confirm — the old shape fired a
+confirm and an unawaited POST per non-survivor, racing concurrent transactions
+and reloads. `merge-vendors` now records each folded spelling as a
+`vendor_aliases` row (that is what makes a merge stick: dup detection skips
+aliased pairs, and the dup-check gate + bank matcher both read the table) and
+repoints any alias that named the source. `merge-artists` cascades
+`deals.artist_name`; `artist_income` is NOT in the cascade because cadence keys it
+by `artist_id`, not a name string. New: `rename-artist` (cascades expenses +
+deals; the clash check is unconditional — normKey collapses whitespace, so gating
+it on "did the name change" skipped exactly the `"Nova  Ray"` → `"Nova Ray"` case
+that then 500'd on `artists_label_id_name_key`) and `archive-release`.
+
+**Client — the flat 7-pill strip is a two-pane hub.** Sticky 224px grouped rail
+(severity dot, problems-first, disabled-when-empty) + a grouped `<select>` below
+`lg`; an Overview with the problem-card grid and an "Incomplete fields" strip
+whose progress bars are drawn ONLY when the server supplied `of_total` ("no total
+available" otherwise); per-section header with description; a filter box with a
+shown/total counter, identifier-skipping deep match, reset-on-section-change and
+an input that survives zero matches; show-low + show-dismissed toggles; a re-scan
+button; and `?tab=` in the URL. Cards regained their evidence: release artwork /
+artist / date / UPC-ISRC-Spotify chips / per-row Archive / multi-reason chips,
+artist release+contract counts and inline rename, vendor metadata with per-row
+**Leave alone** (fuzzy matching pulls genuine third parties into a group, and
+all-or-nothing meant renaming a real vendor or fixing nothing).
+
+**Ledger rows are fixable in place**: the inline editor pre-fills from the server
+suggestion (accepting one is a keystroke), Save PATCHes `/ledger/entries/:id` and
+auto-dismisses, and the row then sits struck-through for **5 s with Undo** before
+being stripped — a fix that vanishes instantly gives no chance to notice it was
+wrong. `artist_placeholder` gets a "No artist" action that is deliberately NOT a
+mode of the field editor (that one refuses an empty value; here blank is the
+ANSWER). Split reuses `components/SplitModal` — so `family_amount` +
+`artist_breakdown` joined the flag-row SELECT, or a re-split would validate
+against `undefined`.
+
+**Human-flag inboxes now have a home.** `flagged_expenses` +
+`flagged_transactions` (`bank_transactions.flagged` arrived with the bank-matching
+campaign) are sections, and `LedgerEntryDrawer` gained the **Flag / Flagged
+toggle** that fills the first — the marker previously had no writer outside the
+campaign review flows.
+
+**Dismissals stayed ONE store.** `data_quality_dismissals` gained a `summary`
+column stamped at dismiss time: the key is an id signature and the rows behind it
+can be merged away, so a dismissed entry cannot be re-hydrated later — printing
+the raw `reldupe:12,15` made a machine identifier the primary copy. `LEGACY_KIND`
+maps the pre-rename per-row kinds (`unknown_artist`→`artist_unknown` etc.) so
+dismissals made before this pass still suppress their rows (verified live).
+`?include_dismissed=1` annotates groups in place with Restore.
+
+**Tokens only** — `bg-red-100/orange-100/amber-100` chips are gone; severity is
+`bg-danger|warning|info` and the accent is `bg-brand-500/10` + `text-brand-ink`,
+so nothing goes near-white in dark. Dates use `utils/dates.formatDate`, never
+`new Date(dateOnly).toLocaleDateString()`.
+
+**Not done, and why.** §7-19's date/method edit-and-recheck popover, "Find it"
+search link and checked-account note, and §7-20's ReviewDeck keep/archive flow,
+live on **/bank-statements** and **/bank-matching** — surfaces the two bank
+campaigns own in this same phase. What was cheap and belongs to the flags family
+was done: `StatementFlagsCard` now prints the true paid-no-match total when the
+engine's 150-row cap hides the rest. The duplicate-pairs payload already carries
+the doc/artist/`gap_days` evidence from the bank-matching campaign. Also skipped:
+an in-page invoice PREVIEW — cadence has no `FilePreview`, and the repo removed
+`?token=` query-param auth on purpose, so an `<img>`/`<iframe>` src cannot
+authenticate; rows show a document marker and deep-link to the ledger instead.
+Vendor names are plain text, not links: there is no per-vendor route to deep-link
+to and `/vendors` is admin-only, which a non-admin can now reach this card from.
+
+**Verified live** (dev workspace 2, seeded dirty data): every one of the 23
+sections fires; cross-artist "Intro" is NOT a duplicate while same-artist "Intro"
+and a shared UPC are; a rejected row and a `bank_statement` row stay out of the
+dup tiers while the blank-# chain 65→66→67 collapses to one group; a pending
+vendor submission's junk artist never reaches the flags; the alias written by a
+vendor merge suppresses the pair when the old spelling reappears; a split makes
+the parent's `missing_song` flag disappear; dismissals survive rescans in both key
+formats. Client build clean, `node --check` on both touched server files,
+`server/scripts/finance-fixtures.cjs` 55/55.
+
 ## Stack & deploy (as built — matches spec §2 unless noted)
 
 - **Backend**: Node/Express 4, PostgreSQL via `pg` (raw parameterized SQL). JWT in

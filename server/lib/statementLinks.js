@@ -94,8 +94,45 @@ async function settleTxnWithInvoices(labelId, txnId, expenseIds, { userName, all
   }
 }
 
-/** Unlink a txn (links + primary). Never touches ledger rows. */
-async function detachTxn(labelId, txnId) {
+/**
+ * Restore the booking a rematch/attach DISPLACED, if there is one.
+ *
+ * A rematch soft-deletes the invented entry with the breadcrumb
+ * `rematch#<txnId>` and repoints the txn at the real invoice. Unlinking that
+ * txn afterwards must not leave the row OPEN with its entry in the graveyard —
+ * that is a dead-end state: the money reads unanswered while an archived entry
+ * holds the only record of the original answer. Restoring puts the row back
+ * exactly where the rematch found it.
+ *
+ * Returns the restored root id, or null when nothing was displaced.
+ */
+async function restoreDisplacedBooking(labelId, txnId, actor) {
+  const tag = `rematch#${txnId}`;
+  const root = (await pool.query(
+    `SELECT id FROM expenses WHERE label_id = $1 AND deleted_by = $2 AND parent_id IS NULL LIMIT 1`,
+    [labelId, tag]
+  )).rows[0];
+  if (!root) return null;
+  await pool.query(
+    `UPDATE expenses SET deleted = FALSE, deleted_by = NULL, deleted_at = NULL WHERE label_id = $1 AND deleted_by = $2`,
+    [labelId, tag]
+  );
+  await pool.query(
+    `UPDATE bank_transactions SET matched_expense_id = $1, match_method = 'created', match_score = 1.0,
+            booked = TRUE, matched_by = $2, matched_at = NOW()
+      WHERE id = $3 AND label_id = $4`,
+    [root.id, actor || null, txnId, labelId]
+  );
+  return root.id;
+}
+
+/**
+ * Unlink a txn (links + primary). Never touches ledger rows — EXCEPT that a
+ * booking this txn's match displaced is restored (see above), because the
+ * alternative is an open row whose only answer is soft-deleted.
+ * Returns { ok, restored } — `restored` is the root id put back, or null.
+ */
+async function detachTxn(labelId, txnId, { restore = true, actor = null } = {}) {
   await pool.query(`DELETE FROM bank_txn_invoice_links WHERE txn_id = $1 AND label_id = $2`, [txnId, labelId]);
   const { rows } = await pool.query(
     `UPDATE bank_transactions SET matched_expense_id = NULL, match_method = NULL, match_score = NULL,
@@ -104,7 +141,9 @@ async function detachTxn(labelId, txnId) {
       RETURNING id`,
     [txnId, labelId]
   );
-  return rows.length > 0;
+  if (!rows.length) return { ok: false, restored: null };
+  const restored = restore ? await restoreDisplacedBooking(labelId, txnId, actor).catch(() => null) : null;
+  return { ok: true, restored };
 }
 
-module.exports = { loadClaimedSums, settleTxnWithInvoices, detachTxn, feeTolerance };
+module.exports = { loadClaimedSums, settleTxnWithInvoices, detachTxn, restoreDisplacedBooking, feeTolerance };

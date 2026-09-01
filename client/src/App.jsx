@@ -166,12 +166,17 @@ function AppContent() {
         <Route path="/salary"       element={<AdminRoute><Salary /></AdminRoute>} />
         <Route path="/bank-statements" element={<AdminRoute><BankStatements /></AdminRoute>} />
         <Route path="/bank-matching" element={<AdminRoute><BankMatching /></AdminRoute>} />
+        {/* Same component as /ledger, `bank` prop — the reference app's
+            one-component-two-routes. Statement-born rows are not a different
+            table, so they take the same inline edits, bulk edits, splits and
+            undo; only the row set, three columns and the lens differ. */}
+        <Route path="/bank-ledger" element={<AdminRoute><Ledger bank /></AdminRoute>} />
         <Route path="/approvals/archive" element={<AdminRoute><LedgerArchive /></AdminRoute>} />
         <Route path="/creators" element={<AdminRoute><Creators /></AdminRoute>} />
         <Route path="/artist-budgets" element={<AdminRoute><ArtistBudgets /></AdminRoute>} />
         <Route path="/artist-budgets/:artistKey" element={<AdminRoute><ArtistBudgetSheet /></AdminRoute>} />
         <Route path="/bank-statements/:id" element={<AdminRoute><BankStatements /></AdminRoute>} />
-        <Route path="/data-quality" element={<AdminRoute><DataQuality /></AdminRoute>} />
+        <Route path="/data-quality" element={<DataQuality />} />
         <Route path="/notifications" element={<Notifications />} />
         <Route path="/manual" element={<ManualPage />} />
         <Route path="/recording-budgets" element={<AdminRoute><RecordingBudgets /></AdminRoute>} />

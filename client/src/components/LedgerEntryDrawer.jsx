@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { X, Plus, Trash2, Check, History, Layers, CreditCard, Ban, RotateCcw, Sparkles, AlertTriangle, Paperclip, Zap, MessageSquare } from 'lucide-react'
+import { X, Plus, Trash2, Check, History, Layers, CreditCard, Ban, RotateCcw, Sparkles, AlertTriangle, Paperclip, Zap, MessageSquare, Flag } from 'lucide-react'
 import ObjectDiscussion from './ObjectDiscussion'
 import { dropTarget } from '../utils/drop'
 import api from '../api'
@@ -24,6 +24,9 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
   const [itemTitle, setItemTitle] = useState('')
   const [scans, setScans] = useState({ invoice: entry?.ai_scan || null, w9: entry?.w9_scan || null })
   const [scanning, setScanning] = useState('')
+
+  const [flagged, setFlagged] = useState(!!entry?.flagged)
+  const [flagReason, setFlagReason] = useState(entry?.flag_reason || '')
 
   const [campaigns, setCampaigns] = useState([])
   const [campaignId, setCampaignId] = useState(entry?.campaign_id || '')
@@ -106,6 +109,25 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
     catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
 
+  // Flag-for-review. A person parking a row for a second pair of eyes is not
+  // the same as an unanswered row, and until this button existed the marker
+  // could only be set by the campaign review flows — so Data Quality's
+  // "Flagged for Review" inbox had no way to fill.
+  const toggleFlag = async () => {
+    const on = !flagged
+    let reason = flagReason
+    if (on) {
+      reason = window.prompt('Why is this flagged? (optional — everyone reviewing sees it)', '') ?? null
+      if (reason === null) return // cancelled, not "no reason"
+    }
+    try {
+      const { data } = await api.post(`/ledger/entries/${id}/flag`, { flagged: on, flag_reason: on ? reason : null })
+      setFlagged(!!data.data.flagged); setFlagReason(data.data.flag_reason || '')
+      toast(on ? 'Flagged for review' : 'Flag cleared')
+      onChanged?.()
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+
   const scanFlags = (scans.invoice?.discrepancies?.length || 0) + (scans.w9?.discrepancies?.length || 0)
   const TABS = [
     { key: 'history', label: 'History', icon: History },
@@ -146,8 +168,12 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
               </button>
             )
           })}
+          <button onClick={toggleFlag} title={flagged ? (flagReason || 'Flagged for review — click to clear') : 'Flag this row for review'}
+            className={`ml-auto inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg ${flagged ? 'text-warning bg-warning/10' : 'text-ink-muted hover:bg-elev'}`}>
+            <Flag size={13} /> {flagged ? 'Flagged' : 'Flag'}
+          </button>
           {isAdmin && (
-            <button onClick={voidEntry} className={`ml-auto inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg ${entry.voided ? 'text-emerald-600 hover:bg-emerald-50' : 'text-red-600 hover:bg-red-50'}`}>
+            <button onClick={voidEntry} className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg ${entry.voided ? 'text-emerald-600 hover:bg-emerald-50' : 'text-red-600 hover:bg-red-50'}`}>
               {entry.voided ? <><RotateCcw size={13} /> Unvoid</> : <><Ban size={13} /> Void</>}
             </button>
           )}

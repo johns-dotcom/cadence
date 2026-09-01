@@ -19,8 +19,10 @@ const { logActivity } = require('../middleware/activityLogger');
 const R = require('../lib/bankReconcile');
 const { usdOf, round2 } = require('../lib/usd');
 const { normalizeBankPayee } = require('../lib/normalizeBankPayee');
-const { settleTxnWithInvoices, detachTxn } = require('../lib/statementLinks');
+const { settleTxnWithInvoices, detachTxn, restoreDisplacedBooking, feeTolerance } = require('../lib/statementLinks');
 const { proposeFundingPairs } = require('../lib/fundingPairs');
+const { proposeGroups } = require('../lib/groupProposal');
+const { aggregateBankVendors, vendorHintFor } = require('../lib/bankVendors');
 const bankEvidence = require('../lib/bankEvidence');
 const { stampFxRateAsync } = require('../lib/fxStamp');
 const { familyRoot } = require('../lib/paymentFamily');
@@ -30,16 +32,9 @@ const { autoLinkRelease } = require('./ledger');
 const router = express.Router();
 router.use(authMiddleware, withTenant, requireAdmin);
 
-function dispositionOf(t) {
-  if (t.direction === 'credit') {
-    if (t.matched_income_id) return 'booked-income';
-    return t.dismissed ? 'dismissed' : 'open-credit';
-  }
-  if (t.dismissed) return 'dismissed';
-  if (t.booked || t.match_method === 'created') return 'booked';
-  if (t.matched_expense_id) return t.exp_payment_status === 'Paid' ? 'matched' : 'toconfirm';
-  return 'open';
-}
+// One definition, shared with routes/bank-statements.js — see lib/statementLens.js
+// for why it stopped being two.
+const { dispositionOf } = require('../lib/statementLens');
 
 async function loadLabelAccounts(labelId) {
   const row = (await pool.query(`SELECT bank_accounts FROM labels WHERE id = $1`, [labelId])).rows[0] || {};
@@ -56,6 +51,8 @@ router.get('/queue', async (req, res) => {
     const { rows: txns } = await pool.query(
       `SELECT t.*, s.account, s.filename, s.period_start, s.period_end,
               e.payee AS exp_payee, e.category AS exp_category, e.payment_status AS exp_payment_status,
+              e.artist AS exp_artist, e.invoice_number AS exp_invoice_number,
+              e.invoice_r2_key AS exp_invoice_key, e.entry_source AS exp_source,
               i.source AS income_type
          FROM bank_transactions t
          JOIN bank_statements s ON s.id = t.statement_id AND s.status = 'ready'
@@ -68,20 +65,64 @@ router.get('/queue', async (req, res) => {
     const { suggestCategory, suggestIncomeType } = require('../lib/statementSuggest');
     const maps = await R.loadMaps(pool, req.labelId);
     const accounts = await loadLabelAccounts(req.labelId);
+    // What descriptors have historically resolved to, for the `history` tier
+    // of the vendor hint. Built from THIS payload so it costs nothing extra.
+    const matchedNames = new Map();
+    for (const t of txns) {
+      if (!t.exp_payee || t.exp_source === 'bank_statement') continue;
+      const k = normalizeBankPayee(t.payee_guess || t.description || '');
+      if (!k) continue;
+      const set = matchedNames.get(k) || new Set();
+      set.add(t.exp_payee);
+      matchedNames.set(k, set);
+    }
+    // Reversal pairing, per ACCOUNT — a failed payment and its refund cancel
+    // out, and the chips steer review away from matching either side to an
+    // invoice (or, worse, booking the credit as revenue).
+    const { pairReversals } = require('../lib/reversalPairs');
+    const reversedBy = new Map(), reversalOf = new Map();
+    const byAccount = new Map();
+    for (const t of txns) {
+      const arr = byAccount.get(t.account) || [];
+      arr.push(t);
+      byAccount.set(t.account, arr);
+    }
+    for (const [, list] of byAccount) {
+      for (const p of pairReversals(list)) { reversedBy.set(p.debit.id, p.credit.id); reversalOf.set(p.credit.id, p.debit.id); }
+    }
+
     const rows = [];
     let suggBudget = 200; // suggestion SQL per open row — cap the work per request
+    let groupBudget = 40; // group proposals are a subset search — a tighter cap
     for (const t of txns) {
       const disposition = dispositionOf(t);
       const row = {
         ...t, disposition,
+        // The parser's printed settlement wins; else cached rates. Summing
+        // yen as dollars is the failure this exists to prevent.
+        usd: round2(t.amount_usd != null ? Number(t.amount_usd) : usdOf(t.amount, t.currency, null)),
+        reversed_by: reversedBy.get(t.id) || null,
+        reversal_of: reversalOf.get(t.id) || null,
+        vendor_hint: vendorHintFor(t, maps, matchedNames),
         suggested_category: disposition === 'open' ? suggestCategory(t.payee_guess, t.description) : null,
         suggested_income_type: disposition === 'open-credit' ? suggestIncomeType(t.payee_guess, t.description) : null,
         suggestions: null,
+        group_proposal: null,
       };
       if (disposition === 'open' && suggBudget > 0) {
         suggBudget -= 1;
         const methods = R.accountMethods(accounts, t.account);
         row.suggestions = await R.suggestions(pool, req.labelId, t, methods, maps).catch(() => []);
+        // A group proposal is only offered when NO single invoice explains the
+        // line — otherwise the page would offer two contradictory answers to
+        // the same row and let the click decide which is true.
+        const top = row.suggestions?.[0];
+        if ((!top || top.score < 0.85) && groupBudget > 0) {
+          groupBudget -= 1;
+          const cands = await R.candidates(pool, req.labelId, t, methods).catch(() => []);
+          const g = proposeGroups(t, cands, { aliasGroups: maps.aliasGroups });
+          if (g.sets.length) row.group_proposal = { ...g, sets: g.ambiguous ? g.sets.slice(0, 2) : g.sets };
+        }
       }
       rows.push(row);
     }
@@ -141,23 +182,44 @@ router.get('/completion', async (req, res) => {
       });
     };
     const mk = () => ({ n: 0, value: 0 });
-    const buckets = { matched: mk(), booked_expected: mk(), booked_not_expected: mk(), open: mk() };
+    // FIVE dispositions, and the bucket names mean what they say:
+    //   needs_invoice      — booked, still expects a document (the worklist)
+    //   no_invoice_expected — booked and ANSWERED (a rule or the row says so)
+    //   creator            — a creator payment: explained, never invoice-backed
+    // `booked_expected` / `booked_not_expected` are kept as aliases with the
+    // reference app's meanings (expected = still waiting) so an older consumer
+    // reads the same truth rather than the opposite one.
+    const buckets = { matched: mk(), creator: mk(), needs_invoice: mk(), no_invoice_expected: mk(), open: mk() };
+    // The same five, narrowed to ?statement_id. Narrowing must change the
+    // percentages on the card, or the card is answering about a different set
+    // of money than the queue underneath it.
+    const scopedBuckets = { matched: mk(), creator: mk(), needs_invoice: mk(), no_invoice_expected: mk(), open: mk() };
     const needsInvoiceIds = [];
     const byStatement = {};
     const vendorClusters = new Map();
     const catStat = new Map();
     let total = 0;
+    let scopedTotal = 0;
+    let leftAll = 0, leftAllValue = 0;
     for (const t of txns) {
       const usd = usdOf(t.amount, t.currency, null);
       total += usd;
-      const st = byStatement[t.statement_id] || (byStatement[t.statement_id] = { left: 0, left_value: 0, debits: 0 });
+      const inScope = !stmtParam || t.statement_id === stmtParam;
+      if (inScope) scopedTotal += usd;
+      const st = byStatement[t.statement_id] || (byStatement[t.statement_id] = { left: 0, left_value: 0, open: 0, needs_invoice: 0, debits: 0 });
       st.debits += 1;
       const isBooked = t.booked || t.match_method === 'created' || t.match_method === 'rule';
       let bucket;
       if (isBooked) {
-        bucket = (t.no_invoice || ruleHit(t)) ? 'booked_expected' : 'booked_not_expected';
-        if (bucket === 'booked_not_expected') {
+        bucket = (t.no_invoice || ruleHit(t)) ? 'no_invoice_expected' : 'needs_invoice';
+        if (bucket === 'needs_invoice') {
           needsInvoiceIds.push(t.id);
+          // "Left" is open PLUS created-and-not-answered. Counting only fully
+          // open rows lets a statement read "0 left" in the selector while the
+          // needs-invoice chip beside it shows a three-figure pile — the exact
+          // drift the reference app's comments memorialise fixing.
+          st.left += 1; st.left_value += usd; st.needs_invoice += 1;
+          leftAll += 1; leftAllValue += usd;
           const key = normalizeBankPayee(t.exp_payee || t.payee_guess || t.description || '') || '(no payee)';
           const c = vendorClusters.get(key) || { key, n: 0, value: 0, sample: t.exp_payee || t.payee_guess };
           c.n += 1; c.value += usd;
@@ -178,24 +240,44 @@ router.get('/completion', async (req, res) => {
         }
       } else if (t.matched_expense_id) {
         // 'creator' matches are explained but NEVER invoice-backed.
-        bucket = t.match_method === 'creator' ? 'booked_expected' : 'matched';
+        bucket = t.match_method === 'creator' ? 'creator' : 'matched';
       } else {
         bucket = 'open';
-        st.left += 1; st.left_value += usd;
+        st.left += 1; st.left_value += usd; st.open += 1;
+        leftAll += 1; leftAllValue += usd;
       }
       buckets[bucket].n += 1;
       buckets[bucket].value += usd;
+      if (inScope) { scopedBuckets[bucket].n += 1; scopedBuckets[bucket].value += usd; }
     }
     for (const b of Object.values(buckets)) b.value = round2(b.value);
-    const explained = buckets.matched.value + buckets.booked_expected.value + buckets.booked_not_expected.value;
-    const scoped = stmtParam ? { statement_id: stmtParam, ...(byStatement[stmtParam] || { left: 0, left_value: 0, debits: 0 }) } : null;
+    for (const b of Object.values(scopedBuckets)) b.value = round2(b.value);
+    // The card reports the NARROWED set when a statement is selected; the
+    // headline and by_statement stay global, because "what else is left"
+    // must survive narrowing to one file.
+    const shown = stmtParam ? scopedBuckets : buckets;
+    const shownTotal = stmtParam ? scopedTotal : total;
+    const explained = shown.matched.value + shown.creator.value + shown.needs_invoice.value + shown.no_invoice_expected.value;
+    const pct = (v) => (shownTotal > 0 ? Math.round((v / shownTotal) * 1000) / 10 : 100);
+    const scoped = stmtParam ? { statement_id: stmtParam, ...(byStatement[stmtParam] || { left: 0, left_value: 0, open: 0, needs_invoice: 0, debits: 0 }) } : null;
     res.json({
       success: true,
       data: {
-        ...Object.fromEntries(Object.entries(buckets)),
-        total: round2(total),
-        explained_pct: total > 0 ? Math.round((explained / total) * 100) : 100,
-        invoice_backed_pct: total > 0 ? Math.round((buckets.matched.value / total) * 100) : 100,
+        ...Object.fromEntries(Object.entries(shown)),
+        // Reference-app-compatible aliases: expected = still expects a
+        // document; not_expected = answered. Naming them the other way round
+        // is internally consistent and a trap for every other consumer.
+        booked_expected: shown.needs_invoice,
+        booked_not_expected: shown.no_invoice_expected,
+        total: round2(shownTotal),
+        scoped_to_statement: stmtParam || null,
+        workspace_total: round2(total),
+        explained_pct: pct(explained),
+        invoice_backed_pct: pct(shown.matched.value),
+        // The headline: everything still owed an answer anywhere, so narrowing
+        // the queue never hides the size of the job.
+        left_all: leftAll,
+        left_all_value: round2(leftAllValue),
         needs_invoice_txn_ids: needsInvoiceIds,
         by_statement: byStatement,
         scoped,
@@ -220,7 +302,8 @@ router.get('/unmatched-ledger', async (req, res) => {
     const accounts = await loadLabelAccounts(req.labelId);
     const base = (predicate) => pool.query(
       `SELECT e.id, e.payee, e.artist, e.song, e.category, e.invoice_number, e.amount,
-              COALESCE(e.currency, 'USD') AS currency, e.fx_rate_to_usd, e.payment_date, e.payment_method
+              COALESCE(e.currency, 'USD') AS currency, e.fx_rate_to_usd, e.payment_date, e.payment_method,
+              (e.invoice_r2_key IS NOT NULL OR e.vendor_submitted = TRUE) AS has_invoice
          FROM expenses e
         WHERE e.label_id = $1 AND e.status = 'approved'
           AND (e.deleted IS NULL OR e.deleted = FALSE) AND (e.voided IS NULL OR e.voided = FALSE)
@@ -236,8 +319,11 @@ router.get('/unmatched-ledger', async (req, res) => {
       base(bankEvidence.awaitingStatementSql('e', accounts)),
       base(bankEvidence.missingStatementSql('e', accounts)),
     ]);
+    // LIMIT 400 per band: a silent truncation makes "n" a lie, so the cap is
+    // reported and the client says so.
     const shape = (rows) => ({
       n: rows.rows.length,
+      truncated: rows.rows.length >= 400,
       value: round2(rows.rows.reduce((s, r) => s + usdOf(r.amount, r.currency, r.fx_rate_to_usd), 0)),
       rows: rows.rows.map((r) => ({ ...r, usd: round2(usdOf(r.amount, r.currency, r.fx_rate_to_usd)) })),
     });
@@ -246,9 +332,51 @@ router.get('/unmatched-ledger', async (req, res) => {
          FROM bank_statements WHERE label_id = $1 AND status = 'ready' GROUP BY account`,
       [req.labelId]
     )).rows;
+
+    // The way OUT of the needs-match band. A row here says "the bank should
+    // show this and doesn't" — usually because an open debit on some statement
+    // IS the payment under a different name. Offering those debits turns a
+    // dead-end list into a one-click match; without it the only exit is to go
+    // hunting on the other side of the page.
+    const needsShaped = shape(needs);
+    if (needsShaped.rows.length) {
+      const openDebits = (await pool.query(
+        `SELECT t.id, t.txn_date, t.amount, t.currency, t.payee_guess, t.description, t.statement_id, s.account
+           FROM bank_transactions t
+           JOIN bank_statements s ON s.id = t.statement_id AND s.status = 'ready'
+          WHERE t.label_id = $1 AND t.direction = 'debit' AND t.dismissed = FALSE
+            AND t.matched_expense_id IS NULL AND t.booked = FALSE`,
+        [req.labelId]
+      )).rows;
+      for (const e of needsShaped.rows) {
+        const fam = Number(e.amount) || 0;
+        const tol = Math.max(35, fam * 0.01);
+        e.bank_candidates = openDebits
+          .filter((t) => {
+            if ((t.currency || 'USD') !== (e.currency || 'USD')) return false;
+            // Account/method compatibility, same rule the matcher uses: a
+            // PayPal-paid row must not be offered a BofA debit.
+            const methods = R.accountMethods(accounts, t.account);
+            if (!methods || !e.payment_method) return true;
+            return methods.includes(e.payment_method);
+          })
+          .map((t) => ({
+            t, delta: Number(t.amount) - fam,
+            dd: Math.abs((new Date(String(t.txn_date).slice(0, 10)) - new Date(String(e.payment_date).slice(0, 10))) / 86400000),
+          }))
+          .filter((x) => x.delta >= -0.01 && x.delta <= tol && x.dd <= 7)
+          .sort((a, b) => a.dd - b.dd || a.delta - b.delta)
+          .slice(0, 3)
+          .map((x) => ({
+            id: x.t.id, txn_date: x.t.txn_date, amount: Number(x.t.amount), currency: x.t.currency,
+            payee_guess: x.t.payee_guess || x.t.description, account: x.t.account, statement_id: x.t.statement_id,
+            days_apart: Math.round(x.dd),
+          }));
+      }
+    }
     res.json({
       success: true,
-      data: { needs_match: shape(needs), awaiting_statement: shape(awaiting), missing_statement: shape(missing), coverage },
+      data: { needs_match: needsShaped, awaiting_statement: shape(awaiting), missing_statement: shape(missing), coverage },
     });
   } catch (e) { console.error('unmatched-ledger error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
@@ -269,15 +397,15 @@ router.post('/tx/:id(\\d+)/attach', async (req, res) => {
 });
 router.post('/tx/:id(\\d+)/unattach', async (req, res) => {
   try {
-    const ok = await detachTxn(req.labelId, parseInt(req.params.id, 10));
-    if (!ok) return res.status(400).json({ success: false, error: 'Booked rows unbook on the statement page, not here' });
-    res.json({ success: true });
+    const out = await detachTxn(req.labelId, parseInt(req.params.id, 10), { actor: req.user.name });
+    if (!out.ok) return res.status(400).json({ success: false, error: 'Booked rows unbook on the statement page, not here' });
+    res.json({ success: true, data: out });
   } catch { res.status(500).json({ success: false, error: 'Failed' }); }
 });
 router.post('/unmatch/bulk', async (req, res) => {
   try {
     const ids = (req.body.txn_ids || []).map(Number).filter(Boolean).slice(0, 500);
-    const done = [], skipped = [];
+    const done = [], skipped = [], restored = [];
     for (const id of ids) {
       const t = (await pool.query(`SELECT * FROM bank_transactions WHERE id = $1 AND label_id = $2`, [id, req.labelId])).rows[0];
       if (!t || !t.matched_expense_id || t.match_method === 'created') { skipped.push(id); continue; }
@@ -286,10 +414,15 @@ router.post('/unmatch/bulk', async (req, res) => {
          VALUES ($1, $2, $3, 'unmatch', $4) ON CONFLICT DO NOTHING`,
         [req.labelId, R.txnFingerprint(t), t.matched_expense_id, req.user.name]
       ).catch(() => {});
-      await detachTxn(req.labelId, id);
+      const out = await detachTxn(req.labelId, id, { actor: req.user.name });
       done.push(id);
+      // A rematch this unmatch just undid puts its original booking back —
+      // reported, because the row does NOT land open and the count would
+      // otherwise describe work that did not happen.
+      if (out.restored) restored.push(id);
     }
-    res.json({ success: true, data: { done, skipped } });
+    await logActivity(req, 'Bulk unmatched bank rows', `${done.length} unmatched, ${skipped.length} skipped, ${restored.length} bookings restored`);
+    res.json({ success: true, data: { done, skipped, restored } });
   } catch (e) { console.error('bulk unmatch error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
 
@@ -297,19 +430,24 @@ router.post('/unmatch/bulk', async (req, res) => {
 router.get('/rematch-candidates', async (req, res) => {
   try {
     const maps = await R.loadMaps(pool, req.labelId);
+    const stmtParam = req.query.statement && req.query.statement !== 'all' ? parseInt(req.query.statement, 10) : null;
+    const bParams = [req.labelId];
+    let bClause = '';
+    if (stmtParam) { bParams.push(stmtParam); bClause = ` AND t.statement_id = $${bParams.length}`; }
     const booked = (await pool.query(
       `SELECT t.*, s.account, e.payee AS exp_payee, e.id AS exp_id
          FROM bank_transactions t
          JOIN bank_statements s ON s.id = t.statement_id AND s.status = 'ready'
          JOIN expenses e ON e.id = t.matched_expense_id AND e.entry_source = 'bank_statement'
         WHERE t.label_id = $1 AND t.dismissed = FALSE AND (t.booked = TRUE OR t.match_method IN ('created', 'rule', 'booked'))
-          AND t.no_invoice = FALSE
+          AND t.no_invoice = FALSE${bClause}
         ORDER BY t.txn_date DESC LIMIT 300`,
-      [req.labelId]
+      bParams
     )).rows;
     const invoices = (await pool.query(
       `SELECT e.id, e.payee, e.invoice_number, e.invoice_date, e.payment_date, e.payment_status,
               e.scheduled_payment_date, e.payment_ref, e.vendor_email, COALESCE(e.currency, 'USD') AS currency,
+              e.fx_rate_to_usd, (e.invoice_r2_key IS NOT NULL OR e.vendor_submitted = TRUE) AS has_invoice,
               (e.amount + COALESCE((SELECT SUM(k.amount) FROM expenses k WHERE k.parent_id = e.id AND (k.deleted IS NULL OR k.deleted = FALSE)), 0)) AS family_amount
          FROM expenses e
         WHERE e.label_id = $1 AND e.parent_id IS NULL AND e.status = 'approved'
@@ -320,31 +458,75 @@ router.get('/rematch-candidates', async (req, res) => {
                            WHERE bl.label_id = e.label_id AND bl.expense_id = e.id)`,
       [req.labelId]
     )).rows;
-    const pairs = [];
-    const usedInv = new Set();
+
+    // Amount test in TWO tiers, exact cents first. A cross-currency invoice is
+    // reachable — the reference app's fx band, with the arithmetic returned so
+    // the card can show its working rather than assert a verdict.
+    const amountFit = (t, inv) => {
+      const sameCur = (inv.currency || 'USD') === (t.currency || 'USD');
+      if (sameCur) {
+        const delta = Number(t.amount) - Number(inv.family_amount);
+        if (Math.abs(delta) < 0.005) return { tier: 'exact', delta: 0, fx: null };
+        if (delta < -0.01 || delta > feeTolerance(Number(inv.family_amount))) return null;
+        return { tier: 'fee', delta: round2(delta), fx: null };
+      }
+      const invUsd = usdOf(inv.family_amount, inv.currency, inv.fx_rate_to_usd);
+      const txnUsd = usdOf(t.amount, t.currency, null);
+      if (!invUsd) return null;
+      const ratio = txnUsd / invUsd;
+      if (ratio < 0.94 || ratio > 1.08) return null;
+      return {
+        tier: 'fx', delta: round2(txnUsd - invUsd),
+        fx: { txn_usd: round2(txnUsd), invoice_usd: round2(invUsd), invoice_currency: inv.currency, ratio: Math.round(ratio * 1000) / 1000 },
+      };
+    };
+
+    // Greedy 1:1 assignment, best score first — and the pairs that LOSE the
+    // assignment are returned, not dropped. "3 contested" is a fact about the
+    // data; silently discarding them makes the panel look complete.
+    const scored = [];
     for (const t of booked) {
       const fp = R.txnFingerprint(t);
-      let best = null;
       for (const inv of invoices) {
-        if (usedInv.has(inv.id)) continue;
-        if ((inv.currency || 'USD') !== (t.currency || 'USD')) continue;
-        const delta = Number(t.amount) - Number(inv.family_amount);
-        if (delta < -0.01 || delta > Math.max(35, Number(inv.family_amount) * 0.01)) continue;
         if (maps.rejections.has(`${fp}::${inv.id}`)) continue;
+        const fit = amountFit(t, inv);
+        if (!fit) continue;
         const ev = R.evidence(t, inv, maps);
         if (ev.score < 0.6) continue;
-        if (!best || ev.score > best.score) best = { inv, score: ev.score, method: ev.method };
-      }
-      if (best) {
-        usedInv.add(best.inv.id);
-        pairs.push({
-          txn: { id: t.id, txn_date: t.txn_date, amount: Number(t.amount), currency: t.currency, payee_guess: t.payee_guess, account: t.account, booked_payee: t.exp_payee, statement_id: t.statement_id },
-          invoice: { id: best.inv.id, payee: best.inv.payee, invoice_number: best.inv.invoice_number, amount: Number(best.inv.family_amount), currency: best.inv.currency },
-          score: Math.round(best.score * 100) / 100, method: best.method,
-        });
+        scored.push({ t, inv, fit, score: ev.score, method: ev.method });
       }
     }
-    res.json({ success: true, data: { pairs } });
+    scored.sort((a, b) => b.score - a.score || (a.fit.tier === 'exact' ? -1 : 1));
+    const usedInv = new Set(), usedTxn = new Set();
+    const pairs = [], contested = [];
+    const shape = (c) => ({
+      txn: {
+        id: c.t.id, txn_date: c.t.txn_date, amount: Number(c.t.amount), currency: c.t.currency,
+        payee_guess: c.t.payee_guess, account: c.t.account, booked_payee: c.t.exp_payee, statement_id: c.t.statement_id,
+      },
+      invoice: {
+        id: c.inv.id, payee: c.inv.payee, invoice_number: c.inv.invoice_number,
+        amount: Number(c.inv.family_amount), currency: c.inv.currency, has_invoice: c.inv.has_invoice,
+      },
+      score: Math.round(c.score * 100) / 100, method: c.method, tier: c.fit.tier, delta: c.fit.delta, fx: c.fit.fx,
+      gap_days: c.inv.payment_date || c.inv.invoice_date
+        ? Math.round(Math.abs(new Date(String(c.t.txn_date).slice(0, 10)) - new Date(String(c.inv.payment_date || c.inv.invoice_date).slice(0, 10))) / 86400000)
+        : null,
+    });
+    for (const c of scored) {
+      if (usedTxn.has(c.t.id) || usedInv.has(c.inv.id)) { if (contested.length < 25) contested.push(shape(c)); continue; }
+      usedTxn.add(c.t.id); usedInv.add(c.inv.id);
+      pairs.push(shape(c));
+    }
+    res.json({
+      success: true,
+      data: {
+        pairs, contested,
+        booked_considered: booked.length,
+        invoices_available: invoices.length,
+        statement_id: stmtParam || null,
+      },
+    });
   } catch (e) { console.error('rematch-candidates error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
 router.post('/tx/:id(\\d+)/rematch', async (req, res) => {
@@ -377,26 +559,18 @@ router.post('/tx/:id(\\d+)/rematch', async (req, res) => {
   finally { client.release(); }
 });
 router.post('/tx/:id(\\d+)/unrematch', async (req, res) => {
-  const client = await pool.connect();
   try {
-    await client.query('BEGIN');
-    const t = (await client.query(`SELECT * FROM bank_transactions WHERE id = $1 AND label_id = $2 FOR UPDATE`, [parseInt(req.params.id, 10), req.labelId])).rows[0];
-    if (!t || t.match_method !== 'rematch') { await client.query('ROLLBACK'); return res.status(400).json({ success: false, error: 'Not a rematched row' }); }
-    const restored = (await client.query(
-      `UPDATE expenses SET deleted = FALSE, deleted_by = NULL, deleted_at = NULL
-        WHERE label_id = $1 AND deleted_by = $2 AND parent_id IS NULL RETURNING id`,
-      [req.labelId, `rematch#${t.id}`]
-    )).rows[0];
-    await client.query(`UPDATE expenses SET deleted = FALSE, deleted_by = NULL, deleted_at = NULL WHERE label_id = $1 AND deleted_by = $2`, [req.labelId, `rematch#${t.id}`]);
-    if (!restored) { await client.query('ROLLBACK'); return res.status(400).json({ success: false, error: 'The original booking is gone' }); }
-    await client.query(
-      `UPDATE bank_transactions SET matched_expense_id = $1, match_method = 'created', match_score = 1.0, booked = TRUE, matched_by = $2, matched_at = NOW() WHERE id = $3`,
-      [restored.id, req.user.name, t.id]
-    );
-    await client.query('COMMIT');
-    res.json({ success: true });
-  } catch (e) { await client.query('ROLLBACK').catch(() => {}); console.error('unrematch error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
-  finally { client.release(); }
+    const id = parseInt(req.params.id, 10);
+    const t = (await pool.query(`SELECT id, match_method FROM bank_transactions WHERE id = $1 AND label_id = $2`, [id, req.labelId])).rows[0];
+    if (!t || t.match_method !== 'rematch') return res.status(400).json({ success: false, error: 'Not a rematched row' });
+    // One restore path, shared with unmatch — two implementations of "put the
+    // displaced booking back" is two chances to leave a row in the dead-end
+    // state (open row, soft-deleted entry).
+    const restored = await restoreDisplacedBooking(req.labelId, id, req.user.name);
+    if (!restored) return res.status(400).json({ success: false, error: 'The original booking is gone — it was hard-deleted or already restored' });
+    await logActivity(req, 'Undid a rematch', `txn #${id} → booking #${restored} restored`);
+    res.json({ success: true, data: { restored_expense_id: restored } });
+  } catch (e) { console.error('unrematch error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
 
 // ── Auto-decisions audit — what the matcher did unasked ─────────────────────
@@ -434,18 +608,42 @@ router.get('/funding-pairs/cross-currency', async (req, res) => {
     );
     const pp = txns.filter((t) => ppKeys.includes(t.account));
     const bank = txns.filter((t) => !ppKeys.includes(t.account) && !t.matched_expense_id && !t.booked);
-    const out = proposeFundingPairs(pp, bank, { windowDays });
-    res.json({ success: true, data: out });
+    // The recipient's OTHER known names — alias group, learned link, vendor
+    // override. Without these, a pull naming the legal entity never proves a
+    // payment to the trading name.
+    const maps = await R.loadMaps(pool, req.labelId);
+    const namesFor = (t) => {
+      const out = [];
+      if (t.vendor_override) out.push(t.vendor_override);
+      const raw = String(t.payee_guess || '').toLowerCase().trim();
+      const learned = maps.payeeMap[R.normalizeName(raw)];
+      if (learned) out.push(learned);
+      const group = maps.aliasGroups && maps.aliasGroups.get(raw);
+      if (group) out.push(...group);
+      return out;
+    };
+    const out = proposeFundingPairs(pp, bank, { windowDays, namesFor });
+    // Already-paired legs, so the panel can offer the undo that closes the loop.
+    const paired = (await pool.query(
+      `SELECT t.id, t.txn_date, t.amount, t.currency, t.payee_guess, t.description, s.account
+         FROM bank_transactions t JOIN bank_statements s ON s.id = t.statement_id AND s.status = 'ready'
+        WHERE t.label_id = $1 AND t.dismissed = TRUE AND t.dismissed_reason = 'funding'
+        ORDER BY t.txn_date DESC LIMIT 100`,
+      [req.labelId]
+    )).rows;
+    res.json({ success: true, data: { ...out, paired } });
   } catch (e) { console.error('funding-pairs error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
 router.post('/tx/:ppId(\\d+)/funding-pair', async (req, res) => {
   try {
     const bankId = parseInt(req.body.bank_txn_id, 10);
     if (req.body.undo) {
-      await pool.query(
-        `UPDATE bank_transactions SET dismissed = FALSE, dismissed_reason = NULL WHERE id = $1 AND label_id = $2 AND dismissed_reason = 'funding'`,
+      const r = await pool.query(
+        `UPDATE bank_transactions SET dismissed = FALSE, dismissed_reason = NULL WHERE id = $1 AND label_id = $2 AND dismissed_reason = 'funding' RETURNING id`,
         [bankId, req.labelId]
       );
+      if (!r.rows.length) return res.status(400).json({ success: false, error: 'That bank line was not set aside as a funding pull' });
+      await logActivity(req, 'Unpaired a PayPal funding pull', `bank txn #${bankId} is open again`);
       return res.json({ success: true });
     }
     const bank = (await pool.query(
@@ -455,6 +653,14 @@ router.post('/tx/:ppId(\\d+)/funding-pair', async (req, res) => {
     )).rows[0];
     if (!bank || bank.direction !== 'debit') return res.status(400).json({ success: false, error: 'Bank pull not found' });
     if (bank.matched_expense_id || bank.booked) return res.status(400).json({ success: false, error: 'That pull is already matched/booked — unlink it first' });
+    // An UNPROVEN pairing (amount fits, nothing names the recipient) needs an
+    // explicit yes. Dismissing the wrong pull hides a real payment.
+    if (req.body.unproven && req.body.confirm_unnamed !== true) {
+      return res.status(400).json({
+        success: false, unproven: true,
+        error: 'Nothing in the pull names this recipient — the amount band alone is not proof. Confirm to set it aside anyway.',
+      });
+    }
     // Dismiss the BANK PULL leg; the PayPal side stays canonical.
     await pool.query(
       `UPDATE bank_transactions SET dismissed = TRUE, dismissed_reason = 'funding' WHERE id = $1 AND label_id = $2`,
@@ -463,6 +669,30 @@ router.post('/tx/:ppId(\\d+)/funding-pair', async (req, res) => {
     await logActivity(req, 'Paired PayPal funding pull', `bank txn #${bankId} ↔ paypal txn #${req.params.ppId}`);
     res.json({ success: true });
   } catch (e) { console.error('funding-pair error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+// Close every PROVABLE pair in one pass. Unproven pairs are excluded by
+// construction; each failure is reported rather than collapsing the batch.
+router.post('/funding-pairs/close-all', async (req, res) => {
+  try {
+    const legs = (Array.isArray(req.body.pairs) ? req.body.pairs : [])
+      .map((p) => ({ pp: parseInt(p.pp_id, 10), bank: parseInt(p.bank_txn_id, 10) }))
+      .filter((p) => Number.isFinite(p.pp) && Number.isFinite(p.bank))
+      .slice(0, 200);
+    const done = [], failed = [];
+    for (const leg of legs) {
+      const r = await pool.query(
+        `UPDATE bank_transactions SET dismissed = TRUE, dismissed_reason = 'funding'
+          WHERE id = $1 AND label_id = $2 AND direction = 'debit' AND dismissed = FALSE
+            AND matched_expense_id IS NULL AND booked = FALSE
+          RETURNING id`,
+        [leg.bank, req.labelId]
+      );
+      if (r.rows.length) done.push(leg.bank);
+      else failed.push({ bank_txn_id: leg.bank, reason: 'already answered or already set aside' });
+    }
+    await logActivity(req, 'Closed PayPal funding pairs', `${done.length} pulls set aside, ${failed.length} refused`);
+    res.json({ success: true, data: { done, failed } });
+  } catch (e) { console.error('funding close-all error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
 
 // ── Split-book: one bank line → several booked slices ───────────────────────
@@ -483,29 +713,55 @@ router.post('/tx/:id(\\d+)/split-book', async (req, res) => {
     const parts = (req.body.parts || []).map((p) => ({
       amount: Number(p.amount), category: String(p.category || '').trim() || null, artist: String(p.artist || '').trim() || null,
     }));
-    if (parts.length < 2 || parts.some((p) => !Number.isFinite(p.amount) || p.amount <= 0)) {
+    // 2-6 parts. Beyond six the form is being used as a ledger, and every
+    // extra slice is another uncategorised row somebody has to find later.
+    if (parts.length < 2 || parts.length > 6 || parts.some((p) => !Number.isFinite(p.amount) || p.amount <= 0)) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ success: false, error: 'At least two positive parts' });
+      return res.status(400).json({ success: false, error: 'Between two and six positive parts' });
+    }
+    // A category per part is REQUIRED, not optional: the whole point of a
+    // split is that the slices land on different P&L lines, and a null
+    // category books money into an uncategorised row nothing surfaces.
+    const uncat = parts.findIndex((p) => !p.category);
+    if (uncat >= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, error: `Part ${uncat + 1} has no category — every slice needs one, or the split books money nowhere` });
     }
     const sum = parts.reduce((s, p) => s + p.amount, 0);
     if (Math.abs(sum - Number(t.amount)) > 0.01) {
       await client.query('ROLLBACK');
       return res.status(400).json({ success: false, error: `Parts sum to ${sum.toFixed(2)}, the line is ${Number(t.amount).toFixed(2)}` });
     }
+    // The payee is resolved, never defaulted: 'Bank debit' is not a vendor,
+    // and a family filed under it is invisible to every vendor surface.
+    // Order = the caller's explicit choice, a person's override, the learned
+    // link, the descriptor, the email local-part.
+    const maps = await R.loadMaps(pool, req.labelId);
+    const hint = vendorHintFor(t, maps, new Map());
+    const payee = String(req.body.payee || '').trim()
+      || (hint && hint.name)
+      || String(t.payee_guess || '').trim()
+      || String(t.payee_email || '').split('@')[0].trim();
+    if (!payee) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, error: 'Nothing names the payee on this line — give one, or the slices file under no vendor at all' });
+    }
     // Replace any existing booking with the family.
     if (t.booked && t.matched_expense_id) {
       await client.query(`UPDATE expenses SET deleted = TRUE, deleted_by = $3, deleted_at = NOW() WHERE (id = $1 OR parent_id = $1) AND label_id = $2`,
-        [t.matched_expense_id, req.labelId, req.user.name]);
+        [t.matched_expense_id, req.labelId, `${req.user.name} (split-book)`]);
     }
-    const payee = t.payee_guess || t.description || 'Bank debit';
+    const accounts = await loadLabelAccounts(req.labelId);
+    const method = (R.accountMethods(accounts, t.account) || [])[0] || null;
     const mk = async (p, parentId) => (await client.query(
       `INSERT INTO expenses (label_id, invoice_date, payee, description, category, artist, amount, currency,
-         status, payment_status, payment_date, payment_ref, entry_source, parent_id, created_by, created_at, paid_marked_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'approved','Paid',$2,$9,'bank_statement',$10,$11,NOW(),NOW()) RETURNING id`,
-      [req.labelId, t.txn_date, payee, t.description || null, p.category, p.artist, p.amount, t.currency || 'USD', t.reference || null, parentId, req.user.name]
+         status, payment_status, payment_date, payment_ref, payment_method, entry_source, parent_id, created_by, created_at, paid_marked_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'approved','Paid',$2,$9,$10,'bank_statement',$11,$12,NOW(),NOW()) RETURNING id`,
+      [req.labelId, t.txn_date, payee, t.description || null, p.category, p.artist, p.amount, t.currency || 'USD', t.reference || null, method, parentId, req.user.name]
     )).rows[0];
     const rootRow = await mk(parts[0], null);
-    for (const p of parts.slice(1)) await mk(p, rootRow.id);
+    const kids = [];
+    for (const p of parts.slice(1)) kids.push(await mk(p, rootRow.id));
     await client.query(
       `UPDATE bank_transactions SET matched_expense_id = $1, match_method = 'created', match_score = 1.0, booked = TRUE,
               matched_by = $2, matched_at = NOW(), dismissed = FALSE, dismissed_reason = NULL WHERE id = $3`,
@@ -513,8 +769,14 @@ router.post('/tx/:id(\\d+)/split-book', async (req, res) => {
     );
     await client.query('COMMIT');
     stampFxRateAsync(rootRow.id);
-    await logActivity(req, 'Split-booked a bank line', `txn #${t.id} → ${parts.length} slices`);
-    res.json({ success: true, data: { expense_id: rootRow.id } });
+    for (const k of kids) stampFxRateAsync(k.id);
+    // Same lesson a single booking teaches — a split is still this descriptor
+    // meaning this vendor.
+    if (payee !== String(t.payee_guess || '').trim()) {
+      await R.learnPayee(pool, req.labelId, t.payee_guess || t.description, payee, req.user.name).catch(() => {});
+    }
+    await logActivity(req, 'Split-booked a bank line', `txn #${t.id} → ${parts.length} slices for ${payee}`);
+    res.json({ success: true, data: { expense_id: rootRow.id, payee, parts: parts.length } });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); console.error('split-book error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
   finally { client.release(); }
 });
@@ -526,10 +788,19 @@ router.get('/duplicate-pairs', async (req, res) => {
     // that HAS one. The orphan is probably a hand-logged copy of the twin.
     const { rows } = await pool.query(
       `SELECT o.id AS orphan_id, o.payee, o.amount, o.currency, o.payment_date AS orphan_paid,
-              w.id AS twin_id, w.payment_date AS twin_paid
+              o.artist AS orphan_artist, o.invoice_number AS orphan_invoice_number,
+              (o.invoice_r2_key IS NOT NULL OR o.vendor_submitted = TRUE) AS orphan_has_invoice,
+              (o.w9_r2_key IS NOT NULL) AS orphan_has_w9,
+              w.id AS twin_id, w.payment_date AS twin_paid, w.amount AS twin_amount,
+              w.artist AS twin_artist, w.invoice_number AS twin_invoice_number, w.entry_source AS twin_source,
+              (w.invoice_r2_key IS NOT NULL OR w.vendor_submitted = TRUE) AS twin_has_invoice,
+              (w.w9_r2_key IS NOT NULL) AS twin_has_w9
          FROM expenses o
          JOIN expenses w ON w.label_id = o.label_id AND w.id <> o.id AND w.parent_id IS NULL
-          AND LOWER(TRIM(w.payee)) = LOWER(TRIM(o.payee)) AND w.amount = o.amount
+          -- ±0.01: two records of ONE payment routinely differ by a rounded
+          -- cent (one typed by hand, one parsed). Exact equality misses those,
+          -- which is the duplicate that survives longest.
+          AND LOWER(TRIM(w.payee)) = LOWER(TRIM(o.payee)) AND ABS(w.amount - o.amount) <= 0.01
           AND COALESCE(w.currency, 'USD') = COALESCE(o.currency, 'USD')
           AND w.status = 'approved' AND (w.deleted IS NULL OR w.deleted = FALSE)
           AND EXISTS (SELECT 1 FROM bank_transactions bt WHERE bt.label_id = w.label_id AND bt.matched_expense_id = w.id AND bt.dismissed = FALSE)
@@ -544,11 +815,11 @@ router.get('/duplicate-pairs', async (req, res) => {
     // One proposal per orphan — closest paid date wins.
     const best = new Map();
     for (const r of rows) {
-      const gap = Math.abs(new Date(r.orphan_paid || 0) - new Date(r.twin_paid || 0));
+      const gapMs = Math.abs(new Date(r.orphan_paid || 0) - new Date(r.twin_paid || 0));
       const cur = best.get(r.orphan_id);
-      if (!cur || gap < cur.gap) best.set(r.orphan_id, { ...r, gap });
+      if (!cur || gapMs < cur.gapMs) best.set(r.orphan_id, { ...r, gapMs, gap_days: Math.round(gapMs / 86400000) });
     }
-    res.json({ success: true, data: { pairs: [...best.values()] } });
+    res.json({ success: true, data: { pairs: [...best.values()].map(({ gapMs, ...p }) => p) } });
   } catch (e) { console.error('duplicate-pairs error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
 router.post('/duplicate-pairs/merge', async (req, res) => {
@@ -556,6 +827,10 @@ router.post('/duplicate-pairs/merge', async (req, res) => {
   try {
     await client.query('BEGIN');
     await client.query(`SET LOCAL statement_timeout = '30s'`);
+    // A lock_timeout as well as a statement_timeout: without it, two people
+    // merging overlapping pairs block on each other for the full 30s and both
+    // surface as "Merge failed" with nothing said about why.
+    await client.query(`SET LOCAL lock_timeout = '10s'`);
     const orphanId = parseInt(req.body.orphan_id, 10);
     const twinId = parseInt(req.body.twin_id, 10);
     const [orphan, twin] = await Promise.all([
@@ -565,7 +840,17 @@ router.post('/duplicate-pairs/merge', async (req, res) => {
     if (!orphan.rows.length || !twin.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ success: false, error: 'Pair not found' }); }
     // Keep the ORPHAN (the hand-logged one usually carries the invoice +
     // artist); move the twin's bank rows onto it, then soft-delete the twin.
-    await client.query(`UPDATE bank_transactions SET matched_expense_id = $1 WHERE label_id = $2 AND matched_expense_id = $3`, [orphanId, req.labelId, twinId]);
+    const moved = await client.query(`UPDATE bank_transactions SET matched_expense_id = $1 WHERE label_id = $2 AND matched_expense_id = $3 RETURNING id`, [orphanId, req.labelId, twinId]);
+    // The merge's whole purpose is to move the bank proof. If nothing moved,
+    // the twin no longer holds it (someone unmatched it first) and archiving
+    // the twin would destroy a record while proving nothing — refuse instead.
+    if (!moved.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        success: false,
+        error: `Entry #${twinId} no longer holds a bank line, so there is nothing to move onto #${orphanId}. Re-run the check — the pair may already be resolved.`,
+      });
+    }
     await client.query(`UPDATE bank_txn_invoice_links SET expense_id = $1 WHERE label_id = $2 AND expense_id = $3`, [orphanId, req.labelId, twinId]).catch(() => {});
     // Carry documents the orphan lacks — server-side, never through Node.
     const carry = ['invoice_r2_key', 'invoice_filename', 'w9_r2_key', 'w9_filename', 'proof_r2_key', 'proof_filename', 'artist', 'song', 'invoice_number'];
@@ -577,11 +862,37 @@ router.post('/duplicate-pairs/merge', async (req, res) => {
         [orphanId, twinId, req.labelId]
       );
     }
+    // Carry the twin's RECOUPMENT state. `ufr` is a mark a person made about
+    // money — "this went out on an artist's statement" — and its date is what
+    // stamps the statement month. Archiving the row that carries it silently
+    // un-recoups the spend and the artist statement quietly changes.
+    //
+    // `recoupable` is deliberately NOT carried: it defaults TRUE, so forcing
+    // it would overwrite a deliberate "no" with a default, which is the
+    // opposite of preserving a decision.
+    const carriedState = [];
+    const ufrCarry = await client.query(
+      `UPDATE expenses o SET ufr = TRUE, ufr_marked_at = COALESCE(o.ufr_marked_at, w.ufr_marked_at)
+         FROM expenses w
+        WHERE o.id = $1 AND w.id = $2 AND o.label_id = $3 AND w.label_id = $3
+          AND w.ufr = TRUE AND COALESCE(o.ufr, FALSE) = FALSE RETURNING o.id`,
+      [orphanId, twinId, req.labelId]
+    ).catch(() => ({ rows: [] }));
+    if (ufrCarry.rows.length) carriedState.push('UFR mark');
+    const labelCarry = await client.query(
+      `UPDATE expenses o SET recoupment_label = w.recoupment_label FROM expenses w
+        WHERE o.id = $1 AND w.id = $2 AND o.label_id = $3 AND w.label_id = $3
+          AND o.recoupment_label IS NULL AND w.recoupment_label IS NOT NULL RETURNING o.id`,
+      [orphanId, twinId, req.labelId]
+    ).catch(() => ({ rows: [] }));
+    if (labelCarry.rows.length) carriedState.push('recoupment label');
     await client.query(`UPDATE expenses SET deleted = TRUE, deleted_by = $3, deleted_at = NOW() WHERE (id = $1 OR parent_id = $1) AND label_id = $2`,
       [twinId, req.labelId, `${req.user.name} (duplicate merge)`]);
     await client.query('COMMIT');
-    await logActivity(req, 'Merged duplicate payment rows', `kept #${orphanId}, archived #${twinId}`);
-    res.json({ success: true });
+    await logActivity(req, 'Merged duplicate payment rows',
+      `kept #${orphanId}, archived #${twinId} — ${moved.rows.length} bank line(s) moved`
+      + (carriedState.length ? `, carried ${carriedState.join(' + ')}` : ''));
+    res.json({ success: true, data: { moved: moved.rows.length, carried: carriedState } });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); console.error('dup merge error:', e); res.status(500).json({ success: false, error: 'Merge failed' }); }
   finally { client.release(); }
 });
@@ -830,21 +1141,243 @@ router.delete('/no-invoice-rules/:id(\\d+)', async (req, res) => {
     res.json({ success: true });
   } catch { res.status(500).json({ success: false, error: 'Failed' }); }
 });
+// "No invoice is coming for this line."
+//
+// This is an ANSWER, not a flag. On an OPEN row it has to book the money as
+// well as record the note — a bare flag leaves the row unanswered by
+// /completion's own rules, so the click appears to do nothing. On a row
+// matched to a REAL invoice it is a contradiction (the document is right
+// there) and is refused.
 router.post('/tx/:id(\\d+)/no-invoice', async (req, res) => {
   try {
-    await pool.query(
-      `UPDATE bank_transactions SET no_invoice = $3 WHERE id = $1 AND label_id = $2`,
-      [parseInt(req.params.id, 10), req.labelId, req.body.undo ? false : true]
-    );
-    res.json({ success: true });
-  } catch { res.status(500).json({ success: false, error: 'Failed' }); }
+    const id = parseInt(req.params.id, 10);
+    const t = (await pool.query(
+      `SELECT t.*, s.account, e.entry_source AS exp_source, e.payee AS exp_payee, e.invoice_number AS exp_invoice_number
+         FROM bank_transactions t
+         JOIN bank_statements s ON s.id = t.statement_id
+         LEFT JOIN expenses e ON e.id = t.matched_expense_id
+        WHERE t.id = $1 AND t.label_id = $2`,
+      [id, req.labelId]
+    )).rows[0];
+    if (!t) return res.status(404).json({ success: false, error: 'Not found' });
+    if (req.body.undo) {
+      await pool.query(`UPDATE bank_transactions SET no_invoice = FALSE WHERE id = $1 AND label_id = $2`, [id, req.labelId]);
+      await logActivity(req, 'Reopened a no-invoice answer', `txn #${id} expects a document again`);
+      return res.json({ success: true, data: { booked: false } });
+    }
+    if (t.matched_expense_id && t.exp_source !== 'bank_statement') {
+      return res.status(400).json({
+        success: false,
+        error: `This line is matched to ${t.exp_payee}'s real invoice${t.exp_invoice_number ? ` #${t.exp_invoice_number}` : ''} — "no invoice coming" would contradict the document it is already tied to.`,
+      });
+    }
+    if (t.direction !== 'debit') return res.status(400).json({ success: false, error: 'Only debits carry this answer' });
+
+    let booked = null;
+    if (!t.matched_expense_id && !t.booked) {
+      // Speed bump: an OPEN line that looks exactly like an already-paid
+      // invoice is far more likely a missed match than a document-free
+      // charge. Booking it invents a second record of one payment.
+      if (req.body.confirm_new !== true) {
+        const dupe = (await pool.query(
+          `SELECT e.id, e.payee, e.invoice_number, e.payment_date,
+                  (e.amount + COALESCE((SELECT SUM(k.amount) FROM expenses k WHERE k.parent_id = e.id AND (k.deleted IS NULL OR k.deleted = FALSE)), 0)) AS family_amount
+             FROM expenses e
+            WHERE e.label_id = $1 AND e.parent_id IS NULL AND e.status = 'approved'
+              AND (e.deleted IS NULL OR e.deleted = FALSE) AND (e.voided IS NULL OR e.voided = FALSE)
+              AND e.entry_source IS DISTINCT FROM 'bank_statement'
+              AND ABS(e.amount - $2) <= 0.01
+              AND e.payment_date BETWEEN $3::date - 10 AND $3::date + 10
+            LIMIT 3`,
+          [req.labelId, Number(t.amount), t.txn_date]
+        )).rows;
+        if (dupe.length) {
+          return res.status(409).json({
+            success: false, paid_candidates: dupe,
+            error: `${dupe.length === 1 ? 'An invoice' : `${dupe.length} invoices`} for this exact amount already sit${dupe.length === 1 ? 's' : ''} in the ledger around this date `
+              + `(${dupe.map((d) => `${d.payee}${d.invoice_number ? ` #${d.invoice_number}` : ''}`).join(', ')}). `
+              + 'Booking a new entry would record the same payment twice — match it instead, or confirm to book anyway.',
+          });
+        }
+      }
+      const category = String(req.body.category || '').trim() || null;
+      if (!category) return res.status(400).json({ success: false, error: 'Give the line a category — booking it without one files the money nowhere' });
+      const r = await require('./bank-statements').bookOpenTxn(req.labelId, t, {
+        category, payee: req.body.payee || null, artist: req.body.artist || null, actor: req.user.name,
+      });
+      booked = r.id;
+    }
+    await pool.query(`UPDATE bank_transactions SET no_invoice = TRUE WHERE id = $1 AND label_id = $2`, [id, req.labelId]);
+    await logActivity(req, 'Recorded that no invoice is coming',
+      `txn #${id}${booked ? ` — booked as entry #${booked}` : ''}`);
+    res.json({ success: true, data: { booked } });
+  } catch (e) { console.error('no-invoice error:', e); res.status(500).json({ success: false, error: e.message || 'Failed' }); }
 });
+// Bulk: booked-but-unanswered rows only. A row matched to a REAL invoice is
+// refused per-row above and must be refused here too — the WHERE is the gate,
+// never the client's selection, and the skipped count is returned so the toast
+// can say "n of m" instead of claiming the whole selection.
 router.post('/no-invoice/bulk', async (req, res) => {
   try {
     const ids = (req.body.txn_ids || []).map(Number).filter(Boolean).slice(0, 500);
-    const r = await pool.query(`UPDATE bank_transactions SET no_invoice = TRUE WHERE id = ANY($1::int[]) AND label_id = $2 RETURNING id`, [ids, req.labelId]);
-    res.json({ success: true, data: { done: r.rows.length, skipped: ids.length - r.rows.length } });
+    if (!ids.length) return res.status(400).json({ success: false, error: 'Nothing selected' });
+    const r = await pool.query(
+      `UPDATE bank_transactions t SET no_invoice = TRUE
+        WHERE t.id = ANY($1::int[]) AND t.label_id = $2 AND t.direction = 'debit'
+          AND t.dismissed = FALSE AND COALESCE(t.no_invoice, FALSE) = FALSE
+          AND (t.matched_expense_id IS NULL
+               OR EXISTS (SELECT 1 FROM expenses e WHERE e.id = t.matched_expense_id AND e.label_id = $2 AND e.entry_source = 'bank_statement'))
+          AND (t.booked = TRUE OR t.match_method IN ('created', 'rule', 'booked'))
+        RETURNING t.id`,
+      [ids, req.labelId]
+    );
+    const done = r.rows.length;
+    await logActivity(req, 'Bulk "no invoice coming"', `${done} of ${ids.length} rows`);
+    res.json({
+      success: true,
+      data: {
+        done, skipped: ids.length - done,
+        // Named, because "12 of 20" with no reason reads as a failure.
+        skipped_reason: ids.length - done > 0 ? 'open rows need booking first; rows matched to a real invoice cannot carry this answer' : null,
+      },
+    });
+  } catch (e) { console.error('bulk no-invoice error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+// ── Row markers: flag-for-review, currency correction, vendor override ──────
+
+// A flag is "come back to this" and nothing else — it never changes an
+// amount, a match or a disposition.
+router.post('/tx/:id(\\d+)/flag', async (req, res) => {
+  try {
+    const r = await pool.query(
+      `UPDATE bank_transactions SET flagged = $3 WHERE id = $1 AND label_id = $2 RETURNING id, flagged`,
+      [parseInt(req.params.id, 10), req.labelId, req.body.flagged !== false]
+    );
+    if (!r.rows.length) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data: r.rows[0] });
   } catch { res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+// Currency correction — a mis-parsed foreign row read as USD. REFUSED while
+// matched or booked: the currency is what the capacity model and every USD
+// conversion downstream were computed from, so changing it under a live match
+// silently moves money in the P&L.
+router.post('/tx/:id(\\d+)/currency', async (req, res) => {
+  try {
+    const code = String(req.body.currency || '').trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(code)) return res.status(400).json({ success: false, error: 'Give a 3-letter currency code' });
+    const t = (await pool.query(`SELECT * FROM bank_transactions WHERE id = $1 AND label_id = $2`, [parseInt(req.params.id, 10), req.labelId])).rows[0];
+    if (!t) return res.status(404).json({ success: false, error: 'Not found' });
+    if (t.matched_expense_id || t.matched_income_id || t.booked) {
+      return res.status(400).json({ success: false, error: 'Unmatch or unbook this line first — its currency is what the match was measured against.' });
+    }
+    // amount_usd was derived from the OLD currency; a stale conversion is
+    // worse than none, so it is cleared rather than left to be believed.
+    await pool.query(`UPDATE bank_transactions SET currency = $3, amount_usd = NULL WHERE id = $1 AND label_id = $2`, [t.id, req.labelId, code]);
+    await logActivity(req, 'Corrected a bank line currency', `txn #${t.id}: ${t.currency || 'USD'} → ${code}`);
+    res.json({ success: true });
+  } catch (e) { console.error('currency error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+// Vendor override — a PERSON says this descriptor is this ledger vendor.
+// Separate from the learned map on purpose (see lib/bankVendors.js). Unknown
+// vendors are gated behind confirm_new so a typo cannot mint a directory row.
+async function applyVendorOverride(labelId, ids, vendor, actor, { learn = true } = {}) {
+  const r = await pool.query(
+    `UPDATE bank_transactions SET vendor_override = $3 WHERE id = ANY($1::int[]) AND label_id = $2 RETURNING id, payee_guess, description`,
+    [ids, labelId, vendor]
+  );
+  if (learn) {
+    const seen = new Set();
+    for (const row of r.rows) {
+      const desc = row.payee_guess || row.description;
+      if (!desc || seen.has(desc)) continue;
+      seen.add(desc);
+      await R.learnPayee(pool, labelId, desc, vendor, actor).catch(() => {});
+    }
+  }
+  return r.rows.length;
+}
+router.post('/tx/:id(\\d+)/vendor', async (req, res) => {
+  try {
+    const vendor = String(req.body.vendor || '').trim().slice(0, 200);
+    if (!vendor) return res.status(400).json({ success: false, error: 'Name the vendor' });
+    const known = (await pool.query(
+      `SELECT 1 FROM expenses WHERE label_id = $1 AND LOWER(TRIM(payee)) = LOWER($2) AND (deleted IS NULL OR deleted = FALSE) LIMIT 1`,
+      [req.labelId, vendor]
+    )).rows.length > 0;
+    if (!known && req.body.confirm_new !== true) {
+      return res.status(409).json({
+        success: false, unknown_vendor: true,
+        error: `No ledger entry is filed under "${vendor}". Confirm to use it anyway — a misspelling here becomes a second vendor in the directory.`,
+      });
+    }
+    const n = await applyVendorOverride(req.labelId, [parseInt(req.params.id, 10)], vendor, req.user.name);
+    if (!n) return res.status(404).json({ success: false, error: 'Not found' });
+    await logActivity(req, 'Set a bank line vendor', `txn #${req.params.id} → ${vendor}`);
+    res.json({ success: true, data: { updated: n, new_vendor: !known } });
+  } catch (e) { console.error('vendor override error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+router.post('/vendor/bulk', async (req, res) => {
+  try {
+    const vendor = String(req.body.vendor || '').trim().slice(0, 200);
+    const ids = (req.body.txn_ids || []).map(Number).filter(Boolean).slice(0, 500);
+    if (!vendor || !ids.length) return res.status(400).json({ success: false, error: 'Name the vendor and select some rows' });
+    const n = await applyVendorOverride(req.labelId, ids, vendor, req.user.name);
+    await logActivity(req, 'Bulk-set bank line vendor', `${n} rows → ${vendor}`);
+    res.json({ success: true, data: { updated: n, skipped: ids.length - n } });
+  } catch (e) { console.error('vendor bulk error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+// ── Attribution: the artist roster + a booked row's artist ──────────────────
+//
+// The roster is the union of the artist table and the artist names the ledger
+// actually carries — a booked entry filed under a name nobody registered is
+// still that artist's spend, and a picker that cannot offer the name forces a
+// second spelling.
+router.get('/artist-names', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT name FROM (
+         SELECT name FROM artists WHERE label_id = $1
+         UNION
+         SELECT DISTINCT TRIM(artist) AS name FROM expenses
+          WHERE label_id = $1 AND COALESCE(TRIM(artist), '') <> '' AND (deleted IS NULL OR deleted = FALSE)
+       ) u WHERE name IS NOT NULL ORDER BY LOWER(name)`,
+      [req.labelId]
+    );
+    res.json({ success: true, data: rows.map((r) => r.name) });
+  } catch (e) { console.error('artist-names error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+// Set (or clear) the artist on the entry a bank line created. Only ever
+// touches BANK-BORN entries: a real invoice's attribution belongs to the
+// ledger, not to a reconciliation screen.
+router.post('/tx/:id(\\d+)/artist', async (req, res) => {
+  try {
+    const artist = String(req.body.artist || '').trim() || null;
+    const t = (await pool.query(
+      `SELECT t.id, t.matched_expense_id, e.entry_source
+         FROM bank_transactions t JOIN expenses e ON e.id = t.matched_expense_id AND e.label_id = t.label_id
+        WHERE t.id = $1 AND t.label_id = $2`,
+      [parseInt(req.params.id, 10), req.labelId]
+    )).rows[0];
+    if (!t) return res.status(400).json({ success: false, error: 'That line has no entry to attribute' });
+    if (t.entry_source !== 'bank_statement') {
+      return res.status(400).json({ success: false, error: 'That entry came from a real invoice — change its artist on the Ledger.' });
+    }
+    await pool.query(`UPDATE expenses SET artist = $1 WHERE (id = $2 OR parent_id = $2) AND label_id = $3`, [artist, t.matched_expense_id, req.labelId]);
+    if (artist) await autoLinkRelease(req.labelId, t.matched_expense_id).catch(() => {});
+    await logActivity(req, 'Attributed a booked bank line', `entry #${t.matched_expense_id} → ${artist || '(no artist)'}`);
+    res.json({ success: true });
+  } catch (e) { console.error('txn artist error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+// ── Bank vendor groups — the batch (vendor-clustered) view's data ───────────
+router.get('/bank-vendors', async (req, res) => {
+  try {
+    res.json({ success: true, data: await aggregateBankVendors(req.labelId) });
+  } catch (e) { console.error('bank-vendors error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
 
 module.exports = router;

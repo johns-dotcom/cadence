@@ -17,6 +17,7 @@ const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
 const paymentCrypto = require('../lib/paymentCrypto');
 const aiScan = require('../lib/aiScan');
 const bankEvidence = require('../lib/bankEvidence');
+const { excludeBankRows, BANK_SOURCE } = require('../lib/ledgerSource');
 const { validateApprovalChecklist, stampChecklist, writeApprovalChecklist } = require('../lib/approvalChecklist');
 const activityBot = require('../lib/activityBot');
 const ExcelJS = require('exceljs');
@@ -205,6 +206,37 @@ async function visibleReps(req) {
   return rows.length ? rows.map(r => r.rep_name) : null;
 }
 
+// ── The two halves of the ledger: ?source=bank | ?source=invoices ───────────
+//
+//   source=bank      only rows booked from a bank statement  (the Bank Ledger)
+//   source=invoices  everything else                          (the ledger proper)
+//   absent           unchanged — every existing caller keeps its behaviour
+//
+// OPT-IN, and that matters more than it looks: this endpoint has many callers
+// (Ledger, Approvals, drawers, the split fetch, Recoupments). A new DEFAULT
+// filter would silently change every one of them.
+//
+// `invoices` is the COMPLEMENT of `bank`, never a second whitelist — that is
+// what guarantees the two halves partition the ledger. A whitelist pair drifts
+// and starts losing rows out of both sides, and a row missing from the ledger
+// is the one bug here nobody would notice.
+//
+// The exclusion comes from lib/ledgerSource.js, which uses IS DISTINCT FROM:
+// `entry_source` is nullable and most hand-entered rows have it NULL, which a
+// plain `<> 'bank_statement'` drops. Inclusion is plain equality — for that
+// direction NULL genuinely is "no".
+//
+// Returns null for an unrecognised value; every caller turns that into a 400
+// rather than ignoring it. A typo'd source silently returning everything is the
+// same failure as a limit that is accepted and ignored.
+function sourceClause(source, alias = 'e') {
+  if (source === undefined || source === '' || source === 'all') return '';
+  if (source === 'bank') return ` AND ${alias}.entry_source = '${BANK_SOURCE}'`;
+  if (source === 'invoices') return ` AND ${excludeBankRows(alias)}`;
+  return null;
+}
+const BAD_SOURCE = { success: false, error: "source must be 'bank' or 'invoices'" };
+
 // GET /api/ledger/entries — list with optional filters (?status=, ?q=)
 router.get('/entries', async (req, res) => {
   try {
@@ -223,6 +255,35 @@ router.get('/entries', async (req, res) => {
     if (req.query.category) { params.push(req.query.category); where += ` AND category = $${params.length}`; }
     if (req.query.artist) { params.push(`%${req.query.artist}%`); where += ` AND artist ILIKE $${params.length}`; }
     if (req.query.q) { params.push(`%${req.query.q}%`); where += ` AND (payee ILIKE $${params.length} OR description ILIKE $${params.length} OR artist ILIKE $${params.length} OR invoice_number ILIKE $${params.length})`; }
+
+    const source = req.query.source;
+    const srcSql = sourceClause(source, 'e');
+    if (srcSql === null) return res.status(400).json(BAD_SOURCE);
+    where += srcSql;
+
+    // ── Bank-mode extras ────────────────────────────────────────────────────
+    // Scoped to source=bank rather than added to LEDGER_VIEW_COLS, which four
+    // pages read. Each is its own subquery and the invoiced half reads none of
+    // them, so the worst case of a mistake here touches one page.
+    //
+    //   bank_evidence / bank_expected — the matching bank line, resolved
+    //     through COALESCE(parent_id, id) so a split child shows its family's
+    //     line rather than nothing (lib/bankEvidence.js).
+    //   no_invoice_expected — has anyone answered "no invoice is coming for
+    //     this"? bool_or over the family root's live transactions, matching how
+    //     bank_evidence resolves. The column is `no_invoice`; the derived name
+    //     says what it means on a ledger row.
+    let bankCols = '';
+    if (source === 'bank') {
+      const accounts = await bankEvidence.loadAccounts(pool, req.labelId).catch(() => []);
+      bankCols = `,
+         ${bankEvidence.bankEvidenceCols('e', accounts)},
+         (SELECT bool_or(COALESCE(nbt.no_invoice, false))
+            FROM bank_transactions nbt
+           WHERE nbt.label_id = e.label_id
+             AND nbt.matched_expense_id = COALESCE(e.parent_id, e.id)
+             AND nbt.dismissed = false) AS no_invoice_expected`;
+    }
 
     const reps = await visibleReps(req);
     if (reps) { params.push(reps); where += ` AND (rep = ANY($${params.length}) OR rep IS NULL)`; }
@@ -265,7 +326,7 @@ router.get('/entries', async (req, res) => {
                  SELECT LOWER(TRIM(va.canonical)) FROM vendor_aliases va WHERE va.label_id = e.label_id AND LOWER(TRIM(va.alias))     = LOWER(TRIM(e.payee))
                )
              )
-           ORDER BY x.id DESC LIMIT 1) AS w9_entry_id
+           ORDER BY x.id DESC LIMIT 1) AS w9_entry_id${bankCols}
        FROM expenses e WHERE ${where} ORDER BY COALESCE(invoice_date, created_at::date) DESC, id DESC${limitSql}`,
       params
     );
@@ -3898,7 +3959,13 @@ function exportFilters(req, params) {
   if (req.query.category) { params.push(req.query.category); where += ` AND e.category = $${params.length}`; }
   if (req.query.artist) { params.push(`%${req.query.artist}%`); where += ` AND e.artist ILIKE $${params.length}`; }
   if (req.query.q) { params.push(`%${req.query.q}%`); where += ` AND (e.payee ILIKE $${params.length} OR e.description ILIKE $${params.length} OR e.artist ILIKE $${params.length} OR e.invoice_number ILIKE $${params.length})`; }
-  return where;
+  // Same ?source= contract as the list, so an export contains EXACTLY the page
+  // it was launched from. A workbook that disagrees with the screen it came
+  // from is worse than no workbook — and this one goes to the accountant.
+  // Returns null on a bad value; callers 400 rather than exporting everything.
+  const srcSql = sourceClause(req.query.source, 'e');
+  if (srcSql === null) return null;
+  return where + srcSql;
 }
 
 const EXPORT_SELECT = `SELECT e.invoice_date, e.payee, e.description, e.category, e.artist,
@@ -3912,9 +3979,14 @@ const EXPORT_SELECT = `SELECT e.invoice_date, e.payee, e.description, e.category
     e.recoupable, e.in_quickbooks, e.notes
   FROM expenses e`;
 
+// Thrown rather than returned: three export routes call this, and a null
+// return would have to be checked in each — one unchecked call site is a query
+// with `WHERE null` in it.
+class BadSource extends Error {}
 async function exportRows(req) {
   const params = [req.labelId];
   const where = exportFilters(req, params);
+  if (where === null) throw new BadSource();
   const { rows } = await pool.query(
     `${EXPORT_SELECT} WHERE ${where} ORDER BY COALESCE(e.invoice_date, e.created_at::date) DESC, e.id DESC`,
     params
@@ -3937,6 +4009,7 @@ router.get('/export', async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename="ledger-export.csv"');
     res.send(csv);
   } catch (error) {
+    if (error instanceof BadSource) return res.status(400).json(BAD_SOURCE);
     console.error('Export error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
@@ -3977,6 +4050,7 @@ router.get('/export-xlsx', async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename="ledger-export.xlsx"');
     res.send(buf);
   } catch (error) {
+    if (error instanceof BadSource) return res.status(400).json(BAD_SOURCE);
     console.error('Export xlsx error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
@@ -3988,6 +4062,7 @@ const ZIP_FILE_CAP = 300;
 async function fileZip(req, res, keyCol, nameOf, zipName) {
   const params = [req.labelId];
   const where = exportFilters(req, params);
+  if (where === null) return res.status(400).json(BAD_SOURCE);
   const { rows } = await pool.query(
     `SELECT e.id, e.payee, e.invoice_number, e.${keyCol} AS key FROM expenses e
       WHERE ${where} AND e.${keyCol} IS NOT NULL

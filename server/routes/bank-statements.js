@@ -14,11 +14,41 @@ const claude = require('../lib/claude');
 const { stampFxRateAsync } = require('../lib/fxStamp');
 const { familyRoot, cascadePaymentFieldsToFamily } = require('../lib/paymentFamily');
 const R = require('../lib/bankReconcile');
+const activityBot = require('../lib/activityBot');
+const { parseStatementText } = require('../lib/statementPdfText');
+const audit = require('../lib/statementAudit');
+const { sendFileSafely } = require('../lib/safeFiles');
+const { usdOf } = require('../lib/usd');
+const { pairReversals } = require('../lib/reversalPairs');
+const { restoreDisplacedBooking } = require('../lib/statementLinks');
+const lens = require('../lib/statementLens');
+const { dispositionOf } = lens;
 
 const router = express.Router();
 router.use(authMiddleware, withTenant, requireAdmin);
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
+
+// Background audit line (parse outcomes have no req). user_id NULL, method
+// 'SYSTEM' — same table the request-path logActivity writes.
+async function logBg(labelId, action, detail) {
+  await pool.query(
+    `INSERT INTO activity_log (label_id, user_id, action, detail, method, endpoint, created_at)
+     VALUES ($1, NULL, $2, $3, 'SYSTEM', '/api/bank-statements', NOW())`,
+    [labelId, action, String(detail || '').slice(0, 2000)]
+  ).catch(() => {});
+}
+
+// ── Housekeeping throttles (per label, never concurrent per process) ─────────
+// Boom's 2026-08-04 outage lesson: idempotent maintenance running on EVERY
+// list load stacks full-table scans until the pool starves. 10 min/label.
+const sweepsLast = new Map();          // labelId -> ts
+let sweepsInFlight = false;
+const rematchLast = new Map();         // statement id -> last freshness re-run ts
+const rematchLabelBusy = new Set();    // labels with a matcher pass running
+let portfolioAuditInFlight = false;    // one whole-portfolio extras audit at a time
+let balBackfillInFlight = false;
+const balBackfillSkip = new Set();     // statement ids whose file shows no balance
 
 // ── Background PDF parse queue (max 2 concurrent — parallel 30k-token streams
 // starve each other on org rate limits and nothing finishes) ────────────────
@@ -36,18 +66,54 @@ function pump() {
 
 const PIPE_INSTRUCTION =
   'You are extracting every transaction from this bank statement.\n' +
-  'FIRST output exactly two header lines with the balances the document prints (leave empty after the pipe when not printed):\n' +
+  'FIRST output exactly two header lines with the balances the document prints (leave empty after the pipe when not printed; take them from the statement\'s own summary — never compute them):\n' +
   'BEGINNING_BALANCE|<number>\n' +
   'ENDING_BALANCE|<number>\n' +
   'Then output ONE LINE PER TRANSACTION in the exact pipe-delimited format:\n' +
-  'DATE|DIRECTION|AMOUNT|PAYEE|EMAIL|REFERENCE|DESCRIPTION\n' +
-  'DATE is YYYY-MM-DD. DIRECTION is "debit" (money out) or "credit" (money in). AMOUNT is the positive number with no currency symbol or commas. ' +
-  'PAYEE is the cleanest merchant/beneficiary name you can extract (empty if none). EMAIL is the counterparty email when the statement prints one (empty if none). ' +
-  'REFERENCE is any confirmation/reference number (empty if none). ' +
-  'DESCRIPTION is the raw line text. Apart from those two header lines, do NOT output JSON, headers, totals, commentary, or markdown — only transaction lines. Include EVERY transaction.';
+  'DATE|DIRECTION|AMOUNT|CURRENCY|AMOUNT_USD|PAYEE|EMAIL|REFERENCE|DESCRIPTION\n' +
+  'DATE is YYYY-MM-DD. DIRECTION is "debit" (money out) or "credit" (money in). AMOUNT is the positive number with no currency symbol or commas, in the transaction\'s OWN currency. ' +
+  'CURRENCY is the 3-letter ISO code of the amount (USD, EUR, JPY, GBP…) — PayPal statements list foreign-currency transactions; never write USD for a JPY amount. ' +
+  'AMOUNT_USD: ONLY when CURRENCY is not USD — the US-dollar settlement the statement prints for that transaction. Leave EMPTY when CURRENCY is USD, and leave it blank rather than estimating. ' +
+  'PAYEE is the counterparty NAME ONLY (for wires the BNF/beneficiary; for card charges the merchant; for PayPal the recipient). Never an email address. ' +
+  'ACH lines look like "MERCHANT DES:<descriptor> ID:<id> INDN:<person> CO ID:<id> WEB" — the PAYEE is the MERCHANT at the START, before "DES:". The INDN field is the individual on OUR OWN account, never the counterparty; taking INDN puts real people\'s names into the vendor ledger where they read as 1099 vendors. ' +
+  'Internal-transfer lines look like "TRANSFER <our account>:<counterparty> Confirmation# <digits>" (REVERSAL the same) — the PAYEE is the counterparty AFTER the colon; the name before it is OUR OWN account. Never return the raw statement line as the payee; if you cannot isolate a name, leave PAYEE blank. ' +
+  'EMAIL is the counterparty email when printed (empty if none). REFERENCE is any confirmation/reference number (empty if none). ' +
+  'DESCRIPTION is the raw line text (replace any | in it with /). Apart from those two header lines, do NOT output JSON, headers, totals, commentary, or markdown — only transaction lines. Include EVERY transaction.';
+
+// Deterministic-first: rules over extracted text win ONLY when the parse
+// reconciles against the statement's own printed balances and section totals
+// (the gate is the whole safety argument — a layout change or a bad text
+// extraction can cost the fast path, never correctness). Anything else falls
+// through to the AI. Returns {rows, balances, method} or null.
+function tryDeterministicPdf(buffer) {
+  let out = null;
+  try { out = parseStatementText(buffer); } catch { return null; }
+  if (!out) return null;
+  if (!out.ok) {
+    console.warn(`[statement-parse] deterministic parse did not reconcile (${out.verdict?.reason || 'unknown'}) — falling back to AI`);
+    return null;
+  }
+  return {
+    // Same payee extraction the CSV path applies to descriptors, so matching
+    // and vendor grouping behave identically whichever path ran.
+    rows: out.rows.map((r) => ({ ...r, payee_guess: r.payee_guess || R.extractPayee(r.description) })),
+    balances: { beginning_balance: out.beginningBalance, ending_balance: out.endingBalance },
+    method: 'rules',
+  };
+}
 
 async function parsePdfStatement(statementId, labelId, account, buffer, mimeType) {
   try {
+    const det = tryDeterministicPdf(buffer);
+    if (det) {
+      await ingest(statementId, labelId, account, det.rows, det.balances, { parseMethod: 'rules' });
+      await logBg(labelId, 'Parsed bank statement (PDF)', `#${statementId} ${account}: rule-parsed, balance-verified — ${det.rows.length} transactions`);
+      return;
+    }
+    if (!claude.isEnabled()) {
+      await failStatement(statementId, 'The PDF did not parse deterministically and AI is not configured — upload the CSV export instead.');
+      return;
+    }
     const block = claude.fileBlock(buffer, mimeType);
     if (!block) { await failStatement(statementId, 'Unsupported file type'); return; }
     const r = await claude.streamText({ content: [block, { type: 'text', text: PIPE_INSTRUCTION }], maxTokens: 32000 });
@@ -55,7 +121,8 @@ async function parsePdfStatement(statementId, labelId, account, buffer, mimeType
     if (r.stop_reason === 'max_tokens') { await failStatement(statementId, 'Statement too long to parse — please upload the CSV export instead.'); return; }
     const txns = R.parsePipeLines(r.text);
     if (!txns.length) { await failStatement(statementId, 'No transactions found — try the CSV export.'); return; }
-    await ingest(statementId, labelId, account, txns, R.extractBalanceLines(r.text));
+    await ingest(statementId, labelId, account, txns, R.extractBalanceLines(r.text), { parseMethod: 'ai' });
+    await logBg(labelId, 'Parsed bank statement (PDF)', `#${statementId} ${account}: AI-parsed — ${txns.length} transactions`);
   } catch (e) {
     await failStatement(statementId, e.message);
   }
@@ -66,15 +133,15 @@ async function failStatement(id, error) {
 
 // ── Ingest: dedupe → auto-dismiss internal → dismiss rules → auto-match →
 // category rules (after matching) → write import_summary ─────────────────────
-async function ingest(statementId, labelId, account, rawTxns, balances = {}) {
+// Split into a context + a per-row step so the strictly-additive /reparse can
+// run EXACTLY the same pipeline over just the rows a re-parse found missing.
+async function buildIngestCtx(labelId, account) {
   const labelRow = (await pool.query('SELECT bank_accounts FROM labels WHERE id = $1', [labelId])).rows[0] || {};
   const accounts = R.accountsFor(labelRow);
   const methods = R.accountMethods(accounts, account);
   const maps = await R.loadMaps(pool, labelId);
   const dismissRules = (await pool.query('SELECT pattern FROM statement_dismiss_rules WHERE label_id = $1', [labelId])).rows.map(r => r.pattern);
   const catRules = (await pool.query('SELECT pattern, category FROM statement_category_rules WHERE label_id = $1', [labelId])).rows;
-  const summary = { dup_skipped: 0, auto_matched: 0, rule_booked: 0, rule_dismissed: 0 };
-
   // One-debit-per-invoice, layer 1: seed the claimed set from ALL existing
   // live claims, and add per match inside this run — two rows in one upload
   // must not both claim the same invoice.
@@ -85,62 +152,99 @@ async function ingest(statementId, labelId, account, rawTxns, balances = {}) {
       [labelId]
     )).rows.map(r => r.id)
   );
+  const summary = { dup_skipped: 0, auto_matched: 0, rule_booked: 0, rule_dismissed: 0, reasons: {} };
+  return { labelId, account, methods, maps, dismissRules, catRules, used, summary };
+}
 
-  const ruleHit = (rules, txn) => {
-    const hay = `${txn.description || ''} ${txn.payee_guess || ''}`.toLowerCase();
-    return rules.find(p => hay.includes(String(p).toLowerCase()));
-  };
+const ruleHit = (rules, txn) => {
+  const hay = `${txn.description || ''} ${txn.payee_guess || ''}`.toLowerCase();
+  return rules.find(p => hay.includes(String(p).toLowerCase()));
+};
 
-  for (const raw of rawTxns) {
-    // Pull an email out of the payee wherever it arrived mashed together.
-    const es = R.splitPayeeEmail(raw.payee_guess);
-    const t = { ...raw, payee_guess: es.payee, payee_email: raw.payee_email || es.email };
-    const currency = t.currency || 'USD';
-    // (a) Dedupe against other statements of the same account (and earlier rows
-    // of this one). Reference match when both have one, else same description.
-    const dup = await pool.query(
-      `SELECT 1 FROM bank_transactions bt JOIN bank_statements bs ON bs.id = bt.statement_id
-        WHERE bs.label_id = $1 AND bs.account = $2 AND bt.txn_date = $3 AND bt.amount = $4 AND bt.direction = $5
-          AND ( ($6 <> '' AND bt.reference = $6) OR ($6 = '' AND COALESCE(bt.description,'') = $7) ) LIMIT 1`,
-      [labelId, account, t.txn_date, t.amount, t.direction, t.reference || '', t.description || '']
-    );
-    if (dup.rows.length) { summary.dup_skipped++; continue; }
+// Process ONE raw parsed row: dedupe → internal → dismiss rules → auto-match →
+// category rules → insert. Returns 'dup' | 'inserted'.
+async function ingestOne(ctx, statementId, raw) {
+  const { labelId, account, methods, maps, dismissRules, catRules, used, summary } = ctx;
+  // Pull an email out of the payee wherever it arrived mashed together.
+  const es = R.splitPayeeEmail(raw.payee_guess);
+  const t = { ...raw, payee_guess: es.payee, payee_email: raw.payee_email || es.email };
+  const currency = t.currency || 'USD';
+  // Backfill the reference from the descriptor (TRN: / Confirmation#) so the
+  // dedupe below has the one field that identifies a payment.
+  const ref = String(t.reference || '').trim() || audit.refFromDescription(t.description) || '';
 
-    let dismissed = false, dismissedReason = null, matchedId = null, method = null, score = null, booked = false;
+  // (a) Dedupe. Across OTHER statements of the same account: reference match
+  // when both have one, else same description — an overlapping or re-uploaded
+  // month must not double-book the period. Within THIS statement: only a REAL
+  // reference may collapse two rows — N identical same-day charges are
+  // ordinary (boom's motivating extras case was 30 legitimate $1.00 fees in
+  // one day), so description equality must never fold them.
+  const dup = await pool.query(
+    `SELECT 1 FROM bank_transactions bt JOIN bank_statements bs ON bs.id = bt.statement_id
+      WHERE bs.label_id = $1 AND bs.account = $2 AND bt.txn_date = $3 AND bt.amount = $4 AND bt.direction = $5
+        AND (
+          (bt.statement_id <> $8 AND (
+            ($6 <> '' AND bt.reference = $6)
+            OR ($6 = '' AND COALESCE(bt.description,'') = $7)))
+          OR (bt.statement_id = $8 AND $6 <> ''
+            AND (bt.reference = $6 OR bt.description LIKE '%' || $6 || '%'))
+        ) LIMIT 1`,
+    [labelId, account, t.txn_date, t.amount, t.direction, ref, t.description || '', statementId]
+  );
+  if (dup.rows.length) { summary.dup_skipped++; return 'dup'; }
 
-    // (b) Auto-dismiss internal movement (both parse paths).
-    if (R.isInternal(t.description, t.payee_guess)) { dismissed = true; dismissedReason = 'internal'; }
-    // (c) Dismiss rules.
-    else if (ruleHit(dismissRules, t)) { dismissed = true; dismissedReason = 'auto'; summary.rule_dismissed++; }
+  let dismissed = false, dismissedReason = null, matchedId = null, method = null, score = null, booked = false;
 
-    if (!dismissed && t.direction === 'debit') {
-      // Auto-match against the ledger.
-      const m = await R.matchTxn(pool, labelId, { ...t, currency }, methods, maps, used);
-      if (m) {
-        matchedId = m.expense_id; method = m.method; score = m.score;
-        used.add(m.expense_id); summary.auto_matched++;
-        // A creator payment reconciles but is never invoice-backed.
-        const src = (await pool.query(`SELECT entry_source FROM expenses WHERE id = $1 /* no-tenant */`, [m.expense_id])).rows[0];
-        if (src?.entry_source === 'creator_payment') method = 'creator';
-      }
-      else {
-        // (post-match) Category rules → book straight to the ledger.
-        const cr = catRules.find(r => { const hay = `${t.description || ''} ${t.payee_guess || ''}`.toLowerCase(); return hay.includes(String(r.pattern).toLowerCase()); });
-        if (cr) {
-          const entry = await bookEntry(pool, labelId, { ...t, currency }, { category: cr.category, method: methods && methods[0], actor: 'Auto (rule)' });
-          matchedId = entry.id; method = 'rule'; booked = true; score = 1.0; summary.rule_booked++;
-        }
+  // (b) Auto-dismiss internal movement (both parse paths).
+  if (R.isInternal(t.description, t.payee_guess)) { dismissed = true; dismissedReason = 'internal'; }
+  // (c) Dismiss rules — the reason names the pattern (an anonymous 'auto'
+  // makes "why is this dismissed" unanswerable a month later).
+  else {
+    const hit = ruleHit(dismissRules, t);
+    if (hit) { dismissed = true; dismissedReason = `rule: ${hit}`.slice(0, 120); summary.rule_dismissed++; }
+  }
+
+  if (!dismissed && t.direction === 'debit') {
+    // Auto-match against the ledger — and when it declines, keep the WHY.
+    // The first thing anyone wants after an upload is not "40 matched" but
+    // "what about the other 396", and the answer used to be unrecoverable.
+    const why = {};
+    const m = await R.matchTxn(pool, labelId, { ...t, currency }, methods, maps, used, why);
+    if (m) {
+      matchedId = m.expense_id; method = m.method; score = m.score;
+      used.add(m.expense_id); summary.auto_matched++;
+      // A creator payment reconciles but is never invoice-backed.
+      const src = (await pool.query(`SELECT entry_source FROM expenses WHERE id = $1 /* no-tenant */`, [m.expense_id])).rows[0];
+      if (src?.entry_source === 'creator_payment') method = 'creator';
+    }
+    else {
+      // (post-match) Category rules → book straight to the ledger.
+      const cr = catRules.find(r => { const hay = `${t.description || ''} ${t.payee_guess || ''}`.toLowerCase(); return hay.includes(String(r.pattern).toLowerCase()); });
+      if (cr) {
+        const entry = await bookEntry(pool, labelId, { ...t, currency }, { category: cr.category, method: methods && methods[0], actor: 'Auto (rule)' });
+        matchedId = entry.id; method = 'rule'; booked = true; score = 1.0; summary.rule_booked++;
+      } else {
+        const reason = why.reason || 'no-candidate';
+        summary.reasons[reason] = (summary.reasons[reason] || 0) + 1;
       }
     }
-
-    await pool.query(
-      `INSERT INTO bank_transactions (statement_id, label_id, txn_date, description, payee_guess, payee_email, amount, direction,
-         currency, reference, fee, amount_usd, matched_expense_id, match_method, match_score, matched_by, matched_at, booked, dismissed, dismissed_reason)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,${matchedId ? 'NOW()' : 'NULL'},$17,$18,$19)`,
-      [statementId, labelId, t.txn_date, t.description || null, t.payee_guess || null, t.payee_email || null, t.amount, t.direction,
-       currency, t.reference || null, t.fee || null, t.amount_usd || null, matchedId, method, score, matchedId ? 'Auto' : null, booked, dismissed, dismissedReason]
-    );
   }
+
+  await pool.query(
+    `INSERT INTO bank_transactions (statement_id, label_id, txn_date, description, payee_guess, payee_email, amount, direction,
+       currency, reference, fee, amount_usd, matched_expense_id, match_method, match_score, matched_by, matched_at, booked, dismissed, dismissed_reason)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,${matchedId ? 'NOW()' : 'NULL'},$17,$18,$19)`,
+    [statementId, labelId, t.txn_date, t.description || null, t.payee_guess || null, t.payee_email || null, t.amount, t.direction,
+     currency, ref || null, t.fee || null, t.amount_usd || null, matchedId, method, score, matchedId ? 'Auto' : null, booked, dismissed, dismissedReason]
+  );
+  return 'inserted';
+}
+
+async function ingest(statementId, labelId, account, rawTxns, balances = {}, opts = {}) {
+  const ctx = await buildIngestCtx(labelId, account);
+  for (const raw of rawTxns) await ingestOne(ctx, statementId, raw);
+  const summary = ctx.summary;
+  if (opts.parseMethod) summary.parse_method = opts.parseMethod;
 
   const per = await pool.query('SELECT MIN(txn_date) AS s, MAX(txn_date) AS e, COUNT(*)::int AS n FROM bank_transactions WHERE statement_id = $1 /* no-tenant */', [statementId]);
   await pool.query(
@@ -198,49 +302,232 @@ router.put('/accounts', async (req, res) => {
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 
-// ── Statements list (with stale-parse guard) ────────────────────────────────
+// ── Housekeeping sweeps (idempotent maintenance, NOT request logic) ─────────
+// Throttled to once per 10 minutes per label and never concurrent per
+// process — running these on every list load stacked full-table scans until
+// the pool starved (boom's 2026-08-04 outage; same shape here).
+async function runListSweeps(labelId) {
+  // Flip interrupted parses (deploys kill in-flight streams) to error.
+  await pool.query(`UPDATE bank_statements SET status = 'error', error = 'Interrupted — please re-upload' WHERE label_id = $1 AND status = 'parsing' AND created_at < NOW() - INTERVAL '25 minutes'`, [labelId]);
+
+  // 1: split emails out of payees on rows that predate payee_email.
+  await pool.query(
+    `UPDATE bank_transactions SET
+       payee_email = LOWER(substring(payee_guess from '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}')),
+       payee_guess = btrim(regexp_replace(payee_guess, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', '', 'g'), ' /|,-')
+     WHERE label_id = $1 AND payee_email IS NULL
+       AND payee_guess ~ '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}'`,
+    [labelId]
+  ).catch(() => {});
+
+  // 2: retro internal-noise cleanup — first UNLINK any AUTO-matched internal
+  // row (a currency conversion that amount-matched an invoice is a false
+  // positive; manual matches are left alone), then dismiss unmatched ones.
+  await pool.query(
+    `UPDATE bank_transactions SET matched_expense_id = NULL, match_method = NULL,
+       match_score = NULL, matched_by = NULL, matched_at = NULL
+      WHERE label_id = $1 AND match_method LIKE 'auto%' AND booked = FALSE
+        AND (description ~* $2 OR payee_guess ~* $2)`,
+    [labelId, R.INTERNAL_RE.source]
+  ).catch(() => {});
+  await pool.query(
+    `UPDATE bank_transactions SET dismissed = TRUE, dismissed_reason = 'internal'
+      WHERE label_id = $1 AND dismissed = FALSE AND matched_expense_id IS NULL AND matched_income_id IS NULL
+        AND (description ~* $2 OR payee_guess ~* $2)`,
+    [labelId, R.INTERNAL_RE.source]
+  ).catch(() => {});
+
+  // 3: orphaned statement bookings — an entry CREATED from a bank debit whose
+  // link is gone (deleted statement, historical race) keeps counting in the
+  // ledger with no bank evidence, the exact "recorded twice" failure once the
+  // debit is re-booked. Soft-delete; restorable from the archive.
+  // entry_source guarded on BOTH halves so a hand-entered child of a
+  // bank-born parent can never be swept.
+  try {
+    const { rows: orphans } = await pool.query(
+      `SELECT id FROM expenses r
+        WHERE r.label_id = $1 AND r.entry_source = 'bank_statement' AND r.parent_id IS NULL
+          AND (r.deleted = false OR r.deleted IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM bank_transactions bt WHERE bt.matched_expense_id = r.id AND bt.label_id = r.label_id)`,
+      [labelId]);
+    if (orphans.length) {
+      const ids = orphans.map((r) => r.id);
+      await pool.query(
+        `UPDATE expenses SET deleted = true, deleted_by = 'orphan-sweep', deleted_at = NOW()
+          WHERE label_id = $2 AND (id = ANY($1) OR parent_id = ANY($1)) AND entry_source = 'bank_statement'
+            AND (deleted = false OR deleted IS NULL)`, [ids, labelId]);
+      await logBg(labelId, 'Statement orphan sweep', `${ids.length} statement-created ledger entr${ids.length === 1 ? 'y' : 'ies'} had no bank link — soft-deleted to prevent double counting`);
+    }
+  } catch { /* advisory */ }
+
+  // 4: currency repair — rows ingested before currency capture carry the real
+  // currency at the end of the description ("General Payment - JPY").
+  // ¥237,858 read as $237,858 is the failure this repairs.
+  await pool.query(String.raw`
+    UPDATE bank_transactions
+       SET currency = UPPER(substring(description from '[-–] ?(JPY|EUR|GBP|CAD|AUD|CHF|MXN|BRL|SEK|NOK|DKK|NZD|HKD|SGD|PLN|CZK|HUF|ILS|THB|PHP|TWD) *$'))
+     WHERE label_id = $1 AND (currency IS NULL OR currency = 'USD')
+       AND description ~ '[-–] ?(JPY|EUR|GBP|CAD|AUD|CHF|MXN|BRL|SEK|NOK|DKK|NZD|HKD|SGD|PLN|CZK|HUF|ILS|THB|PHP|TWD) *$'`,
+    [labelId]).catch(() => {});
+
+  // 5: over-capacity — a family may hold several matched debits
+  // (installments) but only up to its total. The old sweep here reopened
+  // EVERY claim beyond rank 1, which contradicted the match endpoint's
+  // capacity model and unlinked legitimate second installments on the next
+  // page load. Sum claims against family capacity instead, keeping fits;
+  // 'created'/'booked' rows are never unlinked (their entry was created FROM
+  // the txn). Cross-currency groups are skipped — raw sums are meaningless.
+  try {
+    const { rows: multi } = await pool.query(
+      `SELECT t.id, t.amount, t.currency, t.match_method, t.booked, t.match_score, t.matched_at,
+              t.matched_expense_id AS root
+         FROM bank_transactions t
+        WHERE t.label_id = $1 AND t.dismissed = FALSE AND t.matched_expense_id IN (
+          SELECT matched_expense_id FROM bank_transactions
+           WHERE label_id = $1 AND matched_expense_id IS NOT NULL AND dismissed = FALSE
+           GROUP BY matched_expense_id HAVING COUNT(*) > 1)`,
+      [labelId]);
+    if (multi.length) {
+      const rootIds = [...new Set(multi.map((r) => r.root))];
+      const { rows: fams } = await pool.query(
+        `SELECT e.id, COALESCE(e.currency,'USD') AS currency,
+                (e.amount + COALESCE((SELECT SUM(k.amount) FROM expenses k WHERE k.parent_id = e.id AND (k.deleted=false OR k.deleted IS NULL)),0)) AS family_total
+           FROM expenses e WHERE e.label_id = $1 AND e.id = ANY($2)`,
+        [labelId, rootIds]);
+      const totalOf = new Map(fams.map((f) => [f.id, Number(f.family_total)]));
+      const curOf = new Map(fams.map((f) => [f.id, String(f.currency).toUpperCase()]));
+      const strength = (r) =>
+        ((r.match_method === 'created' || r.booked) ? 3e12 : r.match_method === 'manual' ? 2e12 : 0)
+        + (Number(r.match_score) || 0) * 1e9
+        - (r.matched_at ? new Date(r.matched_at).getTime() / 1e6 : 0);
+      const unlink = [];
+      for (const rootId of rootIds) {
+        const total = totalOf.get(rootId);
+        if (total === undefined) continue;
+        const group = multi.filter((r) => r.root === rootId).sort((a, b) => strength(b) - strength(a));
+        const fCur = curOf.get(rootId) || 'USD';
+        if (group.some((r) => String(r.currency || 'USD').toUpperCase() !== fCur)) continue;
+        let sum = 0;
+        for (const r of group) {
+          if (r.match_method === 'created' || r.booked) { sum += Number(r.amount); continue; }
+          // First-claim-only overshoot, same as the match endpoint —
+          // otherwise a second $30 fee squats on a paid $30 entry via the
+          // $35 floor.
+          const tol = sum > 0 ? 0.01 : Math.max(35, total * 0.01);
+          if (sum + Number(r.amount) <= total + tol) sum += Number(r.amount);
+          else unlink.push(r.id);
+        }
+      }
+      if (unlink.length) {
+        await pool.query(
+          `UPDATE bank_transactions SET matched_expense_id = NULL, match_method = NULL,
+                  match_score = NULL, matched_by = NULL, matched_at = NULL
+            WHERE label_id = $2 AND id = ANY($1)`, [unlink, labelId]);
+      }
+    }
+  } catch { /* advisory — never block the list */ }
+}
+
+// Ending-balance backfill: statements missing balances but holding a stored
+// file get a deterministic read first (free), then a focused AI pass when
+// configured. 2 per cycle, FIRE-AND-FORGET — must never block the request.
+function runBalanceBackfill(labelId) {
+  if (balBackfillInFlight) return;
+  balBackfillInFlight = true;
+  (async () => {
+    const { rows: needBal } = await pool.query(
+      `SELECT id, filename, r2_key FROM bank_statements
+        WHERE label_id = $1 AND status = 'ready' AND ending_balance IS NULL AND r2_key IS NOT NULL
+        ORDER BY period_end DESC NULLS LAST`, [labelId]);
+    const todo = needBal.filter((s) => !balBackfillSkip.has(s.id)).slice(0, 2);
+    for (const st of todo) {
+      const bal = await readBalancesFromStored(st).catch(() => null);
+      if (bal && (bal.ending_balance != null || bal.beginning_balance != null)) {
+        await pool.query(
+          `UPDATE bank_statements SET ending_balance = COALESCE(ending_balance, $2), beginning_balance = COALESCE(beginning_balance, $3)
+            WHERE id = $1 AND label_id = $4`,
+          [st.id, bal.ending_balance, bal.beginning_balance, labelId]);
+        await logBg(labelId, 'Statement balance backfilled', `#${st.id} "${st.filename}" → ending ${bal.ending_balance ?? '—'} (${bal.method})`);
+      } else {
+        balBackfillSkip.add(st.id); // no balance found / AI off — don't retry this process
+      }
+    }
+  })().catch((e) => console.warn('[balance-backfill]', e.message))
+    .finally(() => { balBackfillInFlight = false; });
+}
+
+// Read balances off a statement's STORED file: CSV running-balance column or
+// a reconciling deterministic PDF parse; AI single-field extraction last.
+async function readBalancesFromStored(st) {
+  if (!st.r2_key) return null;
+  const buf = await loadFileBuffer(st.r2_key, null);
+  if (!buf) return null;
+  const isPdf = buf.slice(0, 5).toString() === '%PDF-';
+  if (!isPdf) {
+    const b = R.extractCsvBalances(buf.toString('utf8'));
+    if (b.ending_balance != null || b.beginning_balance != null) return { ...b, method: 'csv' };
+    return null;
+  }
+  const det = tryDeterministicPdf(buf);
+  if (det && (det.balances.ending_balance != null || det.balances.beginning_balance != null)) {
+    return { ...det.balances, method: 'rules' };
+  }
+  if (!claude.isEnabled()) return null;
+  const block = claude.fileBlock(buf, 'application/pdf');
+  if (!block) return null;
+  const r = await claude.callClaude({
+    content: [block, {
+      type: 'text',
+      text: 'Return exactly two lines with the balances this bank statement prints (empty after the pipe when not printed):\nBEGINNING_BALANCE|<number>\nENDING_BALANCE|<number>\nNo other output.',
+    }],
+    maxTokens: 100,
+  });
+  if (!r.ok) return null;
+  const b = R.extractBalanceLines(r.text || (typeof r.data === 'string' ? r.data : ''));
+  if (b.ending_balance == null && b.beginning_balance == null) return null;
+  return { ...b, method: 'ai' };
+}
+
+// ── Statements list ──────────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    // Flip interrupted parses (deploys kill in-flight streams) to error.
-    await pool.query(`UPDATE bank_statements SET status = 'error', error = 'Interrupted — please re-upload' WHERE label_id = $1 AND status = 'parsing' AND created_at < NOW() - INTERVAL '25 minutes'`, [req.labelId]);
-
-    // Idempotent retro sweep 1: split emails out of payees on rows that
-    // predate payee_email (banks mash "Name / email@x" into one field).
-    await pool.query(
-      `UPDATE bank_transactions SET
-         payee_email = LOWER(substring(payee_guess from '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}')),
-         payee_guess = btrim(regexp_replace(payee_guess, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', '', 'g'), ' /|,-')
-       WHERE label_id = $1 AND payee_email IS NULL
-         AND payee_guess ~ '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}'`,
-      [req.labelId]
-    ).catch(() => {});
-
-    // Idempotent retro sweep 2: one invoice claimed by several live txns —
-    // keep the strongest (created > manual > score > oldest), reopen the rest.
-    // NEVER unlink 'created' rows: their ledger entry was created FROM the txn.
-    await pool.query(
-      `WITH ranked AS (
-         SELECT id, ROW_NUMBER() OVER (
-           PARTITION BY matched_expense_id
-           ORDER BY (match_method = 'created') DESC, (match_method = 'manual') DESC,
-                    match_score DESC NULLS LAST, matched_at ASC NULLS LAST, id ASC
-         ) AS rn
-         FROM bank_transactions
-         WHERE label_id = $1 AND matched_expense_id IS NOT NULL AND dismissed = FALSE
-       )
-       UPDATE bank_transactions t SET matched_expense_id = NULL, match_method = NULL, match_score = NULL,
-              matched_by = NULL, matched_at = NULL
-        FROM ranked r
-       WHERE t.id = r.id AND r.rn > 1 AND t.label_id = $1
-         AND t.match_method IS DISTINCT FROM 'created'`,
-      [req.labelId]
-    ).catch(() => {});
+    const now = Date.now();
+    if (!sweepsInFlight && now - (sweepsLast.get(req.labelId) || 0) > 10 * 60 * 1000) {
+      sweepsInFlight = true;
+      sweepsLast.set(req.labelId, now);
+      runBalanceBackfill(req.labelId); // fire-and-forget
+      try { await runListSweeps(req.labelId); }
+      finally { sweepsInFlight = false; }
+    }
+    // Per-statement work counts, computed here because a cross-statement
+    // breakdown is impossible client-side exactly when it is most useful.
+    // Explicit FILTERs, never "debits - matched - dismissed" — those overlap.
     const { rows } = await pool.query(
       `SELECT s.*,
-         (SELECT COUNT(*)::int FROM bank_transactions t WHERE t.statement_id = s.id AND t.direction = 'debit' AND NOT t.dismissed AND t.matched_expense_id IS NULL) AS open_count
-       FROM bank_statements s WHERE s.label_id = $1 ORDER BY s.created_at DESC`,
+         COUNT(t.id) FILTER (WHERE t.direction = 'debit')::int AS debits,
+         COUNT(t.id) FILTER (WHERE t.direction = 'debit' AND t.matched_expense_id IS NOT NULL)::int AS matched,
+         COUNT(t.id) FILTER (WHERE t.direction = 'debit' AND t.dismissed)::int AS dismissed,
+         COUNT(t.id) FILTER (WHERE t.direction = 'debit' AND t.matched_expense_id IS NULL AND t.dismissed = FALSE)::int AS open_debits,
+         COUNT(t.id) FILTER (WHERE t.direction = 'debit' AND t.matched_expense_id IS NULL AND t.dismissed = FALSE)::int AS open_count,
+         COUNT(t.id) FILTER (WHERE t.direction = 'credit' AND t.matched_income_id IS NULL AND t.dismissed = FALSE)::int AS open_credits,
+         COALESCE(SUM(ABS(COALESCE(t.amount_usd, t.amount))) FILTER (
+           WHERE t.direction = 'debit' AND t.matched_expense_id IS NULL AND t.dismissed = FALSE
+         ), 0)::float AS open_value
+       FROM bank_statements s
+       LEFT JOIN bank_transactions t ON t.statement_id = s.id
+       WHERE s.label_id = $1
+       GROUP BY s.id ORDER BY s.created_at DESC`,
       [req.labelId]
     );
+    // Flag period overlaps within the same account — an overlapping upload is
+    // the main way a month gets double-counted.
+    for (const s of rows) {
+      if (!s.period_start || !s.period_end) continue;
+      const other = rows.find((o) => o.id !== s.id && o.account === s.account
+        && o.period_start && o.period_end
+        && !(new Date(o.period_end) < new Date(s.period_start) || new Date(o.period_start) > new Date(s.period_end)));
+      if (other) s.overlaps_with = other.filename;
+    }
     res.json({ success: true, data: rows });
   } catch (e) { console.error('Statements list error:', e); res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
@@ -259,7 +546,8 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     await uploadFile(key, req.file.buffer, req.file.mimetype).catch(() => {});
 
     if (isPdf) {
-      if (!claude.isEnabled()) return res.status(400).json({ success: false, error: 'PDF parsing needs AI configured — upload the CSV instead' });
+      // Deterministic rules parse first (sub-second, balance-verified), AI
+      // fallback — so a recognised layout works even with AI unconfigured.
       // Create the row, respond immediately, parse in the background. NEVER
       // parse a dense PDF inside the request (5–10 min → proxy 502).
       const { rows } = await pool.query(
@@ -281,7 +569,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       `INSERT INTO bank_statements (label_id, account, filename, r2_key, status, uploaded_by) VALUES ($1,$2,$3,$4,'parsing',$5) RETURNING id`,
       [req.labelId, account, req.file.originalname, key, req.user.name]
     );
-    await ingest(rows[0].id, req.labelId, account, txns, R.extractCsvBalances(csvText));
+    await ingest(rows[0].id, req.labelId, account, txns, R.extractCsvBalances(csvText), { parseMethod: 'csv' });
     await logActivity(req, 'Uploaded bank statement (CSV)', `${account} · ${txns.length} txns`);
     const st = (await pool.query('SELECT * FROM bank_statements WHERE id = $1', [rows[0].id])).rows[0];
     res.status(201).json({ success: true, data: st });
@@ -291,22 +579,131 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// ── Statement detail — the mini-ledger ──────────────────────────────────────
-function dispositionOf(t) {
-  if (t.direction === 'credit') {
-    if (t.matched_income_id) return 'booked-income';
-    return t.dismissed ? 'dismissed' : 'open-credit';
+// ── Auto-match pass over ONE statement's open debits ────────────────────────
+// Additive by construction: only unmatched, undismissed debits are even
+// considered. Shared by the detail freshness re-run, /rematch-all,
+// /reset-matching and the nightly sweep — one implementation, one behavior.
+async function runAutoMatchStatement(st, labelId, actor) {
+  const { rows: txns } = await pool.query(
+    `SELECT * FROM bank_transactions
+      WHERE statement_id = $1 AND label_id = $2 AND direction = 'debit'
+        AND dismissed = FALSE AND matched_expense_id IS NULL
+      ORDER BY txn_date, id`, [st.id, labelId]);
+  if (!txns.length) return { scanned: 0, matched: 0, reasons: {} };
+  const labelRow = (await pool.query('SELECT bank_accounts FROM labels WHERE id = $1', [labelId])).rows[0] || {};
+  const methods = R.accountMethods(R.accountsFor(labelRow), st.account);
+  const maps = await R.loadMaps(pool, labelId);
+  const used = new Set(
+    (await pool.query(
+      `SELECT DISTINCT matched_expense_id AS id FROM bank_transactions
+        WHERE label_id = $1 AND matched_expense_id IS NOT NULL AND dismissed = FALSE`,
+      [labelId]
+    )).rows.map(r => r.id)
+  );
+  let matched = 0;
+  const reasons = {};
+  for (const t of txns) {
+    const why = {};
+    const m = await R.matchTxn(pool, labelId, t, methods, maps, used, why);
+    if (m) {
+      let method = m.method;
+      const src = (await pool.query(`SELECT entry_source FROM expenses WHERE id = $1 /* no-tenant */`, [m.expense_id])).rows[0];
+      if (src?.entry_source === 'creator_payment') method = 'creator';
+      await pool.query(
+        `UPDATE bank_transactions SET matched_expense_id = $1, match_method = $2, match_score = $3,
+                matched_by = $4, matched_at = NOW()
+          WHERE id = $5 AND label_id = $6 AND matched_expense_id IS NULL AND dismissed = FALSE`,
+        [m.expense_id, method, m.score, actor || 'Auto', t.id, labelId]);
+      used.add(m.expense_id);
+      matched++;
+    } else {
+      const reason = why.reason || 'no-candidate';
+      reasons[reason] = (reasons[reason] || 0) + 1;
+    }
   }
-  if (t.dismissed) return 'dismissed';
-  if (t.booked) return 'booked';
-  if (t.matched_expense_id) return t.exp_payment_status === 'Paid' ? 'matched' : 'toconfirm';
-  return 'open';
+  return { scanned: txns.length, matched, reasons };
 }
+
+// The same pass, label-wide, and it can tell you what it did. Shares the
+// per-label busy set with the freshness re-run and the nightly sweep so
+// pressing the button can never stack matcher passes on the pool.
+async function runMatcherPass(labelId, { userName, statementId = null } = {}) {
+  if (rematchLabelBusy.has(labelId)) return { ran: false, statements: 0, scanned: 0, matched: 0, per_statement: [] };
+  rematchLabelBusy.add(labelId);
+  try {
+    const { rows: sts } = statementId
+      ? await pool.query(`SELECT * FROM bank_statements WHERE id = $1 AND label_id = $2 AND status = 'ready'`, [statementId, labelId])
+      : await pool.query(`SELECT * FROM bank_statements WHERE label_id = $1 AND status = 'ready' ORDER BY period_start`, [labelId]);
+    const per = [];
+    let scanned = 0;
+    let matched = 0;
+    for (const st of sts) {
+      // One statement failing must not abandon the rest — and the failure is
+      // REPORTED per statement, because a silently short count reads as
+      // "nothing to find".
+      const out = await runAutoMatchStatement(st, labelId, userName)
+        .then((r) => ({ ...r, error: null }))
+        .catch((e) => ({ matched: 0, scanned: 0, error: e.message }));
+      rematchLast.set(st.id, Date.now());
+      scanned += out.scanned || 0;
+      matched += out.matched || 0;
+      per.push({ id: st.id, account: st.account, period_start: st.period_start, scanned: out.scanned || 0, matched: out.matched || 0, ...(out.error ? { error: out.error } : {}) });
+    }
+    return { ran: true, statements: sts.length, scanned, matched, per_statement: per };
+  } finally { rematchLabelBusy.delete(labelId); }
+}
+// Exposed for the nightly freshness sweep in index.js.
+router.runMatcherPass = runMatcherPass;
+
+/**
+ * Book one OPEN debit and claim it, atomically enough that two callers cannot
+ * both create an entry. Exported so Bank Matching's "no invoice coming" can
+ * BOOK the row rather than flag an unanswered one — one booking path means
+ * the artist rules, the fx stamp and the learned payee happen either way.
+ * Returns the created expense row; throws when the row is no longer open.
+ */
+router.bookOpenTxn = async function bookOpenTxn(labelId, txn, { category, payee, artist, actor }) {
+  const methods = await accountMethodsForTxn(txn, labelId);
+  const entry = await bookEntry(pool, labelId, txn, { category, payee, artist, method: methods && methods[0], actor });
+  const claim = await pool.query(
+    `UPDATE bank_transactions SET matched_expense_id = $1, match_method = 'booked', match_score = 1.0,
+            matched_by = $2, matched_at = NOW(), booked = TRUE, dismissed = FALSE, dismissed_reason = NULL
+      WHERE id = $3 AND label_id = $4 AND matched_expense_id IS NULL AND booked = FALSE
+      RETURNING id`,
+    [entry.id, actor || null, txn.id, labelId]
+  );
+  if (!claim.rows.length) {
+    // A lost race would otherwise leave the invented entry in the ledger with
+    // no bank line pointing at it — money counted twice.
+    await pool.query(`UPDATE expenses SET deleted = TRUE, deleted_by = $2, deleted_at = NOW() WHERE id = $1`, [entry.id, 'race rollback']).catch(() => {});
+    throw Object.assign(new Error('That line was just answered by someone else'), { status: 409 });
+  }
+  return entry;
+};
+
+// ── Statement detail — the mini-ledger ──────────────────────────────────────
+// `dispositionOf` used to live here AND in routes/bank-matching.js, and the two
+// had drifted: this copy missed `match_method = 'created'`, so a created-from-
+// rule row read as `matched` here and `booked` there — an undocumented row
+// counted as invoice-backed on one page and not the other. One definition now,
+// in lib/statementLens.js, fixture-held.
 router.get('/:id(\\d+)', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const st = (await pool.query('SELECT * FROM bank_statements WHERE id = $1 AND label_id = $2', [id, req.labelId])).rows[0];
     if (!st) return res.status(404).json({ success: false, error: 'Statement not found' });
+
+    // Freshness: invoices approved/paid AFTER upload never touched this
+    // statement's open debits — matching used to run exactly once at ingest.
+    // Re-run quietly on open: idempotent (only unmatched rows considered),
+    // throttled per statement (10 min), never concurrent per label.
+    if (st.status === 'ready' && !rematchLabelBusy.has(req.labelId)
+        && Date.now() - (rematchLast.get(st.id) || 0) > 10 * 60 * 1000) {
+      rematchLast.set(st.id, Date.now());
+      rematchLabelBusy.add(req.labelId);
+      try { await runAutoMatchStatement(st, req.labelId, req.user.name).catch(() => {}); }
+      finally { rematchLabelBusy.delete(req.labelId); }
+    }
 
     const { rows: txns } = await pool.query(
       `SELECT t.*, e.payee AS exp_payee, e.category AS exp_category, e.payment_status AS exp_payment_status,
@@ -322,21 +719,32 @@ router.get('/:id(\\d+)', async (req, res) => {
     // View-time suggestions — never stored, so a pattern fix retroactively
     // applies to every statement.
     const { suggestCategory, suggestIncomeType } = require('../lib/statementSuggest');
+    // Reversal pairing — a FAILED/RETURNED payment and its refund cancel out;
+    // the chips steer review away from matching either side to an invoice.
+    const revPairs = pairReversals(txns.map(t => ({ ...t, account: st.account })));
+    const reversedBy = new Map(revPairs.map(p => [p.debit.id, p.credit.id]));
+    const reversalOf = new Map(revPairs.map(p => [p.credit.id, p.debit.id]));
     const rows = txns.map(t => {
       const disposition = dispositionOf(t);
       return {
         ...t, disposition,
+        // Per-row USD estimate — clients must never sum yen as dollars. The
+        // parser's printed settlement (amount_usd) wins; else cached rates.
+        usd: t.amount_usd != null ? Number(t.amount_usd) : usdOf(Number(t.amount), t.currency || 'USD', null),
+        reversed_by: reversedBy.get(t.id) || null,
+        reversal_of: reversalOf.get(t.id) || null,
         suggested_category: disposition === 'open' ? suggestCategory(t.payee_guess, t.description) : null,
         suggested_income_type: disposition === 'open-credit' ? suggestIncomeType(t.payee_guess, t.description) : null,
       };
     });
 
-    // Category totals over debits (matched/booked category, else Unorganized).
+    // Category totals over debits — summed in USD (raw amounts across
+    // currencies are meaningless the moment one foreign row exists).
     const catTotals = {};
     let liveDebits = 0, matchedDebits = 0;
     for (const t of rows) {
       if (t.direction !== 'debit' || t.dismissed) continue;
-      const amt = Number(t.amount);
+      const amt = Number(t.usd) || 0;
       liveDebits += amt;
       const cat = t.exp_category || 'Unorganized';
       catTotals[cat] = (catTotals[cat] || 0) + amt;
@@ -348,25 +756,112 @@ router.get('/:id(\\d+)', async (req, res) => {
       category: (await pool.query('SELECT id, pattern, category, created_by FROM statement_category_rules WHERE label_id = $1 ORDER BY id', [req.labelId])).rows,
     };
 
-    // "Paid on ledger, no bank evidence" — Paid entries in-period not matched by
-    // any bank txn (surfaces payments the bank statement is missing).
+    // Category usage (12-mo, label-scoped, voided excluded) — orders the deck
+    // and the pickers by what this label actually books.
+    const categoryUsage = (await pool.query(
+      `SELECT e.category, COUNT(*)::int AS n FROM expenses e
+        WHERE e.label_id = $1 AND e.category IS NOT NULL AND TRIM(e.category) <> ''
+          AND (e.deleted=false OR e.deleted IS NULL) AND (e.voided=false OR e.voided IS NULL)
+          AND e.created_at > NOW() - INTERVAL '12 months'
+        GROUP BY e.category ORDER BY n DESC LIMIT 40`,
+      [req.labelId]
+    )).rows;
+
+    // "Paid on ledger, no bank evidence" — Paid entries in-period not matched
+    // by any bank txn. ±3-day pad (banks settle after the ledger's paid date,
+    // and a payment on the period's edge is not "missing"); FAMILY totals (a
+    // split parent's own slice understates what the bank saw); method-compat
+    // filter (a PayPal-paid row must not accuse a BofA statement); and
+    // bank_candidates — this statement's open debits that could explain each
+    // entry, the one-click path from "no bank proof" to matched.
     let paidNoEvidence = [];
     if (st.period_start && st.period_end) {
+      const labelRow = (await pool.query('SELECT bank_accounts FROM labels WHERE id = $1', [req.labelId])).rows[0] || {};
+      const acctMethods = R.accountMethods(R.accountsFor(labelRow), st.account);
+      const params = [req.labelId, st.period_start, st.period_end];
+      let methodClause = '';
+      if (Array.isArray(acctMethods) && acctMethods.length) {
+        params.push(acctMethods);
+        methodClause = ` AND (e.payment_method = ANY($${params.length}) OR e.payment_method IS NULL)`;
+      }
       paidNoEvidence = (await pool.query(
-        `SELECT e.id, e.payee, e.category, e.amount, e.currency, e.payment_date, e.payment_method
+        `SELECT e.id, e.payee, e.category, e.currency, e.payment_date, e.payment_method,
+                (e.amount + COALESCE((SELECT SUM(k.amount) FROM expenses k WHERE k.parent_id = e.id AND (k.deleted=false OR k.deleted IS NULL)),0)) AS amount
            FROM expenses e
           WHERE e.label_id = $1 AND e.parent_id IS NULL AND e.payment_status = 'Paid'
             AND e.entry_source IS DISTINCT FROM 'bank_statement'
-            AND e.payment_date BETWEEN $2 AND $3
+            AND e.payment_date BETWEEN $2::date - 3 AND $3::date + 3
             AND (e.deleted=false OR e.deleted IS NULL) AND (e.voided=false OR e.voided IS NULL)
-            AND NOT EXISTS (SELECT 1 FROM bank_transactions bt WHERE bt.matched_expense_id = e.id AND bt.label_id = e.label_id)
-          ORDER BY e.payment_date`,
-        [req.labelId, st.period_start, st.period_end]
+            AND NOT EXISTS (SELECT 1 FROM bank_transactions bt WHERE bt.matched_expense_id = e.id AND bt.label_id = e.label_id)${methodClause}
+          ORDER BY e.payment_date LIMIT 60`,
+        params
       )).rows;
+      // Reverse candidates: open debits on THIS statement whose amount sits
+      // within the fee tolerance of the entry's family total, scored by date.
+      const openDebits = rows.filter(t => t.disposition === 'open');
+      for (const e of paidNoEvidence) {
+        const fam = Number(e.amount) || 0;
+        const tol = Math.max(35, fam * 0.01);
+        e.bank_candidates = openDebits
+          .filter(t => (t.currency || 'USD') === (e.currency || 'USD'))
+          .map(t => ({ t, delta: Number(t.amount) - fam, dd: Math.abs((new Date(String(t.txn_date).slice(0, 10)) - new Date(String(e.payment_date).slice(0, 10))) / 86400000) }))
+          .filter(x => x.delta >= -0.01 && x.delta <= tol && x.dd <= 7)
+          .sort((a, b) => a.dd - b.dd || a.delta - b.delta)
+          .slice(0, 3)
+          .map(x => ({ txn_id: x.t.id, txn_date: x.t.txn_date, amount: x.t.amount, payee_guess: x.t.payee_guess, description: x.t.description }));
+      }
     }
 
-    res.json({ success: true, data: { statement: st, transactions: rows, catTotals, coverage: { matched: matchedDebits, live: liveDebits }, rules, paidNoEvidence } });
+    res.json({ success: true, data: { statement: st, transactions: rows, catTotals, coverage: { matched: matchedDebits, live: liveDebits }, rules, paidNoEvidence, categoryUsage } });
   } catch (e) { console.error('Statement detail error:', e); res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// ── The statement lens — one month, and whether it adds up ──────────────────
+//
+// Deliberately NOT `GET /:id`. That endpoint re-runs auto-matching on open,
+// computes paid-no-evidence with per-row bank candidates, view-time category
+// suggestions and 12-month category usage — everything the review deck needs
+// and none of what a tie-out needs. The Bank Ledger asks a read-only question
+// about a month it is already showing, and asking it should not have a side
+// effect or cost a 700KB payload.
+//
+// Returns the summary AND a slim per-line list carrying the server's own
+// `disposition`, so the page's extra-lines list is a set difference over
+// decided facts rather than a client-side copy of the disposition rule.
+router.get('/:id(\\d+)/lens', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const st = (await pool.query('SELECT * FROM bank_statements WHERE id = $1 AND label_id = $2', [id, req.labelId])).rows[0];
+    if (!st) return res.status(404).json({ success: false, error: 'Statement not found' });
+
+    // `exp_payment_status` is what separates `matched` from `toconfirm`, and
+    // `match_method` is what separates a creator payment from an invoice — both
+    // have to be on the row before dispositionOf sees it.
+    const { rows: txns } = await pool.query(
+      `SELECT t.id, t.txn_date, t.description, t.payee_guess, t.reference, t.direction,
+              t.amount, t.amount_usd, t.currency, t.dismissed, t.dismissed_reason,
+              t.matched_expense_id, t.matched_income_id, t.match_method, t.booked, t.no_invoice,
+              e.payment_status AS exp_payment_status, e.payee AS exp_payee,
+              i.source AS income_type, ia.name AS income_artist
+         FROM bank_transactions t
+         LEFT JOIN expenses e ON e.id = t.matched_expense_id AND e.label_id = t.label_id
+         LEFT JOIN artist_income i ON i.id = t.matched_income_id AND i.label_id = t.label_id
+         LEFT JOIN artists ia ON ia.id = i.artist_id AND ia.label_id = i.label_id
+        WHERE t.statement_id = $1 AND t.label_id = $2
+        ORDER BY t.txn_date ASC, t.id ASC`,
+      [id, req.labelId]
+    );
+
+    // Per-row USD before the summary sums anything — clients must never sum yen
+    // as dollars, and lib/usd.js converts at the row.
+    const rows = txns.map((t) => ({
+      ...t,
+      usd: t.amount_usd != null ? Number(t.amount_usd) : usdOf(Number(t.amount), t.currency || 'USD', null),
+      disposition: lens.dispositionOf(t),
+    }));
+
+    res.json({ success: true, data: { statement: st, transactions: rows, lens: lens.summariseStatement(st, rows) } });
+  } catch (e) { console.error('Statement lens error:', e); res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 
 // ── Statement balances (backfill for statements uploaded before capture) ────
@@ -378,23 +873,16 @@ router.post('/:id/reparse-balance', async (req, res) => {
     const st = (await pool.query('SELECT * FROM bank_statements WHERE id = $1 AND label_id = $2', [id, req.labelId])).rows[0];
     if (!st) return res.status(404).json({ success: false, error: 'Statement not found' });
     if (!st.r2_key) return res.status(400).json({ success: false, error: 'No stored file for this statement — set the balance manually' });
-    if (!claude.isEnabled()) return res.status(400).json({ success: false, error: 'AI is not configured — set the balance manually' });
-    const buf = await loadFileBuffer(st.r2_key, null);
-    if (!buf) return res.status(400).json({ success: false, error: 'Stored file could not be loaded — set the balance manually' });
-    const isPdf = /\.pdf$/i.test(st.filename || '') || buf.slice(0, 4).toString() === '%PDF';
-    const block = claude.fileBlock(buf, isPdf ? 'application/pdf' : 'text/csv');
-    if (!block) return res.status(400).json({ success: false, error: 'Unsupported stored file type' });
-    const r = await claude.callClaude({
-      content: [block, {
-        type: 'text',
-        text: 'Return exactly two lines with the balances this bank statement prints (empty after the pipe when not printed):\nBEGINNING_BALANCE|<number>\nENDING_BALANCE|<number>\nNo other output.',
-      }],
-      maxTokens: 100,
-    });
-    if (!r.ok) return res.status(400).json({ success: false, error: r.error || 'Balance parse failed' });
-    const bal = R.extractBalanceLines(r.text || (typeof r.data === 'string' ? r.data : ''));
-    if (bal.ending_balance == null && bal.beginning_balance == null) {
-      return res.status(400).json({ success: false, error: 'The document does not print a balance — set it manually if you know it' });
+    // Deterministic first (CSV balance column / balance-verified rules parse);
+    // a focused AI pass only when the rules can't read it.
+    const bal = await readBalancesFromStored(st).catch(() => null);
+    if (!bal) {
+      return res.status(400).json({
+        success: false,
+        error: claude.isEnabled()
+          ? 'The document does not print a readable balance — set it manually if you know it'
+          : 'The balance could not be read deterministically and AI is not configured — set it manually',
+      });
     }
     const upd = (await pool.query(
       `UPDATE bank_statements SET ending_balance = COALESCE($3, ending_balance), beginning_balance = COALESCE($4, beginning_balance)
@@ -435,10 +923,598 @@ router.patch('/:id/balance', async (req, res) => {
 
 router.delete('/:id(\\d+)', async (req, res) => {
   try {
-    // Deleting a statement drops its txns (CASCADE) but leaves any booked/
-    // matched ledger entries intact — the ledger is the source of truth.
-    const { rowCount } = await pool.query('DELETE FROM bank_statements WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId]);
-    if (!rowCount) return res.status(404).json({ success: false, error: 'Statement not found' });
+    const id = parseInt(req.params.id, 10);
+    // The txns cascade away with the statement — soft-delete the ledger
+    // entries that were CREATED from them first, or re-uploading the
+    // statement and re-booking would record every one of them twice.
+    // MATCHED (non-booked) entries are real invoices and stay untouched.
+    const { rows: createdRows } = await pool.query(
+      `SELECT DISTINCT matched_expense_id AS id FROM bank_transactions
+        WHERE statement_id = $1 AND label_id = $2 AND booked = TRUE AND matched_expense_id IS NOT NULL`,
+      [id, req.labelId]);
+    const createdIds = createdRows.map((r) => r.id);
+    const { rows: [st] } = await pool.query('DELETE FROM bank_statements WHERE id = $1 AND label_id = $2 RETURNING *', [id, req.labelId]);
+    if (!st) return res.status(404).json({ success: false, error: 'Statement not found' });
+    let entriesRemoved = 0;
+    if (createdIds.length) {
+      // entry_source guarded so a real invoice can never be swept, even if a
+      // booked flag ever points at one.
+      const { rowCount } = await pool.query(
+        `UPDATE expenses SET deleted = true, deleted_by = $1, deleted_at = NOW()
+          WHERE label_id = $3 AND (id = ANY($2) OR parent_id = ANY($2)) AND entry_source = 'bank_statement'
+            AND (deleted = false OR deleted IS NULL)`,
+        [req.user.name, createdIds, req.labelId]);
+      entriesRemoved = rowCount;
+    }
+    await logActivity(req, 'Deleted bank statement',
+      `${st.account} "${st.filename}"${entriesRemoved ? ` (+${entriesRemoved} booked entr${entriesRemoved === 1 ? 'y' : 'ies'} it created — soft-deleted, restorable from the archive)` : ''}`);
+    res.json({ success: true, data: { entries_removed: entriesRemoved } });
+  } catch (e) { console.error('Statement delete error:', e); res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// ── Original file — the extras/misfiled workflows and ordinary verification
+// depend on being able to open the uploaded statement. Buffer through the
+// server (label-gated) and let safeFiles decide inline vs attachment.
+router.get('/:id(\\d+)/file', async (req, res) => {
+  try {
+    const st = (await pool.query('SELECT filename, r2_key FROM bank_statements WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId])).rows[0];
+    if (!st) return res.status(404).json({ success: false, error: 'Statement not found' });
+    if (!st.r2_key) return res.status(404).json({ success: false, error: 'No file stored — this statement was uploaded before file retention worked' });
+    const buf = await loadFileBuffer(st.r2_key, null).catch(() => null);
+    if (!buf) return res.status(404).json({ success: false, error: 'The stored file could not be read (file storage may not be configured)' });
+    const isPdf = buf.slice(0, 5).toString() === '%PDF-';
+    sendFileSafely(res, { mime: isPdf ? 'application/pdf' : 'text/csv', filename: st.filename || 'statement', buffer: buf });
+  } catch (e) { console.error('Statement file error:', e); res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// ── Re-parse: run the parser over the ORIGINAL file again, add what the
+// first pass missed. STRICTLY ADDITIVE — never deletes, never updates, never
+// re-inserts a row it already has. Rows in the database but absent from the
+// re-parse are reported, never removed (a parser disagreement is a question
+// for a human, not a mandate to delete reconciled history).
+async function applyReparse(st, labelId, parsedRows) {
+  const { rows: existing } = await pool.query(
+    // Every KEY_COLUMNS member MUST be selected — omitting `currency` once
+    // made every non-USD row read as USD and a re-parse would have inserted a
+    // duplicate for each (lib/statementAudit.js).
+    'SELECT txn_date, amount, direction, currency, reference, description FROM bank_transactions WHERE statement_id = $1 AND label_id = $2',
+    [st.id, labelId]);
+  const { missing, onlyInDb } = audit.diffReparseRows(existing, parsedRows);
+
+  const ctx = await buildIngestCtx(labelId, st.account);
+  let inserted = 0;
+  for (const raw of missing) {
+    if ((await ingestOne(ctx, st.id, raw)) === 'inserted') inserted++;
+  }
+  // MATCH the rows just created — upload does this; a re-parse that skipped
+  // it is how a backlog of matchable rows gets booked by hand instead.
+  let autoMatched = 0;
+  if (inserted > 0) {
+    autoMatched = (await runAutoMatchStatement(st, labelId, 'reparse').catch(() => ({ matched: 0 }))).matched || 0;
+  }
+  const { rows: [{ n }] } = await pool.query(
+    'SELECT COUNT(*)::int AS n FROM bank_transactions WHERE statement_id = $1 AND label_id = $2', [st.id, labelId]);
+  await pool.query('UPDATE bank_statements SET txn_count = $1 WHERE id = $2 AND label_id = $3', [n, st.id, labelId]);
+
+  return {
+    parsed: parsedRows.length,
+    added: inserted,
+    already_present: parsedRows.length - missing.length,
+    duplicate_of_other_statement: ctx.summary.dup_skipped,
+    only_in_database: onlyInDb.length,
+    txn_count: n,
+    auto_matched: autoMatched + ctx.summary.auto_matched,
+    rule_booked: ctx.summary.rule_booked,
+  };
+}
+
+// Background PDF re-parse. Writes its outcome into import_summary.reparse and
+// ALWAYS returns the statement to 'ready' — a failed re-parse must not leave
+// a reconciled month stuck in 'parsing' or flipped to 'error'.
+async function reparseInBackground(st, labelId, buffer) {
+  let summary;
+  try {
+    let parsed = null;
+    const det = tryDeterministicPdf(buffer);
+    if (det) parsed = { rows: det.rows, method: 'rules', balances: det.balances };
+    else if (claude.isEnabled()) {
+      const block = claude.fileBlock(buffer, 'application/pdf');
+      const r = block && await claude.streamText({ content: [block, { type: 'text', text: PIPE_INSTRUCTION }], maxTokens: 32000 });
+      if (!r || !r.ok) throw new Error((r && r.error) || 'AI parse failed');
+      if (r.stop_reason === 'max_tokens') throw new Error('Statement too long to parse in one pass — upload the CSV export instead.');
+      parsed = { rows: R.parsePipeLines(r.text), method: 'ai', balances: R.extractBalanceLines(r.text) };
+    } else {
+      throw new Error('The PDF did not parse deterministically and AI is not configured.');
+    }
+    if (!parsed.rows.length) throw new Error('The re-parse produced no transactions.');
+    summary = { ...(await applyReparse(st, labelId, parsed.rows)), method: parsed.method, at: new Date().toISOString() };
+    // Persist the balances a RECONCILING rules parse read — already verified
+    // against the statement's own printed figures. An AI-path re-parse must
+    // never overwrite a known-good balance with a guess.
+    if (parsed.method === 'rules'
+        && Number.isFinite(Number(parsed.balances.beginning_balance))
+        && Number.isFinite(Number(parsed.balances.ending_balance))) {
+      await pool.query(
+        `UPDATE bank_statements SET beginning_balance = $1, ending_balance = $2 WHERE id = $3 AND label_id = $4`,
+        [parsed.balances.beginning_balance, parsed.balances.ending_balance, st.id, labelId]);
+      summary.balances_written = true;
+    }
+    await logBg(labelId, 'Reparsed bank statement', `#${st.id} "${st.filename}" (${parsed.method === 'rules' ? 'rule-parsed, balance-verified' : 'AI-parsed'}): ${summary.added} added, ${summary.already_present} already present, ${summary.only_in_database} only in the app`);
+  } catch (err) {
+    summary = { error: err.message, at: new Date().toISOString() };
+  }
+  await pool.query(
+    `UPDATE bank_statements
+        SET status = 'ready',
+            import_summary = COALESCE(import_summary, '{}'::jsonb) || jsonb_build_object('reparse', $1::jsonb)
+      WHERE id = $2 AND label_id = $3`,
+    [JSON.stringify(summary), st.id, labelId]).catch(() => {});
+}
+
+router.post('/:id(\\d+)/reparse', async (req, res) => {
+  try {
+    const st = (await pool.query('SELECT * FROM bank_statements WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId])).rows[0];
+    if (!st) return res.status(404).json({ success: false, error: 'Statement not found' });
+    if (st.status === 'parsing') return res.status(400).json({ success: false, error: 'Statement is still parsing' });
+    if (!st.r2_key) return res.status(400).json({ success: false, error: 'The original file was never stored for this statement — re-upload it instead.' });
+    const buffer = await loadFileBuffer(st.r2_key, null).catch(() => null);
+    if (!buffer || !buffer.length) return res.status(400).json({ success: false, error: 'The stored file could not be read — re-upload it instead.' });
+
+    const isPdf = buffer.slice(0, 5).toString() === '%PDF-';
+    if (isPdf) {
+      // A PDF re-parse can be an AI call over a whole statement — minutes,
+      // not seconds. Return immediately and finish in the background; the
+      // client polls the list and reads import_summary.reparse.
+      await pool.query(`UPDATE bank_statements SET status = 'parsing' WHERE id = $1 AND label_id = $2`, [st.id, req.labelId]);
+      reparseInBackground(st, req.labelId, buffer).catch(() => {});
+      return res.json({ success: true, data: { started: true, mode: 'background' } });
+    }
+    // CSV — deterministic local parse, synchronous.
+    const parsedRows = R.parseCsv(buffer.toString('utf8'), st.account);
+    if (!parsedRows.length) return res.status(400).json({ success: false, error: 'The re-parse produced no transactions.' });
+    const out = await applyReparse(st, req.labelId, parsedRows);
+    await logActivity(req, 'Reparsed bank statement', `#${st.id} "${st.filename}" (CSV): ${out.added} added, ${out.already_present} already present`);
+    res.json({ success: true, data: { ...out, method: 'csv', mode: 'sync' } });
+  } catch (e) { console.error('Reparse error:', e); res.status(500).json({ success: false, error: 'Re-parse failed' }); }
+});
+
+// ── Extras audit — rows the app holds that the statement itself does not
+// support. Only possible because a RECONCILED deterministic parse is ground
+// truth (opening + net = closing, section totals tie). No ground truth, no
+// opinion: an unreconciled parse reports nothing rather than guessing.
+async function auditStatementExtrasRaw(st, labelId) {
+  const base = {
+    id: st.id, account: st.account, filename: st.filename,
+    period_start: st.period_start, period_end: st.period_end,
+    held: null, expected: null, extraCount: 0, extraValue: 0, missingCount: 0,
+    reconciles: false, reason: null, groups: [], misfiled: { repairs: [], unclear: [] },
+  };
+  const { rows: dbRows } = await pool.query(
+    // currency is part of keyOf; match_method is load-bearing for the
+    // misfiled repair (it is how that path knows a booking was INVENTED and
+    // therefore safe to remove).
+    `SELECT id, txn_date, amount, direction, currency, description, payee_guess, created_at,
+            matched_expense_id, matched_income_id, match_method, booked, dismissed
+       FROM bank_transactions WHERE statement_id = $1 AND label_id = $2`, [st.id, labelId]);
+  base.held = dbRows.length;
+
+  if (!st.r2_key) { base.reason = 'The original file was never stored, so there is nothing to check against.'; return base; }
+  let buffer;
+  try {
+    buffer = await loadFileBuffer(st.r2_key, null);
+  } catch (err) { base.reason = `Could not read the stored file: ${err.message}`; return base; }
+  if (!buffer) { base.reason = 'The stored file could not be read (file storage may not be configured).'; return base; }
+  if (buffer.slice(0, 5).toString() !== '%PDF-') {
+    base.reason = 'CSV statement — the balance proof only applies to the PDF layout.'; return base;
+  }
+  let out;
+  try { out = parseStatementText(buffer); } catch (err) { base.reason = `Parse failed: ${err.message}`; return base; }
+  if (!out) { base.reason = 'The stored PDF did not parse as a recognised statement layout.'; return base; }
+  if (!out.ok) { base.reason = `The parse did not reconcile (${out.verdict.reason}), so it cannot be used as ground truth.`; return base; }
+
+  // The parser leaves payee_guess empty — fill it the SAME way ingest does.
+  // The misfiled repair compares payees; against a blank every repair would
+  // look like a change of vendor.
+  const stmtRows = out.rows.map((r) => ({ ...r, payee_guess: r.payee_guess || R.extractPayee(r.description) }));
+
+  const found = audit.findExtras(stmtRows, dbRows);
+  const misfiled = audit.findMisfiled(dbRows, stmtRows);
+
+  // Surplus and shortfall appearing TOGETHER means the rows were RELABELLED,
+  // not duplicated — the same transaction filed under a different key on each
+  // side (the AI flattening currencies to USD produced exactly this). Only
+  // the excess beyond the overlap is surplus; acting on the overlap would
+  // delete real transactions.
+  const mismatched = Math.min(found.extraCount, found.missingCount);
+  return {
+    ...base,
+    expected: stmtRows.length,
+    reconciles: true,
+    extraCount: found.extraCount,
+    extraValue: found.extraValue,
+    missingCount: found.missingCount,
+    mismatched,
+    surplus: found.extraCount - mismatched,
+    groups: found.groups,
+    misfiled,
+  };
+}
+
+// API shape: ids and labels only.
+async function auditStatementExtras(st, labelId) {
+  const raw = await auditStatementExtrasRaw(st, labelId);
+  return {
+    ...raw,
+    groups: (raw.groups || []).map((g) => ({
+      txn_date: g.txn_date, amount: g.amount, direction: g.direction,
+      expected: g.expected, held: g.held, extra: g.extra,
+      description: (g.remove[0]?.description || '').slice(0, 120),
+      payee_guess: g.remove[0]?.payee_guess || '',
+      remove_ids: g.remove.map((r) => r.id),
+      matched_expense_ids: g.remove.map((r) => r.matched_expense_id).filter(Boolean),
+      booked_income_ids: g.remove.map((r) => r.matched_income_id).filter(Boolean),
+    })),
+    misfiled_count: (raw.misfiled?.repairs || []).length,
+    misfiled_value: Math.round((raw.misfiled?.repairs || []).reduce((t, r) => t + Number(r.row.amount || 0), 0) * 100) / 100,
+    misfiled_unclear: (raw.misfiled?.unclear || []).length,
+  };
+}
+
+// Only ONE whole-portfolio audit at a time, process-wide: each one downloads
+// and re-parses every stored PDF — CPU-bound work inside a request handler.
+// Rejected rather than queued, because a queued audit just moves the pile-up.
+const withPortfolioAudit = async (res, run) => {
+  if (portfolioAuditInFlight) {
+    return res.status(429).json({ success: false, error: 'An audit of every statement is already running. It re-parses all stored PDFs, so only one runs at a time — try again when it finishes.' });
+  }
+  portfolioAuditInFlight = true;
+  try { return await run(); } finally { portfolioAuditInFlight = false; }
+};
+
+// GET /extras — audit every ready statement. Read-only.
+router.get('/extras', async (req, res) => {
+  try {
+    return await withPortfolioAudit(res, async () => {
+      const { rows: stmts } = await pool.query(
+        `SELECT * FROM bank_statements WHERE label_id = $1 AND status = 'ready' ORDER BY period_start DESC NULLS LAST, id DESC`,
+        [req.labelId]);
+      const results = [];
+      for (const st of stmts) results.push(await auditStatementExtras(st, req.labelId)); // sequential: keeps the pool free
+      res.json({ success: true, data: {
+        statements: results,
+        total_extra: results.reduce((s, r) => s + r.extraCount, 0),
+        total_value: Math.round(results.reduce((s, r) => s + r.extraValue, 0) * 100) / 100,
+        checked: results.filter((r) => r.reconciles).length,
+        unverifiable: results.filter((r) => !r.reconciles).length,
+        total_misfiled: results.reduce((s, r) => s + (r.misfiled_count || 0), 0),
+        misfiled_value: Math.round(results.reduce((s, r) => s + (r.misfiled_value || 0), 0) * 100) / 100,
+      } });
+    });
+  } catch (e) { console.error('Extras audit error:', e); res.status(500).json({ success: false, error: 'Extras audit failed' }); }
+});
+
+// GET /:id/extras — one statement, with group detail. Read-only.
+router.get('/:id(\\d+)/extras', async (req, res) => {
+  try {
+    const st = (await pool.query('SELECT * FROM bank_statements WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId])).rows[0];
+    if (!st) return res.status(404).json({ success: false, error: 'Statement not found' });
+    res.json({ success: true, data: await auditStatementExtras(st, req.labelId) });
+  } catch (e) { console.error('Extras error:', e); res.status(500).json({ success: false, error: 'Extras audit failed' }); }
+});
+
+// POST /:id/extras/remove — delete the surplus copies. Server-authoritative:
+// the stored PDF is re-parsed at the moment of the call; the client's opinion
+// is never consulted.
+router.post('/:id(\\d+)/extras/remove', async (req, res) => {
+  try {
+    const st = (await pool.query('SELECT * FROM bank_statements WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId])).rows[0];
+    if (!st) return res.status(404).json({ success: false, error: 'Statement not found' });
+
+    const audit0 = await auditStatementExtras(st, req.labelId);
+    if (!audit0.reconciles) {
+      return res.status(400).json({ success: false, error: `Refusing to remove anything: ${audit0.reason}` });
+    }
+    // A shortfall alongside the surplus means the two sides disagree about how
+    // rows are LABELLED, not how many exist — deleting on that reading once
+    // nearly destroyed 206 real transactions. Re-parse to correct the labels.
+    if (audit0.missingCount > 0) {
+      return res.status(400).json({ success: false,
+        error: `Refusing to remove anything: this statement is also MISSING ${audit0.missingCount} row${audit0.missingCount === 1 ? '' : 's'} `
+          + `that the statement charges, so the ${audit0.extraCount} apparent extras are rows recorded under different details `
+          + `(commonly the wrong currency), not duplicates. Re-parse to correct them instead of deleting.` });
+    }
+    if (!audit0.extraCount) return res.json({ success: true, data: { removed: 0, ...audit0 } });
+
+    // Booked income is a real record elsewhere (an artist_income row) —
+    // deleting its bank row would strand that. Handed back to unbook first.
+    const blockedIds = audit0.groups.filter((g) => g.booked_income_ids.length).flatMap((g) => g.remove_ids);
+    const removableIds = audit0.groups.flatMap((g) => g.remove_ids).filter((id) => !blockedIds.includes(id));
+    const affectedExpenses = [...new Set(audit0.groups.flatMap((g) => g.matched_expense_ids))];
+
+    let removed = 0;
+    if (removableIds.length) {
+      const del = await pool.query(
+        'DELETE FROM bank_transactions WHERE statement_id = $1 AND label_id = $2 AND id = ANY($3::int[])',
+        [st.id, req.labelId, removableIds]);
+      removed = del.rowCount;
+    }
+    const { rows: [{ n }] } = await pool.query(
+      'SELECT COUNT(*)::int AS n FROM bank_transactions WHERE statement_id = $1 AND label_id = $2', [st.id, req.labelId]);
+    await pool.query('UPDATE bank_statements SET txn_count = $1 WHERE id = $2 AND label_id = $3', [n, st.id, req.labelId]);
+
+    await logActivity(req, 'Removed statement extras',
+      `${st.account} "${st.filename}": removed ${removed} extra transaction${removed === 1 ? '' : 's'} worth ${audit0.extraValue} `
+      + `the statement's own balances do not support (proves ${audit0.expected}; app held ${audit0.held}). `
+      + `${blockedIds.length} left in place (booked income). `
+      + `${affectedExpenses.length} ledger entr${affectedExpenses.length === 1 ? 'y' : 'ies'} lost a bank match: ${affectedExpenses.slice(0, 40).join(', ')}${affectedExpenses.length > 40 ? ' …' : ''}`);
+
+    res.json({ success: true, data: {
+      removed, value: audit0.extraValue, expected: audit0.expected, held_before: audit0.held,
+      txn_count: n, blocked_booked_income: blockedIds.length, affected_expense_ids: affectedExpenses,
+    } });
+  } catch (e) { console.error('Extras remove error:', e); res.status(500).json({ success: false, error: 'Extras removal failed' }); }
+});
+
+// ── Misfiled rows — a row holding the WRONG PAYMENT'S details. Invisible to
+// the count-based extras audit by construction: the surplus and the shortfall
+// cancel exactly, the month reconciles to the cent, and the money is filed
+// against a company that was never paid it.
+const misfiledPayee = (r) => String(r.payee_guess || '').trim() || String(r.description || '').slice(0, 40);
+const payeeKey = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+router.get('/:id(\\d+)/misfiled', async (req, res) => {
+  try {
+    const st = (await pool.query('SELECT * FROM bank_statements WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId])).rows[0];
+    if (!st) return res.status(404).json({ success: false, error: 'Statement not found' });
+    const a = await auditStatementExtrasRaw(st, req.labelId);
+    res.json({ success: true, data: {
+      id: st.id, account: st.account, filename: st.filename,
+      reconciles: a.reconciles, reason: a.reason,
+      repairs: (a.misfiled?.repairs || []).map((r) => ({
+        txn_id: r.row.id, txn_date: r.row.txn_date, amount: r.row.amount, direction: r.row.direction,
+        duplicate_of_reference: r.duplicate_of_reference,
+        currently_reads: String(r.row.description || '').slice(0, 140),
+        currently_payee: misfiledPayee(r.row),
+        should_read: String(r.should_be.description || '').slice(0, 140),
+        should_payee: r.should_be.payee_guess || '',
+        matched_expense_id: r.row.matched_expense_id,
+        matched_income_id: r.row.matched_income_id,
+        match_method: r.row.match_method,
+        // A repair that changes WHO was paid invalidates whatever was matched
+        // against the old name; one that only corrects a confirmation number
+        // does not.
+        payee_changes: payeeKey(misfiledPayee(r.row)) !== payeeKey(r.should_be.payee_guess),
+      })),
+      unclear: (a.misfiled?.unclear || []).map((u) => ({
+        txn_id: u.row.id, txn_date: u.row.txn_date, amount: u.row.amount,
+        reference: u.reference, reason: u.reason,
+        reads: String(u.row.description || '').slice(0, 140),
+      })),
+    } });
+  } catch (e) { console.error('Misfiled error:', e); res.status(500).json({ success: false, error: 'Misfiled audit failed' }); }
+});
+
+// POST /:id/misfiled/repair — rewrite each provably-misfiled row to the
+// payment the statement actually charges. The row is correct in date, amount
+// and direction — only its identity is wrong — so this is an UPDATE, never
+// delete-and-insert: the row keeps its id. Where the payee changes the match
+// is DROPPED (silently re-pointing a real invoice at a different company's
+// payment is the exact false-record shape this surface exists to prevent);
+// a BOOKED row's invented entry is soft-deleted, guarded on entry_source.
+router.post('/:id(\\d+)/misfiled/repair', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const st = (await pool.query('SELECT * FROM bank_statements WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId])).rows[0];
+    if (!st) { client.release(); return res.status(404).json({ success: false, error: 'Statement not found' }); }
+    const a = await auditStatementExtrasRaw(st, req.labelId);
+    if (!a.reconciles) { client.release(); return res.status(400).json({ success: false, error: `Refusing to change anything: ${a.reason}` }); }
+    const repairs = a.misfiled?.repairs || [];
+    if (!repairs.length) { client.release(); return res.json({ success: true, data: { repaired: 0, unmatched: 0, unbooked: 0, rows: [], unclear: (a.misfiled?.unclear || []).length } }); }
+
+    // Honour a caller's narrowing, never a caller's list: ids SELECT from what
+    // the statement already proved — a client can repair one row without being
+    // able to nominate a row the statement does not support.
+    const only = Array.isArray(req.body?.txn_ids) ? req.body.txn_ids.map(Number).filter(Boolean) : null;
+    const todo = only ? repairs.filter((r) => only.includes(r.row.id)) : repairs;
+
+    const done = [];
+    let unmatched = 0;
+    let unbooked = 0;
+    await client.query('BEGIN');
+    for (const r of todo) {
+      const oldPayee = misfiledPayee(r.row);
+      const newPayee = String(r.should_be.payee_guess || '').trim();
+      const payeeChanges = payeeKey(oldPayee) !== payeeKey(newPayee);
+
+      if (payeeChanges && (r.row.matched_expense_id || r.row.matched_income_id)) {
+        if (r.row.booked && r.row.matched_expense_id) {
+          const del = await client.query(
+            `UPDATE expenses SET deleted = true, deleted_by = $2, deleted_at = NOW()
+              WHERE label_id = $3 AND (id = $1 OR parent_id = $1) AND entry_source = 'bank_statement'
+                AND (deleted = false OR deleted IS NULL)`,
+            [r.row.matched_expense_id, req.user.name, req.labelId]);
+          unbooked += del.rowCount ? 1 : 0;
+        }
+        await client.query(`DELETE FROM bank_txn_invoice_links WHERE txn_id = $1 AND label_id = $2`, [r.row.id, req.labelId]).catch(() => {});
+        await client.query(
+          `UPDATE bank_transactions SET matched_expense_id = NULL, matched_income_id = NULL,
+                  match_method = NULL, match_score = NULL, matched_by = NULL, matched_at = NULL, booked = FALSE
+            WHERE id = $1 AND label_id = $2`, [r.row.id, req.labelId]);
+        unmatched++;
+      }
+      await client.query(
+        `UPDATE bank_transactions SET description = $1, payee_guess = $2, reference = $3
+          WHERE id = $4 AND label_id = $5`,
+        [r.should_be.description, newPayee.slice(0, 200) || null,
+          audit.refFromDescription(r.should_be.description), r.row.id, req.labelId]);
+      done.push({ txn_id: r.row.id, from: oldPayee, to: newPayee, payee_changed: payeeChanges, amount: r.row.amount, txn_date: r.row.txn_date });
+    }
+    await client.query('COMMIT');
+
+    await logActivity(req, 'Repaired misfiled statement rows',
+      `${st.account} "${st.filename}": repaired ${done.length} row${done.length === 1 ? '' : 's'} holding another payment's details — `
+      + done.map((d) => `#${d.txn_id} ${d.from} → ${d.to}`).join('; ')
+      + `. ${unmatched} lost a match (payee changed); ${unbooked} invented booking${unbooked === 1 ? '' : 's'} removed.`);
+    res.json({ success: true, data: { repaired: done.length, unmatched, unbooked, rows: done, unclear: (a.misfiled?.unclear || []).length } });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Misfiled repair error:', e);
+    res.status(500).json({ success: false, error: 'Misfiled repair failed' });
+  } finally { client.release(); }
+});
+
+// ── Re-match lifecycle ───────────────────────────────────────────────────────
+// POST /rematch-all — run the matcher again over what is still unmatched,
+// WITHOUT clearing anything. Additive by construction: only open debits are
+// even considered. ?statement_id= scopes it.
+router.post('/rematch-all', async (req, res) => {
+  try {
+    const raw = req.query.statement_id ?? req.body?.statement_id;
+    const statementId = raw === undefined || raw === null || raw === '' || raw === 'all' ? null : parseInt(raw, 10);
+    if (statementId !== null && !Number.isFinite(statementId)) {
+      return res.status(400).json({ success: false, error: 'statement_id must be a number, or omitted for every statement' });
+    }
+    const out = await runMatcherPass(req.labelId, { userName: req.user.name, statementId });
+    if (!out.ran) {
+      // 409, never a zero — "0 matched" must not be the answer both when
+      // there was nothing to find and when the run never happened.
+      return res.status(409).json({ success: false, error: 'A matcher pass is already running — nothing was changed; try again in a moment.' });
+    }
+    if (statementId !== null && !out.statements) {
+      return res.status(404).json({ success: false, error: 'Statement not found, or not ready' });
+    }
+    await logActivity(req, 'Statement matcher re-run',
+      `${out.matched} of ${out.scanned} unmatched debits matched across ${out.statements} statement(s)${statementId ? ` (statement #${statementId})` : ''}. Additive — no existing match cleared.`);
+    res.json({ success: true, data: out });
+  } catch (e) { console.error('rematch-all error:', e); res.status(500).json({ success: false, error: 'Rematch failed' }); }
+});
+
+// POST /reset-matching — clear every AUTO and MANUAL match, then re-run with
+// the current evidence (aliases, learned payees, rejections). Never cleared,
+// because clearing them destroys or strands real records: booked rows
+// ('created'/'booked'/'rule' — the entry was CREATED from the txn), anything
+// carrying matched_income_id, and dismissals. Some manual matches exist
+// precisely because the matcher can't derive them; the response reports how
+// many stayed open rather than letting the loss pass silently.
+router.post('/reset-matching', async (req, res) => {
+  try {
+    const { rows: target } = await pool.query(
+      `SELECT id, match_method FROM bank_transactions
+        WHERE label_id = $1 AND (match_method LIKE 'auto%' OR match_method = 'manual')
+          AND booked = FALSE AND matched_income_id IS NULL AND matched_expense_id IS NOT NULL`,
+      [req.labelId]);
+    const ids = target.map((r) => r.id);
+    const manualIds = target.filter((r) => r.match_method === 'manual').map((r) => r.id);
+
+    let cleared = 0;
+    if (ids.length) {
+      const { rowCount } = await pool.query(
+        `UPDATE bank_transactions
+            SET matched_expense_id = NULL, match_method = NULL, match_score = NULL,
+                matched_by = NULL, matched_at = NULL
+          WHERE label_id = $2 AND id = ANY($1::int[])`, [ids, req.labelId]);
+      cleared = rowCount;
+    }
+    const out = await runMatcherPass(req.labelId, { userName: req.user.name });
+    const stillOpen = async (list) => {
+      if (!list.length) return 0;
+      const { rows: [c] } = await pool.query(
+        'SELECT COUNT(*)::int AS n FROM bank_transactions WHERE label_id = $2 AND id = ANY($1::int[]) AND matched_expense_id IS NULL',
+        [list, req.labelId]);
+      return c.n;
+    };
+    const unresolved = await stillOpen(ids);
+    const manualUnresolved = await stillOpen(manualIds);
+    await logActivity(req, 'Statement matching reset',
+      `${cleared} matches cleared (${manualIds.length} manual), ${out.matched} re-matched with current evidence; `
+      + `${unresolved} left open, ${manualUnresolved} of which were previously matched by hand. Booked entries, booked income and dismissals untouched.`);
+    res.json({ success: true, data: {
+      cleared, manual_cleared: manualIds.length, rematched: out.matched,
+      still_open: unresolved, manual_not_recovered: manualUnresolved,
+    } });
+  } catch (e) { console.error('reset-matching error:', e); res.status(500).json({ success: false, error: 'Reset failed' }); }
+});
+
+// ── Reminders — monthly-cadence nudges ("upload the statement and match it"),
+// delivered through the notification bell when due. Per user, label-scoped.
+const REMINDER_CADENCES = ['monthly', 'weekly', 'once'];
+function reminderNextDue(cadence, dayOfMonth, from) {
+  const base = from ? new Date(from) : new Date();
+  if (cadence === 'weekly') {
+    const d = new Date(base); d.setDate(d.getDate() + 7);
+    return d.toISOString().slice(0, 10);
+  }
+  const day = Math.min(Math.max(parseInt(dayOfMonth, 10) || 1, 1), 31);
+  let y = base.getFullYear(); let m = base.getMonth() + 1;
+  if (m > 11) { m = 0; y++; }
+  const clamped = Math.min(day, new Date(y, m + 1, 0).getDate());
+  return `${y}-${String(m + 1).padStart(2, '0')}-${String(clamped).padStart(2, '0')}`;
+}
+function reminderFirstDue(cadence, dayOfMonth) {
+  const now = new Date();
+  if (cadence === 'weekly') return now.toISOString().slice(0, 10);
+  const day = Math.min(Math.max(parseInt(dayOfMonth, 10) || 1, 1), 31);
+  const y = now.getFullYear(); const m = now.getMonth();
+  const clamped = Math.min(day, new Date(y, m + 1, 0).getDate());
+  if (clamped >= now.getDate()) return `${y}-${String(m + 1).padStart(2, '0')}-${String(clamped).padStart(2, '0')}`;
+  return reminderNextDue(cadence, day, new Date(y, m, clamped));
+}
+router.get('/reminders', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM statement_reminders WHERE label_id = $1 AND user_id = $2 ORDER BY next_due, id`,
+      [req.labelId, req.user.id]);
+    res.json({ success: true, data: rows });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+router.post('/reminders', async (req, res) => {
+  try {
+    const title = String(req.body.title || '').trim().slice(0, 200);
+    if (!title) return res.status(400).json({ success: false, error: 'title required' });
+    const cadence = REMINDER_CADENCES.includes(req.body.cadence) ? req.body.cadence : 'monthly';
+    const dayOfMonth = Math.min(Math.max(parseInt(req.body.day_of_month, 10) || 1, 1), 31);
+    const due = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.next_due || ''))
+      ? req.body.next_due
+      : (cadence === 'once' ? new Date().toISOString().slice(0, 10) : reminderFirstDue(cadence, dayOfMonth));
+    const { rows: [r] } = await pool.query(
+      `INSERT INTO statement_reminders (label_id, user_id, title, link, cadence, day_of_month, next_due)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [req.labelId, req.user.id, title, String(req.body.link || '/bank-statements').slice(0, 200), cadence, dayOfMonth, due]);
+    res.json({ success: true, data: r });
+  } catch (e) { console.error('reminder create error:', e); res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+// Done — advance to the next occurrence from TODAY (not a stale next_due), so
+// an overdue monthly reminder lands next month, not tomorrow. 'once' deactivates.
+router.post('/reminders/:rid(\\d+)/done', async (req, res) => {
+  try {
+    const { rows: [r] } = await pool.query(
+      `SELECT * FROM statement_reminders WHERE id = $1 AND label_id = $2 AND user_id = $3`,
+      [parseInt(req.params.rid, 10), req.labelId, req.user.id]);
+    if (!r) return res.status(404).json({ success: false, error: 'Not found' });
+    if (r.cadence === 'once') {
+      await pool.query(`UPDATE statement_reminders SET active = false WHERE id = $1 AND label_id = $2`, [r.id, req.labelId]);
+    } else {
+      await pool.query(`UPDATE statement_reminders SET next_due = $1 WHERE id = $2 AND label_id = $3`,
+        [reminderNextDue(r.cadence, r.day_of_month, new Date()), r.id, req.labelId]);
+    }
+    res.json({ success: true });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+router.put('/reminders/:rid(\\d+)', async (req, res) => {
+  try {
+    const { rows: [r] } = await pool.query(
+      `UPDATE statement_reminders SET active = COALESCE($4, active)
+        WHERE id = $1 AND label_id = $2 AND user_id = $3 RETURNING *`,
+      [parseInt(req.params.rid, 10), req.labelId, req.user.id,
+        typeof req.body.active === 'boolean' ? req.body.active : null]);
+    if (!r) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data: r });
+  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+router.delete('/reminders/:rid(\\d+)', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM statement_reminders WHERE id = $1 AND label_id = $2 AND user_id = $3`,
+      [parseInt(req.params.rid, 10), req.labelId, req.user.id]);
     res.json({ success: true });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
@@ -466,23 +1542,43 @@ router.get('/txns/:id/suggestions', async (req, res) => {
   } catch (e) { console.error('Suggestions error:', e); res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 
-// Ledger search for the Match dialog (approved, unmatched, family roots).
+// Ledger search for the Match dialog (approved family roots).
+//
+// PARTIALLY-SETTLED invoices are INCLUDED, with what is left on them. Hiding
+// every family that any bank line already touches makes an installment
+// invoice unfindable — even though the capacity model explicitly allows
+// further debits up to the family total. The searcher needs to see "$400 of
+// $1,200 left", not an empty result.
 router.get('/ledger-search', async (req, res) => {
   try {
     const q = `%${String(req.query.q || '').trim()}%`;
     const { rows } = await pool.query(
       `SELECT e.id, e.payee, e.invoice_number, e.currency, e.payment_status, e.payment_date, e.invoice_date,
-              (e.amount + COALESCE((SELECT SUM(k.amount) FROM expenses k WHERE k.parent_id = e.id AND (k.deleted=false OR k.deleted IS NULL)),0)) AS family_amount
+              e.entry_source,
+              (e.amount + COALESCE((SELECT SUM(k.amount) FROM expenses k WHERE k.parent_id = e.id AND (k.deleted=false OR k.deleted IS NULL)),0)) AS family_amount,
+              COALESCE((SELECT SUM(bt.amount) FROM bank_transactions bt
+                         WHERE bt.matched_expense_id = e.id AND bt.label_id = e.label_id
+                           AND bt.dismissed = FALSE AND bt.direction = 'debit'), 0) AS claimed
          FROM expenses e
         WHERE e.label_id = $1 AND e.parent_id IS NULL AND e.status = 'approved'
           AND (e.deleted=false OR e.deleted IS NULL) AND (e.voided=false OR e.voided IS NULL)
+          AND e.entry_source IS DISTINCT FROM 'bank_statement'
           AND (e.payee ILIKE $2 OR e.invoice_number ILIKE $2)
-          AND NOT EXISTS (SELECT 1 FROM bank_transactions bt WHERE bt.matched_expense_id = e.id AND bt.label_id = e.label_id)
-        ORDER BY e.invoice_date DESC NULLS LAST LIMIT 25`,
+        ORDER BY e.invoice_date DESC NULLS LAST LIMIT 40`,
       [req.labelId, q]
     );
-    res.json({ success: true, data: rows });
-  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+    // Fully-claimed families are dropped (matching them can only 409); the
+    // rest carry `remaining` so the chip can say how much room is left.
+    const out = [];
+    for (const r of rows) {
+      const total = Number(r.family_amount) || 0;
+      const claimed = Number(r.claimed) || 0;
+      const remaining = Math.round((total - claimed) * 100) / 100;
+      if (claimed > 0 && remaining <= 0.01) continue;
+      out.push({ ...r, claimed: Math.round(claimed * 100) / 100, remaining, partially_settled: claimed > 0 });
+    }
+    res.json({ success: true, data: out.slice(0, 25) });
+  } catch (e) { console.error('ledger-search error:', e); res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 
 // Match a txn to an existing ledger family root (plain link + learn payee).
@@ -529,7 +1625,7 @@ router.post('/txns/:id/match', async (req, res) => {
       return res.status(409).json({
         success: false,
         error: holder
-          ? `That invoice is already covered by a ${Number(holder.amount).toFixed(2)} debit on ${String(holder.txn_date).slice(0, 10)} — unmatch that one first`
+          ? `That invoice is already covered by a ${Number(holder.amount).toFixed(2)} debit on ${(holder.txn_date instanceof Date ? holder.txn_date.toISOString() : String(holder.txn_date)).slice(0, 10)} — unmatch that one first`
           : 'That would over-pay the invoice',
       });
     }
@@ -576,7 +1672,13 @@ router.post('/txns/:id/unmatch', async (req, res) => {
       `UPDATE bank_transactions SET matched_expense_id = NULL, match_method = NULL, match_score = NULL, matched_by = NULL, matched_at = NULL, booked = FALSE WHERE id = $1 AND label_id = $2`,
       [t.id, req.labelId]
     );
-    res.json({ success: true });
+    // If this match DISPLACED a booking (a rematch), put it back — otherwise
+    // the row lands open with its only answer soft-deleted, which is a state
+    // nothing in the UI can get out of.
+    const restored = t.match_method === 'rematch'
+      ? await restoreDisplacedBooking(req.labelId, t.id, req.user.name).catch(() => null)
+      : null;
+    res.json({ success: true, data: { restored_expense_id: restored } });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 
@@ -685,11 +1787,28 @@ router.post('/txns/:id/dismiss', async (req, res) => {
   try {
     const t = await loadTxn(parseInt(req.params.id, 10), req.labelId);
     if (!t) return res.status(404).json({ success: false, error: 'Not found' });
-    await pool.query(`UPDATE bank_transactions SET dismissed = TRUE, dismissed_reason = COALESCE($2,'manual'), matched_expense_id = NULL, match_method = NULL, booked = FALSE WHERE id = $1 AND label_id = $3`,
+    // Zombie guard: a dismissed-but-matched row hides the bank proof while the
+    // ledger still counts the entry — and dismissing a BOOKED row would orphan
+    // the entry it created. Force the unlink/unbook first.
+    if (t.matched_expense_id || t.matched_income_id || t.booked) {
+      return res.status(400).json({ success: false, error: 'This transaction is matched or booked — unmatch/unbook it before dismissing.' });
+    }
+    await pool.query(`UPDATE bank_transactions SET dismissed = TRUE, dismissed_reason = COALESCE($2,'manual') WHERE id = $1 AND label_id = $3`,
       [t.id, req.body.reason || null, req.labelId]);
+    // Dismissing a card that carried a suggestion is a "no" to that pairing —
+    // record it so the matcher and deck never re-propose the exact pair.
+    const rejectedRoot = parseInt(req.body.rejected_expense_id, 10);
+    if (rejectedRoot) {
+      await pool.query(
+        `INSERT INTO statement_match_rejections (label_id, txn_fingerprint, expense_root_id, source, created_by)
+         VALUES ($1, $2, $3, 'dismiss', $4) ON CONFLICT DO NOTHING`,
+        [req.labelId, R.txnFingerprint(t), rejectedRoot, req.user.name]
+      ).catch(() => {});
+    }
     // ≥3 chars — a 1-2 char payee_guess would mint a substring rule that
     // silently auto-dismisses broad swathes of every future upload.
     let ruleSkipped = null;
+    let ruleSwept = 0;
     if (req.body.rule && (t.payee_guess || t.description)) {
       const pattern = (t.payee_guess || t.description).slice(0, 120).trim();
       if (pattern.length < 3) {
@@ -697,10 +1816,19 @@ router.post('/txns/:id/dismiss', async (req, res) => {
       } else {
         await pool.query('INSERT INTO statement_dismiss_rules (label_id, pattern, created_by) VALUES ($1,$2,$3)',
           [req.labelId, pattern, req.user.name]);
-        await logActivity(req, 'Added statement dismiss rule', `always set aside "${pattern}"`);
+        // Sweep it across every existing open debit right away — a rule that
+        // only touches FUTURE ingests leaves this month's recurrences open.
+        const swept = await pool.query(
+          `UPDATE bank_transactions SET dismissed = TRUE, dismissed_reason = $1
+            WHERE label_id = $2 AND direction = 'debit' AND dismissed = FALSE
+              AND matched_expense_id IS NULL AND matched_income_id IS NULL AND booked = FALSE
+              AND (payee_guess ILIKE $3 OR description ILIKE $3)`,
+          [`rule: ${pattern}`.slice(0, 120), req.labelId, `%${pattern.replace(/[\\%_]/g, (m) => '\\' + m)}%`]);
+        ruleSwept = swept.rowCount || 0;
+        await logActivity(req, 'Added statement dismiss rule', `always set aside "${pattern}" (${ruleSwept} existing open row${ruleSwept === 1 ? '' : 's'} swept)`);
       }
     }
-    res.json({ success: true, rule_skipped: ruleSkipped });
+    res.json({ success: true, rule_skipped: ruleSkipped, rule_swept: ruleSwept });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 router.post('/txns/:id/restore', async (req, res) => {
@@ -787,8 +1915,15 @@ router.post('/txns/bulk', async (req, res) => {
     const { rows } = await pool.query('SELECT * FROM bank_transactions WHERE id = ANY($1::int[]) AND label_id = $2', [ids, req.labelId]);
     let n = 0;
     if (action === 'dismiss') {
-      await pool.query(`UPDATE bank_transactions SET dismissed = TRUE, dismissed_reason = 'manual', matched_expense_id = NULL, booked = FALSE WHERE id = ANY($1::int[]) AND label_id = $2`, [ids, req.labelId]);
-      n = rows.length;
+      // Same zombie guard as the single-row endpoint: matched/booked rows are
+      // skipped in the WHERE (the client gates to open rows; the server must
+      // not trust that) and the real count is returned.
+      const { rowCount } = await pool.query(
+        `UPDATE bank_transactions SET dismissed = TRUE, dismissed_reason = 'manual'
+          WHERE id = ANY($1::int[]) AND label_id = $2
+            AND matched_expense_id IS NULL AND matched_income_id IS NULL AND booked = FALSE`,
+        [ids, req.labelId]);
+      n = rowCount;
     } else if (action === 'book') {
       for (const t of rows) {
         if (t.direction !== 'debit' || t.dismissed || t.matched_expense_id) continue;
@@ -887,11 +2022,30 @@ router.post('/rules/alias', async (req, res) => {
   } catch (e) { console.error('alias error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
 
+// Repoint one or more learned links at a ledger vendor — the fix behind the
+// lesson-disagreement and vendor-link flags. A learned link is what the NEXT
+// statement follows, so a wrong one keeps re-creating the same mistake; this
+// rewrites the lesson without touching a single existing match.
+router.post('/rules/relink', async (req, res) => {
+  try {
+    const target = String(req.body.ledger_payee || '').trim();
+    const names = (Array.isArray(req.body.bank_payees) ? req.body.bank_payees : [req.body.bank_payee])
+      .map((n) => String(n || '').trim()).filter(Boolean).slice(0, 100);
+    if (!target || !names.length) return res.status(400).json({ success: false, error: 'bank_payees and ledger_payee required' });
+    for (const n of names) await R.learnPayee(pool, req.labelId, n, target, req.user.name);
+    await logActivity(req, 'Repointed learned bank links',
+      names.length === 1 ? `"${names[0]}" → ${target}` : `${names.length} descriptors → ${target}`);
+    res.json({ success: true, data: { relinked: names.length, ledger_payee: target } });
+  } catch (e) { console.error('relink error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
 // ── Monthly soft close ───────────────────────────────────────────────────────
 router.get('/months', async (req, res) => {
   try {
+    // month key computed in SQL — pg returns DATE as a JS Date, and
+    // String(date).slice(0, 7) yields "Wed Aug", collapsing every month.
     const txns = (await pool.query(
-      `SELECT t.txn_date, t.direction, t.amount, t.currency, t.dismissed, t.matched_expense_id, t.matched_income_id, s.account
+      `SELECT to_char(t.txn_date, 'YYYY-MM') AS month_key, t.direction, t.amount, t.currency, t.dismissed, t.matched_expense_id, t.matched_income_id, s.account
          FROM bank_transactions t JOIN bank_statements s ON s.id = t.statement_id AND s.status = 'ready'
         WHERE t.label_id = $1`,
       [req.labelId]
@@ -902,7 +2056,7 @@ router.get('/months', async (req, res) => {
     );
     const months = {};
     for (const t of txns) {
-      const mk = String(t.txn_date).slice(0, 7);
+      const mk = t.month_key;
       const m = months[mk] || (months[mk] = { month_key: mk, accounts: new Set(), debits: 0, matched: 0, dismissed: 0, open_debits: 0, open_credits: 0 });
       m.accounts.add(t.account);
       if (t.direction === 'debit') {
@@ -913,9 +2067,15 @@ router.get('/months', async (req, res) => {
         }
       } else if (!t.dismissed && !t.matched_income_id) m.open_credits += 1;
     }
+    // Which configured accounts have NO statement covering the month — the
+    // reconcile gate needs it ("No {account} statement covers this month"):
+    // a month can read 100% coverage while a whole account is simply absent.
+    const labelRow = (await pool.query('SELECT bank_accounts FROM labels WHERE id = $1', [req.labelId])).rows[0] || {};
+    const configured = R.accountsFor(labelRow).map(a => a.key);
     const out = Object.values(months)
       .map(m => ({
         ...m, accounts: [...m.accounts],
+        missing_accounts: configured.filter(k => !m.accounts.has(k)),
         coverage: m.debits + m.dismissed > 0 ? Math.round(((m.matched + m.dismissed) / (m.debits + m.dismissed)) * 100) : 100,
         reconciled_by: closed.get(m.month_key)?.reconciled_by || null,
         reconciled_at: closed.get(m.month_key)?.reconciled_at || null,

@@ -182,7 +182,16 @@ function isInternal(description, payee) {
 }
 
 // ── Parsers ─────────────────────────────────────────────────────────────────
-// Claude PDF output: pipe-delimited lines DATE|DIRECTION|AMOUNT|PAYEE|REFERENCE|DESCRIPTION
+// Claude PDF output, three line shapes (newest first, all tolerated):
+//   v3: DATE|DIR|AMOUNT|CURRENCY|AMOUNT_USD|PAYEE|EMAIL|REFERENCE|DESCRIPTION
+//   v2: DATE|DIR|AMOUNT|PAYEE|EMAIL|REFERENCE|DESCRIPTION
+//   v1: DATE|DIR|AMOUNT|PAYEE|REFERENCE|DESCRIPTION
+// A known ISO code in field 4 is the currency; anything else (a 3-letter payee
+// like "UPS") is not consumed. AMOUNT_USD follows CURRENCY only on foreign
+// rows and only when genuinely numeric — the printed USD settlement, never an
+// estimate. Ingesting ¥237,858 as $237,858 is the exact overstatement class
+// this field exists to prevent.
+const ISO_CURRENCY = /^(USD|EUR|GBP|JPY|CAD|AUD|CHF|MXN|BRL|SEK|NOK|DKK|NZD|HKD|SGD|CNY|PLN|CZK|HUF|ILS|THB|PHP|TWD)$/i;
 function parsePipeLines(text) {
   const out = [];
   for (const raw of String(text || '').split('\n')) {
@@ -190,27 +199,40 @@ function parsePipeLines(text) {
     if (!line || line.startsWith('#') || /^date\s*\|/i.test(line)) continue;
     const parts = line.split('|').map(p => p.trim());
     if (parts.length < 3) continue;
-    // Two line shapes: legacy DATE|DIR|AMOUNT|PAYEE|REFERENCE|DESCRIPTION and
-    // v2 DATE|DIR|AMOUNT|PAYEE|EMAIL|REFERENCE|DESCRIPTION. Field 5 is an
-    // email when it looks like one (or the line is long enough to be v2).
-    const [date, dir, amount, payee, ...rest] = parts;
+    const [date, dir, amount, ...tail] = parts;
     const d = normalizeDate(date);
     const amt = parseAmount(amount);
     if (!d || amt == null) continue;
     const direction = /credit|cr|deposit|\+/i.test(dir) ? 'credit' : 'debit';
+    // Optional CURRENCY (+ AMOUNT_USD) before the payee.
+    let rest = tail;
+    let currency = 'USD';
+    let amountUsd = null;
+    if (rest[0] && ISO_CURRENCY.test(rest[0])) {
+      currency = rest[0].toUpperCase();
+      rest = rest.slice(1);
+      if (currency !== 'USD' && rest[0] != null && /^-?[\d,]+(\.\d+)?$/.test(String(rest[0]).trim())) {
+        amountUsd = Math.abs(parseAmount(rest[0]));
+        rest = rest.slice(1);
+      } else if (currency !== 'USD' && String(rest[0] ?? '').trim() === '') {
+        rest = rest.slice(1); // field emitted but blank — no printed USD amount
+      }
+    }
+    const [payee, ...restAfterPayee] = rest;
     let email = null, reference, descRest;
-    if (rest.length >= 3 || (rest.length >= 1 && EMAIL_RE.test(rest[0]))) {
-      email = (rest[0] || '').match(EMAIL_RE)?.[0]?.toLowerCase() || null;
-      reference = rest[1];
-      descRest = rest.slice(2);
+    if (restAfterPayee.length >= 3 || (restAfterPayee.length >= 1 && EMAIL_RE.test(restAfterPayee[0]))) {
+      email = (restAfterPayee[0] || '').match(EMAIL_RE)?.[0]?.toLowerCase() || null;
+      reference = restAfterPayee[1];
+      descRest = restAfterPayee.slice(2);
     } else {
-      reference = rest[0];
-      descRest = rest.slice(1);
+      reference = restAfterPayee[0];
+      descRest = restAfterPayee.slice(1);
     }
     // Emails also arrive mashed into the payee — split them out either way.
     const split = splitPayeeEmail(payee);
     out.push({
       txn_date: d, direction, amount: Math.abs(amt),
+      currency, amount_usd: amountUsd,
       payee_guess: split.payee, payee_email: email || split.email,
       reference: reference || null,
       description: (descRest.join(' | ') || payee || '').trim() || null,
@@ -250,7 +272,7 @@ function extractCsvBalances(text) {
     if (rows.length < 2) return none;
     const hi = findHeader(rows);
     const headers = rows[hi].map(h => String(h).toLowerCase().trim().replace(/\s+/g, ' '));
-    const iBal = headers.findIndex(h => /^(running |ledger |current )?balance$/.test(h));
+    const iBal = headers.findIndex(h => /^(running |ledger |current )?bal(ance)?\.?$/.test(h));
     if (iBal < 0) return none;
     const iDate = col(headers, 'date', 'transaction date', 'posting date');
     const iAmt = col(headers, 'amount', 'gross');
@@ -358,12 +380,26 @@ function parseCsv(text, account) {
   const iRef = col(headers, 'reference', 'transaction id', 'confirmation');
   const iDebit = col(headers, 'debit');
   const iCredit = col(headers, 'credit');
+  // PayPal exports carry these three; generic bank CSVs usually don't.
+  const iCur = col(headers, 'currency');
+  const iStatus = col(headers, 'status');
+  const iType = col(headers, 'type');
   const out = [];
   for (let r = hi + 1; r < rows.length; r++) {
     const cells = rows[r];
     const dateStr = iDate >= 0 ? cells[iDate] : '';
     const d = normalizeDate(dateStr);
     if (!d) continue;
+    // PayPal: a non-Completed row (Pending/Denied/Reversed) is not money that
+    // moved — ingesting it books spend the account never saw.
+    if (iStatus >= 0) {
+      const status = String(cells[iStatus] || '').trim();
+      if (status && !/^completed$/i.test(status)) continue;
+    }
+    // PayPal type-noise: internal ledger movement, not counterparty activity.
+    // (The ingest's internal-dismiss also nets these, but parse-time skipping
+    // matches the reference app and keeps txn_count honest.)
+    if (iType >= 0 && /currency conversion|bank deposit to pp|general withdrawal|account hold|reversal of general account hold/i.test(String(cells[iType] || ''))) continue;
     let amt = null, direction = 'debit';
     if (iDebit >= 0 || iCredit >= 0) {
       const deb = parseAmount(cells[iDebit]) || 0;
@@ -382,8 +418,10 @@ function parseCsv(text, account) {
     if (amt == null) continue;
     const desc = iDesc >= 0 ? cells[iDesc] : '';
     const name = iName >= 0 ? cells[iName] : '';
+    const curRaw = iCur >= 0 ? String(cells[iCur] || '').trim().toUpperCase() : '';
     out.push({
       txn_date: d, direction, amount: amt,
+      currency: /^[A-Z]{3}$/.test(curRaw) ? curRaw : 'USD',
       fee: iFee >= 0 ? Math.abs(parseAmount(cells[iFee]) || 0) || null : null,
       reference: iRef >= 0 ? (cells[iRef] || '').trim() || null : null,
       description: (desc || name || '').trim() || null,
@@ -490,13 +528,18 @@ async function candidates(db, labelId, txn, methods) {
 // or null. `maps` from loadMaps. `used` = Set of family-root ids already
 // claimed (seeded from ALL existing claims + per-match adds during a run) —
 // layer 1 of one-debit-per-invoice.
-async function matchTxn(db, labelId, txn, methods, maps, used = new Set()) {
+// `why` (optional): an object the matcher fills with { reason } when it
+// declines — the "and what about the other 396" accounting the upload summary
+// stores. Purely observational: no decision changes based on it.
+async function matchTxn(db, labelId, txn, methods, maps, used = new Set(), why = null) {
+  const declined = (reason) => { if (why) why.reason = reason; return null; };
   if (txn.direction !== 'debit') return null;
   const fp = txnFingerprint(txn);
-  const cands = (await candidates(db, labelId, txn, methods))
+  const all = await candidates(db, labelId, txn, methods);
+  const cands = all
     .filter(c => !used.has(c.id))
     .filter(c => !maps.rejections || !maps.rejections.has(`${fp}::${c.id}`));
-  if (!cands.length) return null;
+  if (!cands.length) return declined(all.length ? 'already-claimed-or-rejected' : 'no-candidate');
   const amt = Number(txn.amount);
 
   // Tier 1 — exact amount.
@@ -510,7 +553,7 @@ async function matchTxn(db, labelId, txn, methods, maps, used = new Set()) {
         // lesson) — but an evidenceDate within 3 days is the missing evidence.
         const d = daysApart(evidenceDate(best.c), dayOf(txn.txn_date));
         if (d != null && d <= 3) return { expense_id: best.c.id, method: 'auto-date', score: 0.85 };
-        return null;
+        return declined('nameless-descriptor');
       }
       return { expense_id: best.c.id, method: best.ev.method, score: Math.max(best.ev.score, 0.6) };
     }
@@ -530,19 +573,20 @@ async function matchTxn(db, labelId, txn, methods, maps, used = new Set()) {
         return { expense_id: dated[0].c.id, method: 'auto-date', score: 0.8 };
       }
     }
-    return null;
+    return declined('ambiguous');
   }
 
   // Tier 2 — fee-tolerant (wires land a fee above the invoice). Name REQUIRED.
   const tol = Math.max(35, amt * 0.01);
   const near = cands
     .map(c => ({ c, delta: amt - Number(c.family_amount), ev: evidence(txn, c, maps) }))
-    .filter(x => x.delta >= -0.01 && x.delta <= tol && x.ev.score >= 0.6);
-  if (near.length) {
-    near.sort((a, b) => b.ev.score - a.ev.score);
-    return { expense_id: near[0].c.id, method: 'auto-fee', score: near[0].ev.score };
+    .filter(x => x.delta >= -0.01 && x.delta <= tol);
+  const named = near.filter(x => x.ev.score >= 0.6);
+  if (named.length) {
+    named.sort((a, b) => b.ev.score - a.ev.score);
+    return { expense_id: named[0].c.id, method: 'auto-fee', score: named[0].ev.score };
   }
-  return null;
+  return declined(near.length ? 'refused-weak-evidence' : 'amount-no-match');
 }
 
 // Top-3 suggestions for the "Match…" UI and the review deck.
@@ -586,7 +630,7 @@ async function learnPayee(db, labelId, bankPayee, ledgerPayee, actor) {
 
 module.exports = {
   DEFAULT_ACCOUNTS, accountsFor, accountMethods,
-  normalizeName, nameEvidence, evidence, vendorsMatch, isInternal,
+  normalizeName, nameEvidence, evidence, vendorsMatch, isInternal, INTERNAL_RE,
   splitPayeeEmail, txnFingerprint, refEvidence, methodOf,
   parsePipeLines, parseCsv, extractPayee,
   extractBalanceLines, extractCsvBalances,

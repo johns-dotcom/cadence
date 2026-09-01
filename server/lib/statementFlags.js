@@ -12,7 +12,8 @@
 const pool = require('../db');
 const { usdOf, round2 } = require('./usd');
 const { pairReversals } = require('./reversalPairs');
-const { normalizeName } = require('./bankReconcile');
+const { normalizeName, vendorsMatch } = require('./bankReconcile');
+const { aggregateBankVendors, descriptorMentions, sameSquashedName } = require('./bankVendors');
 const { noBankEvidenceSql, methodCompatibleSql } = require('./bankEvidence');
 const { accountsFor } = require('./bankReconcile');
 
@@ -306,7 +307,7 @@ async function buildFlags(labelId) {
     });
   }
 
-  // ── double-booked / booked-duplicate ─────────────────────────────────────
+  // ── double-booked ────────────────────────────────────────────────────────
   const created = live.filter((t) => t.match_method === 'created' || t.booked);
   for (let i = 0; i < created.length; i++) {
     for (let j = i + 1; j < created.length; j++) {
@@ -318,11 +319,217 @@ async function buildFlags(labelId) {
       push({
         severity: 'error', type: 'double-booked', statement_id: b.statement_id, txn_id: b.id,
         title: 'The ledger carries this charge twice',
-        detail: `Two booked entries were invented from the same-looking line on different statements: ${fmt(a.amount)} "${(a.payee_guess || '').slice(0, 40)}", ${day(a.txn_date)} and ${day(b.txn_date)}. Unbook one.`,
+        detail: `Two booked entries were invented from the same-looking line on different statements: ${fmt(a.amount)} "${(a.payee_guess || '').slice(0, 40)}", ${day(a.txn_date)} and ${day(b.txn_date)}. Unbooking the later one leaves one record of one payment.`,
         fingerprint: `dbl:${a.id}:${b.id}`,
+        // The fix is a one-click unbook of the LATER copy — the earlier row
+        // is the one whose statement was reconciled first.
+        action: { kind: 'unbook', txn_id: b.id },
       });
     }
   }
+
+  // ── booked-duplicate / stolen-match ──────────────────────────────────────
+  //
+  // A debit was BOOKED as a new ledger entry when the vendor's real invoice
+  // was already in the ledger. The money now lives twice: the untouched
+  // original reads "paid, no bank match" while the invented copy holds the
+  // bank proof. The one-click fix is exactly the rematch endpoint — retire
+  // the copy, tie the debit to the document.
+  //
+  // When the original is CLAIMED instead, by a payment whose bank name flatly
+  // disagrees with the vendor, the duplicate is a symptom: an amount-
+  // coincidence auto-match stole the invoice. Flag the thief, because
+  // unmatching it is what makes the duplicate fixable at all.
+  try {
+    const claimedSums = new Map();
+    for (const t of live) {
+      if (t.direction !== 'debit' || !t.matched_expense_id) continue;
+      claimedSums.set(t.matched_expense_id, (claimedSums.get(t.matched_expense_id) || 0) + Number(t.amount));
+    }
+    const bookedRows = live.filter((t) => (t.match_method === 'created' || t.booked) && t.matched_expense_id && t.exp_payee && !t.no_invoice);
+    if (bookedRows.length) {
+      const fams = (await pool.query(
+        `SELECT e.id, e.payee, e.invoice_number, e.payment_status, e.payment_date, COALESCE(e.currency, 'USD') AS currency,
+                (e.amount + COALESCE((SELECT SUM(k.amount) FROM expenses k WHERE k.parent_id = e.id AND (k.deleted IS NULL OR k.deleted = FALSE)), 0)) AS family_total
+           FROM expenses e
+          WHERE e.label_id = $1 AND e.parent_id IS NULL AND e.status = 'approved'
+            AND (e.deleted IS NULL OR e.deleted = FALSE) AND (e.voided IS NULL OR e.voided = FALSE)
+            AND e.entry_source IS DISTINCT FROM 'bank_statement'`,
+        [labelId]
+      )).rows;
+      const byName = new Map();
+      for (const f of fams) {
+        const k = normalizeName(f.payee || '');
+        if (!k) continue;
+        if (!byName.has(k)) byName.set(k, []);
+        byName.get(k).push(f);
+      }
+      let emitted = 0;
+      for (const c of bookedRows) {
+        if (emitted >= 60) break;
+        const amt = Number(c.amount);
+        const tol = Math.max(35, amt * 0.01);
+        const key = normalizeName(c.exp_payee || '');
+        let cands = byName.get(key) || [];
+        if (!cands.length) {
+          for (const [, list] of byName) {
+            const vm = vendorsMatch(c.exp_payee, list[0]?.payee);
+            if (vm.match && vm.score >= 0.8) cands = cands.concat(list);
+          }
+        }
+        const sameCur = (f) => (f.currency || 'USD') === (c.currency || 'USD');
+        const fits = cands.filter((f) => sameCur(f) && !claimedSums.get(f.id) && Math.abs(Number(f.family_total) - amt) <= tol);
+        if (fits.length) {
+          fits.sort((a, b) => Math.abs(Number(a.family_total) - amt) - Math.abs(Number(b.family_total) - amt));
+          const orig = fits[0];
+          emitted += 1;
+          push({
+            severity: 'error', type: 'booked-duplicate', statement_id: c.statement_id, txn_id: c.id, ledger_id: orig.id,
+            title: `Booked a duplicate: ${c.exp_payee} ${fmt(amt)}`,
+            detail: `The ${day(c.txn_date)} debit was booked as a NEW ledger entry, but ${orig.payee}'s ${fmt(orig.family_total)} invoice`
+              + `${orig.invoice_number ? ` (inv ${orig.invoice_number})` : ''} already exists`
+              + `${orig.payment_status === 'Paid' ? ' and is marked Paid with no bank line' : ''} — the expense counts twice. `
+              + 'The fix retires the invented copy and ties this debit to the real invoice.',
+            fingerprint: `bdup:${c.matched_expense_id}:${orig.id}`,
+            action: { kind: 'unbook-rematch', txn_id: c.id, expense_id: orig.id, payee: orig.payee },
+          });
+          continue;
+        }
+        // Nothing free fits — is the original held by the WRONG payment?
+        const held = cands.find((f) => sameCur(f) && claimedSums.get(f.id) > 0 && Math.abs(Number(f.family_total) - amt) <= tol);
+        if (!held) continue;
+        const thief = live.find((h) => {
+          if (h.matched_expense_id !== held.id || h.id === c.id) return false;
+          if (!/^auto/.test(h.match_method || '')) return false;   // a person's match is a person's call
+          if (!(h.payee_guess || '').trim() || !(held.payee || '').trim()) return false;
+          const vm = vendorsMatch(h.payee_guess, held.payee);
+          return !vm.match && vm.score < 0.25;
+        });
+        if (!thief) continue;
+        emitted += 1;
+        push({
+          severity: 'error', type: 'stolen-match', statement_id: c.statement_id, txn_id: thief.id, ledger_id: held.id,
+          title: `Wrong payment holds this invoice: ${held.payee} ${fmt(held.family_total)}`,
+          detail: `${held.payee}'s invoice is matched to the ${day(thief.txn_date)} payment from "${thief.payee_guess}" (${thief.match_method} — the names share nothing), `
+            + `while the real ${c.exp_payee} payment sits booked as a duplicate copy. Unmatch the wrong payment; the next pass then offers the one-click duplicate fix.`,
+          fingerprint: `steal:${thief.id}:${held.id}`,
+          action: { kind: 'unmatch', txn_id: thief.id },
+        });
+      }
+    }
+  } catch (e) { console.warn('booked-duplicate flag check degraded:', e.message); }
+
+  // ── suspect-currency ─────────────────────────────────────────────────────
+  //
+  // A PayPal payment whose EXACT amount also appears as a same-day "currency
+  // conversion" row is almost certainly a FOREIGN face amount read as USD —
+  // the conversion is what moved the face value. Left alone it inflates every
+  // USD figure the row touches, silently.
+  try {
+    const ppKeys = accounts.filter((a) => /paypal/i.test(a.key)).map((a) => a.key);
+    if (ppKeys.length) {
+      const ppRows = live.filter((t) => ppKeys.includes(t.account));
+      const conversions = ppRows.filter((t) => /conversion/i.test(`${t.description || ''} ${t.payee_guess || ''}`));
+      for (const t of ppRows) {
+        if ((t.currency || 'USD') !== 'USD') continue;
+        if (Number(t.amount) < 500) continue;
+        if (/conversion/i.test(`${t.description || ''} ${t.payee_guess || ''}`)) continue;
+        const twin = conversions.find((c) => c.id !== t.id && c.statement_id === t.statement_id
+          && Math.abs(Number(c.amount) - Number(t.amount)) < 0.005 && dayGap(c.txn_date, t.txn_date) <= 1);
+        if (!twin) continue;
+        push({
+          severity: 'error', type: 'suspect-currency', statement_id: t.statement_id, txn_id: t.id,
+          title: `Probably not USD: ${(t.payee_guess || t.description || '').slice(0, 40)} ${fmt(t.amount)}`,
+          detail: `This payment's exact amount also appears as a same-day currency-conversion row — the signature of a foreign-currency payment parsed as USD. `
+            + `Open the statement to read the real currency${t.matched_expense_id ? `, ${t.match_method === 'created' || t.booked ? 'unbook' : 'unmatch'} the line,` : ''} then correct it on Bank Matching.`,
+          fingerprint: `suscur:${t.id}`,
+          ...(t.matched_expense_id && t.match_method !== 'created' && !t.booked ? { action: { kind: 'unmatch', txn_id: t.id } } : {}),
+        });
+      }
+    }
+  } catch (e) { console.warn('suspect-currency flag check degraded:', e.message); }
+
+  // ── lesson-disagreement / vendor-link ────────────────────────────────────
+  //
+  // Two complementary checks over the SHARED bank-vendor grouping:
+  //   lesson-disagreement — a learned link names one vendor while every match
+  //     under that descriptor names another. The next statement will follow
+  //     the LINK, so a wrong one keeps re-creating the mistake.
+  //   vendor-link — a group with no link at all whose own matches name exactly
+  //     one vendor. The app already knows the answer and never wrote it down,
+  //     so the directory lists one company as two.
+  //
+  // A person's OVERRIDE is exempt from both: disagreeing with the matches is
+  // that person's decision, not a defect. And vendor-link requires NAME
+  // EVIDENCE, never bare co-occurrence — offering a link on the strength of a
+  // wrong match would cement that error into every future statement.
+  try {
+    const groups = await aggregateBankVendors(labelId);
+    const agrees = (a, b) => {
+      const x = String(a || '').toLowerCase().trim(), y = String(b || '').toLowerCase().trim();
+      if (!x || !y) return false;
+      return x === y || vendorsMatch(a, b).match || sameSquashedName(a, b);
+    };
+    const disagreeing = groups.filter((g) => g.linked_vendor && !g.overridden
+      && g.ledger_vendors.length > 0 && !g.ledger_vendors.some((v) => agrees(v, g.linked_vendor)));
+    // Collapse: 3+ groups whose lessons all disagree while pointing at ONE
+    // ledger vendor are one card processor minting a group per charge. One
+    // card, one bulk repoint — generic, because the next processor does the
+    // same thing.
+    const byLedger = new Map();
+    for (const g of disagreeing) {
+      const k = g.ledger_vendors.slice().sort().join(' + ');
+      if (!byLedger.has(k)) byLedger.set(k, []);
+      byLedger.get(k).push(g);
+    }
+    for (const [ledgerNames, gs] of byLedger) {
+      const target = gs[0].ledger_vendors[0];
+      const total = gs.reduce((n, g) => n + Number(g.total || 0), 0);
+      if (gs.length >= 3) {
+        push({
+          severity: 'warn', type: 'lesson-disagreement',
+          title: `${gs.length} bank vendors are all ${target}`,
+          detail: `${gs.length} separate bank vendor groups (${gs.slice(0, 3).map((g) => g.name).join(', ')}…) each carry their own learned link, `
+            + `but every one of their matches points at ${target} — ${fmt(total)} in total. The descriptor carries a per-charge code the grouping does not strip, `
+            + `so each charge became its own vendor. Repointing all ${gs.length} at ${target} files them together.`,
+          fingerprint: `lessongrp:${target}:${gs.length}`,
+          q: gs[0].name || '',
+          action: { kind: 'relink', bank_payees: gs.map((g) => g.name), ledger_payee: target },
+        });
+        continue;
+      }
+      for (const g of gs) {
+        push({
+          severity: 'warn', type: 'lesson-disagreement',
+          title: `"${g.name}" is taught as ${g.linked_vendor}, but pays ${ledgerNames}`,
+          detail: `Payments under "${g.name}" (${fmt(g.total)}, last seen ${g.last_seen || '?'}) are matched to ${ledgerNames}, `
+            + `while the learned link sends future ones to ${g.linked_vendor}. Either the link is wrong — repoint it — or the matches are, `
+            + 'in which case fix those first: the next statement will follow the link.',
+          fingerprint: `lesson:${g.key}`,
+          q: g.name || '',
+          action: { kind: 'relink', bank_payees: [g.name], ledger_payee: target },
+        });
+      }
+    }
+    for (const g of groups) {
+      if (g.linked_vendor || g.overridden) continue;
+      if (g.ledger_vendors.length !== 1) continue;
+      const target = g.ledger_vendors[0];
+      if (agrees(target, g.name)) continue;               // the directory folds these on the name alone
+      const vm = vendorsMatch(g.name, target);
+      const evidence = vm.match || vm.score >= 0.25 || sameSquashedName(g.name, target) || descriptorMentions(g.name, target);
+      if (!evidence) continue;                            // no evidence => this is a WRONG MATCH, not a link
+      push({
+        severity: 'warn', type: 'vendor-link',
+        title: `"${g.name}" is ${target}`,
+        detail: `Every payment under "${g.name}" (${fmt(g.total)}, last seen ${g.last_seen || '?'}) is matched to ${target}'s invoices, but nothing links the two names — `
+          + 'so the directory lists them as separate vendors and the next statement will know neither. Linking files them together.',
+        fingerprint: `vlink:${g.key}`,
+        q: g.name || '',
+        action: { kind: 'relink', bank_payees: [g.name], ledger_payee: target },
+      });
+    }
+  } catch (e) { console.warn('lesson-disagreement flag check degraded:', e.message); }
 
   // ── stale-coverage ────────────────────────────────────────────────────────
   for (const s of statements) {

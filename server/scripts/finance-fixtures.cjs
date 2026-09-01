@@ -90,4 +90,74 @@ assert('exclusion uses IS DISTINCT FROM (null-safe)', excludeBankRows('e').inclu
 assert('inclusion uses plain equality', isCreatorRow('e').includes("= 'creator_payment'"));
 assert('OBBBA thresholds', reportingThresholdFor(2025) === 600 && reportingThresholdFor(2026) === 2000);
 
+// ── Statement lens (the bank half's tie-out) ────────────────────────────────
+const L = require('../lib/statementLens');
+
+// Disposition order is the rule, not an implementation detail.
+assert('dismissed beats a stale matched_expense_id',
+  L.dispositionOf({ direction: 'debit', dismissed: true, matched_expense_id: 7 }) === 'dismissed');
+assert('a booking is not a match',
+  L.dispositionOf({ direction: 'debit', matched_expense_id: 7, booked: true, exp_payment_status: 'Paid' }) === 'booked');
+assert("match_method 'created' also books (the drift the two old copies had)",
+  L.dispositionOf({ direction: 'debit', matched_expense_id: 7, match_method: 'created', exp_payment_status: 'Paid' }) === 'booked');
+assert('matched vs toconfirm turns on the ENTRY reading Paid',
+  L.dispositionOf({ direction: 'debit', matched_expense_id: 7, exp_payment_status: 'Paid' }) === 'matched'
+  && L.dispositionOf({ direction: 'debit', matched_expense_id: 7, exp_payment_status: 'Unpaid' }) === 'toconfirm');
+assert('credits partition into booked-income / dismissed / open-credit',
+  L.dispositionOf({ direction: 'credit', matched_income_id: 3 }) === 'booked-income'
+  && L.dispositionOf({ direction: 'credit', dismissed: true }) === 'dismissed'
+  && L.dispositionOf({ direction: 'credit' }) === 'open-credit');
+assert('creator is a LENS bucket only — dispositionOf still says matched',
+  L.lensBucketOf({ direction: 'debit', matched_expense_id: 7, match_method: 'creator', exp_payment_status: 'Paid' }) === 'creator'
+  && L.dispositionOf({ direction: 'debit', matched_expense_id: 7, match_method: 'creator', exp_payment_status: 'Paid' }) === 'matched');
+
+// Value: locked/printed USD wins, and direction never subtracts.
+assert('txUsd prefers the request-time usd, then amount_usd, then face',
+  L.txUsd({ usd: 100, amount_usd: 999, amount: 888 }) === 100
+  && L.txUsd({ amount_usd: 130, amount: 100 }) === 130
+  && L.txUsd({ amount: 55 }) === 55);
+assert('a debit stored negative does not subtract from the debit total', L.txUsd({ amount: -500 }) === 500);
+
+// The tie-out: beginning + credits − debits = ending, to the cent.
+// 1000 + 400 − (300 + 100.005 + 100.005) = 899.99. Rounding each debit FIRST
+// would give 500.02 out and a closing 899.98 — a cent of drift invented by the
+// arithmetic, which is the exact failure round-once prevents.
+const stTies = { id: 1, account: 'bofa', beginning_balance: 1000, ending_balance: 899.99 };
+const txns = [
+  { id: 1, direction: 'debit', amount: 300, booked: true, matched_expense_id: 11 },
+  { id: 2, direction: 'debit', amount: 100.005, matched_expense_id: 12, exp_payment_status: 'Paid' },
+  { id: 3, direction: 'debit', amount: 100.005, match_method: 'creator', matched_expense_id: 13, exp_payment_status: 'Paid' },
+  { id: 4, direction: 'credit', amount: 400, matched_income_id: 9 },
+];
+const S = L.summariseStatement(stTies, txns);
+assert('tie-out ties exactly', S.ties === true && S.drift === 0 && S.computed === 899.99);
+assert('rounds ONCE at the end, not per part (0.005 + 0.005 must not become 0.02)',
+  S.moneyOut.usd === 500.01);
+assert('in and out are subtotalled apart, never netted',
+  S.moneyIn.usd === 400 && S.moneyIn.n === 1 && S.moneyOut.n === 3);
+assert('creator is counted apart from matched in the summary',
+  S.moneyOut.by.creator.n === 1 && S.moneyOut.by.matched.n === 1 && S.moneyOut.by.booked.n === 1);
+assert('every line lands in exactly one bucket per direction',
+  Object.values(S.moneyOut.by).reduce((a, b) => a + b.n, 0) === S.moneyOut.n
+  && Object.values(S.moneyIn.by).reduce((a, b) => a + b.n, 0) === S.moneyIn.n);
+assert('drift is reported, not swallowed',
+  (() => { const D = L.summariseStatement({ beginning_balance: 1000, ending_balance: 900 }, txns); return D.ties === false && D.drift === -0.01; })());
+assert('no balances = nothing to tie against, not a failure',
+  (() => { const N = L.summariseStatement({ beginning_balance: null, ending_balance: 0 }, txns); return N.hasBalances === false && N.ties === false && N.drift === null; })());
+assert('a 0/0 PayPal statement counts as having no balances',
+  L.summariseStatement({ beginning_balance: 0, ending_balance: 0 }, txns).hasBalances === false);
+
+// Extra lines: every statement line appears somewhere on a page claiming to
+// account for the month.
+const onScreen = new Set([1]);
+assert('a booked line WITH its ledger row on screen is not repeated',
+  !L.extraTransactions(txns, onScreen, 'out').some((t) => t.id === 1));
+assert('a booked line whose row the filters hide resurfaces rather than vanishing',
+  L.extraTransactions(txns, new Set(), 'out').some((t) => t.id === 1));
+assert('matched lines are always extra here — their invoice lives on the other half',
+  L.extraTransactions(txns, onScreen, 'out').map((t) => t.id).includes(2));
+assert('the credit side is never in the money-out list, and is in the money-in one',
+  !L.extraTransactions(txns, onScreen, 'out').some((t) => t.id === 4)
+  && L.extraTransactions(txns, onScreen, 'in').map((t) => t.id).includes(4));
+
 console.log(process.exitCode ? '\nFIXTURES FAILED' : '\nAll fixtures pass.');

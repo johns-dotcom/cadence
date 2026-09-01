@@ -1762,6 +1762,11 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_dq_dismissals_uniq ON data_quality_dismissals (label_id, flag_key)`);
+  // Human sentence stamped AT DISMISS TIME. Flag keys are id signatures
+  // ("reldupe:12,15") and the rows behind them can be merged or deleted after
+  // the fact, so the Dismissed view cannot re-hydrate them — printing the raw
+  // key made a machine identifier the primary copy. Stored, not derived.
+  await pool.query(`ALTER TABLE data_quality_dismissals ADD COLUMN IF NOT EXISTS summary TEXT`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS artist_normalization_map (
       id SERIAL PRIMARY KEY,
@@ -1990,6 +1995,39 @@ const runMigrations = async () => {
     );
   `);
 
+  // dismissed_reason now carries 'rule: <pattern>' (which pattern set a row
+  // aside — 'auto' made that unanswerable); VARCHAR(24) truncates it.
+  await pool.query(`ALTER TABLE bank_transactions ALTER COLUMN dismissed_reason TYPE VARCHAR(160)`).catch(() => {});
+
+  // Bank Matching work-surface columns.
+  //   flagged        — "come back to this", a marker with no other meaning; a
+  //                    row parked for a person is not the same as an unanswered
+  //                    one, and the queue must be able to say which.
+  //   vendor_override — a PERSON's assignment of a descriptor to a ledger
+  //                    vendor. Deliberately separate from the learned map: an
+  //                    inference may be rewritten by the next match, a decision
+  //                    may not.
+  await pool.query(`ALTER TABLE bank_transactions ADD COLUMN IF NOT EXISTS flagged BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE bank_transactions ADD COLUMN IF NOT EXISTS vendor_override VARCHAR(200)`);
+
+  // Statement reminders — monthly-cadence nudges ("upload the statement and
+  // re-run matching"), surfaced through the notification bell when due.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS statement_reminders (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title VARCHAR(200) NOT NULL,
+      link VARCHAR(200),
+      cadence VARCHAR(10) DEFAULT 'monthly',
+      day_of_month INT DEFAULT 1,
+      next_due DATE,
+      active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_statement_reminders ON statement_reminders (label_id, user_id, next_due)`);
+
   // Helpful indexes for the hot tenant-scoped lookups.
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_releases_label ON releases (label_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_artists_label ON artists (label_id)`);
@@ -2123,6 +2161,19 @@ const server = app.listen(PORT, () => {
     // include the link branch (degrades to primary-column-only until then).
     .then(() => require('./lib/bankEvidence').markLinksReady(pool))
     .catch(err => console.error('Migration error:', err.message));
+
+  // Nightly statement-matcher freshness sweep: an invoice approved AFTER its
+  // statement was ingested is otherwise manual-only forever. Additive by
+  // construction (only open debits are considered); per-label, sequential.
+  setInterval(async () => {
+    try {
+      const { rows } = await pool.query(
+        `SELECT DISTINCT label_id FROM bank_statements WHERE status = 'ready' /* no-tenant */`);
+      for (const r of rows) {
+        await bankStatementsRoutes.runMatcherPass(r.label_id, { userName: 'nightly-rematch' }).catch(() => {});
+      }
+    } catch (e) { console.warn('nightly rematch:', e.message); }
+  }, 24 * 60 * 60 * 1000).unref();
 });
 
 // Graceful shutdown — Railway sends SIGTERM to retire an old container during a

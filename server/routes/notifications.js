@@ -89,6 +89,16 @@ router.get('/', async (req, res) => {
       [req.labelId, req.user.id]
     ));
 
+    // Due personal reminders (statement uploads etc.) — an overdue reminder
+    // stays due until "Done" advances it, so the clear-all watermark does not
+    // hide it. Table may predate the migration on a mid-deploy request.
+    queries.push(pool.query(
+      `SELECT id, title, link, next_due FROM statement_reminders
+        WHERE label_id = $1 AND user_id = $2 AND active = TRUE AND next_due <= CURRENT_DATE
+        ORDER BY next_due ASC LIMIT 10`,
+      [req.labelId, req.user.id]
+    ).catch(() => ({ rows: [] })));
+
     const results = await Promise.all(queries);
     const releases = results[0].rows;
     const tasks = results[1].rows;
@@ -97,6 +107,7 @@ router.get('/', async (req, res) => {
     const contracts = isAdmin ? results[idx++].rows : [];
     const approvals = isApprover ? results[idx++].rows : [];
     const mentions = results[idx++].rows;
+    const reminders = results[idx++].rows;
 
     const fmt = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString()}`;
     // A computed alert is hidden if its underlying row predates the clear-all
@@ -108,6 +119,7 @@ router.get('/', async (req, res) => {
     for (const b of bulkDeals) if (!cleared(b.created_at)) smart.push({ type: 'bulk_deal', key: `bulkdeal-${b.id}`, title: `${b.payee || 'Bulk deal'} · ${fmt(b.amount, b.currency)}`, detail: 'Bulk deal stalled (21+ days unpaid)', date: b.created_at, link: `/ledger?focus=${b.id}`, severity: 'warning' });
     for (const c of contracts) if (!cleared(c.created_at)) smart.push({ type: 'contract', key: `contract-${c.id}`, title: [c.artist_name, c.type].filter(Boolean).join(' '), detail: 'Contract expiring', date: c.expiration_date, link: '/renewals', severity: 'warning' });
     for (const e of approvals) if (!cleared(e.created_at)) smart.push({ type: 'approval', key: `approval-${e.id}`, title: `${e.payee || 'Vendor'} · ${fmt(e.amount, e.currency)}`, detail: e.vendor_submitted ? 'Vendor submission' : 'Awaiting approval', date: null, link: '/ledger', severity: 'info' });
+    for (const r of reminders) smart.push({ type: 'reminder', key: `reminder-${r.id}`, title: r.title, detail: 'Reminder due', date: r.next_due, link: r.link || '/bank-statements', severity: 'info' });
 
     const mentionItems = mentions.map(m => ({ type: 'mention', key: `mention-${m.id}`, mentionId: m.id, title: `${m.actor_name || 'Someone'} mentioned you`, detail: m.snippet, date: m.created_at, link: m.link || '/', severity: 'info' }));
 

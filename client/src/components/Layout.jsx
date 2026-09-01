@@ -6,7 +6,7 @@ import {
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone, FileBarChart, GitMerge, Scale,
   FileClock, Shield, Lock, FileSignature, FileSpreadsheet, Layers, PiggyBank, FilePlus2,
-  MessageSquarePlus, MessageSquare, Landmark, ShieldCheck, Users2, UploadCloud, FileSearch,
+  MessageSquarePlus, MessageSquare, Landmark, Coins, ShieldCheck, Users2, UploadCloud, FileSearch,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useSocket } from '../context/SocketContext'
@@ -28,6 +28,7 @@ export const PAGE_LABELS = {
   '/financials': 'Financials',
   '/reports': 'Reports',
   '/bank-matching': 'Bank Matching',
+  '/bank-ledger': 'Bank Ledger',
   '/bulk-upload': 'Bulk Upload',
   '/approvals/archive': 'Approvals Archive',
   '/creators': 'Creator Payments',
@@ -287,6 +288,7 @@ export default function Layout() {
         ...(isApprover ? [{ path: '/payments', label: 'Payments', icon: CreditCard }] : []),
         ...(isAdmin ? [{ path: '/bank-statements', label: 'Bank Statements', icon: Landmark }] : []),
         ...(isAdmin ? [{ path: '/bank-matching', label: 'Bank Matching', icon: GitMerge }] : []),
+        ...(isAdmin ? [{ path: '/bank-ledger', label: 'Bank Ledger', icon: Coins }] : []),
         ...(isApprover ? [{ path: '/vendors', label: 'Vendors', icon: Building2 }] : []),
         ...(isApprover ? [{ path: '/creators', label: 'Creator Payments', icon: Users }] : []),
         ...(isApprover ? [{ path: '/invoices', label: 'Create Invoice', icon: Receipt }] : []),
@@ -304,7 +306,9 @@ export default function Layout() {
       items: [
         ...(isAdmin ? [{ path: '/team', label: 'Team', icon: UserCheck }] : []),
         ...(isAdmin ? [{ path: '/activity', label: 'Activity', icon: ScrollText }] : []),
-        ...(isAdmin ? [{ path: '/data-quality', label: 'Data Quality', icon: ShieldCheck }] : []),
+        // Not admin-gated: the catalog + artist checks serve every role, and the
+        // money-shaped sections are role-gated server-side (routes/flags.js).
+        { path: '/data-quality', label: 'Data Quality', icon: ShieldCheck },
         { path: '/requests', label: 'Requests & feedback', icon: MessageSquarePlus },
         { path: '/settings', label: 'Settings', icon: Settings },
       ],

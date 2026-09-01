@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useMemo, Fragment } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
-import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart, Search, Pencil, ChevronRight, ChevronDown, Scissors, Flag, Receipt, RotateCcw, AlertTriangle, Filter } from 'lucide-react'
+import { Link, useSearchParams, useNavigate } from 'react-router-dom'
+import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart, Search, Pencil, ChevronRight, ChevronDown, Scissors, Flag, Receipt, RotateCcw, AlertTriangle, Filter, Landmark, Ban, Undo2, GitMerge } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
@@ -17,6 +17,7 @@ import { PAYMENT_METHODS, CURRENCIES } from '../constants'
 import useCategories from '../hooks/useCategories'
 import CategoryOptions from '../components/CategoryOptions'
 import { dropTarget } from '../utils/drop'
+import BankEvidenceDot from '../components/BankEvidenceDot'
 
 const STATUS_STYLES = { pending: 'bg-amber-100 text-amber-700', approved: 'bg-emerald-100 text-emerald-700', rejected: 'bg-red-100 text-red-700' }
 const STATUSES = ['all', 'approved', 'rejected']
@@ -119,19 +120,87 @@ const SOURCE_META = {
 }
 const SOURCE_FILTERS = [['', 'Any source'], ['vendor', 'Vendor-submitted'], ['manual', 'Manual'], ['expense', 'Quick expense'], ['campaign', 'Campaign'], ['reimb', 'Reimbursement']]
 
+// ── The two halves of the ledger ────────────────────────────────────────────
+//
+// One component, two routes — `/ledger` and `/bank-ledger` — exactly as the
+// reference app did it. The bank half is not a different table: statement-born
+// rows live in `expenses` like every other row, take the same inline edits,
+// bulk edits, splits, undo and per-currency totals, and would be a second copy
+// of ~1,500 lines of money-editing UI if they got their own page.
+//
+// What differs is only WHICH rows arrive (`?source=`, server-side), three extra
+// columns that mean nothing on an invoice, and the statement lens.
+//
+// `invoices` is the COMPLEMENT of `bank` server-side, so the two views always
+// partition the ledger. "All spend" stays the default on `/ledger`: it is what
+// the page has always shown, and narrowing it silently would be a change nobody
+// asked for.
+const LEDGER_VIEWS = [
+  { key: 'all', label: 'All spend', title: 'Everything — invoices plus spend booked straight off a bank statement. This is the ledger total.' },
+  { key: 'invoices', label: 'Invoices', title: 'Rows backed by an invoice document: vendor submissions, staff-entered invoices, recoupment and campaign spend.' },
+  { key: 'bank', label: 'Bank items', title: 'Rows booked directly from a bank statement — no invoice behind them.' },
+]
+
+// A statement, named the way a person thinks of it: the month it covers, then
+// the account. `filename` is what the bank called the file, which is unreadable
+// in a dropdown and sorts by nothing useful.
+function stmtOptionLabel(st) {
+  const d = st?.period_end || st?.period_start
+  const when = d
+    ? new Date(String(d).slice(0, 10) + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' })
+    : String(st?.filename || '').slice(0, 18)
+  const acct = String(st?.account || '').toUpperCase()
+  return `${when}${acct ? ` · ${acct}` : ''}`
+}
+
+// Disposition chips for a bank line with no editable row on this page. The
+// vocabulary is the SERVER's (lib/statementLens.js) — the page never re-derives
+// it, so there is no second copy of the rule to drift.
+const DISPO_CHIP = {
+  matched: { label: 'invoice', cls: 'bg-indigo-500/10 text-indigo-600' },
+  toconfirm: { label: 'unconfirmed', cls: 'bg-amber-500/10 text-amber-700' },
+  booked: { label: 'booked', cls: 'bg-gray-500/10 text-gray-500' },
+  'booked-income': { label: 'income', cls: 'bg-emerald-500/10 text-emerald-700' },
+  dismissed: { label: 'dismissed', cls: 'bg-gray-500/10 text-gray-500' },
+  open: { label: 'open', cls: 'bg-amber-500/15 text-amber-700' },
+  'open-credit': { label: 'open', cls: 'bg-amber-500/15 text-amber-700' },
+}
+
+const usdMoney = (v) => Number(v || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+
 const DATE_FIELDS = new Set(['invoice_date', 'payment_date', 'scheduled_payment_date', 'qb_entry_date'])
 const PAGE = 150      // incremental render window (desktop)
 const MOBILE_PAGE = 100
 
-export default function Ledger() {
+export default function Ledger({ bank = false }) {
   const { toast } = useToast()
   const { label, user } = useAuth()
   const isMobile = useIsMobile()
+  const navigate = useNavigate()
   const { expense: expenseCats } = useCategories()
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [params, setParams] = useSearchParams()
   const focusId = params.get('focus')
+
+  // Which half, and (on the invoiced route) which cut of it. `bank` is the
+  // ROUTE; `view` is the switch inside `/ledger`. Kept in the URL so the switch
+  // survives a refresh and can be linked to.
+  const view = bank ? 'bank' : (params.get('view') === 'invoices' ? 'invoices' : 'all')
+  const source = view === 'all' ? null : view          // null = today's unfiltered fetch
+  const setView = (v) => {
+    if (v === 'bank') { navigate('/bank-ledger'); return }
+    if (bank) { navigate(v === 'invoices' ? '/ledger?view=invoices' : '/ledger'); return }
+    setParams(p => { const n = new URLSearchParams(p); if (v === 'invoices') n.set('view', 'invoices'); else n.delete('view'); return n }, { replace: true })
+  }
+
+  // ── Statement lens state (bank half only) ────────────────────────────────
+  const [statements, setStatements] = useState([])
+  const [stmtId, setStmtId] = useState('')
+  const [stmtData, setStmtData] = useState(null)   // { statement, transactions, lens }
+  const [stmtLoading, setStmtLoading] = useState(false)
+  const [direction, setDirection] = useState('out')  // 'out' | 'in' | 'both'
+  const [txBusy, setTxBusy] = useState(null)
 
   // Filters (all client-side over the loaded set for instant response).
   const [status, setStatus] = useState('all')
@@ -301,7 +370,7 @@ export default function Ledger() {
   const editProps = { editing, draft, setDraft, commitEdit, beginEdit, setEditing, artistNames, songOptionsFor }
 
   // -- Toggleable columns, persisted per user+workspace ------------------
-  const COLS = [
+  const BASE_COLS = [
     { key: 'invoice_date', label: 'Date', render: en => <EditCell en={en} field="invoice_date" kind="date" display={<span className="text-gray-500 whitespace-nowrap">{formatDate(en.invoice_date)}</span>} {...editProps} /> },
     { key: 'payee', label: 'Payee', render: en => <PayeeCell en={en} onFlag={() => setDrawerEntry(en)} onToggleSplits={toggleExpand} isOpen={!!expanded[en.id]} onUngroup={ungroup} editProps={editProps} /> },
     { key: 'artist', label: 'Artist', render: en => {
@@ -378,17 +447,77 @@ export default function Ledger() {
       : <span className="text-gray-300 text-xs" title="Receipts apply to reimbursements">N/A</span> },
     { key: 'files', label: 'Files', render: en => <FilesCell en={en} openFile={openFile} /> },
   ]
+
+  // ── Bank-only columns ────────────────────────────────────────────────────
+  // Offered ONLY on the bank half. On the invoiced one they would be three
+  // empty columns and three more toggles in a menu that already has forty.
+  // All three read fields the server only computes for ?source=bank; the first
+  // two come from lib/bankEvidence.js, which resolves a split child through
+  // COALESCE(parent_id, id) so a slice shows its family's line, not nothing.
+  const BANK_COLS = !bank ? [] : [
+    { key: 'statement', label: 'Statement', render: en => {
+      const ev = en.bank_evidence
+      if (!ev) return <span className="text-ink-faint text-xs" title="No bank line settles this row — it may have been unmatched, or its statement deleted">—</span>
+      return <Link to={`/bank-statements/${ev.statement_id}`} onClick={e => e.stopPropagation()} className="text-brand-ink hover:underline whitespace-nowrap text-xs font-medium">
+        {stmtOptionLabel({ period_end: ev.period_start, account: ev.account })}
+      </Link>
+    } },
+    { key: 'bank_line', label: 'Bank line', render: en => {
+      const ev = en.bank_evidence
+      if (!ev) return <span className="inline-flex items-center gap-1.5"><BankEvidenceDot row={en} /><span className="text-ink-faint text-xs">—</span></span>
+      return <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+        <BankEvidenceDot row={en} />
+        <span className="text-ink-muted text-xs tabular-nums">{formatDate(ev.txn_date)}</span>
+        <span className="text-ink-faint text-[10px] uppercase">{ev.method || ''}</span>
+      </span>
+    } },
+    // "Is an invoice still wanted for this?" — the INVERSE of the stored
+    // answer. `no_invoice_expected` means somebody said none is coming; a row
+    // nobody has answered still wants one, which is why the default reads Yes.
+    { key: 'inv_wanted', label: 'Inv wanted?', render: en => (
+      <span title={en.no_invoice_expected
+        ? 'Answered on Bank Matching: no invoice is coming for this line'
+        : 'Nobody has said an invoice is unnecessary — this line still wants paper'}
+        className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${en.no_invoice_expected ? 'bg-gray-500/10 text-ink-faint' : 'bg-amber-500/15 text-amber-700'}`}>
+        {en.no_invoice_expected ? 'No' : 'Yes'}
+      </span>
+    ) },
+  ]
+  const COLS = [...BANK_COLS, ...BASE_COLS]
   const ALL_KEYS = COLS.map(c => c.key)
   // Identity columns can't be hidden (boom froze them outright).
   const ALWAYS_ON = ['payee', 'amount']
   // Boom shipped ~16 toggleables ON by default on top of its always-on set (LED-23).
   const DEFAULT_COLS = ['invoice_date', 'payee', 'artist', 'song', 'description', 'category', 'invoice_number', 'amount', 'status', 'payment', 'payment_method', 'vendor_email', 'vendor_bank', 'rep', 'paid_by', 'socials', 'source', 'files']
-  const storeKey = `ledger-cols:${label?.id || 0}:${user?.id || 0}`
-  const [visible, setVisible] = useState(DEFAULT_COLS)
+  // The bank half opens with the SAME columns as the invoiced one (John's call
+  // on the reference app: "more similar to the normal ledger"), plus its three.
+  // What a bank row never fills is a one-click preset below, not a default —
+  // the document cells are where a late-arriving invoice goes, and hiding them
+  // means a detour through the menu before you can attach one.
+  const BANK_DEFAULT_COLS = ['statement', 'bank_line', 'inv_wanted', ...DEFAULT_COLS]
+  // Structurally empty on a statement-born row: it has no invoice number, no
+  // document, no vendor contact, nothing was ever scheduled (the money already
+  // left), and every row's Source badge says the same thing.
+  const BANK_TIDY_HIDDEN = ['invoice_number', 'invoice_file', 'w9_file', 'proof_file', 'receipt_file',
+    'vendor_email', 'vendor_address', 'vendor_bank', 'socials', 'payment_terms', 'due',
+    'reimbursement', 'cobrand', 'is_bulk_deal', 'campaign', 'source']
+  // Separate keys, deliberately: one key would make hiding a column on one half
+  // silently rearrange the other, and the two halves want different sets.
+  const storeKey = `ledger-cols:${bank ? 'bank:' : ''}${label?.id || 0}:${user?.id || 0}`
+  const [visible, setVisible] = useState(bank ? BANK_DEFAULT_COLS : DEFAULT_COLS)
   const [colMenu, setColMenu] = useState(false)
   useEffect(() => {
-    try { const s = JSON.parse(localStorage.getItem(storeKey) || 'null'); if (Array.isArray(s) && s.length) setVisible([...new Set([...s.filter(k => ALL_KEYS.includes(k)), ...ALWAYS_ON])]) } catch { /* default */ }
+    try {
+      const s = JSON.parse(localStorage.getItem(storeKey) || 'null')
+      if (Array.isArray(s) && s.length) setVisible([...new Set([...s.filter(k => ALL_KEYS.includes(k)), ...ALWAYS_ON])])
+      else setVisible(bank ? BANK_DEFAULT_COLS : DEFAULT_COLS)
+    } catch { /* default */ }
   }, [storeKey]) // eslint-disable-line
+  // One-click preset rather than a default — see BANK_TIDY_HIDDEN.
+  const applyBankTidy = () => {
+    const n = (bank ? BANK_DEFAULT_COLS : DEFAULT_COLS).filter(k => !BANK_TIDY_HIDDEN.includes(k) || ALWAYS_ON.includes(k))
+    localStorage.setItem(storeKey, JSON.stringify(n)); setVisible(n); setColMenu(false)
+  }
   const toggleCol = (key) => {
     if (ALWAYS_ON.includes(key)) return
     setVisible(v => { const n = v.includes(key) ? v.filter(k => k !== key) : [...v, key]; localStorage.setItem(storeKey, JSON.stringify(n)); return n })
@@ -399,9 +528,59 @@ export default function Ledger() {
   const load = (silent = false) => {
     if (!silent) setLoading(true)
     lastFetch.current = Date.now()
-    api.get('/ledger/entries').then(res => setEntries(res.data.data || [])).catch(() => {}).finally(() => { if (!silent) setLoading(false) })
+    // ?source= is opt-in server-side: 'all' sends nothing and the endpoint
+    // behaves exactly as it always has.
+    api.get('/ledger/entries', { params: source ? { source } : {} })
+      .then(res => setEntries(res.data.data || [])).catch(() => {}).finally(() => { if (!silent) setLoading(false) })
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [source]) // eslint-disable-line
+
+  // The statement list. Bank half only — a statement lens over the invoiced
+  // ledger would answer a question that page is not asked.
+  const [stmtDenied, setStmtDenied] = useState(false)
+  useEffect(() => {
+    if (!bank) return
+    api.get('/bank-statements')
+      .then(r => setStatements((r.data.data || []).filter(st => st.status === 'ready')))
+      // The statements API is Admin-only while the ledger itself is Approver+.
+      // An Approver still gets the full editable bank half; they just have
+      // nothing to tie it against, and the page says so rather than showing an
+      // empty dropdown that looks broken.
+      .catch(err => { setStatements([]); setStmtDenied(err.response?.status === 403) })
+  }, [bank])
+
+  // One statement's lines + its tie-out. `/lens` deliberately, not `/:id`:
+  // the detail endpoint re-runs auto-matching on open and carries suggestions,
+  // candidates and 12-month category usage. A read-only tie-out should not
+  // have a side effect.
+  const loadLens = () => {
+    if (!bank || !stmtId) { setStmtData(null); return }
+    setStmtLoading(true)
+    api.get(`/bank-statements/${stmtId}/lens`)
+      .then(r => setStmtData(r.data?.data || null))
+      .catch(() => setStmtData(null))
+      .finally(() => setStmtLoading(false))
+  }
+  useEffect(() => {
+    if (!bank || !stmtId) { setStmtData(null); return }
+    let alive = true
+    setStmtLoading(true)
+    api.get(`/bank-statements/${stmtId}/lens`)
+      .then(r => { if (alive) setStmtData(r.data?.data || null) })
+      .catch(() => { if (alive) setStmtData(null) })
+      .finally(() => { if (alive) setStmtLoading(false) })
+    return () => { alive = false }
+  }, [bank, stmtId])
+
+  // Act on a TRANSACTION (not a ledger row) from the extra-lines list. Every
+  // one of these endpoints already exists — this list is a second door onto
+  // Bank Matching's decisions, never a second implementation of them.
+  const txAct = async (id, path, body) => {
+    setTxBusy(id)
+    try { await api.post(`/bank-statements/txns/${id}/${path}`, body || {}); loadLens(); load(true) }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+    finally { setTxBusy(null) }
+  }
   useEffect(() => { api.get('/artists').then(r => setArtists((r.data.data || []).filter(a => a.name))).catch(() => {}) }, [])
   const [releases, setReleases] = useState([])
   useEffect(() => { api.get('/releases').then(r => setReleases(r.data.data || [])).catch(() => {}) }, [])
@@ -501,6 +680,10 @@ export default function Ledger() {
     if (fCategory) p.category = fCategory
     if (fPaid) p.payment_status = fPaid
     if (fArtist) p.artist = fArtist
+    // The export must contain EXACTLY the page it was launched from. Same
+    // ?source= contract as the list — a workbook that disagrees with the screen
+    // it came from is worse than no workbook, and this one goes out.
+    if (source) p.source = source
     return p
   }
   const download = async (path, filename, type) => {
@@ -583,6 +766,12 @@ export default function Ledger() {
       if (!ynMatch(fUfr, en.ufr)) return false
       if (!ynMatch(fQb, en.in_quickbooks)) return false
       if (!ynMatch(fCampaign, en.campaign_id || en.artist_campaign === true)) return false
+      // The statement lens narrows the LEDGER rows too. Without this, picking
+      // June would show June's unbooked lines beside every month's booked ones,
+      // and the tie-out header would sit above a row set that is not the month
+      // it describes. bank_evidence.statement_id is the row's own line,
+      // resolved through the family root — the same join the extras list uses.
+      if (stmtId && String(en.bank_evidence?.statement_id ?? '') !== String(stmtId)) return false
       return true
     })
     const dir = sort.dir === 'asc' ? 1 : -1
@@ -598,10 +787,10 @@ export default function Ledger() {
       return cmp * dir || b.id - a.id
     })
     return list
-  }, [entries, status, search, amountPredResult, fCategory, fPaid, fMethod, fSource, fFlag, fArtist, fRep, fCurrency, fType, fRecoup, fCobrand, fBulk, fUfr, fQb, fCampaign, sort])
+  }, [entries, status, search, amountPredResult, fCategory, fPaid, fMethod, fSource, fFlag, fArtist, fRep, fCurrency, fType, fRecoup, fCobrand, fBulk, fUfr, fQb, fCampaign, sort, stmtId])
 
   // Reset the paint window when the result set changes shape.
-  useEffect(() => { setRenderCap(PAGE); setMobileCap(MOBILE_PAGE) }, [status, search, amountQ, fCategory, fPaid, fMethod, fSource, fFlag, fArtist, fRep, fCurrency, fType, fRecoup, fCobrand, fBulk, fUfr, fQb, fCampaign, sort])
+  useEffect(() => { setRenderCap(PAGE); setMobileCap(MOBILE_PAGE) }, [status, search, amountQ, fCategory, fPaid, fMethod, fSource, fFlag, fArtist, fRep, fCurrency, fType, fRecoup, fCobrand, fBulk, fUfr, fQb, fCampaign, sort, stmtId])
   const shownRows = filtered.slice(0, renderCap)
 
   // Sentinel: grow the window as it nears the viewport.
@@ -628,6 +817,37 @@ export default function Ledger() {
     const ordered = Object.entries(t).sort((a, b) => b[1] - a[1])
     return { ordered, usdSum, unconverted, multi: ordered.length > 1 || (ordered[0] && ordered[0][0] !== 'USD') }
   }, [filtered])
+  // ── The statement lens ───────────────────────────────────────────────────
+  //
+  // Ledger rows on this half, by the transaction they settle. `bank_evidence`
+  // resolves through COALESCE(parent_id, id), so a split child maps to its
+  // family's line — right, because one bank line should be one row here.
+  //
+  // Built from the FILTERED set, not all entries: a line whose row the current
+  // filters hide has no row ON SCREEN, and must therefore appear in the extras
+  // list rather than vanishing from a page that claims to account for the month.
+  const rowByTxn = useMemo(() => {
+    const m = new Map()
+    for (const e of filtered) { const t = e.bank_evidence?.txn_id; if (t != null && !m.has(t)) m.set(t, e) }
+    return m
+  }, [filtered])
+  const lens = stmtData?.lens || null
+  // The set difference. `disposition` is the SERVER's answer
+  // (lib/statementLens.js) — the page never re-derives it, so there is no
+  // second copy of the money rule here to drift from the first.
+  const extraTx = useMemo(() => {
+    const list = stmtData?.transactions || []
+    const wantOut = direction === 'out' || direction === 'both'
+    const wantIn = direction === 'in' || direction === 'both'
+    return list
+      .filter(t => {
+        const isCredit = t.direction === 'credit'
+        if (isCredit ? !wantIn : !wantOut) return false
+        return !(t.disposition === 'booked' && rowByTxn.has(t.id))
+      })
+      .sort((a, b) => String(b.txn_date || '').localeCompare(String(a.txn_date || '')))
+  }, [stmtData, rowByTxn, direction])
+
   const totalsLine = totals.ordered.map(([c, a]) => `${c} ${a.toLocaleString(undefined, { minimumFractionDigits: 2 })}`).join('   ') || '—'
   const totalsUsd = totals.multi ? ` = USD ${totals.usdSum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${totals.unconverted ? ` (+${totals.unconverted} unconverted)` : ''}` : ''
 
@@ -684,7 +904,27 @@ export default function Ledger() {
         setExpanded(m => ({ ...m, [row.parent_id]: true }))
         await fetchChildren(row.parent_id)
         setTimeout(() => { const kel = rowRefs.current[focusId]; if (kel) spotlight(kel) }, 300)
-      } else setFocusMiss({ id: focusId, status: row.status })
+        return
+      }
+      // ── The row might be in the OTHER half ──────────────────────────────
+      // ?focus= is linked from a dozen places, and a great many of those ids
+      // are bank-created entries. Fixed HERE rather than at every call site,
+      // so a link written anywhere lands in the right half without knowing
+      // which half that is. `xhalf` caps it at ONE hop — redirecting on
+      // "not found" without a marker would bounce a genuinely unknown id
+      // between the two pages forever.
+      // Only the NARROWED views can be the wrong half. "All spend" excludes
+      // nothing, so a row missing there is missing for a different reason
+      // (pending, deleted, another workspace) and must not be bounced.
+      const wrongHalf = source === 'bank' ? row.entry_source !== 'bank_statement'
+        : source === 'invoices' ? row.entry_source === 'bank_statement'
+        : false
+      if (wrongHalf && !params.get('xhalf')) {
+        focusHandled.current = null
+        navigate(`${bank ? '/ledger' : '/bank-ledger'}?focus=${focusId}&xhalf=1`, { replace: true })
+        return
+      }
+      setFocusMiss({ id: focusId, status: row.status, otherHalf: wrongHalf })
     }).catch(() => setFocusMiss({ id: focusId, status: null }))
   }, [focusId, loading, entries, renderCap]) // eslint-disable-line
 
@@ -705,11 +945,14 @@ export default function Ledger() {
   return (
     <div>
       <PageHeader
-        title="Ledger"
-        subtitle="Expenses and vendor payments"
+        title={bank ? 'Bank Ledger' : 'Ledger'}
+        subtitle={bank
+          ? 'Spend booked straight off a bank statement — no invoice behind it'
+          : 'Expenses and vendor payments'}
         action={
           <div className="flex items-center gap-2">
-            <button onClick={open1099} className="btn-secondary"><FileBarChart size={15} /> 1099</button>
+            {bank && <Link to="/bank-matching" className="btn-secondary" title="Decide what an unanswered bank line should become"><GitMerge size={15} /> Bank Matching</Link>}
+            {!bank && <button onClick={open1099} className="btn-secondary"><FileBarChart size={15} /> 1099</button>}
             <div className="relative">
               <button onClick={() => setExportMenu(v => !v)} className="btn-secondary" title="Export (x)"><Download size={15} /> Export</button>
               {exportMenu && (
@@ -721,12 +964,17 @@ export default function Ledger() {
                 </div>
               )}
             </div>
-            <button onClick={() => importRef.current?.click()} disabled={importing} className="btn-secondary"><Upload size={15} /> {importing ? 'Importing…' : 'Import'}</button>
-            <input ref={importRef} type="file" accept=".csv" className="hidden" onChange={onImportFile} />
-            <button onClick={copyVendorLink} className="btn-secondary">{copied ? <><Check size={15} /> Copied</> : <><Link2 size={15} /> Vendor form link</>}</button>
-            <button onClick={() => setQuickOpen(true)} className="btn-secondary"><Plus size={16} /> Add expense</button>
-            <Link to="/ledger/new-reimbursement" className="btn-secondary"><Plus size={16} /> Add reimbursement</Link>
-            <Link to="/ledger/new-invoice" className="btn-primary"><Plus size={16} /> Add invoice</Link>
+            {/* The creation paths all make an INVOICED row. Offering them here
+                would file the new entry onto the other half, which reads as the
+                button doing nothing. */}
+            {!bank && <>
+              <button onClick={() => importRef.current?.click()} disabled={importing} className="btn-secondary"><Upload size={15} /> {importing ? 'Importing…' : 'Import'}</button>
+              <input ref={importRef} type="file" accept=".csv" className="hidden" onChange={onImportFile} />
+              <button onClick={copyVendorLink} className="btn-secondary">{copied ? <><Check size={15} /> Copied</> : <><Link2 size={15} /> Vendor form link</>}</button>
+              <button onClick={() => setQuickOpen(true)} className="btn-secondary"><Plus size={16} /> Add expense</button>
+              <Link to="/ledger/new-reimbursement" className="btn-secondary"><Plus size={16} /> Add reimbursement</Link>
+              <Link to="/ledger/new-invoice" className="btn-primary"><Plus size={16} /> Add invoice</Link>
+            </>}
           </div>
         }
       />
@@ -761,12 +1009,115 @@ export default function Ledger() {
       {focusMiss && (
         <div className="mb-3 rounded-lg border border-rule bg-page/60 px-4 py-2.5 text-sm flex items-center gap-2 flex-wrap">
           <span className="text-ink">Entry #{focusMiss.id} is not in this ledger view.</span>
-          {focusMiss.status === 'pending'
+          {focusMiss.otherHalf
+            ? <span className="text-gray-500">It lives on the <Link to={bank ? '/ledger' : '/bank-ledger'} className="text-brand-600 hover:underline font-semibold">{bank ? 'invoiced' : 'bank'} half</Link>, and both halves were already checked.</span>
+            : focusMiss.status === 'pending'
             ? <span className="text-gray-500">The ledger lists approved entries; it&apos;s waiting in <Link to={`/approvals?focus=${focusMiss.id}`} className="text-brand-600 hover:underline font-semibold">Approvals</Link>.</span>
             : focusMiss.status === null
               ? <span className="text-gray-500">It may have been deleted, or it lives in another workspace.</span>
               : <span className="text-gray-500">Its status is &quot;{focusMiss.status}&quot;; check the status chips or the <Link to="/ledger/archive" className="text-brand-600 hover:underline">archive</Link>.</span>}
           <button onClick={() => setFocusMiss(null)} className="ml-auto text-gray-400 hover:text-ink"><X size={15} /></button>
+        </div>
+      )}
+
+      {/* ── The two halves ─────────────────────────────────────────────────
+          A segmented control rather than a filter chip: this is a change of
+          PAGE (the server sends a different row set), and dressing it as a
+          filter would suggest the rows are all still here. */}
+      <div role="tablist" aria-label="Ledger half" className="inline-flex items-center gap-0.5 p-0.5 mb-3 rounded-lg bg-elev border border-rule">
+        {LEDGER_VIEWS.map(v => (
+          <button key={v.key} role="tab" aria-selected={view === v.key} title={v.title}
+            onClick={() => setView(v.key)}
+            className={`text-xs font-semibold px-3 py-1.5 rounded-md transition ${view === v.key ? 'bg-card text-ink shadow-sm' : 'text-ink-muted hover:text-ink'}`}>
+            {v.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── The statement lens: what the month did, and whether it adds up ──
+          A bank ledger's whole job. The balances are the statement's own
+          printed figures, captured at upload, so this reports a proven fact
+          rather than re-deriving one. */}
+      {bank && (
+        <div className="card p-3 mb-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Landmark size={15} className="text-ink-muted flex-shrink-0" />
+            <select className="input !w-auto" value={stmtId} onChange={e => setStmtId(e.target.value)}
+              title="Narrow the ledger to one statement, and tie that month out line by line">
+              <option value="">All statements — no tie-out</option>
+              {statements.map(st => <option key={st.id} value={st.id}>{stmtOptionLabel(st)}</option>)}
+            </select>
+            {stmtId && (
+              <select className="input !w-auto" value={direction} onChange={e => setDirection(e.target.value)} title="Which side of the statement the line list covers">
+                <option value="out">Money out</option>
+                <option value="in">Money in</option>
+                <option value="both">Both</option>
+              </select>
+            )}
+            {stmtId && <button onClick={() => setStmtId('')} className="text-xs font-semibold text-ink-muted hover:text-ink">Clear</button>}
+            {!statements.length && (stmtDenied
+              ? <span className="text-xs text-ink-faint">The statement tie-out is Admin-only — the rows below are still fully editable.</span>
+              : <span className="text-xs text-ink-faint">No ready statements — upload one on <Link to="/bank-statements" className="text-brand-ink hover:underline">Bank Statements</Link>.</span>)}
+          </div>
+
+          {stmtId && stmtLoading && !lens && <div className="text-xs text-ink-faint mt-2">Reading the statement…</div>}
+
+          {stmtId && lens && (() => {
+            const side = direction === 'in' ? lens.moneyIn : lens.moneyOut
+            const DISPO = [
+              ['booked', 'booked here', 'text-ink'],
+              ['matched', 'matched to an invoice', 'text-ink-muted'],
+              ['toconfirm', 'matched, not yet confirmed paid', 'text-amber-700'],
+              ['creator', 'creator payments', 'text-ink-muted'],
+              ['booked-income', 'booked as income', 'text-emerald-600'],
+              ['dismissed', 'dismissed', 'text-ink-faint'],
+              ['open', 'still open', 'text-amber-700'],
+              ['open-credit', 'still open', 'text-amber-700'],
+            ]
+            return (
+              <>
+                <div className="flex items-baseline gap-3 flex-wrap mt-2.5">
+                  <span className="text-[13px] font-bold text-ink">{stmtOptionLabel(lens.statement)}</span>
+                  <span className="text-[11px] text-ink-faint tabular-nums">
+                    {String(lens.statement.period_start || '').slice(0, 10)} – {String(lens.statement.period_end || '').slice(0, 10)}
+                  </span>
+                  {lens.hasBalances ? (
+                    <span className="text-[11.5px] text-ink-muted tabular-nums">
+                      opened <b className="text-ink">{usdMoney(lens.begin)}</b>
+                      {' · '}in <b className="text-emerald-600">{usdMoney(lens.moneyIn.usd)}</b>
+                      {' · '}out <b className="text-ink">{usdMoney(lens.moneyOut.usd)}</b>
+                      {' · '}closed <b className="text-ink">{usdMoney(lens.end)}</b>{' '}
+                      {lens.ties
+                        ? <span className="text-emerald-600 font-extrabold" title="Beginning + credits − debits equals the closing balance the statement prints, to the cent.">✓ ties</span>
+                        : <span className="text-danger font-extrabold" title="These rows do not add up to the statement's printed closing balance. The parser reconciles at upload, so drift here means rows changed afterwards.">off by {usdMoney(Math.abs(lens.drift))}</span>}
+                    </span>
+                  ) : (
+                    <span className="text-[11.5px] text-ink-faint" title="This account's statements are parsed without beginning and ending balances, so there is nothing to tie the rows against. Not a discrepancy.">
+                      no balances on this statement — nothing to tie against
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-3 flex-wrap mt-2">
+                  <span className="text-[10px] font-bold text-ink-faint uppercase tracking-wider">
+                    money {direction === 'in' ? 'in' : 'out'} · {side.n} line{side.n === 1 ? '' : 's'} · {usdMoney(side.usd)}
+                  </span>
+                  {DISPO.map(([k, lbl, cls]) => {
+                    const v = side.by[k]
+                    if (!v) return null
+                    return <span key={k} className={`text-[11px] tabular-nums ${cls}`}>{v.n} {lbl} <span className="text-ink-faint">{usdMoney(v.usd)}</span></span>
+                  })}
+                  {direction === 'both' && <span className="text-[11px] text-ink-faint">· in and out are subtotalled apart, never netted</span>}
+                  {lens.moneyIn.by['open-credit']?.n > 0 && direction !== 'in' && (
+                    <button onClick={() => setDirection('in')} className="text-[11px] font-bold text-amber-700 underline decoration-dotted underline-offset-2"
+                      title="Credits with no answer yet — not booked as income, not dismissed as a transfer">
+                      {lens.moneyIn.by['open-credit'].n} credit{lens.moneyIn.by['open-credit'].n === 1 ? '' : 's'} unanswered
+                    </button>
+                  )}
+                </div>
+              </>
+            )
+          })()}
         </div>
       )}
 
@@ -798,6 +1149,13 @@ export default function Ledger() {
                     <input type="checkbox" checked={visible.includes(c.key)} disabled={ALWAYS_ON.includes(c.key)} onChange={() => toggleCol(c.key)} /> {c.label}{ALWAYS_ON.includes(c.key) ? ' (always)' : ''}
                   </label>
                 ))}
+                {bank && (
+                  <button onClick={applyBankTidy}
+                    title="Hide the columns a statement-born row never fills: no invoice number, no document, no vendor contact, nothing scheduled."
+                    className="w-full text-left mt-1 pt-2 border-t border-divider px-2 py-1 text-[11px] font-bold text-ink-muted hover:text-ink">
+                    Hide what a bank row never fills
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -836,7 +1194,9 @@ export default function Ledger() {
       ) : filtered.length === 0 ? (
         <div className="card p-10 text-center">
           <BookOpen size={28} className="text-gray-300 mx-auto mb-3" />
-          <p className="text-sm text-gray-500">No entries match.</p>
+          <p className="text-sm text-gray-500">
+            {stmtId ? 'No ledger rows on this statement — every line it holds is in the list below.' : 'No entries match.'}
+          </p>
           {anyFilter && <button onClick={clearAll} className="mt-2 text-xs font-semibold text-brand-600 hover:underline">Clear filters</button>}
         </div>
       ) : isMobile ? (
@@ -966,6 +1326,93 @@ export default function Ledger() {
                 </td>
               </tr>
             </tfoot>
+          </table>
+        </div>
+      )}
+
+      {/* ── The lines with no editable row on this page ────────────────────
+          The other half of "does this month add up". A booked debit is already
+          a full ledger row above; everything else — matched lines whose invoice
+          lives on the invoiced half, dismissals, and the entire credit side,
+          which `expenses` cannot hold at all — appears here, or it appears
+          nowhere on a page claiming to account for the month.
+
+          Deliberately NOT ledger rows: there is no expense id behind them, so
+          there are no inline editors and no bulk checkbox. The buttons act on
+          the TRANSACTION, through the endpoints Bank Matching already owns. */}
+      {bank && stmtId && lens && extraTx.length > 0 && (
+        <div className="card mt-3 overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-divider flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] font-bold text-ink-muted uppercase tracking-wider">
+              {extraTx.length} more line{extraTx.length === 1 ? '' : 's'} on this statement — no ledger row here
+            </span>
+            <span className="text-[11px] text-ink-faint">not in the TOTAL above</span>
+          </div>
+          <table className="w-full text-sm">
+            <tbody className="divide-y divide-divider">
+              {extraTx.map(t => {
+                const isCredit = t.direction === 'credit'
+                const chip = DISPO_CHIP[t.disposition] || DISPO_CHIP.open
+                const busy = txBusy === t.id
+                return (
+                  <tr key={`x-${t.id}`} className={`${t.disposition === 'dismissed' ? 'opacity-70' : ''}`}>
+                    <td className={`px-4 py-2.5 w-[38%] ${isCredit ? 'border-l-[3px] border-emerald-500' : 'border-l-[3px] border-transparent'}`}>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span title={isCredit ? 'Money in' : 'Money out'} className={`text-xs ${isCredit ? 'text-emerald-600' : 'text-ink-faint'}`}>{isCredit ? '↓' : '↑'}</span>
+                        <span className="text-[11px] text-ink-faint tabular-nums whitespace-nowrap">{formatDate(t.txn_date)}</span>
+                        <span className="text-xs font-semibold text-ink truncate" title={t.description || ''}>{t.payee_guess || t.description || '—'}</span>
+                      </div>
+                    </td>
+                    <td className={`px-3 py-2.5 text-right text-xs font-bold tabular-nums whitespace-nowrap ${isCredit ? 'text-emerald-600' : 'text-ink'}`}>
+                      {isCredit ? '+' : '−'}{usdMoney(t.usd)}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${chip.cls}`}>{chip.label}</span>
+                        {(t.disposition === 'matched' || t.disposition === 'toconfirm') && (
+                          <span className="text-[11.5px] text-ink-muted">
+                            settled by {t.match_method === 'creator' ? 'a creator payment' : 'an invoice'} ·{' '}
+                            <Link to={`/ledger?focus=${t.matched_expense_id}`} className="text-brand-ink font-bold hover:underline">open it on the ledger →</Link>
+                          </span>
+                        )}
+                        {t.disposition === 'booked-income' && (
+                          <span className="text-[11.5px] text-ink-muted">{t.income_type || 'income'}{t.income_artist ? ` · ${t.income_artist}` : ''}</span>
+                        )}
+                        {t.disposition === 'booked' && (
+                          <span className="text-[11.5px] text-ink-faint">its ledger row is not in this view</span>
+                        )}
+                        {t.disposition === 'dismissed' && (
+                          <span className="text-[11.5px] text-ink-faint">{t.dismissed_reason || 'no entry needed'}</span>
+                        )}
+                        {(t.disposition === 'open' || t.disposition === 'open-credit') && (
+                          <span className="text-[11.5px] text-amber-700">nothing decided yet</span>
+                        )}
+                        {t.reference && <span className="text-[10.5px] text-ink-faint">ref {t.reference}</span>}
+                      </div>
+                    </td>
+                    <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                      <div className="inline-flex items-center gap-1.5">
+                        {t.disposition === 'open' && (
+                          <>
+                            <Link to={`/bank-matching?statement=${stmtId}&filter=open`} className="text-[11px] font-bold text-brand-ink hover:underline" title="Decide what this line is, on the surface that owns that decision">Answer it →</Link>
+                            <button disabled={busy} onClick={() => txAct(t.id, 'dismiss', {})} title="No ledger entry is needed for this line" className="text-ink-faint hover:text-danger p-1 disabled:opacity-50"><Ban size={14} /></button>
+                          </>
+                        )}
+                        {t.disposition === 'open-credit' && (
+                          <Link to={`/bank-matching?statement=${stmtId}`} className="text-[11px] font-bold text-brand-ink hover:underline" title="Book it as income, or dismiss it as internal movement">Answer it →</Link>
+                        )}
+                        {t.disposition === 'dismissed' && (
+                          <button disabled={busy} onClick={() => txAct(t.id, 'restore', {})} title="Restore — this line does need an answer" className="text-ink-faint hover:text-brand-ink p-1 disabled:opacity-50"><RotateCcw size={14} /></button>
+                        )}
+                        {t.disposition === 'booked-income' && (
+                          <button disabled={busy} onClick={() => txAct(t.id, 'unbook-income', {})} title="Unbook the income entry" className="text-ink-faint hover:text-danger p-1 disabled:opacity-50"><Undo2 size={14} /></button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
           </table>
         </div>
       )}
