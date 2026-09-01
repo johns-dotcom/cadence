@@ -27,6 +27,7 @@ import CreateLabelWaiver from './pages/CreateLabelWaiver'
 import CreateNda from './pages/CreateNda'
 import ArtistClearance from './pages/ArtistClearance'
 import Renewals from './pages/Renewals'
+import CreateContract from './pages/CreateContract'
 import MyWork from './pages/MyWork'
 import TeamWork from './pages/TeamWork'
 import Calendar from './pages/Calendar'
@@ -104,6 +105,16 @@ function AdminRoute({ children }) {
   return children
 }
 
+// Admin/Superadmin only — for surfaces whose SERVER gate is requireAdmin.
+// AdminRoute admits Approvers, so using it on an admin-gated API hands those
+// users a page that can only ever render an empty, silently-403ing shell.
+function StrictAdminRoute({ children }) {
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (!['Superadmin', 'Admin'].includes(user?.role)) return <Navigate to="/" replace />
+  return children
+}
+
 function AppContent() {
   const { token, loading, user, impersonating } = useAuth()
 
@@ -155,6 +166,7 @@ function AppContent() {
         <Route path="/artists/:id"  element={<ArtistProfile />} />
         <Route path="/deals"        element={<Deals />} />
         <Route path="/contracts"    element={<AdminRoute><Contracts /></AdminRoute>} />
+        <Route path="/contracts/create" element={<AdminRoute><CreateContract /></AdminRoute>} />
         <Route path="/pending-contracts" element={<AdminRoute><PendingContracts /></AdminRoute>} />
         <Route path="/renewals"     element={<AdminRoute><Renewals /></AdminRoute>} />
         <Route path="/legal"        element={<AdminRoute><Legal /></AdminRoute>} />
@@ -162,7 +174,7 @@ function AppContent() {
         <Route path="/create-nda"          element={<AdminRoute><CreateNda /></AdminRoute>} />
         <Route path="/create-nda/:template" element={<AdminRoute><CreateNda /></AdminRoute>} />
         <Route path="/clearances"   element={<AdminRoute><ArtistClearance /></AdminRoute>} />
-        <Route path="/admin-docs"   element={<AdminRoute><AdminDocs /></AdminRoute>} />
+        <Route path="/admin-docs"   element={<StrictAdminRoute><AdminDocs /></StrictAdminRoute>} />
         <Route path="/financials"   element={<AdminRoute><Financials /></AdminRoute>} />
         <Route path="/reports"      element={<AdminRoute><Reports /></AdminRoute>} />
         <Route path="/recoupments"  element={<AdminRoute><Recoupments /></AdminRoute>} />

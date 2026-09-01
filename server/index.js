@@ -1638,6 +1638,45 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_docs_label ON admin_docs (label_id)`);
+  // Reusable-template flag (drives the vault's Templates tab + badge).
+  await pool.query(`ALTER TABLE admin_docs ADD COLUMN IF NOT EXISTS is_template BOOLEAN DEFAULT FALSE`);
+  // `tags` was a free comma string; the vault now stores a real array so tags
+  // can be chips and searched individually. Convert in place, guarded on the
+  // current column type so re-running the migration is a no-op. The split is
+  // deliberately naive (comma only, never a jsonb cast) — a cast on malformed
+  // legacy text would abort the whole boot migration, and everything after it.
+  // The USING expression must also be SUBQUERY-FREE (Postgres: "cannot use
+  // subquery in transform expression"), hence regexp_replace + array_remove
+  // rather than the obvious unnest/SELECT.
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'admin_docs' AND column_name = 'tags' AND data_type <> 'jsonb'
+      ) THEN
+        ALTER TABLE admin_docs ALTER COLUMN tags DROP DEFAULT;
+        ALTER TABLE admin_docs ALTER COLUMN tags TYPE JSONB USING (
+          CASE WHEN tags IS NULL OR btrim(tags) = '' THEN '[]'::jsonb
+               ELSE to_jsonb(array_remove(
+                 string_to_array(btrim(regexp_replace(tags, '\\s*,\\s*', ',', 'g'), ', '), ','), ''))
+          END
+        );
+        ALTER TABLE admin_docs ALTER COLUMN tags SET DEFAULT '[]'::jsonb;
+      END IF;
+    END $$;
+  `);
+  // Admin docs used to hold ONE file on the row itself (file_name/r2_key).
+  // Mirror those into entity_files so the multi-file vault covers legacy
+  // uploads too. Idempotent — filename is UNIQUE and the WHERE re-checks.
+  // (entity_files is created earlier in this function.)
+  await pool.query(`
+    INSERT INTO entity_files (label_id, entity_type, entity_id, filename, original_name, r2_key)
+    SELECT d.label_id, 'admin_doc', d.id, d.r2_key, COALESCE(d.file_name, d.r2_key), d.r2_key
+      FROM admin_docs d
+     WHERE d.r2_key IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM entity_files ef WHERE ef.filename = d.r2_key)
+  `);
 
   // Release comments — team discussion thread per release.
   await pool.query(`
@@ -1687,6 +1726,11 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_clearances_label ON clearances (label_id, artist_id)`);
+  // The generated chart is filed on the artist's Documents tab; file_id points
+  // at that entity_files row so a save can replace it in place and a delete can
+  // clean it up. ON DELETE SET NULL so removing the artist (which cascades
+  // their files) can't leave a dangling pointer. entity_files is created above.
+  await pool.query(`ALTER TABLE clearances ADD COLUMN IF NOT EXISTS file_id INT REFERENCES entity_files(id) ON DELETE SET NULL`);
 
   // Label waivers — side-letters waiving the label's exclusivity so a signed
   // artist can appear as co-primary on another label's release. Structured
@@ -1713,6 +1757,14 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_label_waivers_label ON label_waivers (label_id)`);
+  // The rendered waiver PDF is filed on the artist's Documents tab. artist_id
+  // is resolved from artist_name on save (exact, case-insensitive); file_id
+  // points at the entity_files row so an update can replace it in place and a
+  // delete can clean it up. Both FK'd with ON DELETE SET NULL so deleting the
+  // artist (which cascades their entity_files) can't leave a dangling pointer.
+  // Both referenced tables are created above this line — keep it that way.
+  await pool.query(`ALTER TABLE label_waivers ADD COLUMN IF NOT EXISTS artist_id INT REFERENCES artists(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE label_waivers ADD COLUMN IF NOT EXISTS file_id INT REFERENCES entity_files(id) ON DELETE SET NULL`);
 
   // Per-user rep visibility — which reps' ledger entries an Approver may see.
   // Empty for a user = unrestricted (sees all). Admins always see everything.

@@ -20,7 +20,7 @@ if (process.env.NODE_ENV !== 'production' && process.env.DISABLE_TENANT_ASSERT !
   const TENANT_TABLES = [
     'users', 'artists', 'releases', 'expenses', 'contracts', 'pending_contracts',
     'deals', 'tasks', 'calendar_events', 'activity_log', 'vendors', 'vendor_aliases',
-    'invoices', 'campaigns', 'clearances', 'ndas', 'label_waivers', 'admin_docs',
+    'invoices', 'campaigns', 'clearances', 'ndas', 'nda_documents', 'label_waivers', 'admin_docs',
     'salary_employees', 'salary_payments', 'artist_income', 'payment_installments',
     'bulk_deal_items', 'ledger_history', 'dsp_submissions', 'release_comments',
     'release_budget_items', 'release_audit_log', 'user_page_permissions', 'user_visible_reps',

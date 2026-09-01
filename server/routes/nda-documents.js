@@ -13,11 +13,33 @@ router.use(authMiddleware, withTenant, requireApprover);
 // enabled; custom_body is the final, possibly hand-edited, document text.
 const FIELDS = ['template', 'title', 'data', 'custom_body'];
 
+// Form keys each template cannot produce a valid agreement without. Mirrors
+// the `required: true` flags in client/src/constants/ndaTemplates.js — kept
+// here too because the client's asterisk is a hint, not an enforcement point.
+// A template that isn't listed falls back to requiring an effective date.
+const REQUIRED_BY_TEMPLATE = {
+  full: ['effective_date', 'owner_name', 'recipient_name'],
+  investment: ['effective_date', 'owner_name', 'recipient_name'],
+  standard: ['effective_date', 'disclosing_party', 'receiving_party'],
+  mutual: ['effective_date', 'disclosing_party', 'receiving_party'],
+  corporate: ['effective_date', 'disclosing_party', 'recipient_company'],
+};
+
+// Returns the list of missing required keys for a payload, or [] when fine.
+function missingRequired(template, data) {
+  const keys = REQUIRED_BY_TEMPLATE[template] || ['effective_date'];
+  const form = (data && data.form) || {};
+  return keys.filter(k => !form[k] || !String(form[k]).trim());
+}
+
 // GET /api/nda-documents — all saved generated NDAs for this workspace.
 router.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT * FROM nda_documents WHERE label_id = $1 ORDER BY created_at DESC, id DESC',
+      `SELECT n.*, u.name AS created_by_name
+         FROM nda_documents n
+         LEFT JOIN users u ON u.id = n.created_by AND u.label_id = n.label_id
+        WHERE n.label_id = $1 ORDER BY n.created_at DESC, n.id DESC`,
       [req.labelId]
     );
     res.json({ success: true, data: rows });
@@ -33,6 +55,10 @@ router.post('/', async (req, res) => {
     if (!req.body.template) return res.status(400).json({ success: false, error: 'Template is required' });
     if (!req.body.custom_body || !String(req.body.custom_body).trim()) {
       return res.status(400).json({ success: false, error: 'Document body is required' });
+    }
+    const gaps = missingRequired(req.body.template, req.body.data);
+    if (gaps.length) {
+      return res.status(400).json({ success: false, error: `Missing required field(s): ${gaps.join(', ')}` });
     }
     const { rows } = await pool.query(
       `INSERT INTO nda_documents (label_id, created_by, template, title, data, custom_body)
@@ -52,6 +78,15 @@ router.put('/:id', async (req, res) => {
   try {
     const keys = Object.keys(req.body).filter(k => FIELDS.includes(k));
     if (!keys.length) return res.status(400).json({ success: false, error: 'No updatable fields provided' });
+    // The body is the document. The generic '' → null coercion below would
+    // silently blank it, leaving a row that renders as an empty agreement.
+    if (keys.includes('custom_body') && !String(req.body.custom_body || '').trim()) {
+      return res.status(400).json({ success: false, error: 'Document body is required' });
+    }
+    if (keys.includes('data')) {
+      const gaps = missingRequired(req.body.template, req.body.data);
+      if (gaps.length) return res.status(400).json({ success: false, error: `Missing required field(s): ${gaps.join(', ')}` });
+    }
     const setClauses = keys.map((k, i) => `${k} = $${i + 1}`);
     const values = keys.map(k => (req.body[k] === '' ? null : req.body[k]));
     values.push(parseInt(req.params.id, 10), req.labelId);

@@ -55,6 +55,7 @@ export const PAGE_LABELS = {
   '/artists':    'Roster',
   '/deals':      'Deal Pipeline',
   '/contracts':  'Contracts',
+  '/contracts/create': 'Create Contract',
   '/renewals':   'Renewals',
   '/approvals':  'Approvals',
   '/ledger':     'Ledger',
@@ -272,6 +273,7 @@ export default function Layout() {
       label: 'Contracts & Legal',
       items: [
         ...(isApprover ? [{ path: '/contracts', label: 'Contracts', icon: FileText }] : []),
+        ...(isApprover ? [{ path: '/contracts/create', label: 'Create Contract', icon: FilePlus2 }] : []),
         ...(isApprover ? [{ path: '/pending-contracts', label: 'Pending', icon: FileClock }] : []),
         ...(isApprover ? [{ path: '/renewals', label: 'Renewals', icon: RefreshCw }] : []),
         ...(isApprover ? [{ path: '/legal', label: 'NDAs', icon: Shield }] : []),

@@ -35,6 +35,12 @@ const TABLES = [
   { file: 'salary.csv', sql: 'SELECT e.name,e.department,e.monthly_amount,p.month,p.year,p.paid FROM salary_employees e LEFT JOIN salary_payments p ON p.employee_id=e.id AND p.label_id=e.label_id WHERE e.label_id=$1', cols: ['name', 'department', 'monthly_amount', 'month', 'year', 'paid'] },
   // `sql` and `cols` are parallel — a length mismatch shifts every column, so add to both.
   { file: 'tasks.csv', sql: 'SELECT id,description,category,priority,status,due_date,completed_at,notes FROM tasks WHERE label_id=$1', cols: ['id', 'description', 'category', 'priority', 'status', 'due_date', 'completed_at', 'notes'] },
+  // Legal documents. The generated body/track payloads are what make these
+  // rows re-issuable, so they ship as columns rather than being summarised.
+  { file: 'nda_documents.csv', sql: 'SELECT id,template,title,custom_body,created_at FROM nda_documents WHERE label_id=$1 ORDER BY created_at DESC, id DESC', cols: ['id', 'template', 'title', 'custom_body', 'created_at'] },
+  { file: 'label_waivers.csv', sql: 'SELECT id,effective_date,artist_name,releasing_label,other_label_artist,song_title,release_date,release_format,royalty_percent,contact_email,signatory_name,signatory_title,custom_body,created_at FROM label_waivers WHERE label_id=$1 ORDER BY created_at DESC, id DESC', cols: ['id', 'effective_date', 'artist_name', 'releasing_label', 'other_label_artist', 'song_title', 'release_date', 'release_format', 'royalty_percent', 'contact_email', 'signatory_name', 'signatory_title', 'custom_body', 'created_at'] },
+  { file: 'admin_docs.csv', sql: 'SELECT id,title,category,status,confidentiality,counterparty,signed_date,expiration_date,tags,notes,is_template,created_at FROM admin_docs WHERE label_id=$1 ORDER BY updated_at DESC NULLS LAST, id DESC', cols: ['id', 'title', 'category', 'status', 'confidentiality', 'counterparty', 'signed_date', 'expiration_date', 'tags', 'notes', 'is_template', 'created_at'] },
+  { file: 'clearances.csv', sql: 'SELECT id,artist_id,title,project_number,product_commitment,contractual_members,effective_date,royalty_rate,royalty_account,tracks,created_at FROM clearances WHERE label_id=$1 ORDER BY created_at DESC, id DESC', cols: ['id', 'artist_id', 'title', 'project_number', 'product_commitment', 'contractual_members', 'effective_date', 'royalty_rate', 'royalty_account', 'tracks', 'created_at'] },
 ];
 
 // GET /api/full-export — streams a .zip of every table as CSV + a manifest.

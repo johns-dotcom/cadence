@@ -974,9 +974,14 @@ export default function Contracts() {
         title="Contracts"
         subtitle="Manage your artist contracts"
         action={
-          <button onClick={() => setShowForm(v => !v)} className="btn-primary">
-            <Plus size={14} /> New Contract
-          </button>
+          <div className="flex items-center gap-2">
+            <Link to="/contracts/create" className="btn-secondary">
+              <Sparkles size={14} /> Draft with AI
+            </Link>
+            <button onClick={() => setShowForm(v => !v)} className="btn-primary">
+              <Plus size={14} /> New Contract
+            </button>
+          </div>
         }
       />
 

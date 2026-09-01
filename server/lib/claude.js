@@ -200,6 +200,59 @@ function draftClause({ kind, context, labelName }) {
   return callClaude({ system, content: [{ type: 'text', text }], maxTokens: 900 });
 }
 
+// Draft a FULL contract document from a terms form, using the workspace's own
+// existing contracts of the same type as a style/terms reference. Plain-prose
+// output (no schema) — the client renders it as a document and exports it.
+// `labelName` is the tenant's workspace name; never hardcode a label here.
+// Returns { ok, text?, disabled?, error? }.
+function generateContract({ labelName, form, references }) {
+  const label = String(labelName || 'the Label').trim() || 'the Label';
+  const f = form || {};
+  const refText = (references && references.length)
+    ? references.map((r, i) =>
+        `Reference ${i + 1} (${r.type || 'Contract'} with ${r.artist_name || 'an artist'}): `
+        + `Royalty ${r.royalty_split ?? 'N/A'}%, Advance ${r.advance ?? 'N/A'}, `
+        + `Territory ${r.territory || 'N/A'}, Releases ${r.num_releases || 'N/A'}, `
+        + `Terms: ${JSON.stringify(r.financial_terms || [])}`
+        + (r.notes ? `, Notes: ${String(r.notes).slice(0, 400)}` : '')).join('\n')
+    : 'No existing contracts on file for reference.';
+
+  const system = 'You are a music industry contract attorney drafting agreements for a record label. '
+    + 'Write professional legal language that stays readable. Use clear ALL-CAPS section headers and '
+    + 'numbered paragraphs. Output ONLY the contract document — no preamble, commentary or markdown fences.';
+
+  const text = `You are drafting a contract for ${label}, a record label.
+
+EXISTING CONTRACTS ON FILE (use these as reference for style, terms, and structure):
+${refText}
+
+GENERATE A NEW CONTRACT with these specifications:
+- Type: ${f.type} Agreement
+- Artist: ${f.artist_name}
+- Label: ${label}
+- Royalty Split: ${f.royalty_split || 'To be determined'}%
+- Advance: $${f.advance || '0'}
+- Territory: ${f.territory || 'Worldwide'}
+- Number of Releases: ${f.num_releases || 'To be determined'}
+- Duration: ${f.duration_years || '1'} year(s)
+${f.notes ? `- Additional Notes/Requirements: ${f.notes}` : ''}
+${Array.isArray(f.financial_terms) && f.financial_terms.length ? `- Financial Obligations: ${JSON.stringify(f.financial_terms)}` : ''}
+
+Generate a professional, complete contract document. Include:
+1. Parties (${label} and the artist)
+2. Term and territory
+3. Recording/publishing/distribution obligations (based on contract type)
+4. Financial terms (royalty split, advance, recoupment)
+5. Rights and ownership
+6. Termination clauses
+7. General provisions
+8. Signature blocks
+
+Format with clear section headers and numbered paragraphs. This should be a complete, ready-to-review contract draft.`;
+
+  return callClaude({ system, content: [{ type: 'text', text }], maxTokens: 4096 });
+}
+
 // Parse an invoice document/image into structured fields for auto-fill.
 function parseInvoice({ buffer, mimeType, categories, roster }) {
   // Optional label vocabulary: steering the extraction toward the tenant's own
@@ -491,4 +544,4 @@ function scanContract({ buffer, mimeType }) {
   });
 }
 
-module.exports = { isEnabled, callClaude, streamText, extractFromFile, fileBlock, MODEL, parseInvoice, extractPaymentInfo, scanInvoice, validateW9, parseMarketing, draftClause, scanContract, validateInvoiceDoc, parseProof, parseInvoiceLines };
+module.exports = { isEnabled, callClaude, streamText, extractFromFile, fileBlock, MODEL, parseInvoice, extractPaymentInfo, scanInvoice, validateW9, parseMarketing, draftClause, generateContract, scanContract, validateInvoiceDoc, parseProof, parseInvoiceLines };

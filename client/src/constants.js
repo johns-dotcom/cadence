@@ -144,6 +144,13 @@ export const CONTRACT_TYPES = ['Recording', 'Publishing', 'Distribution', 'Manag
 
 export const CONTRACT_STATUSES = ['Active', 'Pending', 'Expired', 'Terminated']
 
+// Territory vocabulary for the contract generator's terms form (boom order).
+// Free text is still accepted on the contract record itself — this list only
+// drives the draft-generation picker.
+export const CONTRACT_TERRITORIES = [
+  'Worldwide', 'North America', 'United States', 'Europe', 'United Kingdom', 'Asia', 'Latin America',
+]
+
 export const TASK_STATUSES = ['To Do', 'In Progress', 'Done']
 
 // ── Bookkeeping ──────────────────────────────────────────────────────────

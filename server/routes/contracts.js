@@ -5,7 +5,7 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { uploadFile, getSignedFileUrl, deleteFile } = require('../lib/r2');
-const { draftClause, scanContract, isEnabled: aiEnabled } = require('../lib/claude');
+const { draftClause, generateContract, scanContract, isEnabled: aiEnabled } = require('../lib/claude');
 const { usdOf, round2 } = require('../lib/usd');
 
 const router = express.Router();
@@ -67,6 +67,72 @@ router.post('/draft-clause', async (req, res) => {
     res.json({ success: true, data: { text: result.text } });
   } catch (error) {
     console.error('Draft clause error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/contracts/generate — AI drafts a FULL contract document from a
+// terms form, using this workspace's own recent Active contracts of the same
+// type as a style/terms reference (same-type first, any-type fallback). The
+// reference pull is label-scoped and the label name comes from the `labels`
+// row, never a hardcoded company. Stateless: nothing is persisted — the client
+// holds the draft and exports it. Degrades gracefully without an API key.
+router.post('/generate', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const artist_name = String(b.artist_name || '').trim();
+    const type = String(b.type || '').trim();
+    if (!artist_name || !type) {
+      return res.status(400).json({ success: false, error: 'Artist name and contract type are required' });
+    }
+    if (!aiEnabled()) {
+      return res.status(503).json({ success: false, error: 'AI contract generation is not configured on this workspace.' });
+    }
+
+    const REF_COLS = `c.type, c.royalty_split, c.advance, c.territory, c.num_releases,
+                      LEFT(COALESCE(c.notes, ''), 400) AS notes, c.financial_terms,
+                      COALESCE(a.name, '(unassigned)') AS artist_name`;
+    const { rows: sameType } = await pool.query(
+      `SELECT ${REF_COLS}
+         FROM contracts c LEFT JOIN artists a ON a.id = c.artist_id AND a.label_id = c.label_id
+        WHERE c.label_id = $1 AND c.status = 'Active' AND LOWER(c.type) = LOWER($2)
+        ORDER BY c.created_at DESC NULLS LAST, c.id DESC LIMIT 5`,
+      [req.labelId, type]
+    );
+    let references = sameType;
+    if (!references.length) {
+      const { rows: anyType } = await pool.query(
+        `SELECT ${REF_COLS}
+           FROM contracts c LEFT JOIN artists a ON a.id = c.artist_id AND a.label_id = c.label_id
+          WHERE c.label_id = $1 AND c.status = 'Active'
+          ORDER BY c.created_at DESC NULLS LAST, c.id DESC LIMIT 5`,
+        [req.labelId]
+      );
+      references = anyType;
+    }
+
+    const { rows: lbl } = await pool.query('SELECT name FROM labels WHERE id = $1', [req.labelId]);
+
+    const form = {
+      artist_name: artist_name.slice(0, 200),
+      type: type.slice(0, 60),
+      royalty_split: b.royalty_split == null ? '' : String(b.royalty_split).trim().slice(0, 20),
+      advance: b.advance == null ? '' : String(b.advance).trim().slice(0, 30),
+      territory: String(b.territory || '').trim().slice(0, 100),
+      num_releases: String(b.num_releases || '').trim().slice(0, 200),
+      duration_years: b.duration_years == null ? '' : String(b.duration_years).trim().slice(0, 10),
+      notes: String(b.notes || '').trim().slice(0, 4000),
+      financial_terms: cleanTerms(b.financial_terms),
+    };
+
+    const result = await generateContract({ labelName: lbl[0]?.name, form, references });
+    if (!result.ok) {
+      return res.status(result.limitReached ? 429 : 502).json({ success: false, error: result.error || 'Contract generation failed' });
+    }
+    await logActivity(req, 'Generated contract draft', `${form.type} — ${form.artist_name}`);
+    res.json({ success: true, data: { text: result.text, reference_count: references.length } });
+  } catch (error) {
+    console.error('Generate contract error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
@@ -219,20 +285,33 @@ router.get('/expiring', async (req, res) => {
   }
 });
 
-// GET /api/contracts/renewals — active contracts expiring within N days
-// (default 90). Consumer is the Renewals page — shape unchanged.
+// GET /api/contracts/renewals — the full renewal PORTFOLIO: every contract in
+// the workspace that carries an expiration date, whatever its status and
+// however far out it sits. The Renewals page bands and filters these locally
+// (Expired / Expiring Soon / Active), so a server-side status or lookahead
+// filter would make whole bands unreachable — an earlier `status = 'Active'
+// AND expiration_date <= CURRENT_DATE + N days` window did exactly that.
+// `?days=` remains as an OPTIONAL narrowing for API callers that want the old
+// lookahead shape; omitted (the page's own call) means no window at all.
+// Note: /contracts/expiring is the separate, deliberately-narrow 90-day Active
+// feed the dashboard alerts read — its semantics are untouched.
 router.get('/renewals', async (req, res) => {
   try {
-    const days = Math.min(parseInt(req.query.days, 10) || 90, 365);
+    const raw = parseInt(req.query.days, 10);
+    const days = Number.isFinite(raw) && raw > 0 ? Math.min(raw, 365) : null;
+    const params = [req.labelId];
+    let windowClause = '';
+    if (days !== null) {
+      params.push(String(days));
+      windowClause = ` AND c.expiration_date <= CURRENT_DATE + ($${params.length} || ' days')::interval`;
+    }
     const { rows } = await pool.query(
       `SELECT c.*, a.name AS artist_name
        FROM contracts c LEFT JOIN artists a ON a.id = c.artist_id AND a.label_id = c.label_id
        WHERE c.label_id = $1
-         AND c.expiration_date IS NOT NULL
-         AND c.status = 'Active'
-         AND c.expiration_date <= CURRENT_DATE + ($2 || ' days')::interval
-       ORDER BY c.expiration_date ASC`,
-      [req.labelId, String(days)]
+         AND c.expiration_date IS NOT NULL${windowClause}
+       ORDER BY c.expiration_date ASC, c.id DESC`,
+      params
     );
     res.json({ success: true, data: rows });
   } catch (error) {

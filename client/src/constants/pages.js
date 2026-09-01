@@ -25,7 +25,9 @@ export const PAGE_GROUPS = [
     { path: '/create-nda', label: 'Create NDA' },
     { path: '/label-waivers', label: 'Label Waivers' },
     { path: '/clearances', label: 'Clearances' },
-    { path: '/admin-docs', label: 'Admin Docs' },
+    // '/admin-docs' is deliberately NOT grantable: the vault is admin-gated
+    // server-side (requireAdmin), so a grant would only hand a User a page
+    // that 403s on every request.
   ] },
   { group: 'Bookkeeping', pages: [
     { path: '/ledger', label: 'Ledger' },
@@ -59,5 +61,5 @@ export const PERMISSION_PRESETS = [
   { name: 'Finance exec', pages: P('/financials', '/reports', '/recoupments', '/payments', '/ledger', '/salary') },
   { name: 'Marketing', pages: P('/calendar', '/marketing', '/artists', '/releases', '/deals') },
   { name: 'A&R', pages: P('/calendar', '/deals', '/artists', '/releases', '/contracts', '/pending-contracts') },
-  { name: 'Legal', pages: P('/contracts', '/pending-contracts', '/renewals', '/legal', '/create-nda', '/label-waivers', '/clearances', '/admin-docs') },
+  { name: 'Legal', pages: P('/contracts', '/pending-contracts', '/renewals', '/legal', '/create-nda', '/label-waivers', '/clearances') },
 ]

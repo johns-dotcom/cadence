@@ -3050,6 +3050,286 @@ titles, a split/unsplit family round trip (combined 1200 = parent 700 + child
 archive silencing it.
 
 ---
+
+## Phase 7 — legal documents (2026-09-01)
+
+Parity pass over the three document-generation pages: **Create NDA**, **Label
+Waiver**, **Artist Clearance**. Specs: `_audit/pages/create-nda.md` §7,
+`label-waiver.md` §7, `artist-clearance.md` §7. No new deps.
+
+**The NDA template registry is now the legal text, not a stand-in.**
+`constants/ndaTemplates.js` was rewritten from a 3-template file of ~6-clause
+boilerplate into a registry of **five** templates. Two are the real agreements
+ported verbatim from the reference app — `full` (15 sections: Confidential
+Information + A-exclusions bullet list, Protection A–D, Injunction,
+Non-Circumvention 1yr, Non-Solicitation 2yr A–D, Return + 5-day certification,
+Relationship, No Warranty, Limited License, Indemnity, Attorney's Fees, Term
+2y + 2y survival, General Provisions/CA law, DTSA Whistleblower, Signatories)
+and `investment` (corporate counterparty: Purpose preamble, Personnel
+definition, §II(E) government-disclosure carve-out, 10-business-day retention,
+Other Businesses, 1-year term with the IV/V/VII–XI survival list). The clause
+wording is copied character-for-character; only party names, addresses, the
+effective date and the signatory line are substituted. **The three original
+short templates (`standard`/`mutual`/`corporate`) are kept under their existing
+keys** — documents have been generated from them and their clause keys are part
+of the stored `data.enabled` payload.
+
+Mechanics restored alongside the text: **gap-free Roman renumbering** (`full`
+drops an optional section without leaving a hole) vs **explicit Romans with two
+`[intentionally omitted.]` placeholders** (`investment`, whose Term clause
+cross-references the numbering); the **3-level `getHeadingLevel` heuristic**
+(h1 all-caps title / h2 Roman-or-letter-or-Arabic subsection / body,
+false-negative biased) shared by preview + PDF + docx — extended with an Arabic
+branch so the short templates' `1. HEADING` lines stay bold; **structured
+OWNER/RECIPIENT signature blocks** (`By:/Name:/Title:/Date:`, recipient-signatory
+fallback, blank-Title omission, a 240pt same-page guard in the PDF) rendered by
+all three renderers instead of an inline body paragraph. The short templates
+therefore stopped emitting their inline "IN WITNESS WHEREOF" closing;
+`stripLegacyClosing()` drops it **at render time only** from bodies saved
+before this change, so nothing is rewritten and nothing double-renders.
+
+- **Dirty-body auto-sync** (the second P1): editing the body no longer freezes
+  it. Watched fields diff-substitute into the hand-edited text — word-boundary
+  regex (a raw replace turns every "T" into "Tyler Henry" when the user pauses
+  mid-name), 400 ms debounce, `prevFormRef` snapshot, flush before save. The
+  debounced timer reads the body from a **ref, not the state closure or a
+  setState updater** — the closure goes stale between arming and firing, and
+  React can invoke an updater twice, which would discard the substitution.
+- Clause toggles are re-derived from the SAVED BODY via per-clause `marker`
+  regexes, so a clause deleted by hand shows as unchecked; toggling against a
+  dirty body confirms and rebuilds in one step instead of refusing.
+- Mandatory-section checking inverted back to **non-blocking**: a per-template
+  regex list drives an amber warning with an inline Reset, and save proceeds —
+  hard-blocking stranded the document.
+- Saved rows regained **Preview / PDF / Word** (each rebuilt from that row's own
+  template, never the one on screen) + Effective/Owner/Recipient/Created·by
+  columns; PDF/docx fidelity restored (helvetica, centered 16pt title, 11pt,
+  1in/1440 margins, bullet newlines preserved) with the filename
+  `{Workspace}-NDA-{Recipient}-{date}`.
+- Required fields enforced in three places (`required` attr, save-time check,
+  server 400 via `REQUIRED_BY_TEMPLATE`); PUT can no longer null `custom_body`
+  through the generic `'' → null` coercion. Owner/recipient **addresses** and a
+  `disclosed_to` field exist again. Dates forced to `en-US` — a browser-locale
+  format made the legal text machine-dependent. Unknown `:template` redirects to
+  the first template instead of dead-ending on the picker; leaving with unsaved
+  edits confirms.
+
+**Label Waiver** — the issued document was granting fewer rights than it should:
+the **digital-exploitation (ringtone & mastertones)** and **remixes** bullets are
+back (8 → 10), along with "detailed statements **and calculations**", the audit
+clause's "books and records **of account** and to copy relevant extracts", and
+"via LOD". The **print-popup is gone**: `buildWaiverPDF` is real jsPDF (helvetica,
+1in margins, grey header date, heading-aware bold), and its bytes are POSTed
+multipart alongside the form so the server files the PDF on the artist's
+**Documents tab** — `label_waivers` gained `artist_id` + `file_id`
+(FK → `entity_files`, both `ON DELETE SET NULL`), resolved by exact
+case-insensitive roster match, replaced in place on update, migrated/dropped when
+the artist changes, cleaned up on delete. **R2 unconfigured is a no-op, not a
+500** (`isConfigured()` guard) — the waiver still saves. Also: roster `<datalist>`
++ attach hint, `mixtape` format, `effective_date` required both layers,
+`royalty_percent` back to free text with the "X%" placeholder (`||` not `??`) and
+a server-side numeric `coerce()` since the column is NUMERIC, Created·by column,
+"· customized" badge + helper copy, Skeleton, inline error banner, and a
+**confirm before the backdrop click discards an in-progress waiver**.
+
+**Artist Clearance** — the chart was missing more than half its fields. Restored
+all **9 dropped per-track primary fields** (role, docs_needed, sample_review,
+release_date, royalty_comments, royalty_account, advance, recoupable_portion,
+agreement_on_file) + `release_id`, and all **6 dropped detail rows** (Musician
+Credits, Recorded by, Lyrics, Stems/Masters, Artwork, Credits Approved) with
+their original labels — 28 fields per track, not 13. `lib/clearanceXlsx.js` now
+emits the **canonical chart layout** rather than an ad-hoc sheet: prefixed header
+strings in rows 1-12 column A (including the long-standing "Product Committment"
+spelling), the effective date as a **real Date cell**, a primary-column header
+row, then one **17-row block per track** — primary row across columns
+1,2,3,4,5,6,7,9,11,13,15,17,19 and 16 detail rows with the label in **column C**
+and the value in **column D**, blank → `TBD`. Built in code, not cloned from a
+bundled `.xlsx`: no binary asset to keep in sync, and the styling is neutral grey
+rather than the hardcoded indigo it replaced. Zero tracks emit the scaffold.
+Saving generates the chart and files it on the artist's Documents tab
+(`clearances.file_id`, same replace/migrate/cleanup rules as the waiver, same R2
+degradation). Catalog linking is back: type-to-search `TrackTitleInput` with
+EXACT MATCH chip and outside-click close, `release_id` binding + Linked
+badge/unlink/auto-unlink-on-edit, manual-value-preserving `applyReleaseToTrack`,
+sibling-release exclusion, and the **multi-select bulk picker** (search,
+already-added disabled, replace-the-default-blank logic). Sticky Chart-preview
+panel restored; track expansion back to a multi-open `Set` with the first open
+and a **minimum of one track**. Server: `/catalog` **400s** without `artist_id`
+(a silent `[]` reads as "no catalog"), excludes archived releases, restores the
+`project_name ASC` tiebreak and `release_type`/`genre`; the list is ordered by
+**`created_at DESC, id DESC`** again so rows stop jumping on save; downloads use
+the server's `Content-Disposition` name (every export used to save as literal
+`clearance.xlsx`).
+
+**Already closed before this pass** (verified, no change): NDA `?token=`-style
+tenancy/gating, LW `bodyDirty` model, AC partial-PUT semantics, and
+AC-13's `?limit=500` — cadence's `/artists` already defaults to a 1000-row page,
+so adding the param would have *lowered* it.
+
+**Partially closed, deliberately**: LW-5 keeps the modal editor (the app-wide
+convention) but fixes its real defects — Skeleton loading and no silent discard.
+AC-12 restores the "Main artist" qualifier in the form label and the XLSX row but
+leaves the column named `royalty_account`; renaming a live column for a label
+change is not worth the migration.
+
+**Schema**: `label_waivers.artist_id` / `.file_id`, `clearances.file_id` (all
+`ADD COLUMN IF NOT EXISTS`, placed after the `artists` + `entity_files` CREATEs).
+`nda_documents` added to `db.js` TENANT_TABLES (it was missing); `nda_documents`,
+`label_waivers` and `clearances` added to `full-export`.
+
+**Files touched**: `client/src/constants/ndaTemplates.js` (rewritten),
+`client/src/pages/CreateNda.jsx`, `CreateLabelWaiver.jsx`, `ArtistClearance.jsx`,
+`server/routes/nda-documents.js`, `label-waivers.js`, `clearances.js`,
+`server/lib/clearanceXlsx.js`, `server/routes/full-export.js`, `server/db.js`,
+`server/index.js`.
+
+**Verification**: client build clean; `node --check` on all 7 touched server
+files; **finance fixtures 140/140**. Every template rendered to PDF + DOCX and
+the text extracted back out of the files — `full` = 15/15 sections, 5 pages, all
+substitutions present, gap-free Romans with both optional clauses off and
+correct toggle re-derivation from the resulting body; `investment` = both
+`[intentionally omitted.]` placeholders in position, §II(E), Other Businesses,
+the 10-business-day clause and the survival list, plus the recipient-signatory
+Name/Title lines. Waiver body verified at 10 bullets with every restored phrase,
+and its PDF re-extracted. XLSX round-tripped and every cell dumped to confirm the
+row/column map and the Date cell. Exercised live on :3001: required-field 400s on
+both layers, blank-body PUT rejected, waiver multipart create with artist
+resolution, non-PDF upload rejected, artist migration on/off the roster in both
+directions, catalog 400, clearance partial-PATCH keeping tracks, cross-workspace
+artist rejected, ordering, 404s, deletes, and a full-export containing the three
+new CSVs. R2 and AI unconfigured throughout — no 500s, attachments cleanly
+skipped.
+
+## Phase 7 — renewals + admin docs + contract generation (2026-09-01)
+
+Parity closer over `Renewals`, `AdminDocs`, and the one page cadence never had:
+boom's **Create Contract** generator. Specs: `_audit/pages/renewals.md` §7,
+`admin-docs.md` §7, `missing--contracts-create.md`. No new deps.
+
+**Renewals — the page changed species back.** It was a lookahead list of Active
+contracts inside a 30/60/90/180-day window; it is a **portfolio tracker** again.
+`GET /contracts/renewals` dropped `status = 'Active'` and the mandatory
+`CURRENT_DATE + N days` ceiling — an Expired contract and an Active one two years
+out were unreachable from every UI state. `?days=` survives as an *optional*
+narrowing for API callers; the page sends none. **`/contracts/expiring` is
+untouched** — that is the deliberately narrow 90-day Active feed the dashboard
+alerts read, and it keeps its own semantics.
+
+The headline defect was RN-1, the exact regression `utils/dates.js` exists to
+prevent: `Math.ceil((new Date(date) - new Date()) / 86400000)` parses the DB date
+as **UTC midnight** and diffs it against **wall-clock time**. Now
+`daysUntilLocal`, with `formatDate` for the Expires cell. Proven, not asserted —
+a harness ran the old and new math side by side across five zones on real
+boundary rows (a contract dated today, one dated yesterday). East of UTC the old
+math read a contract that expired **yesterday** as `0d` and banded it *Expiring
+Soon* instead of **Expired**, and moved the 90-day boundary a day (`+89d` →
+`active`); west of UTC `toLocaleDateString` rendered every date **one day early**.
+The new math is identical in all five zones. Restored with it: 4 stat cards, the
+4 count-bearing filter pills, all 8 columns (Territory / Royalty / Advance and a
+Status badge **separate** from the colour-coded days number), the four original
+bands — grey `<0` · red `<30` · amber `<90` · **green `>=90`**, the positive state
+that had no equivalent — Skeleton loading, an error strip with Retry (a failed
+load used to be indistinguishable from "nothing expiring"), and the plain
+`No renewals found` empty row. The per-row AlertTriangle is gone; alarm
+iconography sits on the stat card only.
+
+**Admin Docs — from a flat card grid back to a document-management surface.**
+The router left `lib/fileResource` (still used by `/ndas`): it outgrew the factory
+the moment it needed a confidentiality tier and file history.
+
+- **Restricted is a real tier again, not a stored word.** `restrictedClause()`
+  hides those rows from non-Superadmins on list/get/expiring/files, and
+  `restrictedBlock()` refuses create, edit, delete, and *marking* a document
+  Restricted. The form only offers "Restricted" to a Superadmin. Verified live
+  from a genuine second Admin account: list hides it, GET 404s, PATCH/DELETE 403,
+  and that same Admin can still edit an Internal document.
+- **Multi-file attachments** on `entity_files` (`entity_type='admin_doc'`),
+  newest-first with uploader / date / size and per-file delete. Upload **ADDS a
+  revision** — the single-slot model deleted the prior R2 object, so filing an
+  amendment destroyed the original. A boot backfill mirrors legacy
+  `admin_docs.file_name/r2_key` rows into `entity_files` (same idempotent
+  `filename`-UNIQUE pattern as the contracts backfill). Uploads bump the parent's
+  `updated_at`, and the list is ordered by it again, so a touched document floats.
+- **Detail view + full metadata editing** — everything but `status` was
+  write-once, and `notes` was literally unreachable (in the blank state, no input,
+  no edit view). Restored with the tag-chip editor, the notes textarea, Created By,
+  the `is_template` flag + Templates tab + badge, search over title/counterparty/
+  **tag**, status + confidentiality filters, category tabs with counts, the
+  8-column table, and quick-upload (toolbar button + page-wide drag-drop overlay,
+  one document per file titled from the filename, `n/m` progress).
+- **Expiring is server-computed again**: 60-day window, `days_left` in SQL,
+  Archived/status-Expired excluded, top-5 click-through, `+n more`, dismiss,
+  red under 14 days. The client version counted Archived docs and was a bare
+  number.
+- `tags` **TEXT → JSONB**, converted in place and guarded on `data_type` so a
+  re-run is a no-op. Landmine worth remembering: an `ALTER … TYPE … USING`
+  expression **may not contain a subquery** (`cannot use subquery in transform
+  expression`) — the obvious `ARRAY(SELECT btrim(t) FROM unnest(...))` throws, and
+  because it throws it **aborts every migration after it**. It is
+  `regexp_replace` + `string_to_array` + `array_remove` instead.
+  `'msa, vendor ,  , legal'` → `["msa","vendor","legal"]`, `''` → `[]`.
+- **Guard mismatch closed**: `AdminRoute` admits Approvers and `/admin-docs` was
+  grantable to Users via the Legal preset, while the server is `requireAdmin` —
+  those users got a permanently empty vault. New **`StrictAdminRoute`**
+  (Admin/Superadmin) on the route, and the path is out of `constants/pages.js`
+  and the preset entirely.
+- **`lib/blockedExtensions.js`** (new, reusable) restores the dangerous-extension
+  blocklist the factory dropped, trailing-dot bypass included — `payload.html`
+  and `payload.html.` both rejected. R2 unconfigured now answers **503 with a
+  plain message** on upload and on the signed-URL fetch instead of a generic
+  500 from the S3 client.
+- Dates via `formatDate` throughout, and the badge palette un-inverted: **Draft
+  amber, Expired red** (they were swapped — an expired legal document looked
+  calmer than an unfinished one). The cadence-only inline status quick-change
+  survives, in the table row, now optimistic with exact rollback.
+
+**Create Contract — ported, not reinvented.** `/contracts/create` (AdminRoute),
+reached from the nav and a "Draft with AI" action on Contracts. What the port
+*needed* was the generation flow itself: the terms form (artist `<datalist>`,
+type, royalty, advance, territory, duration, releases, notes), the financial-
+obligations repeater, `POST /api/contracts/generate`, and `claude.js`
+`generateContract`. What it **reused**: `cleanTerms` (already the contracts
+campaign's `financial_terms` sanitiser), `CONTRACT_TYPES`, `useUnsavedWarning`,
+the `.card`/`.input` kit, and — instead of boom's `.txt`-only blob — the NDA
+builder's document renderers, so the draft exports as **PDF and Word** as well as
+text, classified by the same `getHeadingLevel`/`bodyParagraphs` pass. Nothing was
+persisted then and nothing is now.
+
+Two tenancy corrections over the original: the reference pull is **label-scoped**
+(5 recent Active contracts of the same type, falling back to any 5 Active — both
+`WHERE c.label_id = $1`, INNER→LEFT artist join so an unassigned contract still
+teaches style), and boom's hardcoded **"Boom Records LLC" is replaced by the
+workspace's own `labels.name`**. Verified: the prompt carries the tenant name and
+no trace of the reference app's; a label with no contracts falls through both
+queries cleanly; label 1 sees none of label 2's rows.
+
+**Schema**: `admin_docs.is_template` (`ADD COLUMN IF NOT EXISTS`), `admin_docs.tags`
+TEXT→JSONB (guarded), legacy single-file → `entity_files` backfill. `admin_docs`
+was already in `db.js` TENANT_TABLES; it was **not** in full-export and now is.
+
+**Files touched**: `client/src/pages/Renewals.jsx` (rewritten),
+`AdminDocs.jsx` (rewritten), `CreateContract.jsx` (new), `Contracts.jsx`,
+`App.jsx`, `components/Layout.jsx`, `constants.js`, `constants/pages.js`;
+`server/routes/admin-docs.js` (rewritten), `contracts.js`, `full-export.js`,
+`server/lib/claude.js`, `lib/blockedExtensions.js` (new), `server/index.js`.
+
+**Verification**: client build clean; `node --check` on all six touched server
+files; **finance fixtures 140/140**. Live on :3001 with R2 and AI unconfigured —
+renewals returns the full portfolio (Expired + Pending + a 2027 Active row) while
+`/expiring` still returns exactly its three; `?days=30` still narrows; the
+Restricted matrix exercised from a real second Admin; expiring drops a doc when
+it is Archived and returns when it isn't; blank-title 400s on create and patch;
+blocked extensions rejected both ways; two file revisions listed, one deleted,
+`file_count` tracking; cross-document file ids 404; deleting a document takes its
+files; `generate` 400s without artist+type, 503s with AI off, and — run once
+against a deliberately bogus key — proves the reference pull, label lookup and
+prompt build all execute before a clean 502. A sample draft was rendered through
+both export paths and the text extracted back out of the files (7/7 probes in the
+PDF, 5/5 plus bold runs in the DOCX). `jspdf` imported by NAMED export
+(`default` is the namespace, not the class — confirmed again at runtime).
+Full-export ships `admin_docs.csv`.
+
+---
 ## Standing invariants already honored (keep honoring)
 - Every query scoped by `label_id`; client FKs re-validated against the label.
 - `useEffect(() => { load() }, [])` — never `useEffect(load, [])` (Promise-as-cleanup crash).
