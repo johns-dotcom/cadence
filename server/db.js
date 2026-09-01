@@ -33,7 +33,7 @@ if (process.env.NODE_ENV !== 'production' && process.env.DISABLE_TENANT_ASSERT !
     'report_dismissals', 'report_month_overrides',
     'statement_match_rejections', 'bank_txn_invoice_links', 'statement_no_invoice_rules',
     'statement_artist_rules', 'statement_flag_acks', 'statement_months',
-    'artist_budget_sections',
+    'artist_budget_sections', 'vendor_payment_details',
   ];
   const tableRe = new RegExp(`\\b(from|join|into|update|delete\\s+from)\\s+"?(${TENANT_TABLES.join('|')})"?\\b`, 'i');
   const origQuery = pool.query.bind(pool);

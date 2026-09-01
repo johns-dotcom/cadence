@@ -236,6 +236,31 @@ export default function Approvals() {
                       </div>
                     )
                   })}
+                  {/* Payment coordinates cross-check — only the two states worth
+                      a human. `match`/`absent`/`unscanned` stay silent: a banner
+                      for the expected case would be noise on every row. */}
+                  {(en.payment_check?.verdict === 'mismatch' || en.payment_check?.changed_from) && (
+                    <div className="rounded-lg border px-3 py-2.5 flex items-start gap-2.5 bg-amber-500/10 border-amber-500/30">
+                      <ShieldAlert size={15} className="text-warning mt-0.5 flex-shrink-0" />
+                      <div className="flex-1 min-w-0 text-[13px] text-ink space-y-1">
+                        {en.payment_check.verdict === 'mismatch' && (
+                          <p>
+                            <span className="font-bold">The bank details on the form don't match the invoice.</span>{' '}
+                            Form says <span className="font-semibold">••••{en.payment_check.typed_last4 || '?'}</span>, the invoice says{' '}
+                            <span className="font-semibold">••••{en.payment_check.doc_last4 || '?'}</span> ({en.payment_check.method}).
+                            Confirm with the vendor on a channel you already trust before paying — redirected-payment fraud looks exactly like this.
+                          </p>
+                        )}
+                        {en.payment_check.changed_from && (
+                          <p>
+                            <span className="font-bold">This vendor changed their payment details.</span>{' '}
+                            We previously held <span className="font-semibold">{en.payment_check.changed_from.method} ••••{en.payment_check.changed_from.last4 || '?'}</span>;
+                            this submission gives <span className="font-semibold">{en.payment_check.method} ••••{en.payment_check.typed_last4 || '?'}</span>.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Meta row */}
@@ -249,6 +274,10 @@ export default function Approvals() {
                   </span>
                   <span className="text-gray-300">·</span>
                   <span><span className="font-semibold text-gray-400 uppercase text-[10px] mr-1">Rep</span>{en.rep || '—'}</span>
+                  {(en.payment_method || en.payment_last4) && (<>
+                    <span className="text-ink-faint">·</span>
+                    <span><span className="font-semibold text-ink-faint uppercase text-[10px] mr-1">Pay</span>{en.payment_method || '—'}{en.payment_last4 ? ` ••••${en.payment_last4}` : ''}{en.payment_check?.reused_on_file ? ' (on file)' : ''}</span>
+                  </>)}
                 </div>
 
                 {en.description && <p className="mt-2 text-[13px] text-gray-500"><span className="font-semibold text-gray-400 uppercase text-[10px] mr-1.5">Desc</span>{en.description}</p>}

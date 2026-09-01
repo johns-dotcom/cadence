@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Building2, ShieldCheck, ShieldAlert, X, Upload, ExternalLink, Pencil, GitMerge, Tag, Trash2, Plus, Sparkles, AlertTriangle } from 'lucide-react'
+import { Building2, ShieldCheck, ShieldAlert, X, Upload, ExternalLink, Pencil, GitMerge, Tag, Trash2, Plus, Sparkles, AlertTriangle, CreditCard } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
@@ -14,7 +14,7 @@ function VendorDrawer({ name, allNames, onClose, onChanged, onRenamed }) {
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [edit, setEdit] = useState({ email: '', address: '', bank: '', notes: '' })
+  const [edit, setEdit] = useState({ email: '', address: '', notes: '' })
   const [aliases, setAliases] = useState([])
   const [newAlias, setNewAlias] = useState('')
   const [renameTo, setRenameTo] = useState('')
@@ -22,6 +22,11 @@ function VendorDrawer({ name, allNames, onClose, onChanged, onRenamed }) {
 
   const [emails, setEmails] = useState([])
   const [newEmail, setNewEmail] = useState('')
+  // Payment-details vault: masked summary rides the detail payload; the full
+  // reveal is a separate Admin-only call that writes an audit row PER READ.
+  const [payDetails, setPayDetails] = useState(null)
+  const [payLoading, setPayLoading] = useState(false)
+  const [payErr, setPayErr] = useState('')
   const loadAliases = () => api.get(`/ledger/vendors/${encodeURIComponent(name)}/aliases`).then(r => setAliases(r.data.data || [])).catch(() => {})
   const loadEmails = () => api.get(`/ledger/vendors/${encodeURIComponent(name)}/emails`).then(r => setEmails(r.data.data || [])).catch(() => {})
   const load = () => {
@@ -29,7 +34,8 @@ function VendorDrawer({ name, allNames, onClose, onChanged, onRenamed }) {
     api.get(`/ledger/vendors/${encodeURIComponent(name)}`).then(res => {
       setData(res.data.data)
       const v = res.data.data.vendor || {}
-      setEdit({ email: v.email || '', address: v.address || '', bank: v.bank || '', notes: v.notes || '' })
+      setEdit({ email: v.email || '', address: v.address || '', notes: v.notes || '' })
+      setPayDetails(null); setPayErr('')
     }).catch(() => {}).finally(() => setLoading(false))
     loadAliases(); loadEmails()
   }
@@ -41,6 +47,15 @@ function VendorDrawer({ name, allNames, onClose, onChanged, onRenamed }) {
     catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
   const delEmail = async (id) => { try { await api.delete(`/ledger/vendor-emails/${id}`); loadEmails() } catch { toast('Failed', 'error') } }
+
+  const revealPay = async () => {
+    setPayLoading(true); setPayErr('')
+    try {
+      const r = await api.get(`/ledger/vendors/${encodeURIComponent(name)}/payment-details`)
+      setPayDetails(r.data?.data || { on_file: false })
+    } catch (err) { setPayErr(err.response?.data?.error || 'Could not load payment details') }
+    finally { setPayLoading(false) }
+  }
 
   const save = async () => {
     try { await api.patch(`/ledger/vendors/${encodeURIComponent(name)}`, edit); toast('Saved'); onChanged?.() }
@@ -106,9 +121,73 @@ function VendorDrawer({ name, allNames, onClose, onChanged, onRenamed }) {
             <div className="space-y-3 mb-4">
               <div><label className="label">Email</label><input className="input" value={edit.email} onChange={e => setEdit(s => ({ ...s, email: e.target.value }))} /></div>
               <div><label className="label">Address</label><input className="input" value={edit.address} onChange={e => setEdit(s => ({ ...s, address: e.target.value }))} /></div>
-              <div><label className="label">Bank</label><input className="input" value={edit.bank} onChange={e => setEdit(s => ({ ...s, bank: e.target.value }))} /></div>
               <div><label className="label">Notes</label><textarea className="input" rows={2} value={edit.notes} onChange={e => setEdit(s => ({ ...s, notes: e.target.value }))} /></div>
               <button onClick={save} className="btn-primary">Save details</button>
+            </div>
+
+            {/* Payment details — the encrypted vault. Masked (method + last-4)
+                for everyone; the full reveal is Admin-only and every reveal is
+                written to the audit log. Bank details deliberately have no
+                edit field here — they enter through the vendor form only. */}
+            <div className="card p-4 mb-4">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <CreditCard size={13} className="text-ink-muted" />
+                <p className="text-xs font-bold text-ink">Payment details</p>
+                {isAdmin && data.vendor.payment_summary && !payDetails && (
+                  <button onClick={revealPay} disabled={payLoading} className="ml-auto text-xs font-semibold text-brand-ink hover:underline">
+                    {payLoading ? 'Loading…' : 'Show'}
+                  </button>
+                )}
+              </div>
+              {!data.vendor.payment_summary ? (
+                <p className="text-xs text-ink-faint">Nothing on file — this vendor hasn't submitted payment details through the vendor form yet. Their invoice is still the source.</p>
+              ) : (
+                <>
+                  <p className="text-sm text-ink">
+                    <span className="font-semibold">{data.vendor.payment_summary.method || '—'}</span>
+                    {data.vendor.payment_summary.last4 && <span className="font-semibold"> ••••{data.vendor.payment_summary.last4}</span>}
+                    {data.vendor.payment_summary.updated_at && <span className="text-ink-faint"> · updated {String(data.vendor.payment_summary.updated_at).slice(0, 10)}</span>}
+                  </p>
+                  {isAdmin
+                    ? <p className="text-[11px] text-ink-faint mt-1">Full details are hidden — viewing them is recorded in the audit log.</p>
+                    : <p className="text-[11px] text-ink-faint mt-1">Full details are visible to admins only.</p>}
+                  {data.vendor.payment_summary.key_missing && (
+                    <p className="text-[11px] text-warning mt-1">Vault key not configured (PAYMENT_DETAILS_KEY) — new submissions store the method and last four digits only.</p>
+                  )}
+                  {payErr && <p className="text-[11px] text-danger mt-1">{payErr}</p>}
+                  {payDetails && !payDetails.on_file && <p className="text-xs text-ink-faint mt-2">Nothing stored for this vendor's email.</p>}
+                  {payDetails?.on_file && (
+                    <div className="mt-2 grid grid-cols-[auto,1fr] gap-x-4 gap-y-1 text-xs text-ink">
+                      {[
+                        ['Method', payDetails.method],
+                        ['Name on account', payDetails.holder_name],
+                        ['Account', payDetails.account_number],
+                        ['Routing', payDetails.routing_number],
+                        ['Account type', payDetails.account_type],
+                        ['IBAN / SWIFT', payDetails.iban_swift],
+                        ['PayPal', payDetails.paypal_handle],
+                        ['Bank name', payDetails.bank_name],
+                        ['Bank address', payDetails.bank_address],
+                        ['Beneficiary address', payDetails.beneficiary_address],
+                        ['Intermediary bank', payDetails.intermediary_bank],
+                        ['Wire type', payDetails.wire_scope],
+                        ['Updated', String(payDetails.updated_at || '').slice(0, 10)],
+                      ].filter(([, v]) => v).map(([k, v]) => (
+                        <span key={k} className="contents">
+                          <span className="text-ink-faint">{k}</span>
+                          <span className="tabular-nums break-all">{v}</span>
+                        </span>
+                      ))}
+                      {payDetails.encrypted === false && (
+                        <p className="col-span-2 text-warning">Captured while the vault key was not configured — only the method and last four digits were kept (never full numbers).</p>
+                      )}
+                      {payDetails.encrypted !== false && payDetails.readable === false && (
+                        <p className="col-span-2 text-warning">Stored, but not readable — the encryption key is missing or has changed. This is not the vendor failing to give details.</p>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
 
             {/* Aliases */}

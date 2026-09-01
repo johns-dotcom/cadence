@@ -64,7 +64,7 @@ export default function Catalog() {
   const archive = async (r) => { try { await api.patch(`/releases/${r.id}`, { archived: !r.archived }); load() } catch { toast('Failed', 'error') } }
 
   const syncArtwork = async () => {
-    const missing = shown.filter(r => !r.cover_art_url).slice(0, 40)
+    const missing = shown.filter(r => !r.cover_art_url || r.cover_art_url === 'not_found').slice(0, 40)
     if (!missing.length) { toast('All shown releases already have artwork'); return }
     setSyncing(true); let ok = 0
     for (const r of missing) { try { await api.post(`/releases/${r.id}/sync-artwork`); ok++ } catch { /* skip */ } }
@@ -102,7 +102,7 @@ export default function Catalog() {
                 {items.map(r => (
                   <div key={r.id} className="group">
                     <Link to={`/releases/${r.id}`} className="block aspect-square rounded-xl overflow-hidden bg-gray-100 ring-1 ring-black/5 relative">
-                      {r.cover_art_url
+                      {r.cover_art_url && r.cover_art_url !== 'not_found'
                         ? <img src={r.cover_art_url} alt="" className="w-full h-full object-cover" />
                         : <div className="w-full h-full flex items-center justify-center"><Music size={28} className="text-gray-300" /></div>}
                       {r.release_type && <span className="absolute top-1.5 left-1.5 text-[9px] font-bold uppercase bg-black/60 text-white px-1.5 py-0.5 rounded">{r.release_type}</span>}

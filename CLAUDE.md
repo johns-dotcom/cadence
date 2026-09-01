@@ -502,6 +502,190 @@ boom-dashboard). Fixed in this pass (builds clean, NOT committed):
 - NOT yet fixed: RC-3/RC-4 (micro-typography, icon sizes) land per-page
   during rework by design.
 
+### Build-order Phase 2 (2026-08-31) — payment vault + vendor form parity
+
+**Encrypted payment-details vault** (the vendors.md #2 / vendor-submit VS-1 P0):
+- `server/lib/paymentCrypto.js` — AES-256-GCM, per-value random IV, `v1:`
+  versioned ciphertext. Key from **`PAYMENT_DETAILS_KEY`** (64-hex or base64-32).
+  **MUST be set on Railway before deploy** — generate with
+  `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` and
+  never rotate casually: stored ciphertext under the old key becomes unreadable
+  (surfaced as `readable:false`, distinguished from "vendor gave nothing").
+  **No key ⇒ degraded capture, never plaintext**: the form still accepts +
+  validates details but persists ONLY method + last4 + non-sensitive names with
+  `encrypted=FALSE`; full account/routing/IBAN are NEVER written unencrypted.
+- `server/lib/paymentFields.js` — pure per-method field specs + validation
+  (ABA checksum, IBAN/SWIFT shapes, PayPal), wire split Domestic (ABA+acct) vs
+  International (IBAN/SWIFT; acct required only with a bare SWIFT), and
+  `comparePaymentDetails` doc-vs-typed verdict (match|mismatch|absent|unscanned).
+- `vendor_payment_details` table — **keyed `(label_id, LOWER(vendor_email))`,
+  deliberately NOT by name/alias** (a name collision must never pre-fill one
+  vendor's bank details into another's form). `updated_from_entry_id` stamps
+  which submission last touched the row. In TENANT_TABLES + one-time migration
+  moved plaintext `vendors.bank` into the vault (bank name only, encrypted=FALSE;
+  no-email rows appended to notes) and **blanked the column**; ledger.js no
+  longer selects or PATCHes `bank`.
+- **Reveal**: `GET /ledger/vendors/:name/payment-details` is the ONLY decrypt
+  site — `requireAdmin`, whitelisted response, and an **audit row PER READ**
+  (bk_audit_log + activity_log). Masked summary (method + ••••last4 +
+  key_missing) rides the vendor-detail payload for the drawer.
+- Entry stamps: `expenses.payment_check` JSONB (verdict + typed/doc last4 +
+  `changed_from` {method,last4} when a vendor's details differ from the stored
+  row — the invoice-fraud shape) and denormalized `payment_last4`.
+
+**Vendor form parity** (vendor-submit.md §7 — closed VS-1..VS-18, VS-20..VS-22):
+`routes/vendor.js` rewritten — payment capture/reuse (`payment-on-file` confirms
+without disclosing; `payment_reuse_on_file=true` re-materializes the stored row,
+typed always wins), `/roster` (5-min cache) + server-side roster normalization +
+`off_roster_artist`, `/validate-w9` pre-submit gate (blocks only DEFINITE
+unsigned; falls open), `/lookup` email-gated contact prefill, check-dup advisory
+(normalized dup + 30-day/currency similar WITH details), **dup 409 removed**
+(VS-2 — advisory + note for the approver instead), doc-missing-number bounced,
+Net-30 `payment_terms`/`scheduled_payment_date`, structured `social_handles`
+JSONB (explicit "N/A" convention), rep required only when reps exist, song per
+row required, canonical-alias `vendor_emails`, 10 MB + extension fileFilter,
+multer errors → vendor-readable 400s. `claude.js`: `parseInvoice` takes
+categories+roster vocabulary, new `extractPaymentInfo`, `validateW9`.
+`VendorSubmit.jsx` rewritten (707 lines): per-method payment panel + "still
+correct?" reuse card, RosterPicker (handle-shaped warning, off-roster note),
+draft autosave FIXED (meaningful-content gate + paused while resume banner
+shows; account/routing/IBAN never in localStorage), debounced W9/dup checks,
+ONE AI parse at step 2→3 (was 3 paid calls), prefill-verify banner, named
+missing-items checklist, top-level mode toggle, Net-30 success screen +
+contact-preserving "Submit another". AP surfaces: **Approvals** card shows a
+mismatch/changed_from amber banner + Pay method ••••last4 meta; **Vendors
+drawer** payment card (masked → Admin-only Show). Boom's Payments page shows
+no last4 — nothing added there. Skipped: VS-19 sandbox/admin-preview (P3,
+testing-only). Verified live: encrypt/decrypt round-trip, degraded no-key boot,
+reuse-on-file, changed_from firing, audit-per-reveal, vendors.bank blanked.
+
+### Build-order Phase 2 (2026-08-31) — dashboard parity campaign
+All 17 rows of `_audit/pages/dashboard.md` §7 closed (4 P0 + 5 P1 + P2/P3;
+nothing skipped). Dashboard.jsx rebuilt to boom's layout (space-y-8, greeting
+h1, action-card row, gap-6 rows) with cadence-only features kept: welcome
+banner, pinned links, widget visibility (`vis()` — two NEW keys
+`latest_releases` + `notifications` added to Settings' DASH_WIDGETS), Open
+Deals stat, Recent-activity panel, bookkeeping widget (now with boom's
+recent-invoices mini list, invoice count, "% of logged", Review now → and Open
+Ledger; "Pending QB" stays scoped out).
+- **Server (`routes/dashboard.js`)**: new `GET /dashboard/chart?year&genre&
+  format` (per-year Jan–Dec domain, same-filters prior-year series, option
+  lists, LOWER(TRIM()) matching) and `GET /dashboard/notifications` (computed
+  alerts: this-week count, <50%/<25% checklist completion over the 14 cadence
+  checklist cols, missing UPC/ISRC/Spotify-URI ≤30d LIMIT 5, expiring
+  contracts 60d Approver+ [read-only query — contracts routes untouched],
+  expiring `admin_docs` 60d Admin+ w/ Restricted hidden from non-Superadmin,
+  overdue tasks, open `internal_requests`). `/widgets` swapped the rolling
+  21-day list for `thisWeek`/`nextWeek` calendar-week buckets and dropped
+  `upcomingReleases`/`releasesByMonth` (only consumer was Dashboard;
+  WaitingOnYou reads `pendingApprovals`, still present). `/` gained
+  `teamMembers`; upcoming reverted to boom parity `> CURRENT_DATE`.
+- **Bulk artwork sync**: `POST /releases/sync-artwork {days,force,retry}` in
+  releases.js — general (Catalog will consume it at CAT-3), label-scoped,
+  boom's 2-phase batch (URI lookup then strict search) with 50/100ms pacing,
+  `'not_found'` sentinel so permanent misses never re-poll Spotify, transient
+  errors left NULL for retry, `remaining` excludes sentinels so the client
+  loop terminates. No Spotify keys → `{total:0, disabled:true}` no-op.
+  `lib/spotify.js` gained `artworkByRef` (404 = permanent null, non-2xx =
+  throw) + `searchArtwork` (boom's strongMatch strict matcher) and a
+  case-insensitive/protocol-less `parseRef`. GET /releases gained
+  `archived` + `date_from` params. Sentinel guards added at the four
+  cover_art_url render sites (Catalog, ArtistProfile, ReleaseDetail, Dash).
+- **Client**: Notifications panel (severity icon + left border + color-mix
+  wash, Clear all, release deep-links), Latest Releases 14-day carousel
+  (spotifyWebUrl parser, hover Spotify badge, relativeDateLabel, Open Catalog,
+  sync loop w/ no-progress guard + "Spotify not configured" message), chart
+  filter bar + legend + CustomTooltip + YAxis/grid @260px, donut 80/40 w/
+  in-slice % labels + 2-col count legend + "N releases" formatter (server
+  excludes empty genre again — no more 'Unspecified' bucket), This/Next Week
+  buckets + View all, error screen, full-page skeleton, `r` refresh hotkey,
+  refetch on `user?.id`, task buckets computed client-side with
+  isPastLocal/daysUntilLocal (server counts kept as fallback). ReconciledBadge
+  back to boom's bordered emerald-50 pill w/ full month name, inline next to
+  the subtitle; amber reopened state kept. RC-3/RC-4 applied on this surface
+  (boom's text-[10px]–[13px] + icon sizes). All styling tokens-only
+  (ink/elev/divider/semantic + gray CSS vars for chart internals).
+- **Deviations**: overdue-task alert counts the VIEWER's tasks only
+  (department is a permission boundary — no workspace-wide count);
+  "Pending Requests" reads `internal_requests` (cadence's analog of boom's
+  distributor requests); admin-doc Restricted filter uses IS DISTINCT FROM so
+  NULL-confidentiality docs still alert; My-Tasks/Approvals top-row link cards
+  replace the 3-tile "My tasks" widget (vis('tasks') now gates the card);
+  Approvals card is Admin/Superadmin like boom even though the bk payload
+  serves Approver+.
+- Verified live on :3001 (throwaway DB, label 2): all four endpoints 200 with
+  seeded fixtures — 7 computed alerts across all severities, filtered chart w/
+  prior-year series, week buckets, teamMembers, date_from window, disabled
+  sync no-op. `npm run build` clean.
+
+### Build-order Phase 2 (2026-08-31) — contracts parity campaign
+All rows of `_audit/pages/contracts.md` §7 closed except CT-11 (skipped —
+see below). `Contracts.jsx` rebuilt to boom's two-state page (list ↔ drill-in
+detail), keeping the cadence additives (AI clause box, `num_releases` input,
+PATCH allow-list, toasts, signed URLs).
+- **Schema (`index.js`, all AFTER their CREATEs)**: `contracts.financial_terms
+  JSONB DEFAULT '[]'` (CT-4); `royalty_split` restored to NUMERIC(5,2) —
+  fresh-DB CREATE changed + a **guarded one-time type migration** (checks
+  information_schema; converts free text by leading number, "50/50"→50,
+  capped at 100, pure text→NULL) (CT-10); `entity_files` gained `uploaded_by`
+  + `file_size`; one-time backfill of legacy single-slot contract files
+  (contracts.file_name/r2_key) into entity_files so the multi-file model
+  covers old uploads (CT-8). Boot verified clean on the dev DB.
+- **Server (`routes/contracts.js`)**: GET `/` gained `?artist/type/status` +
+  label-scoped entity_files roll-up subqueries (file_count / latest) + ORDER BY
+  expiration ASC NULLS LAST (CT-7, CT-20); new GET `/missing` (3 buckets,
+  archived artists/releases excluded), GET `/expiring` (Active ≤90d,
+  days_until_expiry) (CT-5/6); POST `/scan` via new `lib/claude.js
+  scanContract` (structured-output schema incl. per-field `_confidence`,
+  clamped server-side; 503 + `setup_required` without a key) (CT-3); GET
+  `/:id/linked` — releases/income by artist_id, ledger by LOWER(TRIM(artist)),
+  **leaf rows only** (cadence's split convention, NOT boom's parent_id IS
+  NULL) and **USD-converted per row via lib/usd usdOf + round2** (boom summed
+  raw amounts) (CT-2); entity_files suite POST/GET/DELETE `/:id/files(/:fileId)`
+  + per-file signed-URL GET, legacy file_name/r2_key kept pointed at the
+  newest upload (CT-8); PDF-only multer fileFilter on both uploaders with a
+  400-shim (CT-13); financial_terms in POST/PATCH via cleanTerms (strips
+  `_confidence`, caps 50 rows); DELETE cleans entity_files + R2 and is
+  activity-logged (CT-18). All `:id` routes `(\d+)`-constrained. `/renewals`
+  untouched (Renewals page consumer); dashboard's read-only expiry query
+  untouched.
+- **Client**: detail view (CT-1) — Contract Details grid, royalty two-box +
+  split bar (brand accent = the label share per RC-2, label name from
+  useAuth), notes, LinkedDataPanel (recoupment stacked bar success/warning,
+  income offset, releases/income/spend cards, unpaid chip), Financial
+  Obligations inline editor, Documents panel (revisions w/ uploader/size/date,
+  upload+drop, per-file preview + ConfirmDialog delete). List: Missing +
+  Expiring collapsible panels (expiry buckets ≤30 danger / 31–60 warning /
+  61–90 neutral — cadence has no third alarm hue), filters card, quick-attach
+  card, 8-col table w/ Artist/{Label} split column + Doc preview cell
+  (count + Eye 10), inline FilePreviewModal (iframe, multi-file pager,
+  Escape-stacked), Skeleton loading (CT-22), distinct error state w/ Retry
+  (CT-15), Badge status pills (Expired back to red) (CT-16), formatDate
+  everywhere (CT-12), `n` hotkey (CT-19), searchable ArtistSelect combobox
+  (CT-23), boom delete confirm w/ file count via ui/ConfirmDialog + busy
+  disable (window.confirm gone from the page) (CT-18), hover:bg-elev rows
+  (CT-24), RC-3/RC-4 bracket sizes + 10–14px icons, tokens-only styling
+  (soft tints use the Badge rgba convention).
+- **CT-17 (artist required)**: enforced client-side (Create disabled without
+  artist+type, "Unassigned" option removed). Server keeps artist_id optional
+  — the Pending Contracts promote flow creates artist-less rows; /missing +
+  detail render `(unassigned)` for them.
+- **CT-21 (type drift)**: reordered to boom (Recording, Publishing,
+  Distribution, Management, Licensing); cadence's 'Producer' kept LAST so
+  existing rows stay representable.
+- **CT-11 SKIPPED — deliberate**: boom's `syncArtistBudget` upserted an
+  `artist_budgets` table cadence doesn't have; the 2026-08-27 Artist Budgets
+  subsystem models budgets as user-entered section numbers
+  (`artist_budget_sections`) where the blur-saved inputs ARE the creation
+  flow. Auto-writing contract advances into it would fight that design —
+  needs a product call, not a parity port.
+- Verified live on :3001 (label 2): create w/ terms + numeric split, filtered
+  list w/ file roll-up, expiring buckets, missing buckets, linked payload
+  (releases 4 / during_term 3), PATCH strips `_confidence`, non-PDF upload
+  400s, scan 503 + setup_required, delete + 404 after. Legacy row's free-text
+  split converted by the migration. `npm run build` clean. NOTE: file uploads
+  need R2 (dev box has none — uploadFile throws, same as artists.js).
+
 - **M5 "Usage analytics" was never built** — no `page_views`, no `/usage`, no
   `/api/analytics`. The claim above is false; treat as an open gap.
 - **M3 "Invoice Search"**: `/invoices` is the outbound invoice CREATOR; no

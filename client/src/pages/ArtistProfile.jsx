@@ -147,7 +147,7 @@ export default function ArtistProfile() {
 
   const ReleaseRow = (r) => (
     <Link key={r.id} to={`/releases/${r.id}`} className="card p-3 flex items-center gap-3 hover:border-brand-300 transition-colors">
-      {r.cover_art_url
+      {r.cover_art_url && r.cover_art_url !== 'not_found'
         ? <img src={r.cover_art_url} alt="" className="w-10 h-10 rounded object-cover flex-shrink-0 bg-gray-100" />
         : <div className="w-10 h-10 rounded bg-gray-100 flex items-center justify-center flex-shrink-0"><Music size={15} className="text-gray-400" /></div>}
       <div className="min-w-0 flex-1">

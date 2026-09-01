@@ -195,11 +195,64 @@ function draftClause({ kind, context, labelName }) {
 }
 
 // Parse an invoice document/image into structured fields for auto-fill.
-function parseInvoice({ buffer, mimeType }) {
-  return extractFromFile({
-    buffer, mimeType, schema: INVOICE_SCHEMA, maxTokens: 1024,
-    instruction: 'Extract the invoice details. invoice_date as YYYY-MM-DD. amount is the total due as a number (no symbols). currency as a 3-letter ISO code. payment_method is the requested method if stated (ACH, Wire, Check, PayPal, etc.), else null. category is a short expense category if obvious, else null. Use null for anything not present.',
+function parseInvoice({ buffer, mimeType, categories, roster }) {
+  // Optional label vocabulary: steering the extraction toward the tenant's own
+  // category names + artist roster raises prefill quality on the public form.
+  let instruction = 'Extract the invoice details. invoice_date as YYYY-MM-DD. amount is the total due as a number (no symbols). currency as a 3-letter ISO code. payment_method is the requested method if stated (ACH, Wire, Check, PayPal, etc.), else null. category is a short expense category if obvious, else null. Use null for anything not present.';
+  if (Array.isArray(categories) && categories.length) {
+    instruction += ` For category, choose the best fit from this list when one applies (else null): ${categories.slice(0, 40).join('; ')}.`;
+  }
+  if (Array.isArray(roster) && roster.length) {
+    instruction += ` The label's artist roster (for reference when the invoice names an artist/project): ${roster.slice(0, 60).join('; ')}.`;
+  }
+  return extractFromFile({ buffer, mimeType, schema: INVOICE_SCHEMA, maxTokens: 1024, instruction });
+}
+
+const PAYMENT_INFO_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    ach_routing_number: nullableStr,
+    ach_account_number: nullableStr,
+    wire_swift_or_iban: nullableStr,
+    paypal_identifier: nullableStr,
+    venmo_or_zelle: nullableStr,
+    cashapp: nullableStr,
+    check_payable_to: nullableStr,
+    external_pay_link: nullableStr,
+    summary: nullableStr,
+  },
+  required: ['ach_routing_number', 'ach_account_number', 'wire_swift_or_iban', 'paypal_identifier',
+    'venmo_or_zelle', 'cashapp', 'check_payable_to', 'external_pay_link', 'summary'],
+};
+
+// Focused extraction of the payment instructions printed on an invoice, used to
+// corroborate (never block) the payment details a vendor typed on the form.
+// Returns { ok:false } when AI is unavailable/errored — callers fall open.
+async function extractPaymentInfo({ buffer, mimeType }) {
+  const r = await extractFromFile({
+    buffer, mimeType, schema: PAYMENT_INFO_SCHEMA, maxTokens: 512,
+    instruction: 'Examine this invoice for the payment instructions printed on the document. '
+      + 'ACH counts only when BOTH a 9-digit routing number AND an account number are printed. '
+      + 'paypal_identifier is a PayPal email/handle money can be pushed to — a paypal.com checkout link is an external_pay_link instead. '
+      + 'external_pay_link is any "Pay Now" / portal URL (Stripe, QBO, Square, Bill.com, etc.). '
+      + 'Banking instructions usually sit in the footer or a "Payment Details" / "Remit To" / "Wire Instructions" block. '
+      + 'Only return values actually printed on the document; null otherwise. summary: one short sentence.',
   });
+  if (!r.ok) return { ok: false };
+  const d = r.data || {};
+  const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  return {
+    ok: true,
+    ach_routing_number: str(d.ach_routing_number),
+    ach_account_number: str(d.ach_account_number),
+    wire_swift_or_iban: str(d.wire_swift_or_iban),
+    paypal_identifier: str(d.paypal_identifier),
+    venmo_or_zelle: str(d.venmo_or_zelle),
+    cashapp: str(d.cashapp),
+    check_payable_to: str(d.check_payable_to),
+    external_pay_link: str(d.external_pay_link),
+    summary: str(d.summary),
+  };
 }
 
 const DISCREPANCY_SCHEMA = {
@@ -273,4 +326,65 @@ function parseMarketing({ buffer, mimeType }) {
   });
 }
 
-module.exports = { isEnabled, callClaude, streamText, extractFromFile, fileBlock, MODEL, parseInvoice, scanInvoice, validateW9, parseMarketing, draftClause };
+
+// ── Contract scan ────────────────────────────────────────────────────────
+// Extract structured deal terms from a contract PDF, with a per-field
+// confidence map ("high" | "medium" | "low") so the client can flag
+// AI-guessed values for human review. Values are clamped in the route.
+
+const confStr = { type: ['string', 'null'] };
+
+const CONTRACT_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    artist_name: nullableStr,
+    contract_type: nullableStr,
+    royalty_split: { type: ['number', 'null'] },
+    advance: { type: ['number', 'null'] },
+    date_signed: nullableStr,
+    expiration_date: nullableStr,
+    territory: nullableStr,
+    notes: nullableStr,
+    financial_obligations: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          label: nullableStr,
+          amount: { type: ['number', 'string', 'null'] },
+          recoupable: { type: ['boolean', 'null'] },
+          note: nullableStr,
+          _confidence: confStr,
+        },
+        required: ['label', 'amount', 'recoupable', 'note', '_confidence'],
+      },
+    },
+    _confidence: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        artist_name: confStr, contract_type: confStr, royalty_split: confStr,
+        advance: confStr, date_signed: confStr, expiration_date: confStr,
+        territory: confStr,
+      },
+      required: ['artist_name', 'contract_type', 'royalty_split', 'advance', 'date_signed', 'expiration_date', 'territory'],
+    },
+  },
+  required: ['artist_name', 'contract_type', 'royalty_split', 'advance', 'date_signed', 'expiration_date', 'territory', 'notes', 'financial_obligations', '_confidence'],
+};
+
+// Scan a contract PDF into structured fields for the New Contract form.
+function scanContract({ buffer, mimeType }) {
+  return extractFromFile({
+    buffer, mimeType, schema: CONTRACT_SCHEMA, maxTokens: 1500,
+    instruction: `You are extracting structured data from a music industry contract.
+- contract_type: exactly one of Recording, Publishing, Distribution, Management, Licensing, Producer (or null).
+- royalty_split: the ARTIST's royalty percentage as a plain number (e.g. 80), or null.
+- advance: the advance payment in dollars as a plain number, or null.
+- date_signed / expiration_date: YYYY-MM-DD or null.
+- notes: 1-2 key deal terms worth noting, or null.
+- financial_obligations: EVERY financial commitment in the contract (funds, budgets, fees, rates, bonuses). Do NOT include the advance (it has its own field). amount is a dollar number, a percentage string like "15%", or a description like "statutory rate". Empty array if none.
+- _confidence: rate every extracted field: "high" = explicitly stated (copied from the page); "medium" = implied / inferred from context; "low" = guessed or ambiguous. Be honest — a UI warns the user on medium/low so they double-check. Use null for fields whose value is null.`,
+  });
+}
+
+module.exports = { isEnabled, callClaude, streamText, extractFromFile, fileBlock, MODEL, parseInvoice, extractPaymentInfo, scanInvoice, validateW9, parseMarketing, draftClause, scanContract };

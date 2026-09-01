@@ -109,7 +109,7 @@ export default function ReleaseDetail() {
 
       <div className="flex items-start justify-between gap-4 mb-5">
         <div className="flex items-center gap-3 min-w-0">
-          {release.cover_art_url
+          {release.cover_art_url && release.cover_art_url !== 'not_found'
             ? <img src={release.cover_art_url} alt="" className="w-14 h-14 rounded-lg object-cover bg-gray-100 flex-shrink-0" />
             : <div className="w-14 h-14 rounded-lg bg-gray-100 flex-shrink-0" />}
           <div className="min-w-0">

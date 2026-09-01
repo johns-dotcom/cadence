@@ -53,7 +53,9 @@ export const DEAL_STAGES = ['Scouting', 'Meeting', 'Offer', 'Negotiation', 'Sign
 
 export const DEAL_TYPES = ['Single', 'EP', 'Album', 'Multi-release', 'Distribution', 'Licensing']
 
-export const CONTRACT_TYPES = ['Recording', 'Distribution', 'Publishing', 'Management', 'Licensing', 'Producer']
+// Boom order (Recording, Publishing, Distribution, Management, Licensing);
+// 'Producer' is a Cadence-era addition kept last so existing rows stay valid.
+export const CONTRACT_TYPES = ['Recording', 'Publishing', 'Distribution', 'Management', 'Licensing', 'Producer']
 
 export const CONTRACT_STATUSES = ['Active', 'Pending', 'Expired', 'Terminated']
 

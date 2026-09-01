@@ -454,7 +454,7 @@ const runMigrations = async () => {
       status VARCHAR(50) DEFAULT 'Active',
       date_signed DATE,
       expiration_date DATE,
-      royalty_split VARCHAR(100),
+      royalty_split NUMERIC(5,2),
       advance VARCHAR(100),
       territory VARCHAR(100),
       num_releases VARCHAR(100),
@@ -466,6 +466,21 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_contracts_label ON contracts (label_id)`);
+  // Financial obligations ("deals") — JSONB list of { label, amount, recoupable,
+  // note } rows, edited inline on the contract detail view (boom parity).
+  await pool.query(`ALTER TABLE contracts ADD COLUMN IF NOT EXISTS financial_terms JSONB DEFAULT '[]'::jsonb`);
+  // royalty_split was rebuilt as VARCHAR free text; restore the numeric type so
+  // the artist/label split widget (100 - x) is representable again. Guarded so
+  // it only runs while the legacy column is still character data. Free-text
+  // values keep their leading number ("50/50" -> 50); pure text becomes NULL.
+  const rsType = await pool.query(
+    `SELECT data_type FROM information_schema.columns
+      WHERE table_name = 'contracts' AND column_name = 'royalty_split'`
+  );
+  if (rsType.rows.length && rsType.rows[0].data_type !== 'numeric') {
+    await pool.query(`ALTER TABLE contracts ALTER COLUMN royalty_split TYPE NUMERIC(5,2)
+      USING LEAST(NULLIF(substring(royalty_split from '\\d{1,3}(?:\\.\\d+)?'), '')::numeric, 100)`);
+  }
 
   // Ledger (money out) — expense entries with an approval workflow. Vendor
   // submissions land here as status='pending' via the public vendor form.
@@ -855,6 +870,73 @@ const runMigrations = async () => {
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vendors_label_name ON vendors (label_id, LOWER(name))`);
 
+  // ── Vendor payment details (the encrypted vault) ──────────────────────────
+  // How we actually pay a vendor. Keyed on the vendor's EMAIL, lower-cased,
+  // per label, and nothing weaker: vendor identity everywhere else resolves
+  // through names and vendor_aliases, which is right for grouping invoices and
+  // exactly wrong here — a name collision that pre-fills one vendor's bank
+  // details into another vendor's form is not a mistake anyone gets to make
+  // twice. account_enc/routing_enc/iban_enc hold AES-256-GCM ciphertext from
+  // lib/paymentCrypto.js — never plaintext. `account_last4` is what screens
+  // show. `encrypted = FALSE` marks rows captured while PAYMENT_DETAILS_KEY was
+  // unset (method + last4 + non-sensitive names only — degraded, never leaky).
+  // Placed AFTER labels + expenses + vendors CREATEs (FK/migration ordering).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS vendor_payment_details (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      vendor_email TEXT NOT NULL,
+      vendor_name TEXT,
+      method TEXT,
+      account_enc TEXT,
+      routing_enc TEXT,
+      iban_enc TEXT,
+      paypal_handle TEXT,
+      account_last4 TEXT,
+      holder_name TEXT,
+      bank_name TEXT,
+      bank_address TEXT,
+      account_type TEXT,
+      beneficiary_address TEXT,
+      intermediary_bank TEXT,
+      wire_scope TEXT,
+      encrypted BOOLEAN DEFAULT TRUE,
+      updated_from_entry_id INT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vpd_label_email ON vendor_payment_details (label_id, LOWER(vendor_email))`);
+  // The document cross-check for a submission ({ method, typed_last4, doc_last4,
+  // verdict match|mismatch|absent|unscanned, changed_from?, checked_at }) —
+  // stored, not recomputed: the document it judged may be replaced later.
+  // payment_last4 is denormalized onto the entry so Payments can show which
+  // account an invoice was to be paid to even if the vendor later changes.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_check JSONB`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_last4 TEXT`);
+  // Vendor named an artist not on the label's roster (server-validated).
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS off_roster_artist BOOLEAN DEFAULT FALSE`);
+  // One-time migration OUT of plaintext: vendors.bank (a bank name any Approver
+  // could read/write) moves into the vault keyed by the vendor's email; rows
+  // without an email keep the bank name in notes so nothing is lost. Idempotent:
+  // after the first run vendors.bank is NULL everywhere.
+  await pool.query(`
+    INSERT INTO vendor_payment_details (label_id, vendor_email, vendor_name, bank_name, encrypted)
+    SELECT DISTINCT ON (label_id, LOWER(email)) label_id, LOWER(email), name, bank, FALSE
+      FROM vendors
+     WHERE bank IS NOT NULL AND bank <> '' AND email IS NOT NULL AND email <> ''
+     ORDER BY label_id, LOWER(email), updated_at DESC NULLS LAST
+    ON CONFLICT (label_id, LOWER(vendor_email)) DO NOTHING
+  `).catch(err => console.error('vendors.bank → vault migration failed:', err.message));
+  await pool.query(`
+    UPDATE vendors SET
+      notes = CASE WHEN COALESCE(notes, '') = '' THEN 'Bank: ' || bank ELSE notes || E'\nBank: ' || bank END,
+      bank = NULL
+    WHERE bank IS NOT NULL AND bank <> '' AND (email IS NULL OR email = '')
+  `).catch(err => console.error('vendors.bank (no email) → notes migration failed:', err.message));
+  await pool.query(`UPDATE vendors SET bank = NULL WHERE bank IS NOT NULL`)
+    .catch(err => console.error('vendors.bank blanking failed:', err.message));
+
   // Invoices (money in) — invoices the label issues. Numbered per-label.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS invoices (
@@ -1116,6 +1198,20 @@ const runMigrations = async () => {
       file_data TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+  `);
+  // Attachment provenance for the Documents panels (uploader + size).
+  await pool.query(`ALTER TABLE entity_files ADD COLUMN IF NOT EXISTS uploaded_by INT REFERENCES users(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE entity_files ADD COLUMN IF NOT EXISTS file_size INT`);
+  // One-time backfill: contracts used to hold a single file on the row itself
+  // (file_name/r2_key). Mirror those into entity_files so the multi-file
+  // Documents model covers legacy uploads too. Idempotent — filename is UNIQUE
+  // and the WHERE re-checks existence. (Runs after BOTH creates above.)
+  await pool.query(`
+    INSERT INTO entity_files (label_id, entity_type, entity_id, filename, original_name, mime_type, r2_key)
+    SELECT c.label_id, 'contract', c.id, c.r2_key, COALESCE(c.file_name, c.r2_key), NULL, c.r2_key
+      FROM contracts c
+     WHERE c.r2_key IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM entity_files ef WHERE ef.filename = c.r2_key)
   `);
 
   // Artist profile depth — social links, imagery and Spotify stats. Columns

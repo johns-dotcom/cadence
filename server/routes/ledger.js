@@ -14,6 +14,7 @@ const { stampFxRateAsync } = require('../lib/fxStamp');
 const { familyRoot, cascadePaymentFieldsToFamily, recomputeFamilyPaymentStatus } = require('../lib/paymentFamily');
 const { toUSD } = require('../lib/fx');
 const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
+const paymentCrypto = require('../lib/paymentCrypto');
 const aiScan = require('../lib/aiScan');
 const { validateApprovalChecklist, stampChecklist, writeApprovalChecklist } = require('../lib/approvalChecklist');
 const activityBot = require('../lib/activityBot');
@@ -796,7 +797,7 @@ router.get('/vendors', async (req, res) => {
          agg.last_invoice,
          (agg.entry_has_w9 OR v.w9_r2_key IS NOT NULL) AS w9_on_file,
          COALESCE(v.email, agg.vendor_email) AS email,
-         v.address, v.bank
+         v.address
        FROM (
          SELECT
            payee,
@@ -828,12 +829,39 @@ router.get('/vendors/:name', async (req, res) => {
   try {
     const name = req.params.name;
     const { rows: vrows } = await pool.query(
-      'SELECT id, name, email, address, bank, w9_filename, w9_r2_key, notes FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)',
+      'SELECT id, name, email, address, w9_filename, w9_r2_key, notes FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)',
       [req.labelId, name]
     );
     const vendor = vrows[0] || { name };
     if (vendor.w9_r2_key) { vendor.w9_url = await getSignedFileUrl(vendor.w9_r2_key, 3600).catch(() => null); }
     delete vendor.w9_r2_key;
+
+    // Masked payment-details summary (method + ••••last4) from the encrypted
+    // vault, keyed by the vendor's email — the record email first, else the
+    // most recent email seen on this payee's invoices. Never a decrypted value;
+    // the reveal is a separate Admin-only endpoint that audits per read.
+    try {
+      let email = vendor.email;
+      if (!email) {
+        const { rows: er } = await pool.query(
+          `SELECT vendor_email FROM expenses
+            WHERE label_id = $1 AND LOWER(payee) = LOWER($2) AND vendor_email IS NOT NULL AND vendor_email <> ''
+            ORDER BY created_at DESC LIMIT 1`, [req.labelId, name]);
+        email = er[0]?.vendor_email || null;
+      }
+      if (email) {
+        const { rows: pr } = await pool.query(
+          `SELECT method, account_last4, encrypted, updated_at FROM vendor_payment_details
+            WHERE label_id = $1 AND LOWER(vendor_email) = LOWER($2)`, [req.labelId, email]);
+        if (pr[0]) {
+          vendor.payment_summary = {
+            method: pr[0].method, last4: pr[0].account_last4,
+            encrypted: pr[0].encrypted, updated_at: pr[0].updated_at,
+            key_missing: !paymentCrypto.isConfigured(),
+          };
+        }
+      }
+    } catch { /* summary is decoration; the drawer degrades to "nothing on file" */ }
 
     const { rows: entries } = await pool.query(
       `SELECT id, invoice_date, invoice_number, amount, currency, category, status, payment_status, scheduled_payment_date, w9_r2_key
@@ -848,11 +876,80 @@ router.get('/vendors/:name', async (req, res) => {
   }
 });
 
-// PATCH /api/ledger/vendors/:name — edit contact details / notes
+// GET /api/ledger/vendors/:name/payment-details — the ONLY place a stored
+// account number is ever decrypted. Admin-gated, and it writes an audit row PER
+// READ — not per change: access to payment details is itself the sensitive
+// event (a change is visible in the data afterwards; a read leaves no trace
+// unless one is made deliberately). Looked up by the vendor's email, which is
+// how the details were keyed on the way in.
+router.get('/vendors/:name/payment-details', requireAdmin, async (req, res) => {
+  try {
+    const name = String(req.params.name || '').trim();
+    if (!name) return res.status(400).json({ success: false, error: 'Vendor name required' });
+
+    let email = null;
+    const { rows: vr } = await pool.query(
+      'SELECT email FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [req.labelId, name]);
+    email = vr[0]?.email || null;
+    if (!email) {
+      const { rows: er } = await pool.query(
+        `SELECT vendor_email FROM expenses
+          WHERE label_id = $1 AND LOWER(payee) = LOWER($2) AND vendor_email IS NOT NULL AND vendor_email <> ''
+          ORDER BY created_at DESC LIMIT 1`, [req.labelId, name]);
+      email = er[0]?.vendor_email || null;
+    }
+    if (!email) return res.json({ success: true, data: { on_file: false, key_missing: !paymentCrypto.isConfigured() } });
+
+    const { rows } = await pool.query(
+      `SELECT * FROM vendor_payment_details WHERE label_id = $1 AND LOWER(vendor_email) = LOWER($2)`,
+      [req.labelId, email]
+    );
+    const r = rows[0];
+    if (!r) return res.json({ success: true, data: { on_file: false, key_missing: !paymentCrypto.isConfigured() } });
+
+    bkAudit(req, null, 'payment details viewed', `${name} (${r.method || '?'}, ••••${r.account_last4 || '?'})`);
+    await logActivity(req, 'Viewed vendor payment details', `${name} — ${r.method || '?'} ••••${r.account_last4 || '?'}`);
+
+    // The query is SELECT *, but this response is a WHITELIST — a column added
+    // to the table and not added here is collected, stored, and invisible.
+    res.json({ success: true, data: {
+      on_file: true,
+      method: r.method,
+      holder_name: r.holder_name,
+      bank_name: r.bank_name,
+      bank_address: r.bank_address,
+      account_type: r.account_type,
+      beneficiary_address: r.beneficiary_address,
+      intermediary_bank: r.intermediary_bank,
+      wire_scope: r.wire_scope,
+      paypal_handle: r.paypal_handle,
+      account_number: paymentCrypto.decrypt(r.account_enc),
+      routing_number: paymentCrypto.decrypt(r.routing_enc),
+      iban_swift: paymentCrypto.decrypt(r.iban_enc),
+      last4: r.account_last4,
+      updated_at: r.updated_at,
+      // encrypted=false rows were captured while the vault key was unset —
+      // only method + last4 were kept (never plaintext numbers). readable=false
+      // with encrypted=true means the key is missing/changed NOW — say so,
+      // rather than letting an empty field read as "the vendor gave nothing".
+      encrypted: r.encrypted,
+      readable: paymentCrypto.isConfigured(),
+      key_missing: !paymentCrypto.isConfigured(),
+    } });
+  } catch (error) {
+    console.error('Vendor payment-details error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PATCH /api/ledger/vendors/:name — edit contact details / notes.
+// `bank` is deliberately NOT accepted any more: bank/payment details live in
+// the encrypted vendor_payment_details vault (Admin-gated, audited on read),
+// not in a plain-text column any Approver can write.
 router.patch('/vendors/:name', async (req, res) => {
   try {
     const id = await upsertVendor(pool, req.labelId, {
-      name: req.params.name, email: req.body.email, address: req.body.address, bank: req.body.bank,
+      name: req.params.name, email: req.body.email, address: req.body.address,
     });
     if (req.body.notes !== undefined) {
       await pool.query('UPDATE vendors SET notes = $1, updated_at = NOW() WHERE id = $2', [req.body.notes, id]);

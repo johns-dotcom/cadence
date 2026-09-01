@@ -10,6 +10,117 @@ const spotify = require('../lib/spotify');
 const router = express.Router();
 router.use(authMiddleware, withTenant);
 
+// POST /api/releases/sync-artwork — bulk cover-art sync (label-scoped).
+// Two-phase server batch, called in a loop by the Dashboard's Latest Releases
+// row and (later) the Catalog page:
+//   Phase 1 — releases WITH a spotify_uri but no artwork: resolve the URI.
+//   Phase 2 — everything still bare: strict artist+title search.
+// Body params (all optional): { days, force, retry }
+//   days  — scope to releases in the last N days (0/absent = whole catalog).
+//   force — NULL out cover_art_url in scope first so every release re-evaluates.
+//   retry — reprocess rows previously stamped 'not_found'.
+// Permanent misses are stamped with the 'not_found' sentinel so they are never
+// retried forever; transient Spotify errors leave the row NULL for next sync.
+// `remaining` excludes 'not_found' so the client's batching loop terminates.
+router.post('/sync-artwork', async (req, res) => {
+  try {
+    // Graceful no-op when Spotify isn't configured — total 0 ends any loop.
+    if (!spotify.isEnabled()) {
+      return res.json({ success: true, data: { updated: 0, total: 0, remaining: 0, searched: 0, search_found: 0, disabled: true } });
+    }
+
+    const includeNotFound = req.body.retry === true;
+    // Sanitized int — safe to interpolate into the INTERVAL literal.
+    const days = Math.max(0, parseInt(req.body.days ?? req.query.days, 10) || 0);
+    const recentClause = days > 0 ? ` AND release_date >= CURRENT_DATE - INTERVAL '${days} days'` : '';
+    const recentClauseR = days > 0 ? ` AND r.release_date >= CURRENT_DATE - INTERVAL '${days} days'` : '';
+
+    // force=true resets cover_art_url in scope so the sync re-evaluates every
+    // release from scratch. Safe: Phase 1 re-populates URI'd rows with the
+    // canonical Spotify image and Phase 2 only writes strict matches.
+    if (req.body.force === true) {
+      await pool.query(`UPDATE releases SET cover_art_url = NULL WHERE label_id = $1${recentClause}`, [req.labelId]);
+    }
+
+    // Phase 1: releases with a Spotify URI but no artwork.
+    const { rows } = await pool.query(
+      `SELECT id, spotify_uri FROM releases
+        WHERE label_id = $1 AND spotify_uri IS NOT NULL AND spotify_uri != ''
+          AND (cover_art_url IS NULL OR cover_art_url = '' ${includeNotFound ? "OR cover_art_url = 'not_found'" : ''})${recentClause}
+        LIMIT 500`,
+      [req.labelId]
+    );
+
+    let updated = 0;
+    for (const r of rows) {
+      try {
+        const url = await spotify.artworkByRef(r.spotify_uri);
+        if (url) {
+          await pool.query(`UPDATE releases SET cover_art_url = $1 WHERE id = $2 AND label_id = $3`, [url, r.id, req.labelId]);
+          updated++;
+        } else {
+          // Permanent: bad URI format, Spotify 404, or no images.
+          await pool.query(`UPDATE releases SET cover_art_url = 'not_found' WHERE id = $1 AND label_id = $2`, [r.id, req.labelId]).catch(() => {});
+        }
+      } catch (err) {
+        // Transient (rate limit, 5xx, network) — leave NULL so next sync retries.
+        console.warn(`[sync-artwork] phase1 transient error on #${r.id}:`, err.message);
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+
+    // Phase 2: still-bare releases (URI-less, or Phase 1 couldn't resolve).
+    const { rows: noUri } = await pool.query(
+      `SELECT r.id, r.project_name, a.name AS artist_name
+         FROM releases r LEFT JOIN artists a ON a.id = r.artist_id AND a.label_id = r.label_id
+        WHERE r.label_id = $1
+          AND (r.cover_art_url IS NULL OR r.cover_art_url = '' ${includeNotFound ? "OR r.cover_art_url = 'not_found'" : ''})${recentClauseR}
+        LIMIT 200`,
+      [req.labelId]
+    );
+
+    let searchUpdated = 0;
+    for (const r of noUri) {
+      try {
+        const url = await spotify.searchArtwork(r.artist_name, r.project_name);
+        if (url) {
+          await pool.query(`UPDATE releases SET cover_art_url = $1 WHERE id = $2 AND label_id = $3`, [url, r.id, req.labelId]);
+          searchUpdated++;
+        } else {
+          // Strict matcher found nothing it trusts — stamp so the batch loop
+          // terminates. Pasting a spotify_uri manually overrides later.
+          await pool.query(`UPDATE releases SET cover_art_url = 'not_found' WHERE id = $1 AND label_id = $2`, [r.id, req.labelId]).catch(() => {});
+        }
+      } catch (err) {
+        console.warn(`[sync-artwork] phase2 transient error on #${r.id}:`, err.message);
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    updated += searchUpdated;
+
+    const remaining = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM releases
+        WHERE label_id = $1 AND (cover_art_url IS NULL OR cover_art_url = '')${recentClause}`,
+      [req.labelId]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        updated,
+        total: rows.length + noUri.length,
+        remaining: remaining.rows[0].n,
+        searched: noUri.length,
+        search_found: searchUpdated,
+      },
+    });
+  } catch (error) {
+    console.error('Bulk sync-artwork error:', error);
+    res.status(500).json({ success: false, error: 'Artwork sync failed' });
+  }
+});
+
 // POST /api/releases/:id/sync-artwork — fetch cover art from Spotify (by the
 // release's spotify_uri, else a title+artist search) and store the URL.
 router.post('/:id/sync-artwork', async (req, res) => {
@@ -36,11 +147,18 @@ router.post('/:id/sync-artwork', async (req, res) => {
 // GET /api/releases — release pipeline for the current label
 router.get('/', async (req, res) => {
   try {
-    const { status, q } = req.query;
+    const { status, q, archived, date_from } = req.query;
     const params = [req.labelId];
     let where = 'r.label_id = $1';
     if (status) { params.push(status); where += ` AND r.status = $${params.length}`; }
     if (q) { params.push(`%${q}%`); where += ` AND (r.project_name ILIKE $${params.length} OR a.name ILIKE $${params.length})`; }
+    // Optional flags used by the Dashboard's Latest Releases row.
+    if (archived === 'false') where += ' AND (r.archived = false OR r.archived IS NULL)';
+    else if (archived === 'true') where += ' AND r.archived = true';
+    if (date_from && /^\d{4}-\d{2}-\d{2}$/.test(String(date_from))) {
+      params.push(date_from);
+      where += ` AND r.release_date >= $${params.length}`;
+    }
 
     const { rows } = await pool.query(
       `SELECT r.*, a.name AS artist_name, u.name AS assignee_name

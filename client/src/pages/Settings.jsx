@@ -13,7 +13,9 @@ import { dropTarget } from '../utils/drop'
 
 // Home-dashboard widgets an owner can show/hide (all default on).
 const DASH_WIDGETS = [
-  { key: 'tasks', label: 'My tasks summary' },
+  { key: 'tasks', label: 'My tasks card' },
+  { key: 'latest_releases', label: 'Latest releases (past 14 days)' },
+  { key: 'notifications', label: 'Notifications panel' },
   { key: 'bookkeeping', label: 'Bookkeeping widget (finance roles)' },
   { key: 'releases_chart', label: 'Releases-by-month chart' },
   { key: 'genre_pie', label: 'Genre-mix chart' },
