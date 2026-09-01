@@ -31,10 +31,15 @@ export default function ApprovalChecklistDeck({
   onApproved,
   onEntryPatched,
   onClose,
+  // Reviewer-staged split rows for an entry (from the Approvals page's split
+  // editor). Travels IN the approve payload — never a separate write, so a
+  // failed approve leaves no half-applied split behind.
+  breakdownFor,
 }) {
   const [index, setIndex] = useState(0)
   const [checks, setChecks] = useState({})     // { [entryId]: { artist: true, cobrand: false, … } }
   const [drafts, setDrafts] = useState({})     // { [entryId]: { amount: '123', … } } — in-flight edits
+  const [notes, setNotes] = useState({})       // { [entryId]: 'approval note' } — optional rider
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [approved, setApproved] = useState(0)
@@ -95,9 +100,12 @@ export default function ApprovalChecklistDeck({
     try {
       // notify:false — vendor emails are queued by the page (per its Notify
       // toggle) and drained into EmailPreviewModal after the deck closes.
+      const staged = breakdownFor?.(entry)
       await api.post(`/ledger/entries/${entry.id}/approve`, {
         checklist: checklistPayload(c),
         notify: false,
+        notes: (notes[entry.id] || '').trim() || undefined,
+        artist_breakdown: Array.isArray(staged) && staged.length > 1 ? staged : undefined,
       })
       setApproved((n) => n + 1)
       onApproved?.(entry)
@@ -160,6 +168,30 @@ export default function ApprovalChecklistDeck({
               context={en}
               disabled={busy}
               fieldKey={String(en.id)} />
+          </div>
+
+          {/* The reviewer's corrected split, staged on the Approvals card,
+              rides in the approve payload above. */}
+          {(() => {
+            const staged = breakdownFor?.(en)
+            if (!Array.isArray(staged) || staged.length < 2) return null
+            return (
+              <p className="text-[11px] text-brand-ink pb-2">
+                Will split across {staged.length} lines on approve ({staged.map(s => s.artist).filter(Boolean).join(', ')}).
+              </p>
+            )
+          })()}
+
+          {/* Optional approval note — appended to the row's notes trail at
+              approve time, never replacing what's there. */}
+          <div className="pb-2">
+            <input
+              value={notes[en.id] || ''}
+              onChange={(e) => setNotes((p) => ({ ...p, [en.id]: e.target.value }))}
+              disabled={busy}
+              placeholder="Approval note (optional — appended to the entry's notes)"
+              className="w-full px-2 py-1 text-[12px] border border-rule rounded-md bg-card text-ink placeholder:text-ink-faint"
+            />
           </div>
 
           {err && <p className="text-[11px] text-danger pb-2">{err}</p>}

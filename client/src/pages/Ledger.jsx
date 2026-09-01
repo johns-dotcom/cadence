@@ -1,9 +1,12 @@
 import { useEffect, useState, useRef, useMemo, Fragment } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart, Search, Pencil, ChevronRight, ChevronDown, Scissors } from 'lucide-react'
+import { Plus, Check, X, Trash2, Paperclip, Link2, BookOpen, DollarSign, Download, Upload, SlidersHorizontal, FileBarChart, Search, Pencil, ChevronRight, ChevronDown, Scissors, Flag, Receipt, RotateCcw, AlertTriangle, Filter } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
+import ConfirmDialog from '../components/ui/ConfirmDialog'
+import BottomSheet from '../components/ui/BottomSheet'
+import SocialHandlesEditor from '../components/SocialHandlesEditor'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import LedgerEntryDrawer from '../components/LedgerEntryDrawer'
@@ -19,30 +22,59 @@ const STATUS_STYLES = { pending: 'bg-amber-100 text-amber-700', approved: 'bg-em
 const STATUSES = ['all', 'approved', 'rejected']
 const money = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
 const PAID_CYCLE = { Unpaid: 'Paid', Paid: 'Partial', Partial: 'Unpaid' }
-const PAID_STYLE = { Paid: 'text-emerald-600', Partial: 'text-amber-600', Unpaid: 'text-gray-400' }
 // Colored pills so payment state reads at a glance (matches the Status column).
 const PAID_PILL = { Paid: 'bg-emerald-100 text-emerald-700', Partial: 'bg-amber-100 text-amber-700', Unpaid: 'bg-rose-100 text-rose-700' }
 
-// Amount query → predicate. Supports "500", "500-1000", ">500", "<500".
-function amountPred(raw) {
-  const s = String(raw || '').trim(); if (!s) return null
+// Payment terms to days (mirror of server lib/payments.js TERM_DAYS, so a terms
+// edit derives the due date without a round trip).
+const TERM_DAYS = { 'Due on receipt': 0, 'Net 7': 7, 'Net 14': 14, 'Net 30': 30, 'Net 45': 45, 'Net 60': 60, 'Net 90': 90 }
+const TERM_OPTIONS = [...Object.keys(TERM_DAYS), 'Custom']
+const termsDue = (invoiceDate, terms) => {
+  const days = TERM_DAYS[terms]
+  if (!invoiceDate || days === undefined) return null
+  const d = new Date(String(invoiceDate).slice(0, 10)); if (isNaN(d)) return null
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+// Client mirror of server lib/normalizeInvoiceNum: the search box matches
+// normalized invoice numbers ("INV-0042" finds "#42").
+const normInv = (num) => {
+  if (!num) return ''
+  let s = String(num).toLowerCase().trim(); let prev
+  do { prev = s; s = s.replace(/^(invoice|inv|no\.?|#)[\s\-.:]*/i, '') } while (s && s !== prev)
+  return s.replace(/[-\s.]/g, '').replace(/^0+/, '')
+}
+
+// Amount query to predicate (boom semantics, LED-5): strips $ , and spaces;
+// bare "500" = exact match within $0.005; > and < are STRICT; >= / <= are
+// supported; "a-b" is inclusive. Returns undefined for empty, null for invalid.
+function parseAmountQuery(raw) {
+  const s = String(raw || '').replace(/[$,\s]/g, '')
+  if (!s) return undefined
   let m
-  if ((m = s.match(/^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)$/))) { const a = +m[1], b = +m[2]; return v => v >= a && v <= b }
-  if ((m = s.match(/^>=?\s*(\d+(?:\.\d+)?)$/))) { const a = +m[1]; return v => v >= a }
-  if ((m = s.match(/^<=?\s*(\d+(?:\.\d+)?)$/))) { const a = +m[1]; return v => v <= a }
-  if ((m = s.match(/^(\d+(?:\.\d+)?)$/))) { const a = +m[1]; return v => v >= a }
+  if ((m = s.match(/^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/))) { const a = +m[1], b = +m[2]; return v => v >= a && v <= b }
+  if ((m = s.match(/^>=(\d+(?:\.\d+)?)$/))) { const a = +m[1]; return v => v >= a }
+  if ((m = s.match(/^<=(\d+(?:\.\d+)?)$/))) { const a = +m[1]; return v => v <= a }
+  if ((m = s.match(/^>(\d+(?:\.\d+)?)$/))) { const a = +m[1]; return v => v > a }
+  if ((m = s.match(/^<(\d+(?:\.\d+)?)$/))) { const a = +m[1]; return v => v < a }
+  if ((m = s.match(/^(\d+(?:\.\d+)?)$/))) { const a = +m[1]; return v => Math.abs(v - a) < 0.005 }
   return null
 }
 
-// Social handles pulled from the multi-artist breakdown (or a "Socials:" note).
+// Social handles: prefer the persisted social_handles rows (what Approvals and
+// campaigns write), then legacy artist_breakdown handles (skipping the
+// post-split {origin, splits} snapshot shape), then a "Socials:" note.
 function socialsOf(en) {
   const out = []
+  const push = (h) => { if (h) out.push(String(h)) }
   try {
+    if (Array.isArray(en.social_handles)) for (const s of en.social_handles) push(s?.handle)
     const bd = en.artist_breakdown
-    const arr = Array.isArray(bd) ? bd : (bd ? [bd] : [])
+    const arr = Array.isArray(bd) ? bd : (Array.isArray(bd?.splits) ? bd.splits : [])
     for (const it of arr) {
-      if (it?.handle) out.push(it.handle)
-      if (Array.isArray(it?.socials)) for (const s of it.socials) if (s?.handle) out.push(s.handle)
+      push(it?.handle)
+      if (Array.isArray(it?.socials)) for (const s of it.socials) push(s?.handle)
     }
   } catch { /* ignore malformed breakdown */ }
   if (!out.length && typeof en.notes === 'string') {
@@ -60,6 +92,36 @@ function dueDateStr(en) {
   }
   return en.scheduled_payment_date ? formatDate(en.scheduled_payment_date) : ''
 }
+const usdOf = (en, amt) => {
+  const a = Number(amt ?? en.amount) || 0
+  if ((en.currency || 'USD') === 'USD') return a
+  return en.fx_rate_to_usd ? a / Number(en.fx_rate_to_usd) : null
+}
+const usdTitle = (en, amt) => {
+  const u = usdOf(en, amt)
+  return u == null ? undefined : `= USD ${u.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+// Source buckets (LED-15): one priority resolver shared by the Source column
+// badge and the source filter, so they can never disagree.
+const sourceOf = (en) =>
+  (en.entry_source === 'artist_campaigns' || en.campaign_id) ? 'campaign'
+    : en.vendor_submitted ? 'vendor'
+    : en.entry_source === 'expense' ? 'expense'
+    : (en.entry_source === 'reimbursement' || en.is_reimbursement) ? 'reimb'
+    : 'manual'
+const SOURCE_META = {
+  campaign: { label: 'Campaign', cls: 'bg-violet-500/10 text-violet-600', hint: 'Born on / linked to an artist campaign' },
+  vendor: { label: 'Vendor', cls: 'bg-brand-500/10 text-brand-700', hint: 'Submitted through the public vendor form' },
+  expense: { label: 'Expense', cls: 'bg-sky-500/10 text-sky-700', hint: 'Quick-added expense (no invoice)' },
+  reimb: { label: 'Reimb', cls: 'bg-emerald-500/10 text-emerald-700', hint: 'Reimbursement' },
+  manual: { label: 'Manual', cls: 'bg-gray-500/10 text-gray-500', hint: 'Added internally' },
+}
+const SOURCE_FILTERS = [['', 'Any source'], ['vendor', 'Vendor-submitted'], ['manual', 'Manual'], ['expense', 'Quick expense'], ['campaign', 'Campaign'], ['reimb', 'Reimbursement']]
+
+const DATE_FIELDS = new Set(['invoice_date', 'payment_date', 'scheduled_payment_date', 'qb_entry_date'])
+const PAGE = 150      // incremental render window (desktop)
+const MOBILE_PAGE = 100
 
 export default function Ledger() {
   const { toast } = useToast()
@@ -68,7 +130,7 @@ export default function Ledger() {
   const { expense: expenseCats } = useCategories()
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
   const focusId = params.get('focus')
 
   // Filters (all client-side over the loaded set for instant response).
@@ -79,7 +141,7 @@ export default function Ledger() {
   const [fPaid, setFPaid] = useState('')
   const [fMethod, setFMethod] = useState('')
   const [fSource, setFSource] = useState('')
-  const [flaggedOnly, setFlaggedOnly] = useState(false)
+  const [fFlag, setFFlag] = useState('')       // '' | flagged | unflagged | ai
   // Extra filters (behind "More filters"), matching the richer column set.
   const [moreOpen, setMoreOpen] = useState(false)
   const [fArtist, setFArtist] = useState('')
@@ -91,7 +153,9 @@ export default function Ledger() {
   const [fBulk, setFBulk] = useState('')
   const [fUfr, setFUfr] = useState('')
   const [fCampaign, setFCampaign] = useState('')
+  const [fQb, setFQb] = useState('')
   const [sort, setSort] = useState({ key: 'invoice_date', dir: 'desc' })
+  const [filterSheet, setFilterSheet] = useState(false)
 
   const [copied, setCopied] = useState(false)
   const importRef = useRef(null)
@@ -101,153 +165,308 @@ export default function Ledger() {
   const [editEntry, setEditEntry] = useState(null)
   const [preview, setPreview] = useState(null) // { url, label } for the file pop-up
   const [report1099, setReport1099] = useState(null)
-  const [splitEntry, setSplitEntry] = useState(null)     // parent being split
+  const [splitEntry, setSplitEntry] = useState(null)     // parent being (re)split
+  const [carveEntry, setCarveEntry] = useState(null)     // fee/reimb carve-off
   const [expanded, setExpanded] = useState({})           // { [parentId]: true }
   const [childrenMap, setChildrenMap] = useState({})     // { [parentId]: [rows] }
+  const [exportMenu, setExportMenu] = useState(false)
+  const [confirmDel, setConfirmDel] = useState(null)     // entry pending delete
+  const [flagFor, setFlagFor] = useState(null)           // { en, reason } flag editor
+  const [socialsFor, setSocialsFor] = useState(null)     // { en, rows } socials editor
+  const [receiptsFor, setReceiptsFor] = useState(null)   // entry whose receipts list is open
+  const [dupGroups, setDupGroups] = useState([])         // duplicate-invoice groups (admins)
+  const [dupOpen, setDupOpen] = useState(false)
+  const [focusMiss, setFocusMiss] = useState(null)       // { id, status } focus target not listed
 
-  // Inline edit + 20-deep undo.
+  // Row selection (LED-1). Held as a Set of ids; every READ re-intersects with
+  // the current filtered set, so a filter change can't strand hidden ids.
+  const [sel, setSel] = useState(() => new Set())
+  const toggleSel = (id) => setSel(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
+
+  // Incremental render (LED-9): paint a window, grow it from a sentinel.
+  const [renderCap, setRenderCap] = useState(PAGE)
+  const [mobileCap, setMobileCap] = useState(MOBILE_PAGE)
+  const sentinelRef = useRef(null)
+
+  // Inline edit + 20-deep undo. Stack entries:
+  //   { type:'patch', id, old:{field:value,...}, label }
+  //   { type:'bulk', field, previous:[{id,value}], label }
   const [editing, setEditing] = useState(null) // { id, key }
   const [draft, setDraft] = useState('')
   const [undoStack, setUndoStack] = useState([])
-  const [artistNames, setArtistNames] = useState([])
+  const [artists, setArtists] = useState([])   // [{id, name}] for profile links
+  const artistNames = useMemo(() => artists.map(a => a.name).filter(Boolean), [artists])
+  const artistIdByName = useMemo(() => { const m = {}; artists.forEach(a => { if (a.name) m[a.name.toLowerCase()] = a.id }); return m }, [artists])
 
-  const beginEdit = (en, key) => { setEditing({ id: en.id, key }); setDraft(en[key] ?? '') }
+  const pushUndo = (rec) => setUndoStack(s => [...s.slice(-19), rec])
+
+  // Per-artist song suggestions (boom's per-artist datalists, LED-18): catalog
+  // titles + spellings already in the ledger, keyed by lowercase artist.
+  const songsByArtist = useMemo(() => {
+    const m = new Map()
+    const add = (artist, song) => {
+      if (!song) return
+      const k = (artist || '').toLowerCase()
+      if (!m.has(k)) m.set(k, new Set())
+      m.get(k).add(song)
+    }
+    releases.forEach(r => add(r.artist_name || r.artist, r.project_name))
+    entries.forEach(e => add(e.artist, e.song))
+    return m
+  }, [releases, entries])
+  const songOptionsFor = (en) => {
+    const own = songsByArtist.get((en.artist || '').toLowerCase())
+    if (own && own.size) return [...own]
+    return [...new Set([...songsByArtist.values()].flatMap(sset => [...sset]))].slice(0, 50)
+  }
+
+  const beginEdit = (en, key) => {
+    const v = en[key]
+    setEditing({ id: en.id, key })
+    setDraft(v == null ? '' : DATE_FIELDS.has(key) ? String(v).slice(0, 10) : v)
+  }
+
+  // One PATCH, possibly multi-field (terms deriving the due date etc). Optimistic
+  // with exact-old-values undo; server splits/links surface through the toast.
+  const applyLocal = (id, patch) => {
+    setEntries(list => list.map(e => e.id === id ? { ...e, ...patch } : e))
+    // Split children live in childrenMap, not entries — patch them there too so
+    // an inline edit on a child row (children own their toggles) paints.
+    setChildrenMap(m => {
+      let changed = false
+      const n = {}
+      for (const [pid, kids] of Object.entries(m)) {
+        n[pid] = kids.map(k => { if (k.id === id) { changed = true; return { ...k, ...patch } } return k })
+      }
+      return changed ? n : m
+    })
+  }
+  const patchEntry = async (en, patch, labelText) => {
+    const old = {}
+    Object.keys(patch).forEach(k => { old[k] = en[k] ?? null })
+    applyLocal(en.id, patch)
+    pushUndo({ type: 'patch', id: en.id, old, label: labelText || `${en.payee}: ${Object.keys(patch)[0]}` })
+    try {
+      const { data } = await api.patch(`/ledger/entries/${en.id}`, patch)
+      if (data.split_parts) { toast(`Split across ${data.split_parts} songs`); load(true) }
+      else if (data.linked_release) { toast(`Saved - linked to release "${data.linked_release.name}"`); load(true) }
+    } catch (err) { toast(err.response?.data?.error || 'Save failed', 'error'); load(true) }
+  }
+
   const commitEdit = async (en, key, raw) => {
     setEditing(null)
     const val = key === 'amount' ? (raw === '' ? null : Number(raw)) : (raw === '' ? null : raw)
-    if (String(en[key] ?? '') === String(val ?? '')) return
-
-    // Auto-split on comma-separated songs: typing "Song A, Song B" into the
-    // song field of a childless entry splits it evenly across those songs.
-    if (key === 'song' && typeof val === 'string' && val.includes(',') && !en.split_count && Number(en.amount) > 0) {
-      const songs = val.split(',').map(s => s.trim()).filter(Boolean)
-      if (songs.length >= 2) {
-        const each = Math.floor((Number(en.amount) / songs.length) * 100) / 100
-        const splits = songs.map((song, i) => ({ artist: en.artist || '', song, amount: i === songs.length - 1 ? Math.round((Number(en.amount) - each * (songs.length - 1)) * 100) / 100 : each }))
-        try { await api.post(`/ledger/entries/${en.id}/split`, { splits }); toast(`Split across ${songs.length} songs`); load() }
-        catch (err) { toast(err.response?.data?.error || 'Could not auto-split', 'error'); load() }
-        return
-      }
+    if (DATE_FIELDS.has(key)) { if (String(en[key] || '').slice(0, 10) === String(val || '')) return }
+    else if (String(en[key] ?? '') === String(val ?? '')) return
+    const patch = { [key]: val }
+    // Terms drive the due date (boom's calcDueDate); a hand-set due date means
+    // the terms are Custom (LED-8).
+    if (key === 'payment_terms') {
+      const due = termsDue(en.invoice_date, val)
+      if (due) patch.scheduled_payment_date = due
     }
-
-    setEntries(list => list.map(e => e.id === en.id ? { ...e, [key]: val } : e))
-    setUndoStack(s => [...s.slice(-19), { id: en.id, key, old: en[key], label: `${en.payee}: ${key}` }])
-    try { await api.patch(`/ledger/entries/${en.id}`, { [key]: val }) } catch { toast('Save failed', 'error'); load() }
+    if (key === 'scheduled_payment_date' && val) patch.payment_terms = 'Custom'
+    // Cobrand spend is Marketing by definition; mirror the server rule locally.
+    if (key === 'cobrand' && val === true) patch.category = 'Marketing'
+    await patchEntry(en, patch)
   }
+
   const undoLast = async () => {
-    setUndoStack(s => {
-      const last = s[s.length - 1]; if (!last) return s
-      setEntries(list => list.map(e => e.id === last.id ? { ...e, [last.key]: last.old } : e))
-      api.patch(`/ledger/entries/${last.id}`, { [last.key]: last.old }).catch(() => load())
-      toast('Reverted')
-      return s.slice(0, -1)
-    })
+    const last = undoStack[undoStack.length - 1]
+    if (!last) return
+    setUndoStack(s => s.slice(0, -1))
+    try {
+      if (last.type === 'bulk') {
+        // Regroup by held value: one call per distinct old value (boom's revertBulk).
+        const byVal = new Map()
+        for (const p of last.previous) {
+          const k = p.value === null || p.value === undefined ? ' null' : String(p.value)
+          if (!byVal.has(k)) byVal.set(k, { value: p.value, ids: [] })
+          byVal.get(k).ids.push(p.id)
+        }
+        for (const { value, ids } of byVal.values()) {
+          await api.post('/ledger/entries/bulk', { ids, field: last.field, value })
+        }
+        toast('Bulk edit reverted'); load(true)
+      } else {
+        applyLocal(last.id, last.old)
+        await api.patch(`/ledger/entries/${last.id}`, last.old)
+        toast('Reverted')
+      }
+    } catch { toast('Undo failed', 'error'); load(true) }
   }
 
   // Props bundle for the module-scope EditCell (keeps its identity stable so
   // the <input> doesn't remount + lose focus/cursor on every keystroke).
-  const editProps = { editing, draft, setDraft, commitEdit, beginEdit, setEditing, artistNames }
+  const editProps = { editing, draft, setDraft, commitEdit, beginEdit, setEditing, artistNames, songOptionsFor }
 
-  // ── Toggleable columns, persisted per user+workspace ──────────────────
+  // -- Toggleable columns, persisted per user+workspace ------------------
   const COLS = [
-    { key: 'invoice_date', label: 'Date', render: en => <span className="text-gray-500 whitespace-nowrap">{formatDate(en.invoice_date)}</span> },
-    { key: 'payee', label: 'Payee', render: en => <PayeeCell en={en} onFlag={() => setDrawerEntry(en)} onToggleSplits={toggleExpand} isOpen={!!expanded[en.id]} /> },
-    { key: 'artist', label: 'Artist', render: en => <EditCell en={en} field="artist" kind="datalist" display={<span className="text-gray-600">{en.artist || '—'}</span>} {...editProps} /> },
-    { key: 'song', label: 'Song', render: en => <EditCell en={en} field="song" display={<span className="text-gray-600">{en.song || '—'}</span>} {...editProps} /> },
+    { key: 'invoice_date', label: 'Date', render: en => <EditCell en={en} field="invoice_date" kind="date" display={<span className="text-gray-500 whitespace-nowrap">{formatDate(en.invoice_date)}</span>} {...editProps} /> },
+    { key: 'payee', label: 'Payee', render: en => <PayeeCell en={en} onFlag={() => setDrawerEntry(en)} onToggleSplits={toggleExpand} isOpen={!!expanded[en.id]} onUngroup={ungroup} editProps={editProps} /> },
+    { key: 'artist', label: 'Artist', render: en => {
+      const aid = en.artist ? artistIdByName[en.artist.toLowerCase()] : null
+      return <EditCell en={en} field="artist" kind="datalist" display={
+        aid ? <Link to={`/artists/${aid}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{en.artist}</Link>
+            : <span className="text-gray-600">{en.artist || '—'}</span>
+      } {...editProps} />
+    } },
+    { key: 'song', label: 'Song', render: en => <EditCell en={en} field="song" kind="song" display={
+      en.release_id ? <Link to={`/releases/${en.release_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{en.song || '—'}</Link>
+        : <span className="text-gray-600">{en.song || '—'}</span>
+    } {...editProps} /> },
     { key: 'description', label: 'Description', render: en => <EditCell en={en} field="description" display={<span className="text-gray-600 truncate block max-w-[220px]">{en.description || '—'}</span>} {...editProps} /> },
     { key: 'category', label: 'Category', render: en => <EditCell en={en} field="category" kind="select" options={expenseCats} display={<span className="text-gray-600 whitespace-nowrap">{en.category || '—'}</span>} {...editProps} /> },
     { key: 'invoice_number', label: 'Invoice #', render: en => <EditCell en={en} field="invoice_number" display={<span className="text-gray-500 whitespace-nowrap">{en.invoice_number || '—'}</span>} {...editProps} /> },
     { key: 'amount', label: 'Amount', render: en => en.split_count > 0
-      ? <span className="text-ink font-medium whitespace-nowrap tabular-nums">{money(en.family_amount ?? en.amount, en.currency)}<span className="block text-[10px] text-gray-400 font-normal">{money(en.amount, en.currency)} this slice</span></span>
-      : <EditCell en={en} field="amount" kind="number" display={<span className="text-ink font-medium whitespace-nowrap tabular-nums">{money(en.amount, en.currency)}</span>} {...editProps} /> },
-    { key: 'currency', label: 'Currency', render: en => <span className="text-gray-500">{en.currency || 'USD'}</span> },
-    { key: 'usd', label: '≈ USD', render: en => {
-      const usd = (en.currency || 'USD') === 'USD' ? Number(en.amount || 0) : (en.fx_rate_to_usd ? Number(en.amount || 0) / Number(en.fx_rate_to_usd) : null)
+      ? <span title={usdTitle(en, en.family_amount)} className="text-ink font-semibold whitespace-nowrap tabular-nums">{money(en.family_amount ?? en.amount, en.currency)}<span className="block text-[10px] text-gray-400 font-normal">{money(en.amount, en.currency)} this slice</span></span>
+      : <EditCell en={en} field="amount" kind="number" display={<span title={usdTitle(en)} className="text-ink font-semibold whitespace-nowrap tabular-nums">{money(en.amount, en.currency)}</span>} {...editProps} /> },
+    { key: 'currency', label: 'Currency', render: en => <EditCell en={en} field="currency" kind="select" options={CURRENCIES} display={<span className="text-gray-500">{en.currency || 'USD'}</span>} {...editProps} /> },
+    { key: 'usd', label: '= USD', render: en => {
+      const usd = usdOf(en, en.family_amount ?? en.amount)
       return <span className="text-gray-500 whitespace-nowrap tabular-nums">{usd == null ? '—' : `USD ${usd.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}</span>
     } },
     { key: 'status', label: 'Status', render: en => <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium capitalize ${STATUS_STYLES[en.status] || ''}`}>{en.status}</span> },
-    { key: 'payment', label: 'Payment', render: en => <button onClick={() => cyclePaid(en)} title="Click to cycle" className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${PAID_PILL[en.payment_status] || PAID_PILL.Unpaid}`}>{en.payment_status || 'Unpaid'}</button> },
+    { key: 'payment', label: 'Payment', render: en => en.status === 'approved' && !en.voided
+      ? <button onClick={() => cyclePaid(en)} title="Click to cycle" className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${PAID_PILL[en.payment_status] || PAID_PILL.Unpaid}`}>{en.payment_status || 'Unpaid'}</button>
+      : <span title={en.voided ? 'Voided' : 'Payment state is set once the entry is approved'} className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold opacity-60 ${PAID_PILL[en.payment_status] || PAID_PILL.Unpaid}`}>{en.payment_status || 'Unpaid'}</span> },
     { key: 'payment_method', label: 'Method', render: en => <EditCell en={en} field="payment_method" kind="select" options={PAYMENT_METHODS} display={<span className="text-gray-500 whitespace-nowrap">{en.payment_method || '—'}</span>} {...editProps} /> },
-    { key: 'payment_date', label: 'Paid on', render: en => <span className="text-gray-500 whitespace-nowrap">{en.payment_date ? formatDate(en.payment_date) : '—'}</span> },
-    { key: 'scheduled_payment_date', label: 'Scheduled', render: en => <span className="text-gray-500 whitespace-nowrap">{en.scheduled_payment_date ? formatDate(en.scheduled_payment_date) : '—'}</span> },
+    { key: 'payment_date', label: 'Paid on', render: en => <EditCell en={en} field="payment_date" kind="date" display={<span className="text-gray-500 whitespace-nowrap">{en.payment_date ? formatDate(en.payment_date) : '—'}</span>} {...editProps} /> },
+    { key: 'paid_by', label: 'Paid by', render: en => <EditCell en={en} field="paid_by" display={<span className="text-emerald-600 whitespace-nowrap">{en.paid_by || '—'}</span>} {...editProps} /> },
+    { key: 'scheduled_payment_date', label: 'Due date', render: en => {
+      const past = en.scheduled_payment_date && en.payment_status !== 'Paid' && String(en.scheduled_payment_date).slice(0, 10) < new Date().toISOString().slice(0, 10)
+      return <EditCell en={en} field="scheduled_payment_date" kind="date" display={<span className={`whitespace-nowrap ${past ? 'text-danger font-semibold' : 'text-gray-500'}`}>{en.scheduled_payment_date ? formatDate(en.scheduled_payment_date) : '—'}</span>} {...editProps} />
+    } },
     { key: 'rep', label: 'Rep', render: en => <EditCell en={en} field="rep" display={<span className="text-gray-500">{en.rep || '—'}</span>} {...editProps} /> },
     { key: 'vendor_email', label: 'Vendor email', render: en => <EditCell en={en} field="vendor_email" display={<span className="text-gray-500 truncate block max-w-[180px]">{en.vendor_email || '—'}</span>} {...editProps} /> },
     { key: 'vendor_address', label: 'Address', render: en => <EditCell en={en} field="vendor_address" display={<span className="text-gray-500 truncate block max-w-[200px]">{en.vendor_address || '—'}</span>} {...editProps} /> },
     { key: 'vendor_bank', label: 'Bank', render: en => <EditCell en={en} field="vendor_bank" display={<span className="text-gray-500 truncate block max-w-[160px]">{en.vendor_bank || '—'}</span>} {...editProps} /> },
-    { key: 'socials', label: 'Socials', render: en => { const s = socialsOf(en); return <span className="text-gray-500 truncate block max-w-[180px]">{s || '—'}</span> } },
-    { key: 'payment_terms', label: 'Terms', render: en => <EditCell en={en} field="payment_terms" display={<span className="text-gray-500 whitespace-nowrap">{en.payment_terms || '—'}</span>} {...editProps} /> },
+    { key: 'socials', label: 'Socials', render: en => {
+      const s = socialsOf(en)
+      return <button onClick={() => setSocialsFor({ en, rows: Array.isArray(en.social_handles) ? en.social_handles : [] })} title="Edit social handles" className="text-left text-gray-500 truncate block max-w-[180px] hover:text-brand-600">{s || <span className="text-gray-300">+ add</span>}</button>
+    } },
+    { key: 'payment_terms', label: 'Terms', render: en => <EditCell en={en} field="payment_terms" kind="select" options={TERM_OPTIONS} display={<span className="text-gray-500 whitespace-nowrap">{en.payment_terms || '—'}</span>} {...editProps} /> },
     { key: 'due', label: 'Due', render: en => { const d = dueDateStr(en); return <span className="text-gray-500 whitespace-nowrap">{d || '—'}</span> } },
-    { key: 'recoupable', label: 'Recoup?', render: en => <button onClick={() => commitEdit(en, 'recoupable', !en.recoupable)} className="text-gray-500 hover:text-brand-600">{en.recoupable ? 'Yes' : 'No'}</button> },
-    { key: 'ufr', label: 'UFR?', render: en => <span className="text-gray-500">{en.ufr ? 'Yes' : 'No'}</span> },
-    { key: 'campaign', label: 'Campaign?', render: en => <span className="text-gray-500">{(en.campaign_id || en.artist_campaign === true) ? 'Yes' : 'No'}</span> },
-    { key: 'reimbursement', label: 'Reimb?', render: en => <span className="text-gray-500">{en.is_reimbursement ? 'Yes' : 'No'}</span> },
-    { key: 'cobrand', label: 'Cobrand?', render: en => <button onClick={() => commitEdit(en, 'cobrand', !en.cobrand)} className="text-gray-500 hover:text-brand-600">{en.cobrand ? 'Yes' : 'No'}</button> },
-    { key: 'is_bulk_deal', label: 'Bulk deal?', render: en => <button onClick={() => commitEdit(en, 'is_bulk_deal', !en.is_bulk_deal)} className="text-gray-500 hover:text-brand-600">{en.is_bulk_deal ? 'Yes' : 'No'}</button> },
+    { key: 'recoupable', label: 'Recoup?', render: en => <YNBadge value={!!en.recoupable} onClick={() => commitEdit(en, 'recoupable', !en.recoupable)} /> },
+    { key: 'ufr', label: 'UFR?', render: en => en.recoupable
+      ? <YNBadge value={!!en.ufr} onClick={() => commitEdit(en, 'ufr', !en.ufr)} title={en.ufr_marked_at ? `Marked ${formatDate(en.ufr_marked_at)}` : 'Un-recouped funds recovered'} />
+      : <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-gray-500/10 text-gray-400" title="Not recoupable - UFR does not apply">N/A</span> },
+    { key: 'campaign', label: 'Campaign?', render: en => en.campaign_id
+      ? <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-500/10 text-violet-600" title="Linked to a campaign (unlink from the drawer)">Yes</span>
+      : <YNBadge value={en.artist_campaign === true ? true : en.artist_campaign === false ? false : null}
+          title="Campaign inclusion: Yes, No, auto"
+          onClick={() => patchEntry(en, { artist_campaign: en.artist_campaign === true ? false : en.artist_campaign === false ? null : true }, `${en.payee}: campaign`)} /> },
+    { key: 'reimbursement', label: 'Reimb?', render: en => <YNBadge value={!!en.is_reimbursement} onClick={() => commitEdit(en, 'is_reimbursement', !en.is_reimbursement)} /> },
+    { key: 'cobrand', label: 'Cobrand?', render: en => <YNBadge value={!!en.cobrand} accent onClick={() => commitEdit(en, 'cobrand', !en.cobrand)} title={en.cobrand ? 'Cobrand (forces category Marketing)' : 'Not cobrand'} /> },
+    { key: 'is_bulk_deal', label: 'Bulk deal?', render: en => <YNBadge value={!!en.is_bulk_deal} accent onClick={() => commitEdit(en, 'is_bulk_deal', !en.is_bulk_deal)} /> },
+    { key: 'in_quickbooks', label: 'QB?', render: en => <YNBadge value={!!en.in_quickbooks} title={en.qb_entry_date ? `Entered in QuickBooks ${formatDate(en.qb_entry_date)}` : 'In QuickBooks?'} onClick={() => patchEntry(en, { in_quickbooks: !en.in_quickbooks, qb_entry_date: !en.in_quickbooks ? new Date().toISOString().slice(0, 10) : null }, `${en.payee}: QB`)} /> },
+    { key: 'recoupment_label', label: 'Tone label', render: en => <EditCell en={en} field="recoupment_label" display={<span className="text-gray-500 whitespace-nowrap">{en.recoupment_label || '—'}</span>} {...editProps} /> },
+    { key: 'source', label: 'Source', render: en => { const s = SOURCE_META[sourceOf(en)]; return <span title={s.hint} className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${s.cls}`}>{s.label}</span> } },
     { key: 'type', label: 'Type', render: en => <span className="text-gray-500">{en.is_reimbursement ? 'Reimb.' : 'Invoice'}</span> },
     { key: 'approved_by', label: 'Approved by', render: en => <span className="text-gray-500 whitespace-nowrap">{en.approved_by || '—'}</span> },
-    { key: 'paid_by', label: 'Paid by', render: en => <span className="text-gray-500 whitespace-nowrap">{en.paid_by || '—'}</span> },
     { key: 'created_at', label: 'Uploaded', render: en => <span className="text-gray-500 whitespace-nowrap">{en.created_at ? formatDate(en.created_at) : '—'}</span> },
     { key: 'notes', label: 'Notes', render: en => <EditCell en={en} field="notes" display={<span className="text-gray-600 truncate block max-w-[220px]">{en.notes || '—'}</span>} {...editProps} /> },
     { key: 'payment_ref', label: 'Ref', render: en => <EditCell en={en} field="payment_ref" display={<span className="text-gray-500 whitespace-nowrap">{en.payment_ref || '—'}</span>} {...editProps} /> },
-    { key: 'invoice_file', label: 'Invoice', render: en => <FileCell en={en} type="invoice" r2key={en.invoice_r2_key} openFile={openFile} onUploaded={load} toast={toast} /> },
-    { key: 'w9_file', label: 'W9', render: en => <FileCell en={en} type="w9" r2key={en.w9_r2_key} openFile={openFile} onUploaded={load} toast={toast} /> },
-    { key: 'receipt_file', label: 'Receipt / proof', render: en => <FileCell en={en} type="receipt" r2key={(en.receipt_r2_key || en.proof_r2_key)} openFile={openFile} onUploaded={load} toast={toast} /> },
+    { key: 'invoice_file', label: 'Invoice', render: en => <FileCell en={en} type="invoice" r2key={en.invoice_r2_key} parentFallback openFile={openFile} onChanged={() => load(true)} toast={toast} /> },
+    { key: 'w9_file', label: 'W9', render: en => <FileCell en={en} type="w9" r2key={en.w9_r2_key} sharedFromId={!en.w9_r2_key && en.w9_entry_id && en.w9_entry_id !== en.id ? en.w9_entry_id : null} openFile={openFile} onChanged={() => load(true)} toast={toast} /> },
+    { key: 'proof_file', label: 'Proof', render: en => <FileCell en={en} type="proof" r2key={en.proof_r2_key} openFile={openFile} onChanged={() => load(true)} toast={toast} /> },
+    { key: 'receipt_file', label: 'Receipt', render: en => (en.is_reimbursement || en.receipt_r2_key || en.receipt_count > 0)
+      ? <span className="inline-flex items-center gap-1.5">
+          <FileCell en={en} type="receipt" r2key={en.receipt_r2_key} openFile={openFile} onChanged={() => load(true)} toast={toast} />
+          {(en.receipt_count > 0) && <button onClick={() => setReceiptsFor(en)} className="text-[10px] font-semibold text-brand-600 hover:underline whitespace-nowrap">+{en.receipt_count} more</button>}
+        </span>
+      : <span className="text-gray-300 text-xs" title="Receipts apply to reimbursements">N/A</span> },
     { key: 'files', label: 'Files', render: en => <FilesCell en={en} openFile={openFile} /> },
   ]
   const ALL_KEYS = COLS.map(c => c.key)
-  const DEFAULT_COLS = ['invoice_date', 'payee', 'artist', 'song', 'category', 'amount', 'status', 'payment', 'files']
+  // Identity columns can't be hidden (boom froze them outright).
+  const ALWAYS_ON = ['payee', 'amount']
+  // Boom shipped ~16 toggleables ON by default on top of its always-on set (LED-23).
+  const DEFAULT_COLS = ['invoice_date', 'payee', 'artist', 'song', 'description', 'category', 'invoice_number', 'amount', 'status', 'payment', 'payment_method', 'vendor_email', 'vendor_bank', 'rep', 'paid_by', 'socials', 'source', 'files']
   const storeKey = `ledger-cols:${label?.id || 0}:${user?.id || 0}`
   const [visible, setVisible] = useState(DEFAULT_COLS)
   const [colMenu, setColMenu] = useState(false)
   useEffect(() => {
-    try { const s = JSON.parse(localStorage.getItem(storeKey) || 'null'); if (Array.isArray(s) && s.length) setVisible(s.filter(k => ALL_KEYS.includes(k))) } catch { /* default */ }
+    try { const s = JSON.parse(localStorage.getItem(storeKey) || 'null'); if (Array.isArray(s) && s.length) setVisible([...new Set([...s.filter(k => ALL_KEYS.includes(k)), ...ALWAYS_ON])]) } catch { /* default */ }
   }, [storeKey]) // eslint-disable-line
-  const toggleCol = (key) => setVisible(v => { const n = v.includes(key) ? v.filter(k => k !== key) : [...v, key]; localStorage.setItem(storeKey, JSON.stringify(n)); return n })
+  const toggleCol = (key) => {
+    if (ALWAYS_ON.includes(key)) return
+    setVisible(v => { const n = v.includes(key) ? v.filter(k => k !== key) : [...v, key]; localStorage.setItem(storeKey, JSON.stringify(n)); return n })
+  }
   const shownCols = COLS.filter(c => visible.includes(c.key))
 
-  const load = () => {
-    setLoading(true)
-    api.get('/ledger/entries').then(res => setEntries(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
+  const lastFetch = useRef(0)
+  const load = (silent = false) => {
+    if (!silent) setLoading(true)
+    lastFetch.current = Date.now()
+    api.get('/ledger/entries').then(res => setEntries(res.data.data || [])).catch(() => {}).finally(() => { if (!silent) setLoading(false) })
   }
   useEffect(() => { load() }, [])
-  useEffect(() => { api.get('/artists').then(r => setArtistNames((r.data.data || []).map(a => a.name).filter(Boolean))).catch(() => {}) }, [])
+  useEffect(() => { api.get('/artists').then(r => setArtists((r.data.data || []).filter(a => a.name))).catch(() => {}) }, [])
+  const [releases, setReleases] = useState([])
+  useEffect(() => { api.get('/releases').then(r => setReleases(r.data.data || [])).catch(() => {}) }, [])
+  // Duplicate-invoice groups (admin endpoint; non-admins just don't see the banner).
+  useEffect(() => { api.get('/flags').then(r => setDupGroups(r.data.data?.invoice_dupes || [])).catch(() => {}) }, [])
+  // Cross-page edits appear without a reload: silent refetch on window focus,
+  // throttled to 10s (boom parity, LED-21).
+  useEffect(() => {
+    const onFocus = () => { if (Date.now() - lastFetch.current > 10000) load(true) }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, []) // eslint-disable-line
 
-  // Hotkey: z = undo last inline edit (ignored while typing).
+  // Hotkeys (bubble phase; overlays own Escape via the capture-phase stack):
+  // z = undo, c = columns, x = export menu. Ignored while typing.
   useEffect(() => {
     const onKey = (e) => {
       const t = e.target
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return
-      if (e.key === 'z' && !e.metaKey && !e.ctrlKey) undoLast()
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key === 'z') undoLast()
+      if (e.key === 'c') setColMenu(v => !v)
+      if (e.key === 'x') setExportMenu(v => !v)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }) // eslint-disable-line
 
-  // Focus deep-link: scroll + amber spotlight for a few seconds.
-  const rowRefs = useRef({})
-  useEffect(() => {
-    if (!focusId || loading) return
-    const el = rowRefs.current[focusId]
-    if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.add('ring-2', 'ring-amber-400'); setTimeout(() => el.classList.remove('ring-2', 'ring-amber-400'), 3500) }
-  }, [focusId, loading, entries])
-
   const cyclePaid = async (en) => {
+    if (en.status !== 'approved') { toast('Only approved entries take payment state', 'error'); return }
     const next = PAID_CYCLE[en.payment_status] || 'Paid'
+    pushUndo({ type: 'patch', id: en.id, old: { payment_status: en.payment_status || 'Unpaid' }, label: `${en.payee}: payment` })
     try {
       if (next === 'Paid') await api.post(`/ledger/entries/${en.id}/mark-paid`, {})   // stamps fx + notify path
       else await api.patch(`/ledger/entries/${en.id}`, { payment_status: next })
-      load()
-    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+      load(true)
+    } catch (err) { setUndoStack(s => s.slice(0, -1)); toast(err.response?.data?.error || 'Failed', 'error') }
   }
-  const act = async (id, path, body) => { try { await api.post(`/ledger/entries/${id}/${path}`, body || {}); load() } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') } }
+  const act = async (id, path, body) => { try { await api.post(`/ledger/entries/${id}/${path}`, body || {}); load(true) } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') } }
   const reject = async (id) => { const reason = window.prompt('Reason for rejection (required):')?.trim(); if (!reason) return; act(id, 'reject', { reason }) }
-  const remove = async (id) => { if (!window.confirm('Delete this entry?')) return; try { await api.delete(`/ledger/entries/${id}`); load() } catch { toast('Failed', 'error') } }
+  const doDelete = async () => {
+    const en = confirmDel; if (!en) return
+    try { await api.delete(`/ledger/entries/${en.id}`); setConfirmDel(null); toast('Entry deleted'); load(true) }
+    catch { toast('Failed', 'error') }
+  }
   function openFile(id, type) { api.get(`/ledger/entries/${id}/file/${type}`).then(({ data }) => setPreview({ url: data.data.url, label: type })).catch(() => toast('No file', 'error')) }
+
+  const saveFlag = async (en, flagged, reason) => {
+    setFlagFor(null)
+    applyLocal(en.id, { flagged, flag_reason: flagged ? reason : null })
+    try { await api.post(`/ledger/entries/${en.id}/flag`, { flagged, flag_reason: reason }) }
+    catch { toast('Flag failed', 'error'); load(true) }
+  }
+
+  const saveSocials = async () => {
+    const { en, rows } = socialsFor
+    const clean = rows.filter(r => (r.handle || '').trim())
+    setSocialsFor(null)
+    await patchEntry(en, { social_handles: clean.length ? clean : null }, `${en.payee}: socials`)
+  }
 
   // Split families: lazily fetch children the first time a parent is expanded.
   const fetchChildren = async (parentId) => {
-    try { const { data } = await api.get('/ledger/entries', { params: { parent: parentId } }); setChildrenMap(m => ({ ...m, [parentId]: data.data || [] })) }
-    catch { toast('Could not load splits', 'error') }
+    try { const { data } = await api.get('/ledger/entries', { params: { parent: parentId } }); setChildrenMap(m => ({ ...m, [parentId]: data.data || [] })); return data.data || [] }
+    catch { toast('Could not load splits', 'error'); return [] }
   }
   const toggleExpand = (en) => {
     const open = !expanded[en.id]
@@ -256,10 +475,15 @@ export default function Ledger() {
   }
   const unsplit = async (en) => {
     if (!window.confirm(`Merge the ${en.split_count} slices back into ${en.payee}?`)) return
-    try { await api.delete(`/ledger/entries/${en.id}/splits`); toast('Unsplit'); setExpanded(m => ({ ...m, [en.id]: false })); setChildrenMap(m => { const n = { ...m }; delete n[en.id]; return n }); load() }
+    try { await api.delete(`/ledger/entries/${en.id}/splits`); toast('Unsplit'); setExpanded(m => ({ ...m, [en.id]: false })); setChildrenMap(m => { const n = { ...m }; delete n[en.id]; return n }); load(true) }
     catch (err) { toast(err.response?.data?.error || 'Could not unsplit', 'error') }
   }
-  const afterSplit = () => { const id = splitEntry?.id; setSplitEntry(null); if (id) { setChildrenMap(m => { const n = { ...m }; delete n[id]; return n }); setExpanded(m => ({ ...m, [id]: true })) } load() }
+  const afterSplit = () => { const id = splitEntry?.id; setSplitEntry(null); if (id) { setChildrenMap(m => { const n = { ...m }; delete n[id]; return n }); setExpanded(m => ({ ...m, [id]: true })) } load(true) }
+  const ungroup = async (en) => {
+    if (!window.confirm(`Ungroup this payment (${en.settlement_group_size} invoices)? Bank matches are not touched.`)) return
+    try { await api.delete(`/ledger/settlement-groups/${en.settlement_group_id}`); toast('Ungrouped'); load(true) }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
 
   const copyVendorLink = () => {
     const url = `${window.location.origin}/submit/${label?.vendor_form_token}`
@@ -267,14 +491,32 @@ export default function Ledger() {
   }
 
   const open1099 = async () => { try { const { data } = await api.get('/ledger/1099-report'); setReport1099(data.data) } catch { toast('Failed to load 1099 report', 'error') } }
-  const exportCsv = async () => {
-    try {
-      const res = await api.get('/ledger/export', { responseType: 'blob' })
-      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }))
-      const a = document.createElement('a'); a.href = url; a.download = `ledger-${label?.slug || 'export'}.csv`
-      document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url)
-    } catch { toast('Export failed', 'error') }
+
+  // Export menu (LED-12). Every export carries the current filters: "export
+  // what I'm looking at". The ZIPs are capped server-side.
+  const exportParams = () => {
+    const p = {}
+    if (status !== 'all') p.status = status
+    if (search.trim()) p.q = search.trim()
+    if (fCategory) p.category = fCategory
+    if (fPaid) p.payment_status = fPaid
+    if (fArtist) p.artist = fArtist
+    return p
   }
+  const download = async (path, filename, type) => {
+    setExportMenu(false)
+    try {
+      const res = await api.get(path, { params: exportParams(), responseType: 'blob' })
+      const url = window.URL.createObjectURL(new Blob([res.data], type ? { type } : undefined))
+      const a = document.createElement('a'); a.href = url; a.download = filename
+      document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url)
+    } catch (err) {
+      let msg = 'Export failed'
+      if (err.response?.data instanceof Blob) { try { msg = JSON.parse(await err.response.data.text()).error || msg } catch { /* keep default */ } }
+      toast(msg, 'error')
+    }
+  }
+
   const parseCsv = (text) => {
     const rows = []; let row = []; let field = ''; let inQuotes = false
     for (let i = 0; i < text.length; i++) {
@@ -298,29 +540,37 @@ export default function Ledger() {
     finally { setImporting(false); if (importRef.current) importRef.current.value = '' }
   }
 
-  // ── Apply filters + sort client-side ──────────────────────────────────
+  // -- Apply filters + sort client-side ----------------------------------
   // Filter option lists derived from what's actually loaded.
   const distinct = (key) => [...new Set(entries.map(e => e[key]).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)))
   const artistOpts = useMemo(() => distinct('artist'), [entries])
   const repOpts = useMemo(() => distinct('rep'), [entries])
   const currencyOpts = useMemo(() => distinct('currency'), [entries])
   const ynMatch = (mode, val) => mode === '' || (mode === 'yes' ? !!val : !val)
-  const advancedActive = fArtist || fRep || fCurrency || fType || fRecoup || fCobrand || fBulk || fUfr || fCampaign
-  const clearAdvanced = () => { setFArtist(''); setFRep(''); setFCurrency(''); setFType(''); setFRecoup(''); setFCobrand(''); setFBulk(''); setFUfr(''); setFCampaign('') }
+  const advancedActive = fArtist || fRep || fCurrency || fType || fRecoup || fCobrand || fBulk || fUfr || fCampaign || fQb
+  const clearAdvanced = () => { setFArtist(''); setFRep(''); setFCurrency(''); setFType(''); setFRecoup(''); setFCobrand(''); setFBulk(''); setFUfr(''); setFCampaign(''); setFQb('') }
+  const anyFilter = !!(advancedActive || search || amountQ || fCategory || fPaid || fMethod || fSource || fFlag || status !== 'all')
+  const clearAll = () => { clearAdvanced(); setSearch(''); setAmountQ(''); setFCategory(''); setFPaid(''); setFMethod(''); setFSource(''); setFFlag(''); setStatus('all') }
+
+  const amountPredResult = useMemo(() => parseAmountQuery(amountQ), [amountQ])
+  const amountInvalid = amountPredResult === null && amountQ.trim() !== ''
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
-    const amt = amountPred(amountQ)
+    const qInv = normInv(q)
+    const amt = amountPredResult || null
     let list = entries.filter(en => {
       if (status !== 'all' && en.status !== status) return false
-      if (q && !`${en.payee} ${en.artist} ${en.song} ${en.invoice_number}`.toLowerCase().includes(q)) return false
-      if (amt && !amt(Number(en.amount) || 0)) return false
+      if (q && !`${en.payee} ${en.artist} ${en.song} ${en.invoice_number}`.toLowerCase().includes(q)
+          && !(qInv && normInv(en.invoice_number) && normInv(en.invoice_number).includes(qInv))) return false
+      if (amt && !amt(Number(en.amount) || 0) && !amt(Number(en.family_amount) || 0)) return false
       if (fCategory && en.category !== fCategory) return false
       if (fPaid && (en.payment_status || 'Unpaid') !== fPaid) return false
       if (fMethod && en.payment_method !== fMethod) return false
-      if (fSource === 'vendor' && !en.vendor_submitted) return false
-      if (fSource === 'manual' && en.vendor_submitted) return false
-      if (flaggedOnly && !(en.ai_scan?.discrepancies?.length || en.w9_scan?.discrepancies?.length)) return false
+      if (fSource && sourceOf(en) !== fSource) return false
+      if (fFlag === 'flagged' && !en.flagged) return false
+      if (fFlag === 'unflagged' && en.flagged) return false
+      if (fFlag === 'ai' && !((en.ai_flags || 0) + (en.w9_flags || 0))) return false
       // Advanced filters
       if (fArtist && en.artist !== fArtist) return false
       if (fRep && en.rep !== fRep) return false
@@ -331,28 +581,126 @@ export default function Ledger() {
       if (!ynMatch(fCobrand, en.cobrand)) return false
       if (!ynMatch(fBulk, en.is_bulk_deal)) return false
       if (!ynMatch(fUfr, en.ufr)) return false
+      if (!ynMatch(fQb, en.in_quickbooks)) return false
       if (!ynMatch(fCampaign, en.campaign_id || en.artist_campaign === true)) return false
       return true
     })
     const dir = sort.dir === 'asc' ? 1 : -1
+    // Empties always sink to the end (boom rule); id is the tiebreaker.
     list = [...list].sort((a, b) => {
       let av = a[sort.key], bv = b[sort.key]
-      if (sort.key === 'amount') { av = Number(av) || 0; bv = Number(bv) || 0; return (av - bv) * dir }
-      if (sort.key === 'invoice_date') { av = av || ''; bv = bv || ''; return av < bv ? -dir : av > bv ? dir : 0 }
-      return String(av || '').localeCompare(String(bv || '')) * dir
+      if (sort.key === 'amount') { av = Number(a.family_amount ?? av) || 0; bv = Number(b.family_amount ?? bv) || 0 }
+      const ae = av == null || av === '', be = bv == null || bv === ''
+      if (ae && be) return b.id - a.id
+      if (ae) return 1
+      if (be) return -1
+      const cmp = (typeof av === 'number' && typeof bv === 'number') ? av - bv : String(av).localeCompare(String(bv))
+      return cmp * dir || b.id - a.id
     })
     return list
-  }, [entries, status, search, amountQ, fCategory, fPaid, fMethod, fSource, flaggedOnly, fArtist, fRep, fCurrency, fType, fRecoup, fCobrand, fBulk, fUfr, fCampaign, sort])
+  }, [entries, status, search, amountPredResult, fCategory, fPaid, fMethod, fSource, fFlag, fArtist, fRep, fCurrency, fType, fRecoup, fCobrand, fBulk, fUfr, fQb, fCampaign, sort])
+
+  // Reset the paint window when the result set changes shape.
+  useEffect(() => { setRenderCap(PAGE); setMobileCap(MOBILE_PAGE) }, [status, search, amountQ, fCategory, fPaid, fMethod, fSource, fFlag, fArtist, fRep, fCurrency, fType, fRecoup, fCobrand, fBulk, fUfr, fQb, fCampaign, sort])
+  const shownRows = filtered.slice(0, renderCap)
+
+  // Sentinel: grow the window as it nears the viewport.
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el || renderCap >= filtered.length) return
+    const ob = new IntersectionObserver((es) => { if (es.some(x => x.isIntersecting)) setRenderCap(c => c + PAGE) }, { rootMargin: '600px' })
+    ob.observe(el)
+    return () => ob.disconnect()
+  }, [renderCap, filtered.length, loading, isMobile])
 
   const totals = useMemo(() => {
     const t = {}
+    let usdSum = 0, unconverted = 0
     // Use family_amount so a split parent contributes its whole family (its
     // slice + hidden children), never just the parent's slice.
-    filtered.filter(e => !e.voided).forEach(e => { t[e.currency || 'USD'] = (t[e.currency || 'USD'] || 0) + (Number(e.family_amount ?? e.amount) || 0) })
-    return t
+    filtered.filter(e => !e.voided).forEach(e => {
+      const amt = Number(e.family_amount ?? e.amount) || 0
+      t[e.currency || 'USD'] = (t[e.currency || 'USD'] || 0) + amt
+      const u = usdOf(e, amt)
+      if (u == null) unconverted++; else usdSum += u
+    })
+    // Currencies ordered by magnitude (boom parity, LED-22).
+    const ordered = Object.entries(t).sort((a, b) => b[1] - a[1])
+    return { ordered, usdSum, unconverted, multi: ordered.length > 1 || (ordered[0] && ordered[0][0] !== 'USD') }
   }, [filtered])
+  const totalsLine = totals.ordered.map(([c, a]) => `${c} ${a.toLocaleString(undefined, { minimumFractionDigits: 2 })}`).join('   ') || '—'
+  const totalsUsd = totals.multi ? ` = USD ${totals.usdSum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${totals.unconverted ? ` (+${totals.unconverted} unconverted)` : ''}` : ''
+
+  // -- Selection, re-read against the current filters ---------------------
+  const selectedRows = useMemo(() => filtered.filter(e => sel.has(e.id)), [filtered, sel])
+  const shownIds = useMemo(() => new Set(shownRows.map(r => r.id)), [shownRows])
+  const selBelow = selectedRows.filter(r => !shownIds.has(r.id)).length
+  const selUsd = selectedRows.reduce((a, r) => a + (usdOf(r, r.family_amount ?? r.amount) || 0), 0)
+  const allSelected = filtered.length > 0 && selectedRows.length === filtered.length
+  const toggleAll = () => setSel(allSelected ? new Set() : new Set(filtered.map(r => r.id)))
+  const headerCbRef = useRef(null)
+  useEffect(() => { if (headerCbRef.current) headerCbRef.current.indeterminate = selectedRows.length > 0 && !allSelected }, [selectedRows.length, allSelected])
+
+  const bulkApply = async (field, value) => {
+    const ids = selectedRows.map(r => r.id)
+    if (!ids.length) return
+    try {
+      const { data } = await api.post('/ledger/entries/bulk', { ids, field, value })
+      const d = data.data
+      pushUndo({ type: 'bulk', field, previous: d.previous, label: `bulk ${field} x ${d.changed}` })
+      toast(`${d.changed} changed${d.already ? `, ${d.already} already` : ''}${d.skipped ? `, ${d.skipped} skipped` : ''}${d.relinked ? `, ${d.relinked} linked to releases` : ''}`)
+      load(true)
+    } catch (err) { toast(err.response?.data?.error || 'Bulk edit failed', 'error') }
+  }
+  const groupSelection = async () => {
+    const ids = selectedRows.map(r => r.id)
+    try { const { data } = await api.post('/ledger/settlement-groups', { ids }); toast(`Grouped ${data.data.size} invoices as one payment`); setSel(new Set()); load(true) }
+    catch (err) { toast(err.response?.data?.error || 'Could not group', 'error') }
+  }
 
   const setSortKey = (key) => setSort(s => s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' })
+
+  // -- ?focus deep link (LED-10) ------------------------------------------
+  // Row present: spotlight. Absent: fetch it; a split child expands its
+  // parent first; a pending/missing row gets an explanatory banner. The URL
+  // param is stripped once handled so a reload doesn't re-spotlight.
+  const rowRefs = useRef({})
+  const focusHandled = useRef(null)
+  const spotlight = (el) => {
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    el.classList.add('ring-2', 'ring-amber-400')
+    setTimeout(() => { el.classList.remove('ring-2', 'ring-amber-400'); setParams(p => { const n = new URLSearchParams(p); n.delete('focus'); return n }, { replace: true }) }, 6000)
+  }
+  useEffect(() => {
+    if (!focusId || loading || focusHandled.current === focusId) return
+    const idx = filtered.findIndex(e => String(e.id) === focusId)
+    if (idx >= renderCap) { setRenderCap(idx + 20); return }   // stretch the paint window to it
+    const el = rowRefs.current[focusId]
+    if (el) { focusHandled.current = focusId; spotlight(el); return }
+    focusHandled.current = focusId
+    api.get(`/ledger/entries/${focusId}`).then(async ({ data }) => {
+      const row = data.data
+      if (row.parent_id) {
+        setExpanded(m => ({ ...m, [row.parent_id]: true }))
+        await fetchChildren(row.parent_id)
+        setTimeout(() => { const kel = rowRefs.current[focusId]; if (kel) spotlight(kel) }, 300)
+      } else setFocusMiss({ id: focusId, status: row.status })
+    }).catch(() => setFocusMiss({ id: focusId, status: null }))
+  }, [focusId, loading, entries, renderCap]) // eslint-disable-line
+
+  // First-cell prefix: selection checkbox + manual flag button (boom kept both
+  // inside the frozen region).
+  const firstCellPrefix = (en) => (
+    <span className="inline-flex items-center gap-1 mr-1.5 align-top">
+      <input type="checkbox" checked={sel.has(en.id)} onChange={() => toggleSel(en.id)} onClick={e => e.stopPropagation()} className="mt-0.5" />
+      <button
+        onClick={(e) => { e.stopPropagation(); setFlagFor({ en, reason: en.flag_reason || '' }) }}
+        title={en.flagged ? `Flagged by ${en.flagged_by || '—'}${en.flag_reason ? `: ${en.flag_reason}` : ''}` : 'Flag for review'}
+        className={en.flagged ? 'text-amber-500' : 'text-gray-300 hover:text-amber-500'}>
+        <Flag size={13} fill={en.flagged ? 'currentColor' : 'none'} />
+      </button>
+    </span>
+  )
 
   return (
     <div>
@@ -362,7 +710,17 @@ export default function Ledger() {
         action={
           <div className="flex items-center gap-2">
             <button onClick={open1099} className="btn-secondary"><FileBarChart size={15} /> 1099</button>
-            <button onClick={exportCsv} className="btn-secondary"><Download size={15} /> Export</button>
+            <div className="relative">
+              <button onClick={() => setExportMenu(v => !v)} className="btn-secondary" title="Export (x)"><Download size={15} /> Export</button>
+              {exportMenu && (
+                <div className="absolute right-0 top-full mt-1 z-30 w-60 card p-1.5 shadow-modal" onMouseLeave={() => setExportMenu(false)}>
+                  <button onClick={() => download('/ledger/export-xlsx', `ledger-${label?.slug || 'export'}.xlsx`)} className="w-full text-left px-2.5 py-1.5 text-sm text-ink hover:bg-brand-500/10 rounded">Excel workbook <span className="block text-[10px] text-gray-400">All + Unpaid + Paid tabs, family totals</span></button>
+                  <button onClick={() => download('/ledger/export', `ledger-${label?.slug || 'export'}.csv`, 'text/csv')} className="w-full text-left px-2.5 py-1.5 text-sm text-ink hover:bg-brand-500/10 rounded">CSV</button>
+                  <button onClick={() => download('/ledger/export-invoices-zip', 'invoices.zip')} className="w-full text-left px-2.5 py-1.5 text-sm text-ink hover:bg-brand-500/10 rounded">Invoices ZIP <span className="block text-[10px] text-gray-400">Files matching the current filters</span></button>
+                  <button onClick={() => download('/ledger/export-w9s-zip', 'w9s.zip')} className="w-full text-left px-2.5 py-1.5 text-sm text-ink hover:bg-brand-500/10 rounded">W9s ZIP</button>
+                </div>
+              )}
+            </div>
             <button onClick={() => importRef.current?.click()} disabled={importing} className="btn-secondary"><Upload size={15} /> {importing ? 'Importing…' : 'Import'}</button>
             <input ref={importRef} type="file" accept=".csv" className="hidden" onChange={onImportFile} />
             <button onClick={copyVendorLink} className="btn-secondary">{copied ? <><Check size={15} /> Copied</> : <><Link2 size={15} /> Vendor form link</>}</button>
@@ -373,35 +731,84 @@ export default function Ledger() {
         }
       />
 
-      {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        <div className="relative flex-1 min-w-[180px]">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search payee, artist, song, invoice #…" className="input !pl-9" />
-        </div>
-        <input value={amountQ} onChange={e => setAmountQ(e.target.value)} placeholder="Amount: 500 · 500-1000 · >500" className="input !w-52" />
-        <select className="input !w-auto" value={fCategory} onChange={e => setFCategory(e.target.value)}><option value="">All categories</option><CategoryOptions /></select>
-        <select className="input !w-auto" value={fPaid} onChange={e => setFPaid(e.target.value)}><option value="">Any payment</option><option>Unpaid</option><option>Partial</option><option>Paid</option></select>
-        <select className="input !w-auto" value={fMethod} onChange={e => setFMethod(e.target.value)}><option value="">Any method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select>
-        <select className="input !w-auto" value={fSource} onChange={e => setFSource(e.target.value)}><option value="">Any source</option><option value="vendor">Vendor-submitted</option><option value="manual">Manual</option></select>
-        <button onClick={() => setFlaggedOnly(v => !v)} className={`text-xs font-semibold px-3 py-2 rounded-lg ${flaggedOnly ? 'bg-red-600 text-white' : 'text-gray-500 hover:bg-gray-100 border border-rule'}`}>⚠ Flagged</button>
-        <button onClick={() => setMoreOpen(v => !v)} className={`text-xs font-semibold px-3 py-2 rounded-lg border ${advancedActive ? 'bg-brand-500/10 text-brand-700 border-brand-300' : 'text-gray-500 hover:bg-gray-100 border-rule'}`}>More filters{advancedActive ? ' •' : ''}</button>
-        <div className="relative">
-          <button onClick={() => setColMenu(v => !v)} className="btn-secondary"><SlidersHorizontal size={15} /> Columns</button>
-          {colMenu && (
-            <div className="absolute right-0 top-full mt-1 z-30 w-48 card p-2 shadow-modal" onMouseLeave={() => setColMenu(false)}>
-              {COLS.map(c => (
-                <label key={c.key} className="flex items-center gap-2 px-2 py-1 text-sm text-ink hover:bg-gray-50 rounded cursor-pointer">
-                  <input type="checkbox" checked={visible.includes(c.key)} onChange={() => toggleCol(c.key)} /> {c.label}
-                </label>
+      {/* Duplicate-invoice banner (LED-14): live groups from /flags (admins). */}
+      {dupGroups.length > 0 && (
+        <div className="mb-3 rounded-lg border border-amber-300 bg-amber-500/10 px-4 py-2.5 text-sm">
+          <div className="flex items-center gap-2 flex-wrap">
+            <AlertTriangle size={15} className="text-amber-600 flex-shrink-0" />
+            <span className="text-ink font-medium">{dupGroups.length} potential duplicate invoice group{dupGroups.length === 1 ? '' : 's'}</span>
+            <span className="text-gray-500">review and delete the wrong copy, or dismiss the group if it&apos;s legit.</span>
+            <button onClick={() => setDupOpen(v => !v)} className="text-xs font-semibold text-amber-700 hover:underline">{dupOpen ? 'Hide' : 'Show'}</button>
+            <Link to="/duplicates" className="text-xs font-semibold text-brand-600 hover:underline ml-auto">Manage on Duplicates page</Link>
+          </div>
+          {dupOpen && (
+            <div className="mt-2 space-y-1">
+              {dupGroups.slice(0, 12).map(g => (
+                <div key={g.flag_key} className="text-xs text-gray-600 flex items-center gap-2 flex-wrap">
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${g.severity === 'high' ? 'bg-red-500/10 text-red-600' : g.severity === 'medium' ? 'bg-amber-500/15 text-amber-700' : 'bg-gray-500/10 text-gray-500'}`}>{g.severity}</span>
+                  <span className="font-medium text-ink">{g.vendor}</span> #{g.number}
+                  {(g.items || []).map(it => (
+                    <Link key={it.id} to={`/ledger?focus=${it.id}`} onClick={() => { setFocusMiss(null); focusHandled.current = null }} className="text-brand-600 hover:underline">#{it.id} ({money(it.amount, it.currency)})</Link>
+                  ))}
+                </div>
               ))}
             </div>
           )}
         </div>
+      )}
+
+      {/* ?focus miss banner */}
+      {focusMiss && (
+        <div className="mb-3 rounded-lg border border-rule bg-page/60 px-4 py-2.5 text-sm flex items-center gap-2 flex-wrap">
+          <span className="text-ink">Entry #{focusMiss.id} is not in this ledger view.</span>
+          {focusMiss.status === 'pending'
+            ? <span className="text-gray-500">The ledger lists approved entries; it&apos;s waiting in <Link to={`/approvals?focus=${focusMiss.id}`} className="text-brand-600 hover:underline font-semibold">Approvals</Link>.</span>
+            : focusMiss.status === null
+              ? <span className="text-gray-500">It may have been deleted, or it lives in another workspace.</span>
+              : <span className="text-gray-500">Its status is &quot;{focusMiss.status}&quot;; check the status chips or the <Link to="/ledger/archive" className="text-brand-600 hover:underline">archive</Link>.</span>}
+          <button onClick={() => setFocusMiss(null)} className="ml-auto text-gray-400 hover:text-ink"><X size={15} /></button>
+        </div>
+      )}
+
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="relative flex-1 min-w-[180px]">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search payee, artist, song, invoice #" className="input !pl-9" />
+        </div>
+        {!isMobile && <>
+          <input value={amountQ} onChange={e => setAmountQ(e.target.value)}
+            placeholder="Amount: 500 or >1000" title={amountInvalid ? 'Amount filter not understood; try 500, 500-1000, >500 or <=500' : 'Exact: 500. Range: 500-1000. Compare: >500, <=500'}
+            className={`input !w-48 ${amountInvalid ? '!border-amber-400 !ring-1 !ring-amber-400' : ''}`} />
+          <select className="input !w-auto" value={fCategory} onChange={e => setFCategory(e.target.value)}><option value="">All categories</option><CategoryOptions /></select>
+          <select className="input !w-auto" value={fPaid} onChange={e => setFPaid(e.target.value)}><option value="">Any payment</option><option>Unpaid</option><option>Partial</option><option>Paid</option></select>
+          <select className="input !w-auto" value={fMethod} onChange={e => setFMethod(e.target.value)}><option value="">Any method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select>
+          <select className={`input !w-auto ${fSource ? '!border-brand-300 text-brand-700' : ''}`} value={fSource} onChange={e => setFSource(e.target.value)}>{SOURCE_FILTERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+          <select className={`input !w-auto ${fFlag ? '!border-amber-400 text-amber-700' : ''}`} value={fFlag} onChange={e => setFFlag(e.target.value)}>
+            <option value="">Flag: any</option><option value="flagged">Flagged</option><option value="unflagged">Unflagged</option><option value="ai">AI discrepancies</option>
+          </select>
+          <button onClick={() => setMoreOpen(v => !v)} className={`text-xs font-semibold px-3 py-2 rounded-lg border ${advancedActive ? 'bg-brand-500/10 text-brand-700 border-brand-300' : 'text-gray-500 hover:bg-gray-100 border-rule'}`}>More filters{advancedActive ? ' •' : ''}</button>
+          {anyFilter && <button onClick={clearAll} title="Clear every filter" className="text-xs font-semibold px-3 py-2 rounded-lg text-gray-500 hover:bg-gray-100 border border-rule">Clear</button>}
+          <div className="relative">
+            <button onClick={() => setColMenu(v => !v)} className="btn-secondary" title="Toggle columns (c)"><SlidersHorizontal size={15} /> Columns</button>
+            {colMenu && (
+              <div className="absolute right-0 top-full mt-1 z-30 w-52 max-h-[60vh] overflow-y-auto card p-2 shadow-modal" onMouseLeave={() => setColMenu(false)}>
+                {COLS.map(c => (
+                  <label key={c.key} className={`flex items-center gap-2 px-2 py-1 text-sm rounded ${ALWAYS_ON.includes(c.key) ? 'text-gray-400' : 'text-ink hover:bg-gray-50 cursor-pointer'}`}>
+                    <input type="checkbox" checked={visible.includes(c.key)} disabled={ALWAYS_ON.includes(c.key)} onChange={() => toggleCol(c.key)} /> {c.label}{ALWAYS_ON.includes(c.key) ? ' (always)' : ''}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        </>}
+        {isMobile && (
+          <button onClick={() => setFilterSheet(true)} className={`btn-secondary ${anyFilter ? '!border-brand-300 !text-brand-700' : ''}`}><Filter size={15} /> Filters{anyFilter ? ' •' : ''}</button>
+        )}
       </div>
 
-      {/* Advanced filters — matched to the extended column set */}
-      {moreOpen && (
+      {/* Advanced filters, matched to the extended column set */}
+      {moreOpen && !isMobile && (
         <div className="flex flex-wrap items-center gap-2 mb-3 p-3 rounded-lg bg-page/60 border border-rule">
           <select className="input !w-auto" value={fArtist} onChange={e => setFArtist(e.target.value)}><option value="">Any artist</option>{artistOpts.map(a => <option key={a}>{a}</option>)}</select>
           <select className="input !w-auto" value={fRep} onChange={e => setFRep(e.target.value)}><option value="">Any rep</option>{repOpts.map(r => <option key={r}>{r}</option>)}</select>
@@ -409,7 +816,8 @@ export default function Ledger() {
           <select className="input !w-auto" value={fType} onChange={e => setFType(e.target.value)}><option value="">Any type</option><option value="invoice">Invoice</option><option value="reimb">Reimbursement</option></select>
           <select className="input !w-auto" value={fRecoup} onChange={e => setFRecoup(e.target.value)}><option value="">Recoup: any</option><option value="yes">Recoupable</option><option value="no">Not recoupable</option></select>
           <select className="input !w-auto" value={fCampaign} onChange={e => setFCampaign(e.target.value)}><option value="">Campaign: any</option><option value="yes">In a campaign</option><option value="no">Not in a campaign</option></select>
-          <select className="input !w-auto" value={fUfr} onChange={e => setFUfr(e.target.value)}><option value="">UFR: any</option><option value="yes">UFR uploaded</option><option value="no">No UFR</option></select>
+          <select className="input !w-auto" value={fUfr} onChange={e => setFUfr(e.target.value)}><option value="">UFR: any</option><option value="yes">UFR marked</option><option value="no">No UFR</option></select>
+          <select className="input !w-auto" value={fQb} onChange={e => setFQb(e.target.value)}><option value="">QB: any</option><option value="yes">In QuickBooks</option><option value="no">Not in QB</option></select>
           <select className="input !w-auto" value={fCobrand} onChange={e => setFCobrand(e.target.value)}><option value="">Cobrand: any</option><option value="yes">Cobrand</option><option value="no">Not cobrand</option></select>
           <select className="input !w-auto" value={fBulk} onChange={e => setFBulk(e.target.value)}><option value="">Bulk deal: any</option><option value="yes">Bulk deal</option><option value="no">Not bulk</option></select>
           {advancedActive && <button onClick={clearAdvanced} className="text-xs font-semibold px-3 py-2 rounded-lg text-gray-500 hover:bg-gray-100 border border-rule">Clear</button>}
@@ -426,12 +834,16 @@ export default function Ledger() {
       {loading ? (
         <div className="card p-2"><Skeleton.Table rows={8} cols={shownCols.length + 1} /></div>
       ) : filtered.length === 0 ? (
-        <div className="card p-10 text-center"><BookOpen size={28} className="text-gray-300 mx-auto mb-3" /><p className="text-sm text-gray-500">No entries match.</p></div>
+        <div className="card p-10 text-center">
+          <BookOpen size={28} className="text-gray-300 mx-auto mb-3" />
+          <p className="text-sm text-gray-500">No entries match.</p>
+          {anyFilter && <button onClick={clearAll} className="mt-2 text-xs font-semibold text-brand-600 hover:underline">Clear filters</button>}
+        </div>
       ) : isMobile ? (
         /* Mobile card list (<768px). Tap a card to open the detail drawer;
            inline quick actions mirror the desktop row actions. */
         <div className="space-y-2">
-          {filtered.map(en => (
+          {filtered.slice(0, mobileCap).map(en => (
             <div
               key={en.id}
               ref={el => (rowRefs.current[en.id] = el)}
@@ -440,22 +852,18 @@ export default function Ledger() {
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold text-ink truncate">{en.payee || '—'}</p>
+                  <p className="text-sm font-semibold text-ink truncate">{en.flagged && <Flag size={11} className="inline text-amber-500 mr-1" fill="currentColor" />}{en.payee || '—'}</p>
                   <p className="text-[11px] text-gray-400 truncate">{[en.category, en.artist].filter(Boolean).join(' · ') || '—'} · {formatDate(en.invoice_date)}</p>
                 </div>
                 <span className={`flex-shrink-0 inline-block px-2 py-0.5 rounded-full text-[10px] font-medium capitalize ${STATUS_STYLES[en.status] || ''}`}>{en.status}</span>
               </div>
               <div className="flex items-center justify-between mt-2">
-                <span className="text-sm font-semibold text-ink tabular-nums">{money(en.amount, en.currency)}</span>
+                <span className="text-sm font-semibold text-ink tabular-nums" title={usdTitle(en, en.family_amount ?? en.amount)}>{money(en.family_amount ?? en.amount, en.currency)}</span>
                 <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                  <button onClick={() => cyclePaid(en)} className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold ${PAID_PILL[en.payment_status] || PAID_PILL.Unpaid}`}>{en.payment_status || 'Unpaid'}</button>
-                  {en.status === 'pending' && (
-                    <>
-                      <button onClick={() => act(en.id, 'approve')} title="Approve" className="text-emerald-600 p-1"><Check size={16} /></button>
-                      <button onClick={() => reject(en.id)} title="Reject" className="text-red-500 p-1"><X size={16} /></button>
-                    </>
-                  )}
-                  {en.status === 'approved' && en.payment_status !== 'Paid' && (
+                  {en.status === 'approved' && !en.voided
+                    ? <button onClick={() => cyclePaid(en)} className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold ${PAID_PILL[en.payment_status] || PAID_PILL.Unpaid}`}>{en.payment_status || 'Unpaid'}</button>
+                    : <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold opacity-60 ${PAID_PILL[en.payment_status] || PAID_PILL.Unpaid}`}>{en.payment_status || 'Unpaid'}</span>}
+                  {en.status === 'approved' && en.payment_status !== 'Paid' && !en.voided && (
                     <button onClick={() => act(en.id, 'mark-paid')} title="Mark paid" className="text-gray-500 p-1"><DollarSign size={16} /></button>
                   )}
                   <button onClick={() => setDrawerEntry(en)} title="Details" className="text-gray-400 p-1"><SlidersHorizontal size={15} /></button>
@@ -463,34 +871,44 @@ export default function Ledger() {
               </div>
             </div>
           ))}
+          {filtered.length > mobileCap && (
+            <button onClick={() => setMobileCap(c => c + MOBILE_PAGE)} className="btn-secondary w-full">Load more ({filtered.length - mobileCap} left)</button>
+          )}
           <div className="card px-3 py-2.5 text-[11px] font-semibold text-gray-500 sticky bottom-16">
-            Totals: {Object.entries(totals).map(([c, a]) => `${c} ${a.toLocaleString(undefined, { minimumFractionDigits: 2 })}`).join('  ·  ') || '—'}
+            Totals: {totalsLine}{totalsUsd && <span className="text-gray-400 font-normal">{totalsUsd}</span>}
           </div>
         </div>
       ) : (
-        // FROZEN FIRST COLUMN — the frozen region is exactly ONE sticky <td> per
+        // FROZEN FIRST COLUMN: the frozen region is exactly ONE sticky <td> per
         // row (ci === 0), NOT several adjacent sticky cells. Multiple sticky
         // cells produce sub-pixel gaps that flicker on horizontal scroll. The
         // sticky cell paints its own row background (so row washes like the
         // expense-hue don't vanish under it) and carries a right-edge shadow to
         // separate it from the scrolling body. Do NOT split into multiple cells.
-        <div className="card overflow-x-auto">
+        // The selection checkbox + flag button live INSIDE that cell (boom kept
+        // them in its frozen block for the same reason).
+        <div className="card overflow-x-auto max-h-[75vh] overflow-y-auto">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-page/50 border-b border-divider text-left">
+            <thead className="sticky top-0 z-30">
+              <tr className="bg-page border-b border-divider text-left">
                 {shownCols.map((c, ci) => (
-                  <th key={c.key} onClick={() => setSortKey(c.key)} className={`px-3 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap cursor-pointer select-none hover:text-gray-600 ${ci === 0 ? 'sticky left-0 z-20 bg-page shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)]' : ''}`}>
-                    {c.label}{sort.key === c.key ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                  <th key={c.key} className={`px-3 py-2.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap select-none bg-page ${ci === 0 ? 'sticky left-0 z-20 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)]' : ''}`}>
+                    {ci === 0 && <input ref={headerCbRef} type="checkbox" checked={allSelected} onChange={toggleAll} onClick={e => e.stopPropagation()} title={`Select all ${filtered.length} rows the current filters show`} className="mr-2 align-middle" />}
+                    <button onClick={() => setSortKey(c.key)} className="uppercase tracking-wider hover:text-gray-600 cursor-pointer">
+                      {c.label}{sort.key === c.key ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                    </button>
                   </th>
                 ))}
-                <th className="px-3 py-2.5" />
+                <th className="px-3 py-2.5 bg-page" />
               </tr>
             </thead>
             <tbody className="divide-y divide-divider">
-              {filtered.map(en => (
+              {shownRows.map(en => (
                 <Fragment key={en.id}>
                 <tr ref={el => (rowRefs.current[en.id] = el)} className={`group align-top transition-shadow ${en.voided ? 'opacity-50' : ''} ${en.entry_source === 'expense' ? 'bg-sky-50/70 hover:bg-sky-100/70' : 'hover:bg-gray-50'}`}>
-                  {shownCols.map((c, ci) => <td key={c.key} className={`px-3 py-3 ${ci === 0 ? `sticky left-0 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)] ${en.entry_source === 'expense' ? 'bg-sky-50' : 'bg-card'} group-hover:bg-gray-50` : ''}`}>{c.render(en)}</td>)}
+                  {shownCols.map((c, ci) => <td key={c.key} title={en.voided ? `Voided by ${en.voided_by || '—'}` : undefined} className={`px-3 py-3 ${ci === 0 ? `sticky left-0 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)] ${en.entry_source === 'expense' ? 'bg-sky-50' : 'bg-card'} group-hover:bg-gray-50` : ''}`}>
+                    {ci === 0 ? <div className="flex items-start"><span className="flex-shrink-0">{firstCellPrefix(en)}</span><div className="min-w-0 flex-1">{c.render(en)}</div></div> : c.render(en)}
+                  </td>)}
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1.5 justify-end whitespace-nowrap">
                       {en.status === 'pending' && (
@@ -499,23 +917,24 @@ export default function Ledger() {
                           <button onClick={() => reject(en.id)} title="Reject" className="text-red-500 hover:bg-red-50 p-1 rounded"><X size={15} /></button>
                         </>
                       )}
-                      {en.status === 'approved' && en.payment_status !== 'Paid' && (
+                      {en.status === 'approved' && en.payment_status !== 'Paid' && !en.voided && (
                         <button onClick={() => act(en.id, 'mark-paid')} title="Mark paid" className="text-gray-500 hover:text-emerald-600 p-1 rounded"><DollarSign size={15} /></button>
                       )}
+                      <button onClick={() => setSplitEntry(en)} title={en.split_count > 0 ? 'Edit split' : 'Split across artists/songs'} className="text-gray-400 hover:text-brand-600 p-1 rounded"><Scissors size={14} /></button>
                       {en.split_count > 0
-                        ? <button onClick={() => unsplit(en)} title="Unsplit" className="text-gray-400 hover:text-amber-600 p-1 rounded"><Scissors size={14} /></button>
-                        : <button onClick={() => setSplitEntry(en)} title="Split across artists" className="text-gray-400 hover:text-brand-600 p-1 rounded"><Scissors size={14} /></button>}
+                        ? <button onClick={() => unsplit(en)} title="Unsplit (merge slices back)" className="text-gray-400 hover:text-amber-600 p-1 rounded"><RotateCcw size={14} /></button>
+                        : !en.is_reimbursement && <button onClick={() => setCarveEntry(en)} title="Carve off a reimbursement (fee + receipt)" className="text-gray-400 hover:text-brand-600 p-1 rounded"><Receipt size={14} /></button>}
                       <button onClick={() => setEditEntry(en)} title="Edit" className="text-gray-400 hover:text-brand-600 p-1 rounded"><Pencil size={14} /></button>
                       <button onClick={() => setDrawerEntry(en)} title="Details" className="text-gray-400 hover:text-brand-600 p-1 rounded"><SlidersHorizontal size={14} /></button>
-                      <button onClick={() => remove(en.id)} title="Delete" className="text-gray-300 hover:text-danger p-1 rounded"><Trash2 size={14} /></button>
+                      <button onClick={() => setConfirmDel(en)} title="Delete" className="text-gray-300 hover:text-danger p-1 rounded"><Trash2 size={14} /></button>
                     </div>
                   </td>
                 </tr>
                 {expanded[en.id] && (childrenMap[en.id] || []).map(kid => (
-                  <tr key={`k-${kid.id}`} className="bg-page/40 text-[13px]">
+                  <tr key={`k-${kid.id}`} ref={el => (rowRefs.current[kid.id] = el)} className="bg-page/40 text-[13px]">
                     {shownCols.map((c, ci) => (
                       <td key={c.key} className={`px-3 py-2 ${ci === 0 ? 'sticky left-0 z-10 bg-page/60 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)]' : ''}`}>
-                        {ci === 0 ? <span className="flex items-center gap-1.5 text-gray-500 pl-4"><span className="text-gray-300">↳</span>{c.render(kid)}</span> : c.render(kid)}
+                        {ci === 0 ? <span className="flex items-center gap-1.5 text-gray-500 pl-4"><span className="text-gray-300">{'↳'}</span>{c.render(kid)}</span> : c.render(kid)}
                       </td>
                     ))}
                     <td className="px-3 py-2">
@@ -531,11 +950,19 @@ export default function Ledger() {
                 )}
                 </Fragment>
               ))}
+              {renderCap < filtered.length && (
+                <tr ref={sentinelRef}>
+                  <td colSpan={shownCols.length + 1} className="px-3 py-3 text-center text-xs text-gray-400">
+                    showing {shownRows.length} of {filtered.length} rows; scroll for more
+                  </td>
+                </tr>
+              )}
             </tbody>
-            <tfoot>
-              <tr className="border-t-2 border-divider bg-page/40">
-                <td className="px-3 py-2.5 text-[11px] font-semibold text-gray-500" colSpan={shownCols.length + 1}>
-                  Totals: {Object.entries(totals).map(([c, a]) => `${c} ${a.toLocaleString(undefined, { minimumFractionDigits: 2 })}`).join('  ·  ') || '—'}
+            <tfoot className="sticky bottom-0 z-20">
+              <tr className="border-t-2 border-divider bg-page">
+                <td className="px-3 py-2.5 text-[11px] font-semibold text-gray-500 sticky left-0 bg-page shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)] whitespace-nowrap">TOTAL</td>
+                <td className="px-3 py-2.5 text-[11px] font-semibold text-gray-500 whitespace-nowrap" colSpan={shownCols.length}>
+                  {totalsLine}{totalsUsd && <span className="text-gray-400 font-normal">{totalsUsd}</span>}
                 </td>
               </tr>
             </tfoot>
@@ -543,18 +970,107 @@ export default function Ledger() {
         </div>
       )}
 
+      {/* Bulk bar (LED-1): appears with a selection; z stays under overlays. */}
+      {selectedRows.length > 0 && !isMobile && (
+        <BulkBar
+          count={selectedRows.length}
+          below={selBelow}
+          usd={selUsd}
+          categories={expenseCats}
+          artistNames={artistNames}
+          canGroup={selectedRows.length >= 2 && new Set(selectedRows.map(r => (r.payee || '').trim().toLowerCase())).size === 1 && selectedRows.every(r => !r.settlement_group_id)}
+          onApply={bulkApply}
+          onGroup={groupSelection}
+          onClear={() => setSel(new Set())}
+        />
+      )}
+
       {/* Undo affordance for inline edits (also: press z) */}
       {undoStack.length > 0 && (
-        <div className="fixed bottom-6 left-6 z-[90] flex items-center gap-3 bg-card border border-rule shadow-modal rounded-xl px-4 py-2.5">
+        <div className="fixed bottom-6 left-6 z-[40] flex items-center gap-3 bg-card border border-rule shadow-modal rounded-xl px-4 py-2.5">
           <span className="text-xs text-gray-500">Edited {undoStack[undoStack.length - 1].label}</span>
           <button onClick={undoLast} className="text-xs font-semibold text-brand-600 hover:underline">Undo (z)</button>
         </div>
       )}
 
-      {drawerEntry && <LedgerEntryDrawer entry={drawerEntry} onClose={() => setDrawerEntry(null)} onChanged={load} />}
+      {drawerEntry && <LedgerEntryDrawer entry={drawerEntry} onClose={() => setDrawerEntry(null)} onChanged={() => load(true)} />}
       {quickOpen && <QuickExpenseModal artistNames={artistNames} toast={toast} onClose={() => setQuickOpen(false)} onCreated={() => { setQuickOpen(false); load() }} />}
-      {editEntry && <EditEntryModal entry={editEntry} artistNames={artistNames} toast={toast} onClose={() => setEditEntry(null)} onSaved={() => { setEditEntry(null); load() }} />}
+      {editEntry && <EditEntryModal entry={editEntry} artistNames={artistNames} toast={toast} onClose={() => setEditEntry(null)} onSaved={() => { setEditEntry(null); load(true) }} />}
       {splitEntry && <SplitModal entry={splitEntry} artistNames={artistNames} toast={toast} onClose={() => setSplitEntry(null)} onDone={afterSplit} />}
+      {carveEntry && <CarveReimbModal entry={carveEntry} toast={toast} onClose={() => setCarveEntry(null)} onDone={() => { setCarveEntry(null); load(true) }} />}
+
+      <ConfirmDialog
+        open={!!confirmDel}
+        onClose={() => setConfirmDel(null)}
+        onConfirm={doDelete}
+        title="Delete ledger entry"
+        message={confirmDel ? `Delete ${confirmDel.payee || 'this entry'} (${money(confirmDel.family_amount ?? confirmDel.amount, confirmDel.currency)})?${confirmDel.split_count > 0 ? ` Its ${confirmDel.split_count} split slices are deleted with it.` : ''} It can be restored from the archive.` : ''}
+        confirmLabel="Delete"
+      />
+
+      {/* Flag-for-review editor (LED-4) */}
+      {flagFor && (
+        <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={() => setFlagFor(null)}>
+          <div className="card w-full max-w-sm p-5" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold text-ink flex items-center gap-2"><Flag size={15} className="text-amber-500" /> Flag for review</h3>
+              <button onClick={() => setFlagFor(null)} className="text-gray-400 hover:text-ink"><X size={18} /></button>
+            </div>
+            <p className="text-xs text-gray-400 mb-2 truncate">{flagFor.en.payee} · {money(flagFor.en.amount, flagFor.en.currency)}</p>
+            <textarea autoFocus rows={3} maxLength={500} className="input w-full" placeholder="Why does this need review? (optional)"
+              value={flagFor.reason} onChange={e => setFlagFor(f => ({ ...f, reason: e.target.value }))} />
+            {flagFor.en.flagged && <p className="text-[11px] text-gray-400 mt-1">Flagged by {flagFor.en.flagged_by || '—'}{flagFor.en.flagged_at ? ` on ${formatDate(flagFor.en.flagged_at)}` : ''}</p>}
+            <div className="flex justify-end gap-2 mt-4">
+              {flagFor.en.flagged && <button onClick={() => saveFlag(flagFor.en, false, null)} className="btn-secondary">Remove flag</button>}
+              <button onClick={() => saveFlag(flagFor.en, true, flagFor.reason.trim() || null)} className="btn-primary">{flagFor.en.flagged ? 'Update flag' : 'Flag'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Socials editor (LED-8): writes expenses.social_handles */}
+      {socialsFor && (
+        <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={() => setSocialsFor(null)}>
+          <div className="card w-full max-w-lg p-5" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold text-ink">Social handles · {socialsFor.en.payee}</h3>
+              <button onClick={() => setSocialsFor(null)} className="text-gray-400 hover:text-ink"><X size={18} /></button>
+            </div>
+            <SocialHandlesEditor value={socialsFor.rows} onChange={rows => setSocialsFor(s => ({ ...s, rows }))} currency={socialsFor.en.currency || 'USD'} />
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setSocialsFor(null)} className="btn-secondary">Cancel</button>
+              <button onClick={saveSocials} className="btn-primary">Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {receiptsFor && <ReceiptsModal entry={receiptsFor} toast={toast} onClose={() => setReceiptsFor(null)} onChanged={() => load(true)} />}
+
+      {/* Mobile filter sheet: the full filter set + sort (LED-25) */}
+      <BottomSheet open={filterSheet} onClose={() => setFilterSheet(false)} title="Filters"
+        footer={<div className="flex gap-2"><button onClick={() => { clearAll(); setFilterSheet(false) }} className="btn-secondary flex-1">Clear all</button><button onClick={() => setFilterSheet(false)} className="btn-primary flex-1">Done</button></div>}>
+        <div className="space-y-2.5 px-1">
+          <input value={amountQ} onChange={e => setAmountQ(e.target.value)} placeholder="Amount: 500 or >1000" className={`input w-full ${amountInvalid ? '!border-amber-400' : ''}`} />
+          <select className="input w-full" value={status} onChange={e => setStatus(e.target.value)}>{STATUSES.map(sv => <option key={sv} value={sv}>{sv === 'all' ? 'Any status' : sv}</option>)}</select>
+          <select className="input w-full" value={fCategory} onChange={e => setFCategory(e.target.value)}><option value="">All categories</option><CategoryOptions /></select>
+          <select className="input w-full" value={fPaid} onChange={e => setFPaid(e.target.value)}><option value="">Any payment</option><option>Unpaid</option><option>Partial</option><option>Paid</option></select>
+          <select className="input w-full" value={fMethod} onChange={e => setFMethod(e.target.value)}><option value="">Any method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select>
+          <select className="input w-full" value={fSource} onChange={e => setFSource(e.target.value)}>{SOURCE_FILTERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+          <select className="input w-full" value={fFlag} onChange={e => setFFlag(e.target.value)}><option value="">Flag: any</option><option value="flagged">Flagged</option><option value="unflagged">Unflagged</option><option value="ai">AI discrepancies</option></select>
+          <select className="input w-full" value={fArtist} onChange={e => setFArtist(e.target.value)}><option value="">Any artist</option>{artistOpts.map(a => <option key={a}>{a}</option>)}</select>
+          <select className="input w-full" value={fRecoup} onChange={e => setFRecoup(e.target.value)}><option value="">Recoup: any</option><option value="yes">Recoupable</option><option value="no">Not recoupable</option></select>
+          <select className="input w-full" value={`${sort.key}:${sort.dir}`} onChange={e => { const [key, dir] = e.target.value.split(':'); setSort({ key, dir }) }}>
+            <option value="invoice_date:desc">Newest first</option>
+            <option value="invoice_date:asc">Oldest first</option>
+            <option value="amount:desc">Amount: high to low</option>
+            <option value="amount:asc">Amount: low to high</option>
+            <option value="payee:asc">Payee A-Z</option>
+            <option value="scheduled_payment_date:asc">Due date</option>
+          </select>
+        </div>
+      </BottomSheet>
+
       {preview && (
         <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={() => setPreview(null)}>
           <div className="bg-card rounded-xl shadow-modal w-full max-w-4xl h-[88vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -574,12 +1090,12 @@ export default function Ledger() {
         <div className="fixed inset-0 z-[60] flex items-center justify-center px-4 py-8 bg-overlay overflow-y-auto" onClick={() => setReport1099(null)}>
           <div className="w-full max-w-2xl bg-card rounded-2xl border border-rule shadow-modal my-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-3 border-b border-divider">
-              <h2 className="text-base font-semibold text-ink">1099 report · {report1099.year} <span className="text-xs font-normal text-gray-400">(paid ≥ $600)</span></h2>
+              <h2 className="text-base font-semibold text-ink">1099 report · {report1099.year} <span className="text-xs font-normal text-gray-400">(reporting threshold; split slices included)</span></h2>
               <button onClick={() => setReport1099(null)} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
             </div>
             <div className="max-h-[60vh] overflow-y-auto">
               {report1099.vendors.length === 0 ? (
-                <p className="px-5 py-8 text-center text-sm text-gray-400">No vendors crossed the $600 threshold this year.</p>
+                <p className="px-5 py-8 text-center text-sm text-gray-400">No vendors crossed the reporting threshold this year.</p>
               ) : (
                 <table className="w-full text-sm">
                   <thead><tr className="text-left text-[10px] text-gray-400 uppercase tracking-wide border-b border-divider bg-page/50">
@@ -604,35 +1120,56 @@ export default function Ledger() {
   )
 }
 
-// Editable cell: click to edit; Enter/blur commits, Esc cancels. Module-scope
-// (identity stable across renders) so the input keeps focus while typing.
-function EditCell({ en, field, kind = 'text', options, display, editing, draft, setDraft, commitEdit, beginEdit, setEditing, artistNames }) {
-  if (editing?.id === en.id && editing?.key === field) {
-    const common = { autoFocus: true, className: 'input !py-1 !px-1.5 text-sm w-full', value: draft, onChange: e => setDraft(e.target.value), onBlur: () => commitEdit(en, field, draft), onKeyDown: e => { if (e.key === 'Enter') commitEdit(en, field, draft); if (e.key === 'Escape') setEditing(null) } }
-    if (kind === 'select') return <select {...common}><option value="">—</option>{options.map(o => <option key={o}>{o}</option>)}</select>
-    if (kind === 'number') return <input type="number" step="0.01" {...common} />
-    if (kind === 'datalist') return <><input list="ledger-artists" {...common} /><datalist id="ledger-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist></>
-    return <input {...common} />
-  }
-  return <span onClick={() => beginEdit(en, field)} className="cursor-text hover:bg-brand-500/10/60 rounded px-1 -mx-1 block min-h-[1.25rem]" title="Click to edit">{display}</span>
+// Y/N chip (boom's YNBadge): green Yes / quiet No; `accent` renders Yes in the
+// brand family (Cobrand / Bulk in boom were blue). null = 3-state dash.
+function YNBadge({ value, onClick, title, accent }) {
+  const cls = value === true
+    ? (accent ? 'bg-brand-500/15 text-brand-700' : 'bg-emerald-500/15 text-emerald-700')
+    : value === false ? 'bg-gray-500/10 text-gray-500' : 'bg-gray-500/10 text-gray-400'
+  return (
+    <button onClick={onClick} title={title || 'Click to toggle'} className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${cls} ${onClick ? 'hover:ring-1 hover:ring-brand-300' : ''}`}>
+      {value === true ? 'Yes' : value === false ? 'No' : '—'}
+    </button>
+  )
 }
 
-function PayeeCell({ en, onFlag, onToggleSplits, isOpen }) {
-  const flags = (en.ai_scan?.discrepancies?.length || 0) + (en.w9_scan?.discrepancies?.length || 0)
+// Editable cell: click to edit; Enter/blur commits, Esc cancels. Module-scope
+// (identity stable across renders) so the input keeps focus while typing.
+function EditCell({ en, field, kind = 'text', options, display, editing, draft, setDraft, commitEdit, beginEdit, setEditing, artistNames, songOptionsFor }) {
+  if (editing?.id === en.id && editing?.key === field) {
+    const common = { autoFocus: true, className: 'input !py-1 !px-1.5 text-sm w-full min-w-[110px]', value: draft, onChange: e => setDraft(e.target.value), onBlur: () => commitEdit(en, field, draft), onKeyDown: e => { if (e.key === 'Enter') commitEdit(en, field, draft); if (e.key === 'Escape') setEditing(null) } }
+    if (kind === 'select') return <select {...common}><option value="">{'—'}</option>{options.map(o => <option key={o}>{o}</option>)}</select>
+    if (kind === 'number') return <input type="number" step="0.01" {...common} />
+    if (kind === 'date') return <input type="date" {...common} />
+    if (kind === 'datalist') return <><input list="ledger-artists" {...common} /><datalist id="ledger-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist></>
+    if (kind === 'song') return <><input list="ledger-songs" {...common} /><datalist id="ledger-songs">{(songOptionsFor ? songOptionsFor(en) : []).map(sg => <option key={sg} value={sg} />)}</datalist></>
+    return <input {...common} />
+  }
+  return <span onClick={() => beginEdit(en, field)} className="cursor-text hover:bg-brand-500/10 rounded px-1 -mx-1 block min-h-[1.25rem]" title="Click to edit">{display}</span>
+}
+
+function PayeeCell({ en, onFlag, onToggleSplits, isOpen, onUngroup, editProps }) {
+  const flags = (en.ai_flags || 0) + (en.w9_flags || 0)
   return (
     <div>
-      <p className={`font-medium text-ink ${en.voided ? 'line-through' : ''}`}>{en.payee}</p>
+      <EditCell en={en} field="payee" display={<p className={`font-medium text-ink ${en.voided ? 'line-through' : ''}`}>{en.payee || '—'}</p>} {...editProps} />
       {en.vendor_submitted && <span className="text-[10px] text-brand-600 font-semibold uppercase">Vendor</span>}
-      {en.voided && <span className="text-[10px] text-red-500 font-semibold uppercase ml-1">Voided</span>}
+      {en.voided && <span className="text-[10px] text-red-500 font-semibold uppercase ml-1" title={`Voided by ${en.voided_by || '—'}`}>Voided</span>}
       {en.split_count > 0 && (
         <button onClick={(e) => { e.stopPropagation(); onToggleSplits?.(en) }} title="Show/hide splits"
           className="inline-flex items-center gap-0.5 text-[10px] text-brand-600 font-semibold uppercase ml-1 hover:underline align-middle">
           {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}{en.split_count} splits
         </button>
       )}
-      {en.is_bulk_deal && <span className="text-[10px] text-violet-500 font-semibold uppercase ml-1">Bulk</span>}
-      {en.rush && <span className="text-[10px] text-amber-600 font-semibold uppercase ml-1">⚡ Rush</span>}
-      {flags > 0 && <button onClick={onFlag} className="text-[10px] text-red-600 font-semibold uppercase ml-1 hover:underline">⚠ {flags} flag(s)</button>}
+      {en.settlement_group_size > 1 && (
+        <button onClick={(e) => { e.stopPropagation(); onUngroup?.(en) }} title="One bank payment settles these invoices; click to ungroup (bank matches unaffected)"
+          className="text-[9px] text-violet-600 font-bold uppercase ml-1 px-1 py-0.5 rounded bg-violet-500/10 hover:bg-violet-500/20 align-middle whitespace-nowrap">
+          One payment · {en.settlement_group_size}
+        </button>
+      )}
+      {en.is_bulk_deal && <span className="text-[10px] text-violet-500 font-semibold uppercase ml-1" title={en.bulk_deal_quantity ? `${en.bulk_deal_quantity} ${en.bulk_deal_unit || 'items'}` : undefined}>Bulk</span>}
+      {en.rush && <span className="text-[10px] text-amber-600 font-semibold uppercase ml-1">Rush</span>}
+      {flags > 0 && <button onClick={onFlag} className="text-[10px] text-red-600 font-semibold uppercase ml-1 hover:underline">{flags} AI flag(s)</button>}
     </div>
   )
 }
@@ -642,15 +1179,18 @@ function FilesCell({ en, openFile }) {
     <div className="flex gap-1.5">
       {en.invoice_r2_key && <button onClick={() => openFile(en.id, 'invoice')} title="Invoice" className="text-gray-400 hover:text-brand-600"><Paperclip size={14} /></button>}
       {en.w9_r2_key && <button onClick={() => openFile(en.id, 'w9')} title="W9" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">W9</button>}
-      {(en.receipt_r2_key || en.proof_r2_key) && <button onClick={() => openFile(en.id, 'receipt')} title="Receipt" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">RCT</button>}
-      {!en.invoice_r2_key && !en.w9_r2_key && !(en.receipt_r2_key || en.proof_r2_key) && <span className="text-gray-300">—</span>}
+      {en.proof_r2_key && <button onClick={() => openFile(en.id, 'proof')} title="Proof of payment" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">PRF</button>}
+      {en.receipt_r2_key && <button onClick={() => openFile(en.id, 'receipt')} title="Receipt" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">RCT</button>}
+      {!en.invoice_r2_key && !en.w9_r2_key && !en.proof_r2_key && !en.receipt_r2_key && <span className="text-gray-300">{'—'}</span>}
     </div>
   )
 }
 
-// A per-type file cell: opens the file if present, and always offers an
-// upload/replace control so files can be attached straight from the ledger.
-function FileCell({ en, type, r2key, openFile, onUploaded, toast }) {
+// A per-type file cell: open / upload / replace / remove. Split children
+// without their own invoice open the PARENT's (the family shares one document);
+// rows without their own W9 but with an alias-sibling that holds one offer
+// "View (shared)" plus an explicit Upload that targets THIS row (LED-11).
+function FileCell({ en, type, r2key, openFile, onChanged, toast, sharedFromId, parentFallback }) {
   const ref = useRef(null)
   const [busy, setBusy] = useState(false)
   const upload = async (file) => {
@@ -659,21 +1199,176 @@ function FileCell({ en, type, r2key, openFile, onUploaded, toast }) {
     try {
       const fd = new FormData(); fd.append('file', file)
       await api.post(`/ledger/entries/${en.id}/file/${type}`, fd)
-      onUploaded()
-    } catch { toast('Upload failed', 'error'); setBusy(false) }
+      onChanged()
+    } catch { toast('Upload failed', 'error') }
+    finally { setBusy(false) }
+  }
+  const remove = async () => {
+    if (!window.confirm(`Remove the ${type} file from ${en.payee}?`)) return
+    try { await api.delete(`/ledger/entries/${en.id}/file/${type}`); onChanged() }
+    catch (err) { toast(err.response?.data?.error || 'Remove failed', 'error') }
   }
   return (
     <span className="inline-flex items-center gap-1.5" {...dropTarget(upload)}>
       {r2key && <button onClick={() => openFile(en.id, type)} className="text-brand-600 hover:underline text-xs">Open</button>}
-      <button onClick={() => ref.current?.click()} title={r2key ? 'Replace file' : 'Upload file'} className="text-gray-300 hover:text-brand-600">
-        {busy ? <span className="text-[10px] text-gray-400">…</span> : <Upload size={13} />}
-      </button>
+      {!r2key && sharedFromId && <button onClick={() => openFile(sharedFromId, type)} title="This vendor's W9 lives on another entry" className="text-brand-600/80 hover:underline text-xs whitespace-nowrap">View (shared)</button>}
+      {!r2key && parentFallback && en.parent_id && <button onClick={() => openFile(en.parent_id, type)} title="Split slices share the family's invoice" className="text-brand-600/80 hover:underline text-xs whitespace-nowrap">Open (family)</button>}
+      {!r2key && sharedFromId
+        ? <button onClick={() => ref.current?.click()} title="Upload a W9 onto THIS entry (not the shared one)" className="text-[10px] font-semibold text-gray-500 border border-rule rounded px-1.5 py-0.5 hover:text-brand-600 hover:border-brand-300">{busy ? '…' : 'Upload'}</button>
+        : <button onClick={() => ref.current?.click()} title={r2key ? 'Replace file' : 'Upload file'} className="text-gray-300 hover:text-brand-600">
+            {busy ? <span className="text-[10px] text-gray-400">{'…'}</span> : <Upload size={13} />}
+          </button>}
+      {r2key && <button onClick={remove} title="Remove file" className="text-gray-300 hover:text-danger opacity-0 group-hover:opacity-100"><X size={12} /></button>}
       <input ref={ref} type="file" accept="application/pdf,image/*" hidden onChange={e => { upload(e.target.files?.[0]); e.target.value = '' }} />
     </span>
   )
 }
 
-// Quick-add an expense straight from the ledger — no invoice number or file
+// The extra receipts on an entry (first one lives on the row; 2nd..nth are
+// entity_files). List / add another / remove one (LED-11).
+function ReceiptsModal({ entry, toast, onClose, onChanged }) {
+  const [files, setFiles] = useState(null)
+  const addRef = useRef(null)
+  const load = () => api.get(`/ledger/entries/${entry.id}/receipts`).then(r => setFiles(r.data.data || [])).catch(() => setFiles([]))
+  useEffect(() => { load() }, [entry.id]) // eslint-disable-line
+  const add = async (file) => {
+    if (!file) return
+    try { const fd = new FormData(); fd.append('file', file); await api.post(`/ledger/entries/${entry.id}/receipts`, fd); load(); onChanged() }
+    catch { toast('Upload failed', 'error') }
+  }
+  const del = async (fid) => {
+    try { await api.delete(`/ledger/entries/${entry.id}/receipts/${fid}`); load(); onChanged() }
+    catch { toast('Remove failed', 'error') }
+  }
+  return (
+    <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-bold text-ink truncate">Receipts · {entry.payee}</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
+        </div>
+        {files === null ? <p className="text-sm text-gray-400">Loading…</p> : (
+          <div className="space-y-1.5">
+            {entry.receipt_r2_key && <p className="text-xs text-gray-500">1 primary receipt on the entry (open it from the Receipt column).</p>}
+            {files.map(f => (
+              <div key={f.id} className="flex items-center justify-between text-sm py-1.5 border-b border-divider">
+                <a href={f.url} target="_blank" rel="noreferrer" className="text-brand-600 hover:underline truncate">{f.original_name || f.filename}</a>
+                <button onClick={() => del(f.id)} className="text-gray-300 hover:text-danger flex-shrink-0"><Trash2 size={13} /></button>
+              </div>
+            ))}
+            {!files.length && <p className="text-sm text-gray-400">No extra receipts.</p>}
+          </div>
+        )}
+        <button onClick={() => addRef.current?.click()} className="btn-secondary w-full mt-4"><Plus size={14} /> Add another receipt</button>
+        <input ref={addRef} type="file" accept="application/pdf,image/*" hidden onChange={e => { add(e.target.files?.[0]); e.target.value = '' }} />
+      </div>
+    </div>
+  )
+}
+
+// Bulk bar (LED-1): one field across the whole selection. Selection state is
+// honest about paint vs write; "N below the visible rows" says the write hits
+// rows the incremental render hasn't painted yet.
+function BulkBar({ count, below, usd, categories, artistNames, canGroup, onApply, onGroup, onClear }) {
+  const [panel, setPanel] = useState(null)   // 'artist' | 'song' | 'category'
+  const [val, setVal] = useState('')
+  const [busy, setBusy] = useState(false)
+  const apply = async (field, value) => {
+    setBusy(true)
+    try { await onApply(field, value); setPanel(null); setVal('') } finally { setBusy(false) }
+  }
+  const open = (p) => { setPanel(panel === p ? null : p); setVal('') }
+  return (
+    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[40] bg-card border border-rule shadow-modal rounded-xl px-4 py-2.5 flex items-center gap-3 flex-wrap max-w-[92vw]">
+      <span className="text-xs font-semibold text-ink whitespace-nowrap">{count} selected
+        <span className="text-gray-400 font-normal"> · USD {usd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+        {below > 0 && <span className="text-amber-600 font-normal" title="Selected rows the incremental render hasn't painted yet; bulk edits still write to them"> · {below} below the visible rows</span>}
+      </span>
+      <button onClick={() => open('artist')} className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border ${panel === 'artist' ? 'bg-brand-500/10 border-brand-300 text-brand-700' : 'border-rule text-gray-500 hover:bg-gray-50'}`}>Set artist</button>
+      <button onClick={() => open('song')} className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border ${panel === 'song' ? 'bg-brand-500/10 border-brand-300 text-brand-700' : 'border-rule text-gray-500 hover:bg-gray-50'}`}>Set song</button>
+      <button onClick={() => open('category')} className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border ${panel === 'category' ? 'bg-brand-500/10 border-brand-300 text-brand-700' : 'border-rule text-gray-500 hover:bg-gray-50'}`}>Set category</button>
+      <button onClick={() => apply('in_quickbooks', true)} disabled={busy} title="Mark the selection as entered in QuickBooks" className="text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-rule text-gray-500 hover:bg-gray-50">QB {'✓'}</button>
+      <button onClick={() => apply('recoupable', false)} disabled={busy} className="text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-rule text-gray-500 hover:bg-gray-50">Not recoupable</button>
+      {canGroup && <button onClick={onGroup} disabled={busy} title="Declare these invoices as settling in ONE bank payment" className="text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-violet-500/10 text-violet-600 hover:bg-violet-500/20">One payment</button>}
+      <button onClick={onClear} className="text-xs font-semibold text-gray-400 hover:text-ink">Clear</button>
+      {panel && (
+        <div className="w-full flex items-center gap-2 pt-2 border-t border-divider">
+          {panel === 'category' ? (
+            <select autoFocus className="input !py-1.5 text-sm flex-1" value={val} onChange={e => setVal(e.target.value)}>
+              <option value="">choose category</option>
+              {categories.map(c => <option key={c}>{c}</option>)}
+            </select>
+          ) : (
+            <>
+              <input autoFocus list={panel === 'artist' ? 'bulk-artists' : undefined} className="input !py-1.5 text-sm flex-1"
+                placeholder={panel === 'song' ? 'One song. A comma splits an entry per song, which stays a per-row edit.' : `New ${panel} for the selection`}
+                value={val} onChange={e => setVal(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && val.trim()) apply(panel, val.trim()) }} />
+              {panel === 'artist' && <datalist id="bulk-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist>}
+            </>
+          )}
+          <button onClick={() => apply(panel, val.trim() || null)} disabled={busy || (panel === 'category' && !val)} className="btn-primary !py-1.5 text-xs">{busy ? 'Applying…' : 'Apply'}</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Fee/reimbursement carve-off (boom's split-fee-reimb, LED-32): fee + reimb
+// must equal the entry total, and the receipt is REQUIRED; the reimbursement
+// child carries it. Unsplit pulls the receipt back onto the parent.
+function CarveReimbModal({ entry, toast, onClose, onDone }) {
+  const total = Number(entry.amount || 0)
+  const [fee, setFee] = useState('')
+  const [receipt, setReceipt] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const fileRef = useRef(null)
+  const reimb = fee === '' ? '' : Math.round((total - Number(fee)) * 100) / 100
+  const valid = fee !== '' && Number(fee) > 0 && reimb > 0 && receipt
+  const submit = async () => {
+    if (!valid) return
+    setSaving(true)
+    try {
+      const fd = new FormData()
+      fd.append('fee_amount', String(Number(fee)))
+      fd.append('reimb_amount', String(reimb))
+      fd.append('receipt', receipt)
+      await api.post(`/ledger/entries/${entry.id}/split-fee-reimb`, fd)
+      toast('Reimbursement carved off')
+      onDone()
+    } catch (err) { toast(err.response?.data?.error || 'Could not carve', 'error'); setSaving(false) }
+  }
+  return (
+    <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="font-bold text-ink flex items-center gap-2"><Receipt size={15} /> Carve off reimbursement</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
+        </div>
+        <p className="text-xs text-gray-400 mb-4">{entry.payee} · {money(total, entry.currency)}: split into a fee and a receipt-backed reimbursement slice.</p>
+        <div className="grid grid-cols-2 gap-3">
+          <div><label className="label">Fee</label><input autoFocus type="number" step="0.01" className="input" value={fee} onChange={e => setFee(e.target.value)} /></div>
+          <div><label className="label">Reimbursement</label><input type="number" className="input" value={reimb} readOnly disabled /></div>
+          <div className="col-span-2">
+            <label className="label">Receipt <span className="text-danger">*</span></label>
+            <div onClick={() => fileRef.current?.click()} {...dropTarget(f => setReceipt(f))}
+              className={`border-2 border-dashed rounded-lg px-4 py-4 text-center text-sm cursor-pointer ${receipt ? 'border-emerald-300 text-ink' : 'border-rule text-gray-400 hover:border-brand-300'}`}>
+              {receipt ? receipt.name : 'Drop the receipt here, or click to choose'}
+              <input ref={fileRef} type="file" accept="application/pdf,image/*" hidden onChange={e => { setReceipt(e.target.files?.[0] || null); e.target.value = '' }} />
+            </div>
+          </div>
+        </div>
+        {fee !== '' && reimb <= 0 && <p className="text-xs text-danger mt-2">The fee must be less than the total.</p>}
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="btn-secondary">Cancel</button>
+          <button onClick={submit} disabled={!valid || saving} className="btn-primary">{saving ? 'Carving…' : 'Carve off'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Quick-add an expense straight from the ledger; no invoice number or file
 // required (for costs that don't have an invoice). Posts to the same create
 // endpoint as an approver, so it lands in the ledger immediately.
 function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
@@ -709,7 +1404,7 @@ function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
           <h3 className="font-bold text-ink">Add expense</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
         </div>
-        <p className="text-xs text-gray-400 mb-4">For a cost with no invoice — no invoice number or file needed.</p>
+        <p className="text-xs text-gray-400 mb-4">For a cost with no invoice; no invoice number or file needed.</p>
         <div className="grid grid-cols-2 gap-3">
           <div><label className="label">Date</label><input type="date" className="input" value={f.invoice_date} onChange={set('invoice_date')} /></div>
           <div><label className="label">Amount *</label><input type="number" step="0.01" className="input" value={f.amount} onChange={set('amount')} /></div>
@@ -723,7 +1418,7 @@ function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
           <div className="flex items-end"><label className="inline-flex items-center gap-2 text-sm text-gray-600 pb-2"><input type="checkbox" checked={f.recoupable} onChange={e => setF(s => ({ ...s, recoupable: e.target.checked }))} /> Recoupable</label></div>
           <div className="col-span-2"><label className="label">Notes</label><input className="input" value={f.notes} onChange={set('notes')} /></div>
           <div className="col-span-2">
-            <label className="label">Proof of payment <span className="text-gray-400 font-normal">— optional</span></label>
+            <label className="label">Proof of payment <span className="text-gray-400 font-normal">(optional)</span></label>
             <div
               onClick={() => proofRef.current?.click()}
               onDragOver={e => { e.preventDefault(); setDragOver(true) }}
@@ -750,7 +1445,7 @@ function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
   )
 }
 
-// Full edit form for a ledger entry — every editable field in one place (for
+// Full edit form for a ledger entry: every editable field in one place (for
 // the fields that aren't inline-editable in the table, and as a convenient
 // all-in-one editor). PATCHes /ledger/entries/:id.
 function EditEntryModal({ entry, artistNames, toast, onClose, onSaved }) {
@@ -761,10 +1456,12 @@ function EditEntryModal({ entry, artistNames, toast, onClose, onSaved }) {
     invoice_number: entry.invoice_number || '', amount: entry.amount ?? '', currency: entry.currency || 'USD',
     payment_method: entry.payment_method || '', payment_status: entry.payment_status || 'Unpaid',
     payment_date: d(entry.payment_date), scheduled_payment_date: d(entry.scheduled_payment_date),
+    paid_by: entry.paid_by || '',
     rep: entry.rep || '', vendor_email: entry.vendor_email || '', vendor_address: entry.vendor_address || '',
     vendor_bank: entry.vendor_bank || '', payment_terms: entry.payment_terms || '', payment_ref: entry.payment_ref || '',
-    notes: entry.notes || '',
+    notes: entry.notes || '', recoupment_label: entry.recoupment_label || '',
     recoupable: !!entry.recoupable, cobrand: !!entry.cobrand, is_bulk_deal: !!entry.is_bulk_deal, is_reimbursement: !!entry.is_reimbursement,
+    ufr: !!entry.ufr, in_quickbooks: !!entry.in_quickbooks,
   })
   const [saving, setSaving] = useState(false)
   const set = (k) => (e) => setF(s => ({ ...s, [k]: e.target.value }))
@@ -775,7 +1472,8 @@ function EditEntryModal({ entry, artistNames, toast, onClose, onSaved }) {
     setSaving(true)
     try {
       const payload = {}
-      for (const [k, v] of Object.entries(f)) payload[k] = v === '' ? null : v   // empty → null (dates/amount)
+      for (const [k, v] of Object.entries(f)) payload[k] = v === '' ? null : v   // empty -> null (dates/amount)
+      if (payload.cobrand) payload.category = 'Marketing'   // mirror the server rule
       await api.patch(`/ledger/entries/${entry.id}`, payload)
       toast('Entry updated')
       onSaved()
@@ -794,17 +1492,19 @@ function EditEntryModal({ entry, artistNames, toast, onClose, onSaved }) {
           <div><label className="label">Amount *</label><input type="number" step="0.01" className="input" value={f.amount} onChange={set('amount')} /></div>
           <div><label className="label">Currency</label><select className="input" value={f.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
           <div className="col-span-2 md:col-span-3"><label className="label">Payee / description *</label><input className="input" value={f.payee} onChange={set('payee')} /></div>
-          <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}><option value="">—</option><CategoryOptions /></select></div>
+          <div><label className="label">Category</label><select className="input" value={f.category} onChange={set('category')}><option value="">{'—'}</option><CategoryOptions /></select></div>
           <div><label className="label">Invoice #</label><input className="input" value={f.invoice_number} onChange={set('invoice_number')} /></div>
           <div><label className="label">Rep</label><input className="input" value={f.rep} onChange={set('rep')} /></div>
           <div><label className="label">Artist</label><input list="edit-artists" className="input" value={f.artist} onChange={set('artist')} /><datalist id="edit-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist></div>
           <div><label className="label">Song</label><input className="input" value={f.song} onChange={set('song')} /></div>
-          <div><label className="label">Payment method</label><select className="input" value={f.payment_method} onChange={set('payment_method')}><option value="">—</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
+          <div><label className="label">Payment method</label><select className="input" value={f.payment_method} onChange={set('payment_method')}><option value="">{'—'}</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
           <div><label className="label">Payment status</label><select className="input" value={f.payment_status} onChange={set('payment_status')}><option>Unpaid</option><option>Partial</option><option>Paid</option></select></div>
           <div><label className="label">Paid on</label><input type="date" className="input" value={f.payment_date} onChange={set('payment_date')} /></div>
+          <div><label className="label">Paid by</label><input className="input" value={f.paid_by} onChange={set('paid_by')} /></div>
           <div><label className="label">Scheduled</label><input type="date" className="input" value={f.scheduled_payment_date} onChange={set('scheduled_payment_date')} /></div>
           <div><label className="label">Terms</label><input className="input" value={f.payment_terms} onChange={set('payment_terms')} placeholder="e.g. Net 30" /></div>
           <div><label className="label">Payment ref</label><input className="input" value={f.payment_ref} onChange={set('payment_ref')} /></div>
+          <div><label className="label">Tone label</label><input className="input" value={f.recoupment_label} onChange={set('recoupment_label')} placeholder="Recoupment grouping" /></div>
           <div><label className="label">Vendor email</label><input type="email" className="input" value={f.vendor_email} onChange={set('vendor_email')} /></div>
           <div className="col-span-2"><label className="label">Mailing address</label><input className="input" value={f.vendor_address} onChange={set('vendor_address')} /></div>
           <div><label className="label">Bank</label><input className="input" value={f.vendor_bank} onChange={set('vendor_bank')} /></div>
@@ -813,8 +1513,10 @@ function EditEntryModal({ entry, artistNames, toast, onClose, onSaved }) {
           <div className="col-span-2 md:col-span-3 flex flex-wrap items-center gap-4 rounded-lg bg-page/60 border border-rule px-3 py-2.5">
             <label className="inline-flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" checked={f.recoupable} onChange={chk('recoupable')} /> Recoupable</label>
             <label className="inline-flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" checked={f.is_reimbursement} onChange={chk('is_reimbursement')} /> Reimbursement</label>
-            <label className="inline-flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" checked={f.cobrand} onChange={chk('cobrand')} /> Cobrand</label>
+            <label className="inline-flex items-center gap-2 text-sm text-gray-600" title="Forces category Marketing"><input type="checkbox" checked={f.cobrand} onChange={chk('cobrand')} /> Cobrand</label>
             <label className="inline-flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" checked={f.is_bulk_deal} onChange={chk('is_bulk_deal')} /> Bulk deal</label>
+            <label className="inline-flex items-center gap-2 text-sm text-gray-600" title="Un-recouped funds recovered"><input type="checkbox" checked={f.ufr} onChange={chk('ufr')} disabled={!f.recoupable} /> UFR</label>
+            <label className="inline-flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" checked={f.in_quickbooks} onChange={chk('in_quickbooks')} /> In QuickBooks</label>
           </div>
         </div>
         <div className="flex justify-end gap-2 mt-5">
@@ -825,4 +1527,3 @@ function EditEntryModal({ entry, artistNames, toast, onClose, onSaved }) {
     </div>
   )
 }
-

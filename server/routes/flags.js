@@ -216,7 +216,9 @@ router.post('/normalization', async (req, res) => {
   try {
     const pattern = String(req.body.pattern || '').trim();
     const base = String(req.body.base_artist || '').trim();
-    if (!pattern || !base) { client.release(); return res.status(400).json({ success: false, error: 'Pattern and base artist required' }); }
+    // No client.release() here — the finally below releases; releasing twice
+    // throws OUTSIDE the try (pg-pool double-release) and takes the process down.
+    if (!pattern || !base) return res.status(400).json({ success: false, error: 'Pattern and base artist required' });
     await client.query('BEGIN');
     await client.query(
       `INSERT INTO artist_normalization_map (label_id, pattern, base_artist, created_by) VALUES ($1,$2,$3,$4)

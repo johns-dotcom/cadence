@@ -41,7 +41,7 @@ function Section({ title, rows, total, restoreLabel, onRestore, attribution }) {
             <tbody className="divide-y divide-divider">
               {rows.map(r => (
                 <tr key={r.id} className="hover:bg-gray-50">
-                  <td className="px-5 py-2 whitespace-nowrap text-ink-muted">{formatDate(r.deleted_at || r.approved_at || r.created_at)}</td>
+                  <td className="px-5 py-2 whitespace-nowrap text-ink-muted">{formatDate(r.deleted_at || r.rejected_at || r.approved_at || r.created_at)}</td>
                   <td className="px-3 py-2">
                     <span className="text-ink">{r.payee || '—'}</span>
                     {r.invoice_number && <span className="ml-1.5 text-[11px] text-ink-faint">#{r.invoice_number}</span>}
@@ -51,7 +51,7 @@ function Section({ title, rows, total, restoreLabel, onRestore, attribution }) {
                   <td className="px-3 py-2 text-[12px] text-ink-muted max-w-xs">
                     {r.deleted
                       ? <>{r.deleted_by || 'Unknown'} · {formatDate(r.deleted_at)}</>
-                      : <>{r.approved_by || 'Unknown'} · {formatDate(r.approved_at)}{r.rejected_reason && <span className="text-danger"> — {r.rejected_reason}</span>}</>}
+                      : <>{r.rejected_by || r.approved_by || 'Unknown'} · {formatDate(r.rejected_at || r.approved_at)}{r.rejected_reason && <span className="text-danger"> — {r.rejected_reason}</span>}</>}
                   </td>
                   <td className="px-5 py-2 text-right">
                     <button type="button" onClick={() => onRestore(r)}

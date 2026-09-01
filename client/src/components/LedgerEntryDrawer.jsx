@@ -4,6 +4,7 @@ import ObjectDiscussion from './ObjectDiscussion'
 import { dropTarget } from '../utils/drop'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
+import { useAuth } from '../context/AuthContext'
 
 const SEV = { high: 'bg-red-100 text-red-700', medium: 'bg-amber-100 text-amber-700', low: 'bg-gray-100 text-gray-600' }
 
@@ -11,6 +12,8 @@ const SEV = { high: 'bg-red-100 text-red-700', medium: 'bg-amber-100 text-amber-
 // bulk-deal deliverables, and void/unvoid. All endpoints are label-scoped.
 export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
   const { toast } = useToast()
+  const { user } = useAuth()
+  const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const [tab, setTab] = useState('history')
   const [history, setHistory] = useState([])
   const [installments, setInstallments] = useState([])
@@ -31,6 +34,9 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
     api.get(`/ledger/entries/${id}/history`).then(r => setHistory(r.data.data || [])).catch(() => {})
     api.get(`/ledger/entries/${id}/installments`).then(r => { setInstallments(r.data.data.installments || []); setPaidTotal(r.data.data.total || 0) }).catch(() => {})
     api.get(`/ledger/entries/${id}/bulk-items`).then(r => setItems(r.data.data || [])).catch(() => {})
+    // The list payload no longer carries the scan JSONB (LED-28) — fetch the
+    // full row for the AI-scan tab.
+    api.get(`/ledger/entries/${id}`).then(r => setScans({ invoice: r.data.data.ai_scan || null, w9: r.data.data.w9_scan || null })).catch(() => {})
   }
   useEffect(() => { load() }, [id])
   useEffect(() => { setCampaignId(entry?.campaign_id || ''); setScans({ invoice: entry?.ai_scan || null, w9: entry?.w9_scan || null }); api.get('/campaigns').then(r => setCampaigns(r.data.data || [])).catch(() => {}) }, [id])
@@ -92,9 +98,12 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
   const toggleItem = async (it) => { try { await api.patch(`/ledger/bulk-items/${it.id}`, { completed: !it.completed }); load() } catch { toast('Failed', 'error') } }
   const delItem = async (iid) => { try { await api.delete(`/ledger/bulk-items/${iid}`); load() } catch { toast('Failed', 'error') } }
   const voidEntry = async () => {
-    if (!window.confirm(entry.voided ? 'Restore this entry?' : 'Void this entry?')) return
+    const msg = entry.voided
+      ? `Restore ${entry.payee}? The entry (and any split slices) returns to payable/spend totals with its payment state intact.`
+      : `Void ${entry.payee} — ${entry.currency || 'USD'} ${Number(entry.amount).toLocaleString()}? The entry stays on the ledger for the audit trail but drops out of payable and spend totals. Split slices are voided with it.`
+    if (!window.confirm(msg)) return
     try { await api.post(`/ledger/entries/${id}/${entry.voided ? 'unvoid' : 'void'}`); toast(entry.voided ? 'Restored' : 'Voided'); onChanged?.(); onClose() }
-    catch { toast('Failed', 'error') }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
 
   const scanFlags = (scans.invoice?.discrepancies?.length || 0) + (scans.w9?.discrepancies?.length || 0)
@@ -137,9 +146,11 @@ export default function LedgerEntryDrawer({ entry, onClose, onChanged }) {
               </button>
             )
           })}
-          <button onClick={voidEntry} className={`ml-auto inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg ${entry.voided ? 'text-emerald-600 hover:bg-emerald-50' : 'text-red-600 hover:bg-red-50'}`}>
-            {entry.voided ? <><RotateCcw size={13} /> Unvoid</> : <><Ban size={13} /> Void</>}
-          </button>
+          {isAdmin && (
+            <button onClick={voidEntry} className={`ml-auto inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg ${entry.voided ? 'text-emerald-600 hover:bg-emerald-50' : 'text-red-600 hover:bg-red-50'}`}>
+              {entry.voided ? <><RotateCcw size={13} /> Unvoid</> : <><Ban size={13} /> Void</>}
+            </button>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto p-5">

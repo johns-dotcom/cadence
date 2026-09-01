@@ -49,8 +49,10 @@ import Campaigns from './pages/Campaigns'
 import ArtistCampaigns from './pages/ArtistCampaigns'
 import ArtistCampaignDetail from './pages/ArtistCampaignDetail'
 import Ledger from './pages/Ledger'
+import InvoiceSearch from './pages/InvoiceSearch'
 import Approvals from './pages/Approvals'
 import AddLedgerEntry from './pages/AddLedgerEntry'
+import BulkUpload from './pages/BulkUpload'
 import Payments from './pages/Payments'
 import Vendors from './pages/Vendors'
 import CreateInvoice from './pages/CreateInvoice'
@@ -179,6 +181,9 @@ function AppContent() {
         <Route path="/artist-campaigns/:artist/:song" element={<AdminRoute><ArtistCampaignDetail /></AdminRoute>} />
         <Route path="/approvals"    element={<AdminRoute><Approvals /></AdminRoute>} />
         <Route path="/ledger"       element={<AdminRoute><Ledger /></AdminRoute>} />
+        {/* Search-oriented invoices index — distinct from /invoices (outbound creator) */}
+        <Route path="/invoice-search" element={<AdminRoute><InvoiceSearch /></AdminRoute>} />
+        <Route path="/bulk-upload"  element={<AdminRoute><BulkUpload /></AdminRoute>} />
         <Route path="/add-invoice"  element={<AddLedgerEntry mode="invoice" />} />
         <Route path="/ledger/new-invoice"       element={<AdminRoute><AddLedgerEntry mode="invoice" /></AdminRoute>} />
         <Route path="/ledger/new-reimbursement" element={<AdminRoute><AddLedgerEntry mode="reimbursement" /></AdminRoute>} />

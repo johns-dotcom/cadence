@@ -164,10 +164,24 @@ function vendorDecisionEmail({ vendorName, workspaceName, approved, invoiceNumbe
 }
 
 // Vendor's invoice was paid.
-function paymentConfirmationEmail({ vendorName, workspaceName, invoiceNumber, amount, currency, method, date, accent }) {
-  const subject = `Payment sent by ${workspaceName}${invoiceNumber ? ` — invoice ${invoiceNumber}` : ''}`;
-  const body = `<p style="color:#444;font-size:14px;line-height:1.6">Hi ${esc(vendorName)},</p>
-    <p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(workspaceName)}</strong> has sent payment${amount ? ` of <strong>${esc(money(amount, currency))}</strong>` : ''}${invoiceNumber ? ` for invoice <strong>${esc(invoiceNumber)}</strong>` : ''}${method ? ` via ${esc(method)}` : ''}${date ? ` on ${esc(date)}` : ''}.</p>`;
+function paymentConfirmationEmail({ vendorName, workspaceName, invoiceNumber, amount, currency, method, date, accent, invoices, totalLine, note }) {
+  // Multi-invoice form (one combined email per vendor — boom's
+  // bulk_payment_confirmation): `invoices` = [{invoiceNumber, amount, currency,
+  // date, method}] + `totalLine` for the subject/summary.
+  const many = Array.isArray(invoices) && invoices.length > 1;
+  const subject = many
+    ? `Payment sent by ${workspaceName} — ${invoices.length} invoices${totalLine ? ` (${totalLine})` : ''}`
+    : `Payment sent by ${workspaceName}${invoiceNumber ? ` — invoice ${invoiceNumber}` : ''}`;
+  let body = `<p style="color:#444;font-size:14px;line-height:1.6">Hi ${esc(vendorName)},</p>`;
+  if (many) {
+    const td = 'padding:5px 10px;border-bottom:1px solid #eee;font-size:13px;color:#333';
+    body += `<p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(workspaceName)}</strong> has sent payment for the following <strong>${invoices.length}</strong> invoices${totalLine ? ` totalling <strong>${esc(totalLine)}</strong>` : ''}:</p>
+      <table style="border-collapse:collapse;width:100%">${invoices.map(i =>
+        `<tr><td style="${td}">${esc(i.invoiceNumber || '—')}</td><td style="${td};text-align:right">${esc(money(i.amount, i.currency))}</td><td style="${td}">${esc(i.method || '')}${i.date ? ` · ${esc(i.date)}` : ''}</td></tr>`).join('')}</table>`;
+  } else {
+    body += `<p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(workspaceName)}</strong> has sent payment${amount ? ` of <strong>${esc(money(amount, currency))}</strong>` : ''}${invoiceNumber ? ` for invoice <strong>${esc(invoiceNumber)}</strong>` : ''}${method ? ` via ${esc(method)}` : ''}${date ? ` on ${esc(date)}` : ''}.</p>`;
+  }
+  if (note) body += `<p style="color:#444;font-size:14px;line-height:1.6">${esc(note).replace(/\n/g, '<br>')}</p>`;
   return { subject, html: shell('Payment sent', body, accent), text: subject };
 }
 
@@ -203,11 +217,12 @@ function internalRequestEmail({ userName, userEmail, workspaceName, requestType,
 }
 
 // Batch of invoices sent to a named approver for sign-off (Excel + PDFs attached).
-function approvalRequestEmail({ approverName, workspaceName, count, totalLine, note }) {
+function approvalRequestEmail({ approverName, workspaceName, count, totalLine, note, tablesHtml }) {
   const subject = `${workspaceName}: ${count} invoice${count === 1 ? '' : 's'} for your approval`;
   const body = `<p style="color:#444;font-size:14px;line-height:1.6">Hi ${esc(approverName || 'there')},</p>
     <p style="color:#444;font-size:14px;line-height:1.6"><strong>${esc(workspaceName)}</strong> has ${count} invoice${count === 1 ? '' : 's'} totalling <strong>${esc(totalLine || '')}</strong> awaiting your approval. A summary spreadsheet and the invoice PDFs are attached.</p>
-    ${note ? `<p style="color:#444;font-size:14px;line-height:1.6">${esc(note).replace(/\n/g, '<br>')}</p>` : ''}`;
+    ${note ? `<p style="color:#444;font-size:14px;line-height:1.6">${esc(note).replace(/\n/g, '<br>')}</p>` : ''}
+    ${tablesHtml || ''}`;
   return { subject, html: shell('Invoices for approval', body), text: subject };
 }
 

@@ -24,6 +24,8 @@ const { proposeFundingPairs } = require('../lib/fundingPairs');
 const bankEvidence = require('../lib/bankEvidence');
 const { stampFxRateAsync } = require('../lib/fxStamp');
 const { familyRoot } = require('../lib/paymentFamily');
+const { loadEverInvoiced, buildRuleSuggestions, annotateCategoryRules } = require('../lib/uploadRules');
+const { autoLinkRelease } = require('./ledger');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant, requireAdmin);
@@ -120,18 +122,30 @@ router.get('/completion', async (req, res) => {
       [req.labelId]
     );
     const rules = (await pool.query(`SELECT id, scope, pattern FROM statement_no_invoice_rules WHERE label_id = $1 ORDER BY id`, [req.labelId])).rows;
+    // Whole-category candidates need the invoice census — a category is only
+    // offered when NOT ONE of its vendors has ever sent an invoice.
+    const everInvoiced = await loadEverInvoiced(pool, req.labelId);
     const ruleHit = (t) => {
-      const vendor = String(t.exp_payee || t.payee_guess || '').trim().toLowerCase();
+      // BOTH names, not a fallback chain: a vendor rule written for the bank
+      // descriptor must still clear rows whose ledger payee differs, and vice
+      // versa — otherwise the queue count disagrees with what a rule accept
+      // actually delivers.
+      const ledger = String(t.exp_payee || '').trim().toLowerCase();
+      const guess = String(t.payee_guess || '').trim().toLowerCase();
       const cat = String(t.exp_category || '').trim().toLowerCase();
       // EQUALITY, never substring — "TONE" is inside "Tone Pay, Inc".
-      return rules.some((r) => (r.scope === 'vendor' ? r.pattern.trim().toLowerCase() === vendor : r.pattern.trim().toLowerCase() === cat));
+      return rules.some((r) => {
+        const p = r.pattern.trim().toLowerCase();
+        if (r.scope === 'vendor') return (!!ledger && p === ledger) || (!!guess && p === guess);
+        return !!cat && p === cat;
+      });
     };
     const mk = () => ({ n: 0, value: 0 });
     const buckets = { matched: mk(), booked_expected: mk(), booked_not_expected: mk(), open: mk() };
     const needsInvoiceIds = [];
     const byStatement = {};
     const vendorClusters = new Map();
-    const catCounts = new Map();
+    const catStat = new Map();
     let total = 0;
     for (const t of txns) {
       const usd = usdOf(t.amount, t.currency, null);
@@ -148,7 +162,19 @@ router.get('/completion', async (req, res) => {
           const c = vendorClusters.get(key) || { key, n: 0, value: 0, sample: t.exp_payee || t.payee_guess };
           c.n += 1; c.value += usd;
           vendorClusters.set(key, c);
-          if (t.exp_category) catCounts.set(t.exp_category, (catCounts.get(t.exp_category) || 0) + 1);
+          // Category evidence for the "whole categories that never invoice"
+          // candidates below — tracked with money and the vendor census, so a
+          // candidate carries its evidence instead of a bare count.
+          if (t.exp_category) {
+            const cs = catStat.get(t.exp_category) || { category: t.exp_category, n: 0, value: 0, vendors: new Set(), invoiced_vendors: 0 };
+            cs.n += 1; cs.value += usd;
+            const vp = String(t.exp_payee || t.payee_guess || '').trim().toLowerCase();
+            if (vp && !cs.vendors.has(vp)) {
+              cs.vendors.add(vp);
+              if (everInvoiced.has(vp)) cs.invoiced_vendors += 1;
+            }
+            catStat.set(t.exp_category, cs);
+          }
         }
       } else if (t.matched_expense_id) {
         // 'creator' matches are explained but NEVER invoice-backed.
@@ -174,7 +200,14 @@ router.get('/completion', async (req, res) => {
         by_statement: byStatement,
         scoped,
         vendors: [...vendorClusters.values()].map((c) => ({ ...c, value: round2(c.value) })).sort((a, b) => b.value - a.value).slice(0, 40),
-        category_candidates: [...catCounts.entries()].map(([category, n]) => ({ category, n })).sort((a, b) => b.n - a.n).slice(0, 12),
+        // Categories where NOT ONE vendor has ever sent an invoice — offered
+        // as suggested answers WITH their evidence (n · $ · vendor count),
+        // never applied automatically. A category with even one invoicing
+        // vendor is not offered: those rows want matching.
+        category_candidates: [...catStat.values()]
+          .filter((c) => c.invoiced_vendors === 0 && c.n > 0)
+          .map((c) => ({ category: c.category, n: c.n, value: round2(c.value), vendors: c.vendors.size }))
+          .sort((a, b) => b.value - a.value),
         rules,
       },
     });
@@ -564,7 +597,114 @@ router.post('/duplicate-pairs/reject', async (req, res) => {
   } catch { res.status(500).json({ success: false, error: 'Failed' }); }
 });
 
-// ── Rules: artist attribution + no-invoice ───────────────────────────────────
+// ── Rules: suggestions, all four kinds of CRUD, and the leak report ──────────
+//
+// The organizing question: will this line ever have an invoice behind it? The
+// suggestions endpoint mines repeated decisions and answers it per vendor; the
+// annotate report shows what each BOOK rule is DOING to the needs-invoice
+// queue. Every rule mutation is written to the activity log — a rule books or
+// hides money on every future upload, so its history must be reconstructable.
+
+// GET /rule-suggestions — repeated-decision mining + invoice-census
+// classification (match / category+pairing / no-invoice / dismiss / artist).
+router.get('/rule-suggestions', async (req, res) => {
+  try {
+    const data = await buildRuleSuggestions(pool, req.labelId, req.query.min);
+    res.json({ success: true, data });
+  } catch (e) { console.error('rule-suggestions error:', e); res.status(500).json({ success: false, error: 'Suggestions failed' }); }
+});
+
+// Category (BOOK) rules — standalone CRUD. A rule learned from history has no
+// row to act on, so it cannot be born only as a booking side effect.
+router.get('/category-rules', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT * FROM statement_category_rules WHERE label_id = $1 ORDER BY created_at DESC, id DESC`, [req.labelId]);
+    // annotate=1 also reports what each rule is DOING — how many rows it is
+    // putting in the needs-invoice queue, and which ledger vendors they
+    // resolve to. Opt-in because it costs a scan of every booked debit.
+    if (!rows.length || req.query.annotate !== '1') return res.json({ success: true, data: rows });
+    res.json({ success: true, data: await annotateCategoryRules(pool, req.labelId, rows) });
+  } catch (e) { console.error('category-rules error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+router.post('/category-rules', async (req, res) => {
+  try {
+    const pattern = String(req.body.pattern || '').trim().slice(0, 120);
+    const category = String(req.body.category || '').trim().slice(0, 80);
+    if (pattern.length < 3) return res.status(400).json({ success: false, error: 'pattern must be at least 3 characters' });
+    if (!category) return res.status(400).json({ success: false, error: 'category required' });
+    const { rows: [rule] } = await pool.query(
+      `INSERT INTO statement_category_rules (label_id, pattern, category, created_by) VALUES ($1, $2, $3, $4) RETURNING *`,
+      [req.labelId, pattern, category, req.user.name]);
+
+    // BOTH HALVES OR NEITHER. A category rule on its own MANUFACTURES queue
+    // work: every rule-booked row lands with no document behind it, which
+    // /completion counts as "still needs an invoice". So the caller can say
+    // "and no invoice is ever coming for this vendor" in the same call; if
+    // that half fails, the booking rule is rolled back rather than left
+    // feeding the queue — a leaking rule looks identical to a working one.
+    //
+    // The no-invoice pattern is the LEDGER payee, matched by EQUALITY —
+    // substring would swallow the neighbour ("TONE" inside "Tone Pay, Inc").
+    const niPattern = String(req.body.no_invoice_pattern || '').trim().slice(0, 120);
+    let noInvoiceRule = null;
+    if (niPattern) {
+      try {
+        const { rows: [ni] } = await pool.query(
+          `INSERT INTO statement_no_invoice_rules (label_id, scope, pattern, created_by)
+           VALUES ($1, 'vendor', $2, $3)
+           ON CONFLICT (label_id, scope, LOWER(TRIM(pattern))) DO UPDATE SET created_at = NOW()
+           RETURNING *`,
+          [req.labelId, niPattern, req.user.name]);
+        noInvoiceRule = ni;
+      } catch (err) {
+        await pool.query(`DELETE FROM statement_category_rules WHERE id = $1 AND label_id = $2`, [rule.id, req.labelId]).catch(() => {});
+        return res.status(500).json({
+          success: false,
+          error: `Could not record "${niPattern}" as never invoicing, so the booking rule was rolled back `
+            + `rather than left feeding the needs-invoice queue: ${err.message}`,
+        });
+      }
+    }
+    await logActivity(req, 'Added statement book rule', `always book "${pattern}" as ${category}`
+      + (niPattern ? ` — and "${niPattern}" never sends an invoice` : ''));
+    res.json({ success: true, data: { ...rule, no_invoice_rule: noInvoiceRule } });
+  } catch (e) { console.error('category-rule error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+router.delete('/category-rules/:id(\\d+)', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`DELETE FROM statement_category_rules WHERE id = $1 AND label_id = $2 RETURNING pattern, category`, [parseInt(req.params.id, 10), req.labelId]);
+    if (rows.length) await logActivity(req, 'Removed statement book rule', `"${rows[0].pattern}" → ${rows[0].category}`);
+    res.json({ success: true });
+  } catch { res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+// Dismiss (SET ASIDE) rules — standalone CRUD, same reasoning as above.
+router.get('/dismiss-rules', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT * FROM statement_dismiss_rules WHERE label_id = $1 ORDER BY created_at DESC, id DESC`, [req.labelId]);
+    res.json({ success: true, data: rows });
+  } catch { res.status(500).json({ success: false, error: 'Failed' }); }
+});
+router.post('/dismiss-rules', async (req, res) => {
+  try {
+    const pattern = String(req.body.pattern || '').trim().slice(0, 120);
+    if (pattern.length < 3) return res.status(400).json({ success: false, error: 'pattern must be at least 3 characters' });
+    const { rows: [rule] } = await pool.query(
+      `INSERT INTO statement_dismiss_rules (label_id, pattern, created_by) VALUES ($1, $2, $3) RETURNING *`,
+      [req.labelId, pattern, req.user.name]);
+    await logActivity(req, 'Added statement dismiss rule', `always set aside "${pattern}"`);
+    res.json({ success: true, data: rule });
+  } catch { res.status(500).json({ success: false, error: 'Failed' }); }
+});
+router.delete('/dismiss-rules/:id(\\d+)', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`DELETE FROM statement_dismiss_rules WHERE id = $1 AND label_id = $2 RETURNING pattern`, [parseInt(req.params.id, 10), req.labelId]);
+    if (rows.length) await logActivity(req, 'Removed statement dismiss rule', `"${rows[0].pattern}"`);
+    res.json({ success: true });
+  } catch { res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+// Artist attribution rules.
 router.get('/artist-rules', async (req, res) => {
   try {
     const { rows } = await pool.query(`SELECT * FROM statement_artist_rules WHERE label_id = $1 ORDER BY id`, [req.labelId]);
@@ -583,25 +723,69 @@ router.post('/artist-rules', async (req, res) => {
        ON CONFLICT (label_id, LOWER(pattern)) DO UPDATE SET artist = EXCLUDED.artist, is_overhead = EXCLUDED.is_overhead`,
       [req.labelId, pattern, artist, isOverhead, req.user.name]
     );
+    // The historical write is scoped by EXPENSE ID, never by the pattern.
+    //
+    // A pattern is a substring test, and vendor names collide exactly where it
+    // hurts: "TONE" is a substring of "Tone Pay, Inc". Sweeping history by
+    // LIKE '%pattern%' silently attributes a different company's spend to an
+    // artist, and nothing downstream contradicts it. So the caller sends the
+    // ids it actually reviewed, re-checked server-side (still booked, still
+    // artist-less, still alive — the client's list can be stale), and the
+    // pattern is kept only for FUTURE statements, where the stakes are one new
+    // row at a time. No ids means rule-only — a deliberate no-op on history.
     let updated = 0;
-    if (req.body.retro === true && artist) {
-      const r = await pool.query(
-        `UPDATE expenses e SET artist = $1
-          FROM bank_transactions t
-         WHERE t.matched_expense_id = e.id AND t.label_id = $2 AND e.label_id = $2
-           AND e.entry_source = 'bank_statement' AND (e.artist IS NULL OR TRIM(e.artist) = '')
-           AND LOWER(COALESCE(t.payee_guess, '') || ' ' || COALESCE(t.description, '')) LIKE '%' || LOWER($3) || '%'`,
-        [artist, req.labelId, pattern]
-      );
-      updated = r.rowCount;
+    const touched = [];
+    const ids = Array.isArray(req.body.entry_ids)
+      ? req.body.entry_ids.map(Number).filter(Number.isFinite).slice(0, 5000)
+      : [];
+    if (!isOverhead && artist && ids.length) {
+      const { rows: targets } = await pool.query(
+        `SELECT e.id FROM bank_transactions t
+           JOIN expenses e ON e.id = t.matched_expense_id
+          WHERE t.label_id = $1 AND e.label_id = $1 AND t.direction = 'debit' AND t.dismissed = FALSE
+            AND (t.booked = TRUE OR t.match_method IN ('created', 'rule'))
+            AND (e.deleted = false OR e.deleted IS NULL)
+            AND COALESCE(TRIM(e.artist), '') = ''
+            AND e.id = ANY($2::int[])`,
+        [req.labelId, ids]);
+      for (const t of targets) {
+        await pool.query(`UPDATE expenses SET artist = $1 WHERE id = $2 AND label_id = $3`, [artist, t.id, req.labelId]);
+        // Same release auto-link the ledger's own edit path runs, so a rule
+        // write is indistinguishable from a hand edit. Best-effort.
+        await autoLinkRelease(req.labelId, t.id).catch(() => {});
+        updated += 1;
+        touched.push(t.id);
+      }
     }
-    res.json({ success: true, data: { updated } });
+    await logActivity(req, 'Added statement artist rule',
+      `"${pattern}" → ${isOverhead ? 'overhead' : artist}${updated ? ` — ${updated} past entr${updated === 1 ? 'y' : 'ies'} attributed` : ''}`);
+    res.json({
+      success: true,
+      data: {
+        updated,
+        entry_ids: touched,
+        // Requested vs written: a gap means rows changed under the caller
+        // (already attributed, unbooked, deleted) and the UI should say so
+        // rather than report a count it didn't achieve.
+        requested: ids.length,
+        skipped: Math.max(0, ids.length - updated),
+      },
+    });
   } catch (e) { console.error('artist-rule error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
 router.delete('/artist-rules/:id(\\d+)', async (req, res) => {
-  try { await pool.query(`DELETE FROM statement_artist_rules WHERE id = $1 AND label_id = $2`, [parseInt(req.params.id, 10), req.labelId]); res.json({ success: true }); }
-  catch { res.status(500).json({ success: false, error: 'Failed' }); }
+  try {
+    const { rows } = await pool.query(`DELETE FROM statement_artist_rules WHERE id = $1 AND label_id = $2 RETURNING pattern, artist, is_overhead`, [parseInt(req.params.id, 10), req.labelId]);
+    if (rows.length) await logActivity(req, 'Removed statement artist rule', `"${rows[0].pattern}" → ${rows[0].is_overhead ? 'overhead' : rows[0].artist}`);
+    res.json({ success: true });
+  } catch { res.status(500).json({ success: false, error: 'Failed' }); }
 });
+
+// No-invoice rules. Accepts `pattern` or `patterns` — one call either way.
+// `patterns` exists because pairing an existing category rule needs a vendor
+// rule per ledger payee its rows resolve to, and a half-paired rule drops
+// fewer rows than it just promised, which is indistinguishable from the rule
+// not working. All or nothing.
 router.get('/no-invoice-rules', async (req, res) => {
   try {
     const { rows } = await pool.query(`SELECT * FROM statement_no_invoice_rules WHERE label_id = $1 ORDER BY id`, [req.labelId]);
@@ -610,19 +794,41 @@ router.get('/no-invoice-rules', async (req, res) => {
 });
 router.post('/no-invoice-rules', async (req, res) => {
   try {
-    const scope = req.body.scope === 'category' ? 'category' : 'vendor';
-    const pattern = String(req.body.pattern || '').trim();
-    if (!pattern) return res.status(400).json({ success: false, error: 'pattern required' });
-    await pool.query(
-      `INSERT INTO statement_no_invoice_rules (label_id, scope, pattern, created_by) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-      [req.labelId, scope, pattern, req.user.name]
-    );
-    res.json({ success: true });
+    const scope = String(req.body.scope || '').trim();
+    // Scope is validated, never coerced — a typo silently becoming 'vendor'
+    // writes a rule that matches nothing the caller intended.
+    if (!['category', 'vendor'].includes(scope)) return res.status(400).json({ success: false, error: "scope must be 'category' or 'vendor'" });
+    const list = (Array.isArray(req.body.patterns) ? req.body.patterns : [req.body.pattern])
+      .map((p) => String(p || '').trim().slice(0, 120)).filter((p) => p.length >= 2);
+    if (!list.length) return res.status(400).json({ success: false, error: 'pattern too short' });
+    const written = [];
+    try {
+      for (const pattern of list) {
+        const { rows: [rule] } = await pool.query(
+          `INSERT INTO statement_no_invoice_rules (label_id, scope, pattern, created_by) VALUES ($1, $2, $3, $4)
+           ON CONFLICT (label_id, scope, LOWER(TRIM(pattern))) DO UPDATE SET created_at = NOW()
+           RETURNING *`,
+          [req.labelId, scope, pattern, req.user.name]);
+        written.push(rule);
+      }
+    } catch (err) {
+      // A partial accept quietly under-delivers on the row count it just
+      // promised, which is indistinguishable from the rule not working.
+      const ids = written.map((r) => r.id);
+      if (ids.length) await pool.query(`DELETE FROM statement_no_invoice_rules WHERE id = ANY($1) AND label_id = $2`, [ids, req.labelId]).catch(() => {});
+      return res.status(500).json({ success: false, error: `Nothing was saved (${err.message})` });
+    }
+    await logActivity(req, 'Added no-invoice rule',
+      list.length === 1 ? `${scope} "${list[0]}" never has an invoice` : `${list.length} ${scope}s never have an invoice (${list.join(', ')})`);
+    res.json({ success: true, data: written.length === 1 ? written[0] : written });
   } catch { res.status(500).json({ success: false, error: 'Failed' }); }
 });
 router.delete('/no-invoice-rules/:id(\\d+)', async (req, res) => {
-  try { await pool.query(`DELETE FROM statement_no_invoice_rules WHERE id = $1 AND label_id = $2`, [parseInt(req.params.id, 10), req.labelId]); res.json({ success: true }); }
-  catch { res.status(500).json({ success: false, error: 'Failed' }); }
+  try {
+    const { rows } = await pool.query(`DELETE FROM statement_no_invoice_rules WHERE id = $1 AND label_id = $2 RETURNING scope, pattern`, [parseInt(req.params.id, 10), req.labelId]);
+    if (rows.length) await logActivity(req, 'Removed no-invoice rule', `${rows[0].scope} "${rows[0].pattern}"`);
+    res.json({ success: true });
+  } catch { res.status(500).json({ success: false, error: 'Failed' }); }
 });
 router.post('/tx/:id(\\d+)/no-invoice', async (req, res) => {
   try {

@@ -614,13 +614,49 @@ router.post('/txns/:id/book', async (req, res) => {
       `UPDATE bank_transactions SET matched_expense_id = $1, match_method = 'booked', match_score = 1.0, matched_by = $2, matched_at = NOW(), booked = TRUE, dismissed = FALSE, dismissed_reason = NULL WHERE id = $3 AND label_id = $4`,
       [entry.id, req.user.name, t.id, req.labelId]
     );
-    // Optional "always book <payee> as <category>" rule.
+    // Optional "always book <payee> as <category>" rule — GUARDED, because a
+    // rule can be a wrong turn. If this vendor has ever sent a real invoice,
+    // its lines want MATCHING: a booking rule would quietly convert matchable
+    // payments into rematch work while its invoices sit unclaimed. The booking
+    // itself still goes through; only the rule is refused, and the refusal is
+    // named in the response so the click isn't a silent no-op.
+    let ruleSkipped = null;
     if (req.body.rule && req.body.category && (t.payee_guess || t.description)) {
-      await pool.query('INSERT INTO statement_category_rules (label_id, pattern, category, created_by) VALUES ($1,$2,$3,$4)',
-        [req.labelId, (t.payee_guess || t.description).slice(0, 120), req.body.category, req.user.name]);
+      const pattern = (t.payee_guess || t.description).slice(0, 120).trim();
+      if (pattern.length < 3) {
+        // A 1-2 char payee_guess mints a substring rule that auto-books broad
+        // swathes of every future upload.
+        ruleSkipped = 'pattern too short for a standing rule — booked without one';
+      } else {
+        const vendorName = String(req.body.payee || t.payee_guess || '').trim();
+        const { rows: inv } = await pool.query(
+          `SELECT COUNT(*)::int AS n FROM expenses
+            WHERE label_id = $1 AND (deleted = false OR deleted IS NULL)
+              AND COALESCE(entry_source, '') <> 'bank_statement'
+              AND COALESCE(TRIM(invoice_number), '') <> ''
+              AND LOWER(TRIM(payee)) = LOWER(TRIM($2))`,
+          [req.labelId, vendorName || pattern]);
+        if (inv[0].n > 0) {
+          ruleSkipped = `"${vendorName || pattern}" has sent ${inv[0].n} real invoice${inv[0].n === 1 ? '' : 's'} — its lines want matching, so no standing rule was written`;
+        } else {
+          await pool.query('INSERT INTO statement_category_rules (label_id, pattern, category, created_by) VALUES ($1,$2,$3,$4)',
+            [req.labelId, pattern, req.body.category, req.user.name]);
+          await logActivity(req, 'Added statement book rule', `always book "${pattern}" as ${req.body.category}`);
+          // Pair it in the same call when the client says no invoice is ever
+          // coming — an unpaired BOOK rule feeds the needs-invoice queue.
+          const niPattern = String(req.body.no_invoice_pattern || '').trim().slice(0, 120);
+          if (niPattern.length >= 2) {
+            await pool.query(
+              `INSERT INTO statement_no_invoice_rules (label_id, scope, pattern, created_by)
+               VALUES ($1, 'vendor', $2, $3)
+               ON CONFLICT (label_id, scope, LOWER(TRIM(pattern))) DO UPDATE SET created_at = NOW()`,
+              [req.labelId, niPattern, req.user.name]).catch(() => {});
+          }
+        }
+      }
     }
     await logActivity(req, 'Booked bank debit', `${entry.payee} — ${entry.amount}`);
-    res.json({ success: true, data: entry });
+    res.json({ success: true, data: entry, rule_skipped: ruleSkipped });
   } catch (e) { console.error('Book error:', e); res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 
@@ -651,11 +687,20 @@ router.post('/txns/:id/dismiss', async (req, res) => {
     if (!t) return res.status(404).json({ success: false, error: 'Not found' });
     await pool.query(`UPDATE bank_transactions SET dismissed = TRUE, dismissed_reason = COALESCE($2,'manual'), matched_expense_id = NULL, match_method = NULL, booked = FALSE WHERE id = $1 AND label_id = $3`,
       [t.id, req.body.reason || null, req.labelId]);
+    // ≥3 chars — a 1-2 char payee_guess would mint a substring rule that
+    // silently auto-dismisses broad swathes of every future upload.
+    let ruleSkipped = null;
     if (req.body.rule && (t.payee_guess || t.description)) {
-      await pool.query('INSERT INTO statement_dismiss_rules (label_id, pattern, created_by) VALUES ($1,$2,$3)',
-        [req.labelId, (t.payee_guess || t.description).slice(0, 120), req.user.name]);
+      const pattern = (t.payee_guess || t.description).slice(0, 120).trim();
+      if (pattern.length < 3) {
+        ruleSkipped = 'pattern too short for a standing rule — dismissed without one';
+      } else {
+        await pool.query('INSERT INTO statement_dismiss_rules (label_id, pattern, created_by) VALUES ($1,$2,$3)',
+          [req.labelId, pattern, req.user.name]);
+        await logActivity(req, 'Added statement dismiss rule', `always set aside "${pattern}"`);
+      }
     }
-    res.json({ success: true });
+    res.json({ success: true, rule_skipped: ruleSkipped });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 router.post('/txns/:id/restore', async (req, res) => {

@@ -186,7 +186,12 @@ function StatementDetail({ id }) {
     try { const { data: r } = await api.post('/bank-statements/txns/bulk', { ids, action, ...extra }); toast(`${r.data.affected} updated`); setSel(new Set()); load() }
     catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
-  const delRule = async (kind, ruleId) => { try { await api.delete(`/bank-statements/rules/${kind}/${ruleId}`); load() } catch { toast('Failed', 'error') } }
+  // Named consequence, not a bare delete — removing a rule changes what every
+  // future upload does.
+  const delRule = async (kind, ruleId, label) => {
+    if (!window.confirm(`Remove ${label}?\n\nFuture statements stop applying it. Nothing already recorded changes.`)) return
+    try { await api.delete(`/bank-statements/rules/${kind}/${ruleId}`); load() } catch { toast('Failed', 'error') }
+  }
 
   const txns = data?.transactions || []
   const counts = useMemo(() => {
@@ -403,13 +408,13 @@ function StatementDetail({ id }) {
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 mb-2">Book as category</p>
               {data.rules.category.length ? data.rules.category.map(r => (
-                <div key={r.id} className="flex items-center justify-between text-sm py-1"><span className="text-gray-600 truncate">"{r.pattern}" → <span className="font-medium text-ink">{r.category}</span></span><button onClick={() => delRule('category', r.id)} className="text-gray-300 hover:text-danger"><X size={14} /></button></div>
+                <div key={r.id} className="flex items-center justify-between text-sm py-1"><span className="text-gray-600 truncate">"{r.pattern}" → <span className="font-medium text-ink">{r.category}</span></span><button onClick={() => delRule('category', r.id, `the rule booking "${r.pattern}" as ${r.category}`)} className="text-gray-300 hover:text-danger"><X size={14} /></button></div>
               )) : <p className="text-xs text-gray-400">None yet.</p>}
             </div>
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 mb-2">Always dismiss</p>
               {data.rules.dismiss.length ? data.rules.dismiss.map(r => (
-                <div key={r.id} className="flex items-center justify-between text-sm py-1"><span className="text-gray-600 truncate">"{r.pattern}"</span><button onClick={() => delRule('dismiss', r.id)} className="text-gray-300 hover:text-danger"><X size={14} /></button></div>
+                <div key={r.id} className="flex items-center justify-between text-sm py-1"><span className="text-gray-600 truncate">"{r.pattern}"</span><button onClick={() => delRule('dismiss', r.id, `the rule setting aside "${r.pattern}"`)} className="text-gray-300 hover:text-danger"><X size={14} /></button></div>
               )) : <p className="text-xs text-gray-400">None yet.</p>}
             </div>
           </div>
@@ -502,7 +507,14 @@ function EntryModal({ txn, onClose, onDone, toast }) {
   const set = (k) => (e) => setF(s => ({ ...s, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }))
   const save = async () => {
     setSaving(true)
-    try { await api.post(`/bank-statements/txns/${txn.id}/book`, { payee: f.payee, category: f.category || null, artist: f.artist || null, rule: f.rule }); toast('Booked'); onDone() }
+    try {
+      const { data: r } = await api.post(`/bank-statements/txns/${txn.id}/book`, { payee: f.payee, category: f.category || null, artist: f.artist || null, rule: f.rule })
+      // The booking always lands; the RULE can be refused (vendor really
+      // invoices, or the pattern is too short). Say so — a silently skipped
+      // rule looks identical to a written one.
+      toast(r.rule_skipped ? `Booked — ${r.rule_skipped}` : 'Booked')
+      onDone()
+    }
     catch (err) { toast(err.response?.data?.error || 'Failed', 'error'); setSaving(false) }
   }
   return (

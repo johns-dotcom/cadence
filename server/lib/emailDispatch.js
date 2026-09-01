@@ -58,7 +58,13 @@ function prepareEmail(kind, ctx = {}) {
     cc: toCc(ctx.cc),
     subject,
     html,
-    attachmentLabels: (ctx.attachments || []).map(a => a.filename),
+    // Preview callers can't carry real attachments (the /email/preview route
+    // strips them as a security boundary) — they pass display-only
+    // attachmentLabels instead so the modal still shows what WILL be attached
+    // by the feature route that ultimately sends.
+    attachmentLabels: (ctx.attachments && ctx.attachments.length)
+      ? ctx.attachments.map(a => a.filename)
+      : (Array.isArray(ctx.attachmentLabels) ? ctx.attachmentLabels.map(String) : []),
   };
 }
 

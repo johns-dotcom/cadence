@@ -6,7 +6,7 @@ import {
   Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone, FileBarChart, GitMerge, Scale,
   FileClock, Shield, Lock, FileSignature, FileSpreadsheet, Layers, PiggyBank, FilePlus2,
-  MessageSquarePlus, MessageSquare, Landmark, ShieldCheck, Users2,
+  MessageSquarePlus, MessageSquare, Landmark, ShieldCheck, Users2, UploadCloud, FileSearch,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useSocket } from '../context/SocketContext'
@@ -28,6 +28,7 @@ export const PAGE_LABELS = {
   '/financials': 'Financials',
   '/reports': 'Reports',
   '/bank-matching': 'Bank Matching',
+  '/bulk-upload': 'Bulk Upload',
   '/approvals/archive': 'Approvals Archive',
   '/creators': 'Creator Payments',
   '/artist-budgets': 'Artist Budgets',
@@ -52,6 +53,7 @@ export const PAGE_LABELS = {
   '/renewals':   'Renewals',
   '/approvals':  'Approvals',
   '/ledger':     'Ledger',
+  '/invoice-search': 'Invoice Search',
   '/ledger/new-invoice': 'Add invoice',
   '/ledger/new-reimbursement': 'Add reimbursement',
   '/payments':   'Payments',
@@ -280,6 +282,8 @@ export default function Layout() {
         { path: '/add-invoice', label: 'Add Invoice', icon: Receipt },
         ...(isApprover ? [{ path: '/approvals', label: 'Approvals', icon: Check, badge: pendingApprovals }] : []),
         ...(isApprover ? [{ path: '/ledger', label: 'Ledger', icon: BookOpen }] : []),
+        ...(isApprover ? [{ path: '/invoice-search', label: 'Invoice Search', icon: FileSearch }] : []),
+        ...(isApprover ? [{ path: '/bulk-upload', label: 'Bulk Upload', icon: UploadCloud }] : []),
         ...(isApprover ? [{ path: '/payments', label: 'Payments', icon: CreditCard }] : []),
         ...(isAdmin ? [{ path: '/bank-statements', label: 'Bank Statements', icon: Landmark }] : []),
         ...(isAdmin ? [{ path: '/bank-matching', label: 'Bank Matching', icon: GitMerge }] : []),

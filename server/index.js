@@ -568,6 +568,18 @@ const runMigrations = async () => {
   // lib/approvalChecklist.writeApprovalChecklist — deliberately NOT in the
   // ledger PATCH allow-list, so it can't be edited after the fact.
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS approval_checklist JSONB`);
+  // The SECOND review on Approvals (boom parity): "is this W9 signed and
+  // dated?" — written onto the entry that HOLDS the W9 file, so one answer
+  // covers every invoice from that vendor. { signed_and_dated, prefilled,
+  // accepted_prefill, scan_said, by, at }. Not in the PATCH allow-list.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS w9_review JSONB`);
+  // Rejection attribution. Before these, the reject route stamped the rejecter
+  // into approved_by/approved_at — a misleading audit trail (APR-26).
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS rejected_by TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMP`);
+  // Approve-time auto-link to the catalog (artist + song match). FK ALTER is
+  // safe here: releases is created earlier in this function.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS release_id INT REFERENCES releases(id) ON DELETE SET NULL`);
   // Vendor-provided multi-artist allocation: [{ artist, song, amount, socials:[{handle, amount}] }].
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS artist_breakdown JSONB`);
   // Recoupment statement tracking: UFR ("un-recouped funds recovered") marker
@@ -684,6 +696,16 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS bulk_deal_quantity INT`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS bulk_deal_unit TEXT`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS bulk_deal_completed INT DEFAULT 0`);
+  // Phase-3 ledger parity (boom): QuickBooks reconciliation tracking, tone
+  // labels (recoupment statement grouping), the unsplit guard that stops a
+  // comma-in-title song from re-splitting on the next edit, and settlement
+  // groups ("ONE PAYMENT · N INVOICES" — invoices declared as settling in one
+  // bank payment; group id = the smallest member id).
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS in_quickbooks BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS qb_entry_date DATE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS recoupment_label TEXT`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS no_auto_split BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS settlement_group_id INT`);
 
   // Per-artist metadata (keyed by a normalized artist key).
   await pool.query(`
@@ -952,11 +974,42 @@ const runMigrations = async () => {
       line_items JSONB,
       payment_status TEXT DEFAULT 'Unpaid',
       created_by TEXT,
-      created_at TIMESTAMP DEFAULT NOW(),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE (label_id, invoice_number)
     );
   `);
   await pool.query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'USD'`);
+  // Payment terms, and the date they imply. `due_by` stays — it is the printed
+  // STRING the PDF shows — but it is now DERIVED from these two by
+  // routes/invoices.js (lib/payment-terms.js), never taken from the request.
+  await pool.query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_terms TEXT`);
+  await pool.query(`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS due_date DATE`);
+  // created_at carries the INSTANT, not a wall-clock reading.
+  //
+  // It was TIMESTAMP (no zone). NOW() writes the DB session's clock (UTC), so
+  // the stored value meant "UTC, trust me" — and node-pg parses a zoneless
+  // timestamp in the NODE PROCESS's timezone, so the same row read from a
+  // laptop in Los Angeles came back seven hours later. That matters because
+  // the invoice's printed date and its payment deadline are both derived from
+  // this column (lib/payment-terms.js businessDay), so a misread instant moves
+  // a client's due date.
+  //
+  // Guarded by the current type, not just IF EXISTS: re-running
+  // `AT TIME ZONE 'UTC'` on a column that is ALREADY timestamptz would shift
+  // every value by the session offset. Existing rows are UTC wall clocks,
+  // which is exactly what the USING clause says.
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_name = 'invoices' AND column_name = 'created_at'
+                    AND data_type = 'timestamp without time zone') THEN
+        ALTER TABLE invoices
+          ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC';
+        ALTER TABLE invoices ALTER COLUMN created_at SET DEFAULT NOW();
+      END IF;
+    END $$;
+  `).catch((e) => console.error('[migration] invoices.created_at -> timestamptz deferred:', e.message));
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS tasks (

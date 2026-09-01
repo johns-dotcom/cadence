@@ -688,8 +688,9 @@ PATCH allow-list, toasts, signed URLs).
 
 - **M5 "Usage analytics" was never built** — no `page_views`, no `/usage`, no
   `/api/analytics`. The claim above is false; treat as an open gap.
-- **M3 "Invoice Search"**: `/invoices` is the outbound invoice CREATOR; no
-  search surface exists.
+- **M3 "Invoice Search"**: `/invoices` is the outbound invoice CREATOR; the
+  search surface now exists at `/invoice-search` (see "Phase 3 — bk-invoices
+  port (2026-08-31)").
 - **M3 "Archive"**: `GET /ledger/archive` exists server-side with NO client UI.
 - **M3 "Bulk Upload"** = the ledger CSV import, not an AI invoice+proof batch
   flow.
@@ -697,6 +698,531 @@ PATCH allow-list, toasts, signed URLs).
   matcher lives in `lib/bankReconcile.js` and is now the heart of Bank Matching.
 
 ---
+
+## Phase 3 — add-invoice + add-reimbursement parity (2026-08-31)
+
+Closed the remaining §7 rows of `_audit/pages/add-invoice.md` (2 P0 · 16 P1 ·
+11 P2 · 7 P3) + `_audit/pages/add-reimbursement.md` (3 P1 · 6 P2 · 6 P3) — one
+page serves both modes. The two P0s (checklist review gate client + server)
+were already closed by the RC-7 port and were verified, not rebuilt. **Zero new
+columns, zero new deps** — every field this pass writes already existed.
+
+- **Server (`routes/ledger.js`)**: `createEntry` now stamps vendor_email/
+  address/bank ON THE ROW (not just the vendors upsert), `payment_terms`
+  ('Net 30' default) + `scheduled_payment_date` (anchored to SUBMISSION date),
+  `paid_by`/`paid_marked_at`/`payment_ref` when born Paid, urgency at create
+  (`urgency=rush|hold` or boom's `rush_requested`/`on_hold` booleans — mutex
+  400, both dropped when Paid), bulk deal (`is_bulk_deal`+quantity+unit;
+  an answered checklist OWNS the flag and qty/unit drop when it's off),
+  `social_handles` JSONB (kept even amount-less — Flags' missing_socials reads
+  it), artist normalization via `artist_normalization_map` (top-level AND split
+  lines). **409 duplicate gate**: `findDuplicateInvoice` (normalized number,
+  alias-aware both directions via vendor_aliases canonical/alias, vendor_email
+  index, FAMILY-ROOT resolved w/ family amount) unless `force_duplicate`;
+  runs BEFORE any R2 write. **Proof → its own `proof_r2_key/proof_filename`**
+  (was hijacking the receipt slot — on a reimbursement that column holds the
+  claimed receipt). **Multi-receipt**: `receipt_file` maxCount 10; first →
+  row columns, extras → `entity_files` ('expense_receipt', label-scoped) +
+  `GET /entries/:id/receipts`. Split children now inherit vendor identity,
+  payment fields, terms/due, cobrand/artist_campaign/rush/hold, and honor
+  per-line `category/description/recoupable` (COALESCE; head slice too).
+  Children born Paid get their own FX stamp. `EDITABLE` += bulk qty/unit.
+- **Member-reachable helpers** — registered ABOVE `requireApprover` like POST
+  /entries (the page is open to any member): `/parse-invoice` (now feeds label
+  categories + roster∪ledger artists to the model, post-validates artist
+  against the known list, moves @handles to `suggest_socials` w/ `ai_warnings`,
+  answers 200 + `ai_status` disabled|error|ok), NEW `/validate-invoice` +
+  `/validate-w9` (both FAIL OPEN without AI), NEW `/parse-proof` (date/method/
+  ref), NEW `/parse-lines` (line items; **divergence from boom, documented in
+  lib/claude.js: amounts are AI-extracted, not PDF-text-deterministic — no pdf
+  dep — so the server reports the printed-total tie-out and the client blocks
+  save until lines tie**), `/check-dup` (rewritten: alias-aware, family-root,
+  exact `match` + same-normalized-different-format `similar` tier), NEW
+  `/vendor-w9-status` (alias-aware boolean). `vendor-suggest` (still Approver+)
+  now returns email/address/bank (vendors-table overlay) for autofill.
+- **Client (`AddLedgerEntry.jsx`, 963 lines)**: parse button open to all
+  members and fires parse + validate-invoice + parse-lines together (boom fired
+  four); **parsed-value-wins** fill (re-parse can refresh a wrong field;
+  `currencyTouched` removed); typed-vs-printed invoice-number mismatch warning
+  (client `normInv` mirror); live 500ms dup check + post-parse sweep + rich
+  amber banner (family split note, status-aware "Open in Approvals →" vs
+  `?focus=` link, pending-not-in-ledger explanation, similar list); 409 →
+  window.confirm "Add anyway" → resubmit w/ force_duplicate (checklist
+  preserved, NOT re-asked); vendor-suggest chips + exact-match autofill
+  (approvers); W9-on-file banner + tile state; W9 auto-validate on attach;
+  proof attach sets Paid (approvers) + parse-proof fills date/ref and method
+  INSIDE the state updater, proof-remove resets payment fields; editable
+  line-items table (tie-out footer, remainder-to-last-line, add/remove,
+  discard) — ≥2 usable lines TAKE PRECEDENCE over the artist splitter and
+  hide artist/song like splitOn does; urgency segmented control + 500-char
+  reason; bulk-deal marker + qty/unit; Ref # in the paid row; vendor email
+  required + regex BOTH modes (reimb shows it again); reimb shows optional
+  invoice/ref # and dup-checks it; reimb multi-receipt list (count/clear-all/
+  per-file remove); reimb date label fixed; non-approver gate (song-or-splits
+  + ≥1 social); rep defaults to the current user (injected into options);
+  save resets IN PLACE w/ a success banner + ledger/approvals link (no more
+  navigate-away); `hooks/useUnsavedWarning` (new) arms beforeunload while
+  dirty; split "Add another artist" prefills the remainder. `Dropzone` gained
+  accept enforcement on the DROP path (+ error line), label/hint props (were
+  silently ignored), `multiple`, and lost its dead `bg-brand-500/10/40` class.
+- **Deliberately kept/skipped**: split editor still HARD-BLOCKS unbalanced
+  saves (boom warned-only) — cadence's parent-takes-slice-1 family_amount
+  model corrupts on unbalanced families, so the block is load-bearing
+  (DEF-ADDINV-36/ADDREIMB-12 partially closed: remainder prefill + numbered
+  rows done). DEF-ADDINV-31 `autoLinkRelease` SKIPPED: expenses has no
+  release_id column and NOTHING in cadence reads one (boom's link powered a
+  ledger jump icon + release rollups that don't exist here) — a write-only
+  column fails the don't-gold-plate rule; revisit if a release P&L lands.
+  Vendor-suggest stays Approver+ (contact/bank autofill is finance-surface
+  data; members still get w9-status + parse + dup-check).
+- **Also fixed (found live)**: `flags.js` POST /normalization crashed the
+  whole process on any 400 — early-return called `client.release()` and the
+  `finally` released again; pg-pool throws on double-release OUTSIDE the try.
+- Verified: client build clean; `node --check` on ledger/claude/flags; all 35
+  finance fixtures pass; live on the throwaway Neon box — checklist 400-before-
+  insert, cobrand→Marketing+campaign implication, 409/force_duplicate, dup
+  tiers, terms/due stamping, paid stamps, rush-dropped-when-Paid, mutex 400,
+  socials JSONB, normalization (top-level + splits), per-line split fields +
+  family math (40+60=100), ai_status contract, fail-open validators. File
+  uploads 500 on that box (R2 unconfigured) — multi-receipt/proof column paths
+  are code-verified + build-verified only. Non-approver pending path unchanged
+  (no non-approver user exists in the throwaway workspace).
+
+## Phase 3 — approvals parity (2026-08-31)
+
+Closed the remaining §7 rows of `_audit/pages/approvals.md` (the worst page in
+the audit: 1 P0 · 13 P1 · 13 P2 · 18 P3). APR-1..9/15 (checklist deck, RC-7),
+APR-14 (payment_check banner, vault campaign) and APR-38 (archive link + page)
+had already landed — verified, not rebuilt. **New columns**: `w9_review` JSONB,
+`rejected_by`/`rejected_at`, `expenses.release_id` FK. Zero new deps.
+
+- **Annotated queue** — new `GET /ledger/approvals` (the page's fetch): pending
+  parents + family_amount, has_invoice/has_w9, alias-aware `w9_entry_id`
+  (cross-row W9 chip), read-time **alias silencing** of name discrepancies
+  (bidirectional alias graph + whole-word `mentions` for the AI's descriptive
+  sentences, `w9_value` handled, summary rewritten when the list empties),
+  **stale-amount silencer** (family/breakdown vs document, ±1¢, invoice scans
+  only), **unknown_artist/unknown_song** + Levenshtein 1–3 suggestions with
+  one-click "Use ‘X’" apply, **possible_duplicates** (normInv across
+  vendor_email/vendor_name/payee identities, `?focus` deep links), `usd_equiv`
+  (server-side toUSD; null when FX is unconfigured — client hides the suffix).
+- **W9 review deck** (APR-10) — the SECOND review: one card per W9 DOCUMENT
+  (`GET/POST /ledger/w9-reviews`, alias-aware owner grouping, covers-N-invoices
+  list, `no_w9` surfaced), Yes/No **pre-filled from the scan** with
+  `prefilled`/`accepted_prefill` recorded (non-boolean → 400), does NOT gate
+  approval. Client `components/W9ReviewDeck.jsx` on the ReviewDeck shell
+  (Y/N/S/Enter keys); "Review W9s (N)" toolbar button.
+- **Approve route**: per-entry **rep-visibility backstop** (`canActOnEntry`, +
+  `findInvisibleEntry` on bulk — APR-27), `notes` rider (appended, never
+  replacing), **split-before-approve** — payload `artist_breakdown` REPLACES
+  the vendor's (file-carrying-child 409 guard, delete + re-apply); pending-child
+  approval cascade (single + bulk); **release_id auto-link** by artist+song;
+  checklist gate unchanged on every path. Client: SplitEditor stages rows per
+  card, deck's `breakdownFor` prop carries them in the approve POST.
+- **Reject/restore**: inline panel (multi-line reason, rule-based notify
+  pre-check, busy state — no more window.prompt; `r` opens it), reason lands in
+  `rejected_reason` AND the `' | Rejected: …'` notes trail, `rejected_by/at`
+  stamped (approved_by no longer lied), pending children cascade, restore keeps
+  the reason. Archive page prefers rejected_by/rejected_at.
+- **Notify is OPT-IN both ends** (APR-30): server auto-sends only on
+  `notify === true` (was `!== false` — any caller omitting it silently
+  emailed); page toggle defaults OFF; **rep CC** (APR-31) — `/reps` emails flow
+  into `ctx.cc` on vendor_approved/vendor_rejected previews.
+- **Scan banners**: `isMissingDocClaim` filter, per-discrepancy × (optimistic;
+  server single-item JSONB rebuild preserving summary/scanned_at, audited),
+  whole-scan Dismiss button, italic summary, `form_type` label, `relativeAgo`
+  stamps, rescan warnings surfaced ("Re-scan: <why>"), severity chips on token
+  tints. **Rush**: reason prompt + attribution tooltip + fill-state pill +
+  server not-Paid 400 + bk_audit entries (set and clear). **Flag-for-review**
+  chip (`POST /entries/:id/flag`, optimistic). Off-roster chip. Description
+  120-char clamp. File chips w/ real filenames (30-char) + in-app FilePreview
+  modal (signed URL → iframe/img). Alias panel (chips + per-alias remove +
+  Enter-add + link-payee-as-alias-of-existing-vendor; every change refetches so
+  silencing clears immediately). Bulk qty/unit save-on-blur inputs. Edit-in-
+  place gains invoice_date/rep/vendor_email(regex)/payment_method/notes +
+  `SocialHandlesEditor` (new shared component; `social_handles` added to PATCH
+  allow-list w/ JSONB serialization + amount>0 400 guard). Select-all bulk bar.
+  "Amount: low" sort (created_at basis restored) + description in search.
+  **Recent Activity** panel (`GET /ledger/approval-history`, last 50 from
+  bk_audit_log). Hotkeys: focus starts −1, contentEditable + modifier chords
+  ignored. Deck gains an optional approval-note input + staged-split notice.
+- Verified live on the throwaway Neon box: annotations (dups 14↔15, Ezraa→Ezra
+  suggestion, w9_entry_id grouping), checklist 400s (single + bulk), approve w/
+  notes + staged breakdown → children inherit vendor_email, W9 review non-bool
+  400 + queue drain, reject→notes trail→restore-keeps-reason, rush-on-Paid 400,
+  flag, approval-history, PATCH guards. Client build clean; 35 fixtures pass.
+  Not exercisable there: scan-dependent paths (AI/R2 unconfigured) — per-
+  discrepancy dismiss + missing-doc filter are code/build-verified.
+
+## Phase 3 — payments parity (2026-08-31)
+
+Worked every remaining §7 row of `_audit/pages/payments.md` (30 defects: 10 P1 ·
+13 P2 · 7 P3). DEF-PAY-01 (EmailPreviewModal missing its `open` prop) was
+already fixed before this pass — verified, not rebuilt. **Zero new columns,
+zero new deps.** Ran concurrently with the Approvals campaign in the same tree —
+payments edits were kept anchored/regional and both syntax-check together.
+
+- **Server (`routes/ledger.js`)**: `PAID_GRACE_DAYS` 7→14 (boom window) +
+  `created_at` fallback in the linger COALESCE so legacy rows don't vanish
+  instantly. `/payables` now excludes `bank_statement`/`recoupments`/
+  `artist_campaigns`-born rows (money that already left the account — 90% of
+  boom's queue before the same fix), and serves `bankEvidenceCols` (per-row
+  dot), `inst_paid`/`inst_count` (partial-payment progress) and `usd_equiv`
+  (locked-rate-aware, on the FAMILY total). `payment-stats` rebuilt: same
+  population as the list (heads only, same exclusions, family totals — split
+  children no longer counted as invoices), plus **never-netted per-currency
+  `native` captions** per bucket and **Paid This Month** (calendar month;
+  window widened just for it). Found+fixed en route: pg DATE columns are JS
+  Dates, so the route's old `String(date).slice()` compares were silently
+  garbage ("Wed Aug…") — `iso()` helper now. **mark-paid / batch-pay /
+  pay-with-proof**: `paid_marked_at` is EDGE-ONLY (re-marking keeps the stamp)
+  and Paid **clears rush+hold** across the family. batch-pay is multipart-
+  tolerant: `payment_ref` + ONE proof file stored once and linked on every
+  selected head (boom's proof-to-all). Rush/hold: Paid guard on hold (rush
+  already had one from the approvals pass), 500-char reason caps, bulk routes
+  skip Paid rows and answer `{rushed|held, skipped}`. **send-for-approval**:
+  counts FAMILIES not slices, Excel grew to 11 cols + bold per-currency TOTAL
+  rows, email body gains Totals-by-Artist + per-invoice tables (`tablesHtml`
+  through `approvalRequestEmail`), subject override + note. **Confirmations**:
+  shared `sendVendorConfirmation(req, ids, override)` — family totals (never
+  the parent's slice), invoice+proof ATTACHMENTS, **proof gate** (entry proof /
+  legacy receipt / installment proof; 400 naming the offenders unless `force`),
+  marks whole families notified, audited; `/entries/:id/send-confirmation`
+  upgraded onto it and new `POST /send-vendor-confirmation {ids,…}` sends ONE
+  combined email per vendor (bulk_payment_confirmation); legacy per-entry bulk
+  route kept for API compat. New `GET /payments-export?filter=` — Excel, rep-
+  visibility honored, TOTAL-unpaid rows.
+- **Templates**: `paymentConfirmationEmail` renders an invoice table + total
+  for the multi-invoice form and an optional note; `approvalRequestEmail`
+  accepts `tablesHtml`. `EmailPreviewModal` gained an optional per-item
+  `noteField` (additive prop — Approvals unaffected).
+- **Client (`Payments.jsx` 491→~1250 lines)**: ONE fetch serves every chip
+  again (Paid tab = the same 14-day window the subtitle promises, not all-time
+  history); Unpaid chip includes held rows (chip now agrees with the card);
+  **Multi-invoice chip** + per-vendor "N open" chips (family-counted from the
+  full set, held excluded but tooltip'd, ⚠ on mixed currency/method,
+  click-to-isolate). Toolbar: search, **amount grammar** (`500`, `500-1000`,
+  `>500`, `<=250`, amber ring on invalid — a typo never wipes the list),
+  method/status/rep(+"No rep") filters, 6 sorts (amount sorts compare the
+  served USD equivalents), group-by method/status with header rows.
+  **Calendar view** (month grid, overdue/due/paid chips, +n more, Today).
+  Stat cards: native captions + Paid This Month. Table: **frozen first cell**
+  (checkbox+date+payee+amount, opaque bg + edge shadow — shadow on the cell,
+  not the row, per the border-collapse landmine), method badges, due-soon
+  warning tier, **status-pill popover** (Paid / Partially paid… / Unpaid —
+  restoring the page's only un-pay path), BankEvidenceDot, ≈USD row suffix,
+  split ▶ expansion (lazy `?parent=` children), confirmation column on the
+  main view, inline **row edit** (12 fields, amount>0 guard, diff-PATCH),
+  delete→archive, and a **6s undo toast** for pay/unpay/delete. Rush/hold get
+  a real modal (context block, capped reason + counter, bulk totals +
+  first-3 payees; **Cancel no longer applies the flag** — the old
+  `window.prompt(...) ?? ''` did) and badges carry reason+by+date. 10s rush
+  grace after paying a rush row. **Installments UI on the page**: Receipt
+  action + paid/total progress + full modal (family total / paid / remaining
+  w/ overpaid-red, table w/ method badge + mono ref + proof + delete,
+  multipart add form). Confirmations: eligibility = paid+email+proof+not-sent
+  (bulk reports skips; single resend/no-proof asks first), **grouped by
+  vendor** into one combined email, manual "mark sent" + Sent-undo
+  (mark-unsent — previously a zero-caller route), CC = saved vendor emails +
+  rep toggle + **persisted default-CC list** (localStorage — divergence from
+  boom's server-side user pref, noted). **Persistent bottom bar**: always-on
+  Filtered-Unpaid + Selected totals (per-currency + ≈USD), Select all /
+  Select pending confirmations (N) / Clear + bulk actions incl. paid-pending
+  selection. Send-for-approval flows through the preview modal with the note
+  field. **Mobile**: search + FilterSheet (amount/method/status/rep/sort) +
+  tap-to-open **PaymentSheet** detail drawer (all fields + every action incl.
+  proof upload + confirmation controls), bulk bar fixed above BottomNav.
+  Escape-stacked modals throughout.
+- **Verified live** (throwaway Neon): payables shape (evidence cols,
+  inst sums, family_amount, native stats USD+EUR never netted), paid-this-
+  month after the Date fix, rush→pay clears the flag, paid rush/hold → 400,
+  bulk `{rushed:1, skipped:1}`, edge-only `paid_marked_at` (re-mark keeps the
+  stamp), batch-pay ref stamped family-wide, payments-export 200 w/ real
+  xlsx, confirmation proof gate 400 naming the invoice, single/bundle/
+  approval sends run to the provider boundary (no SMTP on this box),
+  bulk-confirmation template renders both invoices + total subject. Client
+  build clean; fixtures pass. Deferred: server-rendered contentEditable HTML
+  preview + html_override for confirmations (DEF-PAY-20 partial — note field
+  + subject/To/CC editing shipped; body editing needs an EPM surface shared
+  with Approvals, better done in a dedicated EPM pass).
+
+## Phase 3 — ledger parity (2026-08-31)
+
+Closed the `_audit/pages/ledger.md` §7 register (31 rows) against boom.
+Surfaces: `Ledger.jsx` (rewritten, ~1560 lines), `SplitModal.jsx`,
+`LedgerEntryDrawer.jsx`, `routes/ledger.js`, `index.js` migrations.
+
+**New expenses columns** (IF-NOT-EXISTS after the CREATE): `in_quickbooks`,
+`qb_entry_date`, `recoupment_label` (tone labels), `no_auto_split` (unsplit
+guard), `settlement_group_id`. All in the list column set; the first four in
+the PATCH allow-list (settlement_group_id writes only via its routes).
+
+**Server** — EDITABLE grew to boom vocab (paid_by / ufr w/ `ufr_marked_at`
+stamping / artist_campaign / recoupment_label / release_id validated in-tenant /
+QB / bulk_deal_completed); PATCH gained cobrand⇒Marketing forcing (LED-7),
+**server-side comma+slash song auto-split** (even cents, remainder-to-FIRST,
+children inherit approval+payment stamps, guarded by `no_auto_split` which
+unsplit now sets — LED-16) and `autoLinkRelease` on artist/song edits
+(response carries `split_parts` / `linked_release` for the toast — LED-18).
+`GET /entries` now serves `LEDGER_VIEW_COLS` (scan/checklist JSONB trimmed to
+`ai_flags`/`w9_flags` counts), `?limit` (400 on garbage), voided-child-excluded
+`family_amount`, `receipt_count`, alias-aware `w9_entry_id`,
+`settlement_group_size` (LED-28/27/11); new `GET /entries/:id(\d+)` full row
+feeds the drawer's AI-scan tab. New routes: `POST /entries/bulk`
+(BULK_FIELDS whitelist {artist,song,category,payment_method,in_quickbooks,
+recoupable}, comma-in-bulk-song 400, rep-visibility gate, previous[] one-action
+undo payload, autoLink relink count — LED-1); settlement groups POST/DELETE
+(same-vendor + roots-only + not-already-grouped, gid = min id, ungroup never
+touches bank matches — LED-13); `DELETE /entries/:id/file/:type` + extra-receipt
+POST/DELETE via entity_files (LED-11); `POST /entries/:id/split-fee-reimb`
+(fee+reimb=total, receipt REQUIRED, is_reimbursement child carries it;
+re-split refuses while it exists; unsplit pulls the receipt back — LED-32).
+Split is now a **re-split** (replaces children transactionally, validates
+against the FAMILY total, refuses on child files/installments, keeps the
+ORIGINAL origin snapshot — LED-17). Void/unvoid: requireAdmin, family cascade,
+payment_status preserved (LED-27). 1099 counts split slices (dropped
+`parent_id IS NULL` — LED-3). Export rework (LED-2/12): CSV = family totals +
+child_artists agg, voided excluded, honors q/category/artist/status/
+payment_status; plus `GET /export-xlsx` (branded, All/Unpaid/Paid tabs) and
+`/export-invoices-zip` + `/export-w9s-zip` (filter-scoped, 300-file cap,
+R2-miss degrades to a smaller zip).
+
+**Client** — bulk selection in the frozen first cell (select-all over the
+FILTERED set w/ indeterminate, selection re-intersected on read, USD total,
+"N below the visible rows" honesty w/ the paint window) + bulk bar (Set
+artist/song/category, QB ✓, Not recoupable, One payment, Clear) + bulk undo
+regrouping previous[] by held value. Manual FlagButton + reason modal + 4-way
+flag filter (flagged/unflagged/AI) — the old ⚠ filter was AI-only (LED-4).
+Amount grammar fixed to boom semantics (bare=exact ±0.005, strict >/<,
+>=/<=, $/comma strip, amber invalid state — LED-5). Inline edit gained payee/
+date/currency/paid-by/date-paid/due-date (back-writes terms='Custom')/terms
+select (derives due via TERM_DAYS mirror)/socials popover (SocialHandlesEditor
+→ `social_handles`; socialsOf now reads social_handles first and skips the
+{origin,splits} snapshot) and YN CHIPS for recoupable/UFR (N/A when not
+recoupable)/campaign (3-state)/reimb/cobrand/bulk/QB (LED-8/6). Source buckets:
+one `sourceOf` resolver shared by the new Source column badge + tinted filter
+(campaign/vendor/expense/reimb/manual — LED-15). Incremental render (150-row
+window, IntersectionObserver sentinel, "showing N of M", ?focus cap-stretch —
+LED-9). `?focus`: split-child focus fetches the row, expands the parent,
+spotlights the child; pending/missing banner points at Approvals/archive; URL
+param stripped after the 6s highlight (LED-10). File cells: Remove ✕ w/
+confirm, shared-W9 "View (shared)" + bordered Upload-targets-THIS-row, split
+children "Open (family)" invoice, dedicated Proof column, reimb-only N/A
+receipt gate + "+N more" receipts modal (LED-11). Export menu (Excel/CSV/
+Invoices ZIP/W9s ZIP) carrying live filters; hotkeys `c` columns / `x` export
+(bubble phase — LED-12/24). Duplicate-invoice banner from `/flags`
+invoice_dupes w/ severity chips + per-entry ?focus links + Duplicates-page
+link (endpoint is admin-gated; non-admins simply don't see it — LED-14).
+Toolbar: Clear-ALL button, QB + UFR-marked advanced filters, normalized-inv#
+search (client normInv mirror), 10s-throttled window-focus silent refetch
+(LED-21). Sticky table header + sticky TOTAL footer w/ frozen TOTAL cell;
+totals magnitude-ordered + ≈USD line (+n unconverted); precise-USD tooltips on
+amounts, family-aware amount sort + USD col (LED-20/22/31). Column defaults
+expanded to 18; payee/amount always-on and unhideable (LED-23). Delete =
+ConfirmDialog w/ payee+amount+family note (LED-26). Paid pill static on
+rejected/voided rows (mark-paid requires approved — LED-29). Undo rework:
+multi-field patch records, cyclePaid/toggles undoable, undoLast runs OUTSIDE
+setState (StrictMode double-fire fixed), split-children patched optimistically
+via applyLocal (LED-19). SplitModal: Split evenly (N) cent-exact
+(remainder-to-first), breakdown prefill, re-split validates the family total
+(LED-30). Mobile: BottomSheet FilterSheet (full filters + sort presets),
+100-row Load more, flag dot on cards (LED-25). Per-artist song datalist from
+releases+entries (falls back to all songs). Drawer: fetches the full row for
+scans, detailed void/unvoid confirm copy, void button admin-only.
+
+**Skipped / N/A**: recoupment-plan deep link (cadence planning is
+server-computed `/financials/planning`, no localStorage plan to rehydrate);
+duplicate-PAYMENT warning on paid-cycle (bank-half surface per the audit);
+per-edit 5s toast-undo (persistent undo bar + `z` covers it); boom's 6-field
+frozen block (single frozen first column is the deliberate cadence design —
+checkbox+flag moved INTO that cell instead). Rep-visibility/tenancy/
+signed-URL divergences remain intentional. Verified: client build clean,
+`node --check` on ledger.js + index.js, finance fixtures pass (35),
+live smoke on throwaway Neon (list/limit/bulk/settlement/carve/re-split/
+void-cascade/1099/exports/approvals/payables all 200).
+
+## Phase 3 — create-invoice + upload-rules (2026-08-31)
+
+Closed `_audit/pages/create-invoice.md` §7 (all 15 rows) and
+`_audit/pages/upload-rules.md` §6 (all 13 defect rows; DEF-RUL-11's
+separate-page placement stays a panel — an §7 intentional divergence — but its
+missing capabilities are closed).
+
+**Create Invoice** — ported the **payment-terms engine** as
+`server/lib/payment-terms.js` (Due-on-receipt/Net 15-90/Custom, date-only
+UTC arithmetic, `printed()` "June 10, 2026 (Net 30)"); multi-tenant twist:
+`businessDay(v, tz)` takes the label's tz from `labels.settings.business_tz`
+(default America/Los_Angeles), formatter cached per tz. `routes/invoices.js`
+gained `GET /terms` + `GET /due-date` (label-scoped `invoice_id` anchor);
+POST/PUT DERIVE `due_by` (dropped from the PUT allow-list — the printed
+deadline and the terms can no longer disagree) and every returned row carries
+`invoice_date = businessDay(created_at, tz)` so the client does NO date math.
+Schema: `invoices` +`payment_terms` +`due_date`, and `created_at` migrated
+TIMESTAMP→**TIMESTAMPTZ** via a type-guarded DO block (re-running `AT TIME
+ZONE 'UTC'` on an already-tz column would shift values); POST pins `created_at`
+to the instant the business day was read from. Client rewrite: terms select +
+custom date + live server-computed due string; **jsPDF** selectable-text
+download (lazy-imported, deterministic `Label-Invoice#0007-Payee.pdf`,
+accent-colored header, both routing lines) replacing the popup+print; shared
+`InvoicePreview` used by live preview / **full-document card view** /
+**preview modal** (ui/Modal — Eye no longer duplicates Pencil); 3-state
+Unpaid→Paid→**Partial** cycle w/ optimistic patch (Badge-recipe token tints);
+meta hotkeys ⌘↵/⌘⇧L/⌘P via a local listener (shared `useHotkeys` deliberately
+ignores modifiers) incl. the in-flight requestSubmit guard; $0 comp invoices
+allowed (validate on line presence, `amount !== ''` filter); `Intl.NumberFormat`
+currency w/ unknown-code fallback; Skeleton loading; min="0" amounts;
+payee-named edit subtitle; trash hidden at 1 row; in-form running Total.
+`invoice_settings` gained **`routing_ach`** (Settings → wire/ACH split; PATCH
+/label stores the object whole, no server change). Live-verified: an invoice
+raised at 03:14Z prints invoice_date 2026-08-31 (LA) — the after-5pm case.
+
+**Upload Rules** — the safety layer around the four rule tables, ported into
+the Bank Matching surface. New `server/lib/uploadRules.js`: label-scoped
+`loadInvoiceCensus` (real + waiting-unclaimed per payee), `loadEverInvoiced`,
+`loadNoInvoiceRowIds` (row `no_invoice` flag), `bookPatternFor` (provable
+descriptor pattern: payee_guess vs longest distinctive token, ≥75% coverage,
+≤25% cross-category conflict share, noise list + the LABEL'S OWN NAME tokens
+per tenant), `buildRuleSuggestions` (MIN_TIMES≥3 mining, 60% majority guard,
+invoice-census split into match/category+pairing/no-invoice/dismiss/artist,
+union-deduped clears; human decisions = booked w/ `match_method IS DISTINCT
+FROM 'rule'`, machine dismissals 'internal'/'auto' excluded),
+`annotateCategoryRules` (per-rule queue_rows/queue_usd/ledger_payees w/
+real_invoices + clears). `bank-matching.js`: `GET /rule-suggestions`;
+category + dismiss rules got standalone CRUD (`/category-rules` w/
+`?annotate=1`, `/dismiss-rules`), POST /category-rules writes **both halves
+or neither** (vendor no-invoice pair, rollback on failure); no-invoice POST
+now validates scope (400, never coerce), takes a `patterns` batch
+all-or-nothing, ≥2-char floor, upsert instead of DO NOTHING; **artist-rule
+retro is now reviewed-`entry_ids`-only** (server re-verified, per-row
+`autoLinkRelease` — exported from routes/ledger.js — requested/skipped
+accounting; the `LIKE '%pattern%'` history sweep is GONE); every rule
+create/delete hits `logActivity`. Completion: `ruleHit` tests exp_payee AND
+payee_guess (both, not a fallback chain); `category_candidates` now require
+the **never-invoiced census** (zero invoicing vendors) and carry n·$·vendor
+evidence. `bank-statements.js`: book-with-rule is guarded by an ever-invoiced
+check (booking lands, rule refused + named in `rule_skipped`; pairs via
+`no_invoice_pattern`); book/dismiss side-effect rules enforce ≥3 chars.
+Client: `RulesPanel` (BankMatching) is now the full BkRules surface —
+suggestions sections (match-don't-rule w/ "Work these" → sets the page's
+needs-invoice filter; BOOK+NO-INV accepts w/ relabels/covers-N-of-M/conflict
+confirms; evidence-carrying category-candidate + vendor chips w/ quantified
+confirms; dismiss/artist), unified in-force list (all four kinds, creator +
+date, feeding-the-queue amber, pair-it action, consequence-naming remove),
+error banner + retry (no more `.catch(() => {})` empty-list misread);
+BankStatements rule deletes + EntryModal surface confirms/`rule_skipped`.
+Skipped: DEF-RUL-11's "dedicated page" placement (INT per §7 — panel-on-work-
+surface is cadence's call; the missing capabilities themselves are closed).
+Kept contracts: EQUALITY-never-substring, `statement_artist_rules` NULL+
+overhead semantics, ingest ordering (rules after auto-match), vault/checklist
+untouched. Verified: build clean, node --check, fixtures 35/35, live smoke on
+all new endpoints (suggestions/annotate/batch/paired/bad-scope-400).
+
+## Phase 3 — bulk-upload port (2026-08-31)
+
+Boom's `/bk/bulk-upload` (AI batch invoice+proof ingest) ported as **`/bulk-upload`**
+(Approver+, Bookkeeping nav, `pages/BulkUpload.jsx`). Five-phase wizard:
+two drop zones (invoices required, proofs optional) → sequential AI parse via the
+EXISTING `/ledger/parse-invoice` + `/ledger/parse-proof` (one multipart request in
+flight — stays clear of MAX_CONCURRENT_UPLOADS) → proof auto-match (payee AND
+amount, boom's normalized-substring + |Δ|<0.02 rules) → editable review grid
+(include/payee/amount/date/inv#/**dup chip**/one-payment letter/category via
+`CategoryOptions grouped`/artist/song/proof match-unmatch/status) → chunked
+submit → done screen (per-entry failures "no row was created", settlement-group
+results BOTH ways, pending-→-Approvals note).
+
+Server: **`POST /api/ledger/entries/batch`** in `routes/ledger.js` (kept there —
+it reuses 8 module-private helpers: storeFile/findDuplicateInvoice/
+normalizeArtist/autoLinkRelease/bkAudit + computeDueDate/stampFxRateAsync/
+upsertVendor). Multipart `upload.array('files', 40)`, ≤20 entries/request
+(client chunks at 8, sequential, one 503 retry — the upload guard asking to
+wait); each entry names its documents by per-request index. Per-entry isolation:
+dup gate (same alias-aware `findDuplicateInvoice`, per-row `force_duplicate`),
+files upload BEFORE the INSERT (failure ⇒ NO row — same invariant as boom's
+insert-then-DELETE, residue is an orphan R2 object not a phantom row; insert
+failure after upload best-effort deletes the objects), `entry_source=
+'bulk_upload'` (safe: all exclusions are IS DISTINCT FROM / NOT IN lists),
+Net-30 due date, upsertVendor, autoLinkRelease, `bkAudit 'bulk-upload'`,
+one `logActivity` + activity-bot post per batch.
+
+**Deliberate divergences from boom**: rows are created **`status='pending'`** →
+the Approvals deck reviews them with its checklist (RC-7; boom created them
+approved — no direct-approve-in-grid, so no grid-of-checklists). Proof-matched
+rows still land Paid (route is behind requireApprover, same population
+createEntry lets mark paid at create) + `stampFxRateAsync`. "One payment"
+letters (A–E) resolve CLIENT-side onto the existing
+`POST /ledger/settlement-groups` with the created ids (ref-echo maps rows across
+chunks) — one grouping mechanism (`settlement_group_id`), no boom
+`settlement_group` string column; refused groups reported, never silent. Files
+ride multipart as File objects (no base64 → no express.json limit concern).
+Review grid ADDS live dup chips (`/ledger/check-dup` exact+similar tiers,
+re-checked on payee/inv# blur). `parse-proof` response gained `payee`
+(schema always extracted it; auto-match needs it — additive for AddLedgerEntry).
+
+**No schema changes.** Degrades: AI off → `ai_status:'disabled'` banner, blank
+rows for manual completion, files still upload; R2 off → per-entry clean failure
+(verified live: "File upload failed — …Bucket", zero rows). Wiring: App.jsx
+route (AdminRoute), Layout nav + PAGE_LABELS, constants/pages.js Bookkeeping
+group + Bookkeeping/AP preset. Verified: build clean, node --check, fixtures
+35/35, live batch create/dup-gate/force/settlement-group/Paid-fields/
+approvals-queue-pickup on the dev Neon.
+
+## Phase 3 — bk-invoices port (2026-08-31)
+
+Boom's `/bk/invoices` (browse/search-ALL-invoices index) ported as
+**`/invoice-search`** (Approver+, Bookkeeping nav, `pages/InvoiceSearch.jsx`) —
+named to never collide with `/invoices`, which stays the OUTBOUND invoice
+creator. One row per invoice FAMILY (parents only, children folded into the
+family total), searchable from any angle: payee / invoice # / description /
+artist substring PLUS normalized invoice-number equality ("Invoice #NRM-2" and
+"nrm.2" both find "NRM-2").
+
+Server (`routes/ledger.js`, no schema changes):
+- **`GET /api/ledger/invoices`** — label-scoped + rep-visibility like the main
+  list; params `search`, `from`/`to`, `basis` ∈ invoice_date (default) |
+  created_at | payment_date (the range filters on the same column a clicked
+  chart bar bucketed by; created_at compared on `::date` so Sunday-evening
+  intake lands in its week), `status` ∈ approved (default) | rejected |
+  pending. Family `amount`, `split_count`, has_invoice/w9/proof + filenames,
+  alias-aware `w9_entry_id`, and rejected_at/by/reason straight off the row
+  (boom's bk_audit_log LATERAL unnecessary — cadence stamps rejection columns).
+  **Normalized invoice matching stays JS-side** (lib/normalizeInvoiceNum is the
+  one definition, never re-expressed in SQL): when it could apply, the query
+  also pulls invoice-number-bearing rows in scope as candidates and the filter
+  + 200-cap run after; without a search the cap is SQL `LIMIT 200`.
+- **`payment-analytics` extended** (Payments.jsx contract preserved — `week`/
+  `count`/`amount` unchanged, paramless default still 12 weeks): optional
+  `?from/?to` (missing side filled 12w out, 2-year clamp, garbage → default
+  window), per-bucket `week_end` + vendor/admin split (counts + USD sums —
+  the click-to-filter contract needs week bounds). Amounts are now FAMILY
+  totals at the parent's locked rate (`fam` LATERAL), and voided rows are
+  excluded (both small output changes to Payments' charts, both corrections).
+  **Params are built per series** — the paid bucket doesn't reference tz, and
+  an unreferenced $n is a Postgres 42P18 error, not a no-op (hit live).
+
+Client (`InvoiceSearch.jsx`): two weekly Recharts charts (intake by created_at,
+outflow by payment_date) fed by ONE analytics fetch so the ranges stay
+apples-to-apples; stacked vendor-portal/staff-entered bars; **click-a-bar
+filters the list** to that Mon–Sun week on the chart's basis (same-bar click
+toggles off, selection dims other weeks, highlight only when the active basis
+matches so manual date edits never leave a stale one); range picker chips
+4w/12w/26w/52w/Custom persisted to `invoice_search_chart_range_v1` (presets
+count `(N-1)*7` back — server week-snap is inclusive, so 12w = 12 bars);
+per-chart collapse keys. Toolbar: 300ms-debounced search, from/to (reset basis
+to invoice_date), count, table/cards toggle (cards default on mobile), Clear.
+Filter banner with "the week of Jun 22" phrasing for exact Mon–Sun spans.
+Boom's fetch-generation race guard + first-load-only skeleton (refetches never
+unmount the focused search box). File chips: view via signed URL
+(`GET /ledger/entries/:id/file/:type`), replace/upload-when-missing (POST same
+path), W9 follows the canonical `w9_entry_id || id` cross-entry rule. Rows
+click through to **`/ledger?focus=<id>`** (the drawer surface — replaces boom's
+inline-only cells; the focus-miss banner routes pending ones to Approvals).
+Rejected audit tail: collapsed-by-default, refetched on expand, Rejected
+(date + by) / Reason ("no reason recorded" fallback) columns.
+
+Wiring: App.jsx route (AdminRoute), Layout nav + PAGE_LABELS, constants/pages.js
+Bookkeeping group + Bookkeeping/AP preset. Verified: build clean, node --check,
+fixtures 35/35, live on dev Neon (default/ranged analytics, plain + normalized
+search, basis-week filtering, rejected list, family totals on a split).
 
 ## Stack & deploy (as built — matches spec §2 unless noted)
 
@@ -883,7 +1409,8 @@ PATCH allow-list, toasts, signed URLs).
 - **Financials** depth: artist/month P&L, KPI deltas, multi-chart, pivots, drill-through,
   CSV/Excel. — PARTIAL (basic summary only).
 - **Recording Budgets** (draft→approved→locked lifecycle, sections, costs-to-date) — MISSING.
-- **Invoices index**, **Expense Lookup**, **Archive**, **Bulk Upload**, **Bulk Re-upload**,
+- **Invoices index** — DONE at `/invoice-search` (Phase 3 bk-invoices port,
+  2026-08-31). **Expense Lookup**, **Archive**, **Bulk Upload**, **Bulk Re-upload**,
   **QB Import**, **Ledger matching**, **Master-sheet import UI** — MISSING (master-sheet
   import API exists, no UI).
 

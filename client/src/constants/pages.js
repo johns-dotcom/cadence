@@ -29,6 +29,8 @@ export const PAGE_GROUPS = [
   ] },
   { group: 'Bookkeeping', pages: [
     { path: '/ledger', label: 'Ledger' },
+    { path: '/invoice-search', label: 'Invoice Search' },
+    { path: '/bulk-upload', label: 'Bulk Upload' },
     { path: '/payments', label: 'Payments' },
     { path: '/vendors', label: 'Vendors' },
     { path: '/creators', label: 'Creator Payments' },
@@ -53,7 +55,7 @@ export const PAGE_LABEL = Object.fromEntries(PAGE_GROUPS.flatMap(g => g.pages.ma
 const P = (...paths) => ['/', '/my-work', ...paths]
 export const PERMISSION_PRESETS = [
   { name: 'Full access', pages: ALL_PAGES },
-  { name: 'Bookkeeping / AP', pages: P('/calendar', '/ledger', '/payments', '/vendors', '/invoices', '/recoupments', '/financials', '/reports') },
+  { name: 'Bookkeeping / AP', pages: P('/calendar', '/ledger', '/invoice-search', '/bulk-upload', '/payments', '/vendors', '/invoices', '/recoupments', '/financials', '/reports') },
   { name: 'Finance exec', pages: P('/financials', '/reports', '/recoupments', '/payments', '/ledger', '/salary') },
   { name: 'Marketing', pages: P('/calendar', '/marketing', '/artists', '/releases', '/deals') },
   { name: 'A&R', pages: P('/calendar', '/deals', '/artists', '/releases', '/contracts', '/pending-contracts') },

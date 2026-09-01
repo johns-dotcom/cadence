@@ -24,6 +24,9 @@ export default function EmailPreviewModal({ open, kind, ctx, items, onClose, onS
   const [subject, setSubject] = useState('')
   const [html, setHtml] = useState('')
   const [attach, setAttach] = useState([])
+  // Optional personal note (boom's confirmation note field) — rendered into the
+  // template server-side. Only shown when the queue item asks for it.
+  const [note, setNote] = useState('')
 
   const cur = queue[idx]
 
@@ -32,6 +35,7 @@ export default function EmailPreviewModal({ open, kind, ctx, items, onClose, onS
   useEffect(() => {
     if (!open || !cur) return
     setLoading(true)
+    setNote('')
     api.post('/email/preview', { kind: cur.kind, ctx: cur.ctx })
       .then(r => { const d = r.data.data; setTo(d.to || ''); setCc(d.cc || []); setSubject(d.subject || ''); setHtml(d.html || ''); setAttach(d.attachmentLabels || []) })
       .catch(() => toast('Could not build preview', 'error'))
@@ -48,8 +52,8 @@ export default function EmailPreviewModal({ open, kind, ctx, items, onClose, onS
     try {
       // Custom sender (e.g. attachment-bearing Send-for-Approval) bypasses the
       // generic /email/send, which strips attachments as a security boundary.
-      if (cur.onCustomSend) await cur.onCustomSend({ to: to.trim(), cc, subject })
-      else await api.post('/email/send', { kind: cur.kind, ctx: cur.ctx, override: { to: to.trim(), cc, subject } })
+      if (cur.onCustomSend) await cur.onCustomSend({ to: to.trim(), cc, subject, note: note.trim() || undefined })
+      else await api.post('/email/send', { kind: cur.kind, ctx: note.trim() ? { ...cur.ctx, note: note.trim() } : cur.ctx, override: { to: to.trim(), cc, subject } })
       await cur.onItemSent?.()
       onSent?.(cur)
       toast('Email sent')
@@ -73,6 +77,10 @@ export default function EmailPreviewModal({ open, kind, ctx, items, onClose, onS
           <div><label className="label">To</label><input className="input" value={to} onChange={e => setTo(e.target.value)} /></div>
           <div><label className="label">CC</label><CcChipInput value={cc} onChange={setCc} suggestions={suggestions} /></div>
           <div><label className="label">Subject</label><input className="input" value={subject} onChange={e => setSubject(e.target.value)} /></div>
+          {cur.noteField && (
+            <div><label className="label">Personal note <span className="text-ink-faint font-normal">— optional, added to the email</span></label>
+              <textarea className="input" rows={2} value={note} onChange={e => setNote(e.target.value.slice(0, 500))} placeholder="Anything to add for the recipient…" /></div>
+          )}
           {attach.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {attach.map((a, i) => <span key={i} className="inline-flex items-center gap-1 text-xs bg-gray-100 rounded px-2 py-0.5"><Paperclip size={11} /> {a}</span>)}

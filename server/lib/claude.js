@@ -178,8 +178,14 @@ const INVOICE_SCHEMA = {
     description: nullableStr,
     category: nullableStr,
     payment_method: nullableStr,
+    // Boom-parity fields (RC add-invoice): who the work was FOR and how to
+    // reach the biller. All nullable — most invoices name none of them.
+    artist: nullableStr,
+    song: nullableStr,
+    vendor_email: nullableStr,
   },
-  required: ['vendor_name', 'amount', 'currency', 'invoice_number', 'invoice_date', 'description', 'category', 'payment_method'],
+  required: ['vendor_name', 'amount', 'currency', 'invoice_number', 'invoice_date', 'description', 'category', 'payment_method',
+    'artist', 'song', 'vendor_email'],
 };
 
 // Draft a contract clause from a kind + freeform context. Plain-prose output
@@ -198,14 +204,112 @@ function draftClause({ kind, context, labelName }) {
 function parseInvoice({ buffer, mimeType, categories, roster }) {
   // Optional label vocabulary: steering the extraction toward the tenant's own
   // category names + artist roster raises prefill quality on the public form.
-  let instruction = 'Extract the invoice details. invoice_date as YYYY-MM-DD. amount is the total due as a number (no symbols). currency as a 3-letter ISO code. payment_method is the requested method if stated (ACH, Wire, Check, PayPal, etc.), else null. category is a short expense category if obvious, else null. Use null for anything not present.';
+  let instruction = 'Extract the invoice details. invoice_date as YYYY-MM-DD. amount is the total due as a number (no symbols). currency as a 3-letter ISO code. payment_method is the requested method if stated (ACH, Wire, Check, PayPal, etc.), else null. category is a short expense category if obvious, else null. '
+    + 'vendor_email is the BILLER\'s contact email printed on the document, else null. '
+    + 'artist is the recording artist/project the work was for when the invoice names one — an artist NAME, never a social media handle (@something is a handle, not an artist). song is the track/project title when named. '
+    + 'Use null for anything not present.';
   if (Array.isArray(categories) && categories.length) {
     instruction += ` For category, choose the best fit from this list when one applies (else null): ${categories.slice(0, 40).join('; ')}.`;
   }
   if (Array.isArray(roster) && roster.length) {
-    instruction += ` The label's artist roster (for reference when the invoice names an artist/project): ${roster.slice(0, 60).join('; ')}.`;
+    instruction += ` The label's artist roster — artist may ONLY be a name from this list, exactly as spelled (else null): ${roster.slice(0, 60).join('; ')}.`;
   }
   return extractFromFile({ buffer, mimeType, schema: INVOICE_SCHEMA, maxTokens: 1024, instruction });
+}
+
+// ── Add-invoice document gates (boom parity) ─────────────────────────────
+
+const INVOICE_DOC_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    valid: { type: 'boolean' },
+    issues: { type: 'array', items: { type: 'string' } },
+    is_invoice: { type: ['boolean', 'null'] },
+    billed_to: nullableStr,
+    has_invoice_number: { type: ['boolean', 'null'] },
+    has_date: { type: ['boolean', 'null'] },
+    has_amount: { type: ['boolean', 'null'] },
+  },
+  required: ['valid', 'issues', 'is_invoice', 'billed_to', 'has_invoice_number', 'has_date', 'has_amount'],
+};
+
+// Is this document actually an invoice, billed to the label, with the basics
+// on it? Mirror of boom's /validate-invoice gate. Callers FAIL OPEN on !ok —
+// an AI hiccup must never block filing an invoice.
+function validateInvoiceDoc({ buffer, mimeType, labelName }) {
+  return extractFromFile({
+    buffer, mimeType, schema: INVOICE_DOC_SCHEMA, maxTokens: 512,
+    instruction: `You are validating an invoice submitted to ${labelName || 'a record label'}. The document MUST: `
+      + `(1) be an actual invoice or receipt — not bank instructions, a screenshot of a conversation, or a random document; `
+      + `(2) be billed/addressed to "${labelName || 'the label'}" or similar; `
+      + '(3) include an invoice number or receipt reference; (4) include a date; (5) include a total amount; (6) include a description of services or items. '
+      + 'If ANY requirement fails, set valid=false and list the specific problems in issues. Be strict — reject anything that is not a proper invoice.',
+  });
+}
+
+const PROOF_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    payment_date: nullableStr,
+    payment_method: nullableStr,
+    amount: { type: ['number', 'null'] },
+    reference_number: nullableStr,
+    payee: nullableStr,
+  },
+  required: ['payment_date', 'payment_method', 'amount', 'reference_number', 'payee'],
+};
+
+// Extract payment date / method / reference from a proof-of-payment document
+// (bank confirmation, receipt, check image). Boom's /parse-proof.
+function parseProof({ buffer, mimeType }) {
+  return extractFromFile({
+    buffer, mimeType, schema: PROOF_SCHEMA, maxTokens: 512,
+    instruction: 'This is a proof of payment (bank statement, receipt, transfer confirmation, check image, etc.). '
+      + 'payment_date as YYYY-MM-DD — the date the payment was made/processed; prefer the actual payment/transaction date over statement dates. '
+      + 'payment_method: one of ACH, Check, Wire, Credit Card, PayPal, Cash — or null. '
+      + 'amount as a number, no symbols. reference_number: transaction/confirmation/check number. payee: who was paid. Null for anything not shown.',
+  });
+}
+
+const LINE_ITEMS_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    lines: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          description: nullableStr,
+          amount: { type: ['number', 'null'] },
+          date: nullableStr,
+          category: nullableStr,
+          artist: nullableStr,
+        },
+        required: ['description', 'amount', 'date', 'category', 'artist'],
+      },
+    },
+    printed_total: { type: ['number', 'null'] },
+  },
+  required: ['lines', 'printed_total'],
+};
+
+// Read the LINE ITEMS off a multi-line invoice, for the Add Invoice split
+// editor. Divergence from boom (documented): boom read the amounts out of the
+// PDF text deterministically (pdf-parse) and used AI only for labels; cadence
+// has no PDF-text dependency, so the whole table is one extraction — which is
+// why the caller computes the tie-out against printed_total and the client
+// puts every line in front of a human before anything is saved.
+function parseInvoiceLines({ buffer, mimeType, categories, roster }) {
+  let instruction = 'List EVERY line item on this invoice, in document order. For each: description (as printed), amount as a number (the line total, no symbols), date as YYYY-MM-DD if the line carries one. '
+    + 'printed_total is the invoice\'s own printed grand total. Do not invent lines; do not merge lines; a single-total invoice with no itemization returns an empty lines array.';
+  if (Array.isArray(categories) && categories.length) {
+    instruction += ` category: the best fit per line from this list ONLY (else null): ${categories.slice(0, 40).join('; ')}.`;
+  }
+  instruction += ' artist: when a line is clearly for a specific recording artist, that artist — staff, partners, subscriptions, software, bank fees and general travel are label overhead with NO artist.';
+  if (Array.isArray(roster) && roster.length) {
+    instruction += ` artist may ONLY be a name from this list, exactly as spelled here, or null: ${roster.slice(0, 80).join('; ')}. Never invent a name and never guess at a spelling.`;
+  }
+  return extractFromFile({ buffer, mimeType, schema: LINE_ITEMS_SCHEMA, maxTokens: 4096, instruction });
 }
 
 const PAYMENT_INFO_SCHEMA = {
@@ -387,4 +491,4 @@ function scanContract({ buffer, mimeType }) {
   });
 }
 
-module.exports = { isEnabled, callClaude, streamText, extractFromFile, fileBlock, MODEL, parseInvoice, extractPaymentInfo, scanInvoice, validateW9, parseMarketing, draftClause, scanContract };
+module.exports = { isEnabled, callClaude, streamText, extractFromFile, fileBlock, MODEL, parseInvoice, extractPaymentInfo, scanInvoice, validateW9, parseMarketing, draftClause, scanContract, validateInvoiceDoc, parseProof, parseInvoiceLines };

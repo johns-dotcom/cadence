@@ -420,7 +420,8 @@ export default function Settings() {
                   <div><label className="label">Account name</label><input className="input" value={inv.account_name || ''} onChange={setInvField('account_name')} placeholder="BOOM.RECORDS LLC" /></div>
                   <div><label className="label">Account type</label><input className="input" value={inv.account_type || ''} onChange={setInvField('account_type')} placeholder="CHECKING" /></div>
                   <div><label className="label">SWIFT</label><input className="input" value={inv.swift || ''} onChange={setInvField('swift')} placeholder="BOFAUS3N (for funds sent in USD)" /></div>
-                  <div><label className="label">Routing</label><input className="input" value={inv.routing || ''} onChange={setInvField('routing')} placeholder="026009593 (WIRE) / 122000661 (ACH)" /></div>
+                  <div><label className="label">Routing (wire)</label><input className="input" value={inv.routing || ''} onChange={setInvField('routing')} placeholder="026009593 (WIRE)" /></div>
+                  <div><label className="label">Routing (ACH)</label><input className="input" value={inv.routing_ach || ''} onChange={setInvField('routing_ach')} placeholder="122000661 (ACH)" /></div>
                   <div className="sm:col-span-2"><label className="label">Account number</label><input className="input" value={inv.account_number || ''} onChange={setInvField('account_number')} placeholder="325146889268" /></div>
                 </div>
               </div>
