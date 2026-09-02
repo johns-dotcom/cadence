@@ -35,10 +35,10 @@ Design-system-level diffs (font, accent default, paddings, radii) are covered by
 | Width / logo row / group header / row classes | `w-60`; `h-16 px-5`; group header `px-3 mb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-widest`; row `gap-3 px-3 py-2 rounded-lg text-sm font-medium`, icon 17, strokeWidth 2/1.5, active `bg-boom-50 text-boom-700` | identical classes, `brand` for `boom` (RC-2) | OLD :586,:589,:603,:624-631 / NEW :322,:325,:351,:360-365 |
 | Badge pill | `ml-auto bg-boom-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full` | identical, `brand-600` | OLD :722 / NEW :368 |
 | Logo | `text-lg font-bold` "boom." wordmark | 8×8 workspace logo/initial tile + name + tagline | OLD :590 / NEW :327-337 — **[INT]** branding |
-| Child rows (collapsible) | `text-[13px] py-1.5`, icon 15, indented w/ `border-l` guide | no child-row concept | OLD :672-692 / NEW — |
-| Collapsed-family hint | closed group w/ active child gets `text-boom-700 bg-boom-50/50` | n/a | OLD :654-663 / NEW — |
+| Child rows (collapsible) | `text-[13px] py-1.5`, icon 15, indented w/ `border-l` guide | **matched 2026-09-02** — `ml-5 pl-3 border-l border-divider mt-0.5`, `px-3 py-1.5 text-[13px]`, icon 15. `border-divider` not OLD's `border-gray-100`: in cadence's dark theme `gray-50` and `gray-100` are the same colour, so the guide line would be invisible | OLD :672-692 / NEW Layout.jsx |
+| Collapsed-family hint | closed group w/ active child gets `text-boom-700 bg-boom-50/50` | **matched 2026-09-02** as `bg-brand-500/10 text-brand-700` — `bg-brand-50` is near-white in dark (banned repo-wide), and `/50` on a half-tint is not a real distinction at this size | OLD :654-663 / NEW Layout.jsx |
 | Footer | user block + Sign out only | + Vendor Form button, + "Powered by Cadence" w/ Disc3 11 | OLD :793-815 / NEW :379-416 — powered-by is **[INT]** branding |
-| Vendor Form / Boom Billing rows | in-nav bottom block, icon 17, right hint `text-[10px] text-gray-300` "Copy link"/"Copy address", swaps to emerald Check + "Link copied!" | single Vendor Form row in footer, icon 16, right hint `text-xs font-semibold` "Copy link"→"✓ Copied" | OLD :742-790 / NEW :381-393 |
+| Vendor Form / Boom Billing rows | in-nav bottom block, icon 17, right hint `text-[10px] text-gray-300` "Copy link"/"Copy address", swaps to emerald Check + "Link copied!" | **matched 2026-09-02** — both buttons back in the in-nav block, icon 17, hint `text-[10px] text-ink-faint font-normal`, `text-success` Check, OLD's copy strings. `text-ink-faint` not `text-gray-300` (token, legible in both themes) | OLD :742-790 / NEW Layout.jsx |
 
 Active-item treatment, icon size (17), hover states, spacing: parity (modulo RC-2). Active match logic is equivalent (`===` or `startsWith`; OLD Layout.jsx:703, NEW :355).
 
@@ -81,17 +81,81 @@ No tables or forms on this surface.
 
 ## 7. Defects found
 
-1. **P2** — Group taxonomy restructured: Reports group merged into a 16-row flat Bookkeeping (OLD split them deliberately, navConfig.jsx:180-183), Artists/Releases groups reshuffled into Catalog/A&R (Roster under "Catalog"; Artist Campaigns moved Reports→A&R), System group dissolved — fix: cadence Layout.jsx:234-307 regroup per OLD navConfig.jsx:76-243. (HIGH)
+1. **P2** — ~~Group taxonomy restructured~~ **CLOSED 2026-09-02.** Regrouped per OLD in `constants/navConfig.jsx`: Reports split back out of Bookkeeping (13 + 9 rows, not one flat 24), Catalog/A&R dissolved back into **Artists** (Roster, Deal Pipeline) and **Releases** (Releases, Catalog, Brand, Marketing), **System** restored (Admin Docs, Activity, Usage, Vendor Form sandbox), Workspace → **Team** (Members, Settings, Requests), Data Quality promoted to the untitled top group as OLD's Flags. Cadence-only rows kept and placed: Messages + Team Work top group, Brand + Marketing under Releases, Requests under Team. `/legal` (NDAs) deliberately NOT moved into System — cadence's `/legal` is the NDA counterparty tracker, a different page from boom's terms/privacy `/legal`, and moving it would revoke it from Approvers. Admin row count 51 → 49 with strictly more pages reachable (53).
 2. **P2** — Flags demoted: OLD all-users top-group item `/flags` (navConfig.jsx:85) → NEW admin-only "Data Quality" under Workspace (Layout.jsx:302) — non-admins lose the entry entirely; page-scope gap adjudicated in flags-data-quality.md, the nav visibility/placement/rename is this surface's — fix: cadence Layout.jsx:237-244 top group, drop the isAdmin gate (or justify). (HIGH)
 3. **P2** — Personal nav customization layer missing: `nav_hidden_pages` filter + storage-event refresh (OLD Layout.jsx:414-429,:528-544; Settings.jsx:1440-1452) — fix: cadence Layout.jsx:308 add hidden-pages filter + Settings "My Nav" editor. (HIGH)
 4. **P2** — Add Reimbursement has no nav entry: OLD Bookkeeping▸More row (navConfig.jsx:168); NEW page exists (`/ledger/new-reimbursement`) but is reachable only via a button on Ledger (Ledger.jsx:370), a page Users without `/ledger` never see — fix: cadence Layout.jsx:279 add item. (HIGH)
 5. **P2** — Mobile edge-swipe open/close of the drawer missing (OLD Layout.jsx:397-412) — fix: cadence Layout.jsx:186-194 add touch handlers. (HIGH)
-6. **P3** — Collapsible sub-groups + tabbed family rows (first-viewable-child link, summed famBadge, `nav_collapsed` persistence, family-survives-if-any-child-viewable) not implemented; Recoupments family renders as two flat rows (OLD Layout.jsx:443-454,:613-699,:521 / NEW :292-293) — fix: port the two container kinds. (HIGH)
-7. **P3** — Bookkeeping item order deviates from OLD's frequency order (OLD: Approvals→Payments→Ledger→…, navConfig.jsx:118-178; NEW: Add Invoice first, Payments after Ledger, report pages interleaved, Layout.jsx:277-296) — fix: reorder. (MED)
+6. **P3** — ~~Collapsible sub-groups + tabbed family rows~~ **CLOSED 2026-09-02.** Both container kinds ported. Config gains `{tabbed,key,label,icon,children}` and `{collapsible,key,label,icon,children}`; `buildNavGroups` drops a container whose children all filtered out (reading `children[0].path` off an empty array is a white screen, not an empty row) and `check-render`'s shell pre-flight now asserts that for all three roles. Families: **Vendors** (Directory + Added-expense) and **Recoupments** (Overview + Planning + Audit — `/recoupments/audit` had no rail entry of any kind before). Sub-group: Bookkeeping ▸ **More** (Add Reimbursement, Bookkeeper Reconcile), open by default, closed state persisted per-user in `nav_collapsed:{userId}`. Children of both kinds flatten back into pages via the new `navPageGroups()`, which Settings' My Nav and the ⌘K palette now consume — so a tab child is still individually hideable and searchable. Not ported: OLD's `TabbedShell` in-page tab bar; both cadence family pages already carry their own cross-links.
+7. **P3** — ~~Bookkeeping item order~~ **CLOSED 2026-09-02.** Now OLD's frequency order: Approvals → Payments → Ledger → Bank Ledger → Add Invoice → Create Invoice → Vendors▸ → Creator Payments → Bank Statements → Bank Matching → Invoice Search → Bulk Upload → More▸. Report pages left with Reports. Contracts & Legal also restored to OLD's order (trackers before the create-* actions). `constants/pages.js` (the permissions matrix) was realigned to the same groups and the same Bookkeeping order, since it is the list an admin reads while configuring the rail.
 8. **P3** — Nav definition is an inline Layout array again — the exact drift-prone shape OLD retired into navConfig.jsx (:49-63) with Settings + ⌘K consumers; NEW has no shared module or `synonyms` vocabulary — fix: extract to a navConfig consumed by Layout/Settings/search. (MED)
 9. **P3** — BottomNav parity: Releases tab dropped (for Chat), visibility window `sm:hidden`→`lg:hidden` (640→1024px), Finance target `/bk/ledger` fixed → first-viewable fallback (OLD BottomNav.jsx:5-26 / NEW BottomNav.jsx:12-23) — fix: decide 5-tab set incl. Releases or log as accepted. (MED — Chat slot is a NEW-feature trade CLAUDE.md acknowledges)
-10. **P3** — Boom Billing copy-address button missing (OLD Layout.jsx:766-789); NEW has per-label remittance data in `labels.invoice_settings` to source it — fix: cadence Layout.jsx footer button reading invoice_settings. (LOW — OLD hardcodes Boom's address; generic feature still absent)
-11. **P3** — Vendor Form copy link relocated from the nav body to the footer and gated `isApprover` (OLD ungated, Layout.jsx:742-762 / NEW :381-393) — fix: drop gate or confirm intent. (LOW)
-12. **P3** — `external: true` nav-item support (`<a target="_blank">`) absent (OLD navConfig.jsx:240, Layout.jsx:728-731) — fix: only needed when a vendor-lab-style page ports. (LOW)
+10. **P3** — ~~Boom Billing copy-address button missing~~ **CLOSED 2026-09-02**, generically. "Billing Address" sits in the in-nav utility block and copies `invoice_settings.company_name` + `.address`; no hardcoded address, and the button does not render at all for a workspace that hasn't filled one in. `/auth/me` carries the two keys via `jsonb_build_object` rather than the whole column — `invoice_settings` also holds the bank account number, routing/SWIFT and EIN, and `/auth/me` is fetched by every role on every load.
+11. **P3** — Vendor Form copy link — **half closed, half confirmed intentional, 2026-09-02.** *Placement:* moved back into the in-nav utility block at the foot of the scrolling rail, with OLD's chrome (icon 17, `text-[10px] font-normal` right hint, "Copy link" → "Link copied!"). *Gate:* `isApprover` **KEPT, deliberately.** OLD's form lived at a fixed `/submit` URL anyone could type, so the copy button gave nothing away. Cadence's is token-only (`vendor_form_token`, see §Security in CLAUDE.md): the token IS the capability — it admits rows into this workspace's approval queue and accepts file uploads against it — and only an admin can rotate it. Handing it out is a tenant-level decision, not a per-user convenience. Reasoning is in a comment at the definition site.
+12. **P3** — ~~`external: true` nav-item support~~ **CLOSED 2026-09-02.** The condition the row set for itself was met: `missing--vendor-preview-lab` ported in Phase 9.5, so `/vendor-lab` now exists and is exactly OLD's consumer. It renders `<a target="_blank" rel="noopener noreferrer">` from the System group, never takes the active state, and is `isAdmin`-gated as OLD's `sysAdminOnly` System group was (a narrowing from cadence's previous `isApprover`).
 
 Intentional divergences (not defects): workspace logo/initials/name/tagline replacing the "boom." wordmark + "Powered by Cadence" footer (multi-tenant branding, NEW :325-344,:412-415); NEW-feature nav items Messages (+live unread badge), Team Work, Brand, Marketing, Requests & feedback; badge endpoint moved to label-scoped `/ledger/pending-count` and gated to approvers; announcements/chat fetches in the shell.
+
+---
+
+## Close-out — 2026-09-02 (rows 1, 6, 7, 10, 11, 12)
+
+Phase 9 closed rows 2, 3, 4, 5, 8, 9. The six it skipped are now done: **1, 6,
+7, 10, 12 closed; 11 half-closed and half-confirmed-intentional** (see the row).
+
+### Structure, before → after (rows per role; a family/sub-group counts as ONE row)
+
+| Role | Before | After | Groups before → after |
+|---|---|---|---|
+| Superadmin | 51 rows / 51 pages | **49 rows / 53 pages** | 6 → **8** |
+| Admin | 51 / 51 | **49 / 53** | 6 → 8 |
+| Approver | 43 / 43 | **41 / 44** | 6 → 7 (no System) |
+| User | 16 / 16 | **16 / 16** | 6 → 5 (Contracts & Legal was already rendering empty) |
+
+Fewer rows, more reachable pages: `/recoupments/audit` and
+`/vendors/added-expenses` had no nav entry at all and now ship inside families,
+where they are also grantable in Settings and findable in ⌘K.
+
+### After — the Admin rail
+
+```
+(untitled)          Dashboard · My Work · Team Work · Messages · Calendar · Data Quality
+Artists             Roster · Deal Pipeline
+Releases            Releases · Catalog · Brand · Marketing
+Contracts & Legal   Contracts · Pending · Renewals · NDAs · Create Contract ·
+                    Create NDA · Label Waivers · Clearances
+Bookkeeping         Approvals · Payments · Ledger · Bank Ledger · Add Invoice ·
+                    Create Invoice · Vendors▸(Directory, Added-expense) ·
+                    Creator Payments · Bank Statements · Bank Matching ·
+                    Invoice Search · Bulk Upload ·
+                    More▾(Add Reimbursement, Bookkeeper Reconcile)
+Reports             Financials · Reports · Recording Budgets ·
+                    Recoupments▸(Overview, Planning, Audit) · Artist Budgets ·
+                    Artist Campaigns · Allocate Ads · Salary · Bulk Deals
+Team                Members · Settings · Requests & feedback
+System              Admin Docs · Activity · Usage · Vendor Form (sandbox)↗
+—                   Vendor Form [Copy link] · Billing Address [Copy address]
+```
+
+### Found while doing this, not in the register
+
+**Two nav rows lit up at once**, in both directions, because the active test was
+a bare `pathname.startsWith(path)`:
+
+- `/team` matched while you were on `/team-work` (prefix with no segment
+  boundary) — every visit to Team Work also highlighted Members;
+- `/ledger` stayed lit on `/ledger/new-reimbursement` and `/ledger/new-invoice`
+  alongside the row that actually owns the page.
+
+Neither could happen in OLD — boom's paths (`/team`, `/bk/ledger`,
+`/bk/reimburse`) simply never nested this way, so its identical `startsWith`
+was safe and the defect is cadence-only. Fixed by matching on a **segment
+boundary** and then keeping only the **longest** match, so exactly one row is
+ever active. Verified across 16 paths including `/`, deep params
+(`/releases/5`, `/recoupments/artist/x`) and both family children.
+
+Also fixed in passing: `AuthContext`'s exit-impersonation path rebuilt the
+workspace object from a second, shorter mapping that dropped `settings` and
+`vendor_form_token` — coming back from a "view as" left the shell with no
+tagline and no vendor-form link until the next reload. One `labelFrom(u)` now.
+

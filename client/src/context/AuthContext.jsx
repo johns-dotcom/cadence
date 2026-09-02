@@ -48,12 +48,28 @@ export const AuthProvider = ({ children }) => {
     else resetAccent()
   }, [label?.accent_color])
 
+  // ONE mapping from an /auth/me row to the workspace object. It was written
+  // out twice and the copies had already diverged — the exit-impersonation path
+  // dropped `settings` and `vendor_form_token`, so coming back from a
+  // "view as" left the shell without its tagline or its vendor-form link until
+  // the next reload.
+  const labelFrom = (u) => ({
+    id: u.label_id,
+    name: u.label_name,
+    slug: u.label_slug,
+    accent_color: u.label_accent_color,
+    logo_url: u.label_logo_url,
+    vendor_form_token: u.label_vendor_form_token,
+    settings: u.label_settings || {},
+    invoice_settings: u.label_invoice_settings || {},
+  })
+
   const fetchUser = async () => {
     try {
       const { data } = await api.get('/auth/me')
       const u = data.data
       setUser(u)
-      setLabel({ id: u.label_id, name: u.label_name, slug: u.label_slug, accent_color: u.label_accent_color, logo_url: u.label_logo_url, vendor_form_token: u.label_vendor_form_token, settings: u.label_settings || {} })
+      setLabel(labelFrom(u))
       setPagePermissions(u.pagePermissions ?? null)
     } catch (error) {
       console.error('Failed to fetch user:', error)
@@ -173,7 +189,7 @@ export const AuthProvider = ({ children }) => {
     api.get('/auth/me').then(res => {
       const u = res.data.data
       setUser(u)
-      setLabel({ id: u.label_id, name: u.label_name, slug: u.label_slug, accent_color: u.label_accent_color, logo_url: u.label_logo_url })
+      setLabel(labelFrom(u))
     }).catch(() => logout())
   }
 

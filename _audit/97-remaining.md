@@ -394,3 +394,45 @@ Full detail in the dated CLAUDE.md entry.
   include `w9_filename` (as `creators.js` does) would flip a vendor from MISSING
   to ✓ on a tax report. Deliberately not changed silently; expense #61 (Yuki
   Studio) is such a row today.
+
+---
+
+## Update — sidebar nav close-out, 2026-09-02
+
+`g-sidebar-nav.md` §7 is now fully adjudicated. Phase 9 closed rows 2, 3, 4, 5,
+8, 9; this pass closed the six it skipped — **1, 6, 7, 10, 12 closed; 11
+half-closed (placement) and half-confirmed-intentional (the `isApprover` gate on
+the vendor-form token, which is a tenancy divergence, not a regression)**.
+
+| Row | Result |
+|---|---|
+| 1 — group taxonomy | **Closed** — OLD's 8 groups restored (Artists / Releases / Reports / Team / System back; Catalog + A&R dissolved; Data Quality promoted to the top group). Admin: 6 groups / 51 rows → **8 groups / 49 rows / 53 pages** |
+| 6 — collapsible sub-groups + tab families | **Closed** — both container kinds ported, `nav_collapsed:{userId}`, first-viewable-child link, summed family badge, empty-container guard in `buildNavGroups` **and** in check-render's shell pre-flight |
+| 7 — Bookkeeping item order | **Closed** — OLD's frequency order; `constants/pages.js` realigned to the same groups + order |
+| 10 — copy billing address | **Closed generically** — reads `labels.invoice_settings`, hides itself when unset, and `/auth/me` projects only `company_name` + `address` so the bank/EIN half of that column is not shipped to every role |
+| 11 — vendor-form link | **Placement closed** (back in the in-nav utility block, OLD chrome); **gate kept and reasoned** in code + audit |
+| 12 — `external: true` | **Closed** — the vendor-lab port from Phase 9.5 gave the feature its consumer |
+
+### Found during the work, not in the register
+
+- **Two active nav rows at once.** `pathname.startsWith(path)` with no segment
+  boundary: `/team` lit up on `/team-work`, and `/ledger` stayed lit on
+  `/ledger/new-reimbursement`. Cadence-only — boom's flatter paths never nested.
+  Now: segment-boundary match, longest match wins, exactly one active row.
+  Verified over 16 paths.
+- **`AuthContext` had two mappings from `/auth/me` to the workspace object** and
+  they had diverged — exit-impersonation's copy dropped `settings` and
+  `vendor_form_token`, so returning from a "view as" lost the tagline and the
+  vendor-form link until reload. Collapsed to one `labelFrom(u)`.
+- **`/data-quality` and `/catalog` were in the sidebar for every role but absent
+  from `constants/pages.js`**, so a User on an explicit permission set could
+  never be granted either. Both added (their APIs are not role-gated, which is
+  the same test that keeps `/admin-docs` and `/usage` out of that list).
+
+### Still open on this surface
+
+Nothing from §7. The remaining divergences are the documented intentional ones
+(workspace branding in place of the wordmark, "Powered by Cadence", the five
+cadence-only feature rows, the label-scoped approvals badge) plus the accent
+colour, RC-2, which is multi-tenant branding by design.
+

@@ -207,7 +207,17 @@ router.get('/me', authMiddleware, async (req, res) => {
               l.name AS label_name, l.slug AS label_slug,
               l.accent_color AS label_accent_color, l.logo_r2_key, l.logo_data AS label_logo_data,
               l.vendor_form_token AS label_vendor_form_token,
-              COALESCE(l.settings, '{}'::jsonb) AS label_settings
+              COALESCE(l.settings, '{}'::jsonb) AS label_settings,
+              -- For the shell's one-click "copy our billing address". TWO KEYS,
+              -- picked out by name rather than shipping invoice_settings whole:
+              -- that column also holds the bank account number, routing/SWIFT
+              -- and EIN, and /auth/me is fetched by every role on every load.
+              -- The company name and postal address are already printed on
+              -- every invoice this workspace issues; the banking half is not.
+              jsonb_build_object(
+                'company_name', l.invoice_settings->>'company_name',
+                'address',      l.invoice_settings->>'address'
+              ) AS label_invoice_settings
        FROM users u JOIN labels l ON l.id = u.label_id
        WHERE u.id = $1 ${isOp ? '' : 'AND u.label_id = $2'}`,
       isOp ? [req.user.id] : [req.user.id, req.user.label_id]

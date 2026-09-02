@@ -4835,3 +4835,100 @@ utilities compile to real rules (`!max-w-xl`, `!p-0`, `!overflow-hidden`,
 Endpoints exercised live on the seeded workspace: `/api/version`, `/assets/*`
 404, `/ledger` SPA fallback, `/api/dashboard/widgets` (before + after),
 `/api/creators/directory`, ledger create + PATCH `payment_status`.
+
+---
+
+## Sidebar navigation — boom parity (2026-09-02)
+
+`g-sidebar-nav.md` §7 closed out. Phase 9 had done rows 2/3/4/5/8/9; this pass
+did **1, 6, 7, 10, 12** and adjudicated **11**. Zero new deps.
+
+**The rail is regrouped to OLD's taxonomy** (`constants/navConfig.jsx`). The flat
+sixteen-row Bookkeeping is gone: **Reports** is a group again (boom split it
+deliberately — "so the daily-ops list stays scannable", and an Admin here sees
+49 rows, far more than boom ever had, so grouping is load-bearing). **Catalog**
+and **A&R** dissolve back into **Artists** (Roster, Deal Pipeline) and
+**Releases** (Releases, Catalog, Brand, Marketing); **System** is restored
+(Admin Docs, Activity, Usage, Vendor Form sandbox); **Workspace** → **Team**
+(Members, Settings, Requests & feedback); **Data Quality** is promoted to the
+untitled top group as boom's Flags. `/legal` (NDAs) deliberately did NOT move
+into System — cadence's `/legal` is the NDA counterparty tracker, a different
+page from boom's terms/privacy `/legal`, and moving it would revoke it from
+Approvers. Bookkeeping is back in boom's FREQUENCY order (Approvals → Payments →
+Ledger → Bank Ledger → Add Invoice → …), and `constants/pages.js` — the
+permissions matrix, a fourth reader of this taxonomy — was realigned to the same
+groups and the same order.
+
+**Two container kinds ported** (`Layout.jsx`). A **tab family**
+`{tabbed,key,label,icon,children}` is ONE rail row that links to the first child
+the viewer can reach, sums its children's badges, and survives while any child
+does — the row is a way IN, not a page. A **collapsible sub-group**
+`{collapsible,…}` is a chevron disclosure, open by default, its closed state
+persisted per user in `nav_collapsed:{userId}`. Families: **Vendors**
+(Directory + Added-expense) and **Recoupments** (Overview + Planning + Audit —
+`/recoupments/audit` had NO rail entry of any kind before). Sub-group:
+Bookkeeping ▸ **More** (Add Reimbursement, Bookkeeper Reconcile). Both kinds
+flatten back into pages through the new **`navPageGroups()`**, which Settings'
+My Nav and the ⌘K palette now consume — a tab child is still individually
+hideable and searchable. **`external: true`** rows render
+`<a target="_blank" rel="noopener noreferrer">` and never take the active state;
+its consumer is `/vendor-lab`, moved to System and narrowed to `isAdmin` to
+match boom's `sysAdminOnly`.
+
+**A container filtered down to zero children is a white screen, not an empty
+row** — the family row reads `children[0].path`. `buildNavGroups` drops hollow
+containers, and `check-render`'s shell pre-flight now asserts it for all three
+role shapes alongside the missing-icon and dead-route checks (it also checks
+both shapes now: rows as the rail draws them, pages as Settings/⌘K read them).
+
+**Found while doing this, not in the audit register:**
+- **Two nav rows lit up at once.** The active test was a bare
+  `pathname.startsWith(path)` with no segment boundary, so `/team` matched on
+  `/team-work` and `/ledger` stayed lit on `/ledger/new-reimbursement`. Boom's
+  flatter paths (`/bk/ledger`, `/bk/reimburse`) never nested, so its identical
+  code was safe — this is cadence-only. Now: segment-boundary match, then the
+  LONGEST match wins, so exactly one row is ever active. Verified over 16 paths
+  including `/`, deep params and both family children.
+- **`AuthContext` had two mappings from an `/auth/me` row to the workspace
+  object** and they had diverged — exit-impersonation's copy dropped `settings`
+  and `vendor_form_token`, so returning from a "view as" lost the tagline and
+  the vendor-form link until reload. One `labelFrom(u)` now.
+- **`/data-quality` and `/catalog` were in the rail for every role but missing
+  from `constants/pages.js`**, so a User on an explicit permission set could
+  never be granted either. Both added (neither API is role-gated — the same test
+  that keeps `/admin-docs` and `/usage` out of that list).
+
+**Utility block** back inside the nav where boom had it, at the foot of the
+scrolling rail: **Vendor Form** (copy link) and a new, generic **Billing
+Address** (copy address). The address comes from `labels.invoice_settings` —
+never hardcoded — and the button does not render for a workspace that has not
+filled one in. `/auth/me` projects **two keys** out of that column via
+`jsonb_build_object`, not the column: `invoice_settings` also holds the bank
+account number, routing/SWIFT and EIN, and `/auth/me` is fetched by every role
+on every page load. The Vendor Form link keeps its `isApprover` gate (boom's was
+ungated) **deliberately**: boom's form was a fixed `/submit` URL anyone could
+type, whereas cadence's `vendor_form_token` IS the capability — it admits rows
+into the approval queue and accepts uploads — and only an admin can rotate it.
+
+**Visual pass**: boom's bracket type sizes and smaller icons on this surface
+(RC-3/RC-4) — child rows `px-3 py-1.5 text-[13px]` with icon 15 inside
+`ml-5 pl-3 border-l`, chevron 13, utility hints `text-[10px] font-normal`,
+utility icons 16 → 17. Token substitutions where boom's literal class would
+break cadence's dark theme: `border-divider` for `border-gray-100` (in
+`tokens.css`'s `.dark` block `gray-50` and `gray-100` are the same colour, so
+the guide line would vanish), `text-ink-faint` for `text-gray-300`,
+`text-success` for `text-emerald-500`, and `bg-brand-500/10` for `bg-boom-50`
+(banned — near-white in dark). RC-2, the accent itself, stays as-is:
+multi-tenant branding.
+
+**Preserved, not regressed:** workspace logo/initials/name/tagline and the
+"Powered by Cadence" footer; Messages (+ live unread badge), Team Work, Brand,
+Marketing and Requests & feedback all placed in the restored taxonomy;
+`nav_hidden_pages` + the Settings "My Nav" editor (now child-aware); the
+label-scoped `/ledger/pending-count` badge; mobile edge-swipe; BottomNav.
+
+**Structure, before → after** (a family or sub-group counts as ONE row):
+Superadmin/Admin 6 groups / 51 rows / 51 pages → **8 / 49 / 53**; Approver
+6 / 43 / 43 → **7 / 41 / 44**; User 6 / 16 / 16 → **5 / 16 / 16**. Fewer rows,
+more reachable pages.
+

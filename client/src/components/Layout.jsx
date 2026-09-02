@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Settings, LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, BookOpen, Link2, Check, Search, Megaphone, MessageSquarePlus, Keyboard,
+  Settings, LogOut, LogIn, Eye, ChevronDown, ChevronRight, Menu, X, Moon, Sun, Disc3, BookOpen, Link2, Check, Search, Megaphone, MessageSquarePlus, Keyboard, Building2,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { getHiddenPages, onNavPrefsChange } from '../utils/navPrefs'
@@ -15,10 +15,18 @@ import BottomNav from './BottomNav'
 import Fab from './Fab'
 import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
 import ErrorBoundary from './ErrorBoundary'
-import { PAGE_LABELS, buildNavGroups } from '../constants/navConfig'
+import { PAGE_LABELS, buildNavGroups, navPageGroups } from '../constants/navConfig'
 
 // Re-exported so existing importers (`from '../components/Layout'`) keep working.
-export { PAGE_LABELS, buildNavGroups }
+export { PAGE_LABELS, buildNavGroups, navPageGroups }
+
+// Sidebar row chrome, declared once so the three row kinds (plain page, tab
+// family, sub-group header) cannot drift apart by a padding.
+const BADGE_CLASS = 'ml-auto bg-brand-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none'
+const rowClass = (isActive) =>
+  `group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 ${
+    isActive ? 'bg-brand-500/10 text-brand-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+  }`
 
 // "View as" dropdown — Superadmin-only impersonation within the workspace.
 function ViewAsDropdown() {
@@ -112,6 +120,7 @@ export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
   const [vendorLinkCopied, setVendorLinkCopied] = useState(false)
+  const [addressCopied, setAddressCopied] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const [manualOpen, setManualOpen] = useState(false)
@@ -196,15 +205,53 @@ export default function Layout() {
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
 
-  // Public vendor submission form — unique per workspace via the label slug.
+  // Public vendor submission form — unique per workspace via an unguessable
+  // `vendor_form_token`. Kept behind isApprover, which is a DIVERGENCE from the
+  // single-tenant original where the row was ungated: there the form lived at a
+  // fixed /submit URL that anyone could have typed, so a copy button gave away
+  // nothing. Here the token IS the capability — it lets any holder push rows
+  // into this workspace's approval queue and upload files against it, and only
+  // an admin can rotate it. Handing it out is a tenant-level decision.
+  const canCopyVendorLink = isApprover && !!label?.vendor_form_token
   const copyVendorLink = () => {
-    if (!label?.slug) return
+    if (!canCopyVendorLink) return
     const url = `${window.location.origin}/submit/${label.vendor_form_token}`
     navigator.clipboard.writeText(url).then(() => {
       setVendorLinkCopied(true)
       setTimeout(() => setVendorLinkCopied(false), 2000)
     }).catch(() => {})
   }
+
+  // The workspace's own billing block, one click from anywhere — it is what
+  // you paste into a vendor's "bill to" field, and it is asked for constantly.
+  // Sourced from `labels.invoice_settings` (the same remittance block Create
+  // Invoice prints), never hardcoded, so the button simply does not appear for
+  // a workspace that has not filled its address in.
+  // The address itself is what makes this useful, so an unset one hides the
+  // button entirely rather than offering a click that copies a bare name.
+  const billingAddress = label?.invoice_settings?.address
+    ? [label.invoice_settings.company_name || label.name, label.invoice_settings.address].filter(Boolean).join('\n').trim()
+    : ''
+  const copyBillingAddress = () => {
+    if (!billingAddress) return
+    navigator.clipboard.writeText(billingAddress).then(() => {
+      setAddressCopied(true)
+      setTimeout(() => setAddressCopied(false), 2000)
+    }).catch(() => {})
+  }
+
+  // Collapsible nav sub-groups. Per-user key for the same reason hidden pages
+  // are: two accounts on one laptop must not inherit each other's rail.
+  const collapseKey = `nav_collapsed:${user?.id || 'anon'}`
+  const [collapsed, setCollapsed] = useState({})
+  useEffect(() => {
+    try { setCollapsed(JSON.parse(localStorage.getItem(collapseKey) || '{}') || {}) } catch { setCollapsed({}) }
+  }, [collapseKey])
+  const toggleCollapsed = (key) => setCollapsed(prev => {
+    const next = { ...prev, [key]: !prev[key] }
+    try { localStorage.setItem(collapseKey, JSON.stringify(next)) } catch { /* private mode / quota */ }
+    return next
+  })
 
   // Pending ledger approvals → nav badge (approvers only). Refreshes on nav.
   const [pendingApprovals, setPendingApprovals] = useState(0)
@@ -240,12 +287,37 @@ export default function Layout() {
     api.post('/analytics/pageview', { path }).catch(() => {})
   }, [location.pathname, user?.id, impersonating])
 
+  // canView is the PERMISSION gate; hiddenPages is the person's own tidying of
+  // what's left. Order matters only in that a hidden item was never granted
+  // extra reach — everything here is still reachable by URL and by ⌘K.
+  //
+  // Both gates apply to a container's CHILDREN as well as to plain rows: a
+  // family row survives while ANY child is left (the row is a way in, not a
+  // page), and dies when none is — which also keeps `children[0]` from being
+  // read off an empty array.
+  const visible = (p) => canView(p) && !hiddenPages.includes(p)
   const navGroups = buildNavGroups({ isAdmin, isApprover, chatUnread, pendingApprovals })
-    // canView is the PERMISSION gate; hiddenPages is the person's own tidying of
-    // what's left. Order matters only in that a hidden item was never granted
-    // extra reach — everything here is still reachable by URL and by ⌘K.
-    .map(g => ({ ...g, items: g.items.filter(i => canView(i.path) && !hiddenPages.includes(i.path)) }))
+    .map(g => ({
+      ...g,
+      items: g.items
+        .map(i => (i.children ? { ...i, children: i.children.filter(c => visible(c.path)) } : i))
+        .filter(i => (i.children ? i.children.length > 0 : visible(i.path))),
+    }))
     .filter(g => g.items.length > 0)
+
+  // ── Which ONE row is highlighted ──────────────────────────────────────────
+  // A bare `pathname.startsWith(path)` lit up two rows at once, in both
+  // directions: `/team` matched while you were on `/team-work`, and `/ledger`
+  // stayed lit on `/ledger/new-reimbursement` alongside the row that owns it.
+  // So: match on a SEGMENT boundary (which kills the /team ~ /team-work case),
+  // then keep only the longest match (which settles genuine nesting in favour
+  // of the more specific page).
+  const navPaths = navGroups.flatMap(g => g.items.flatMap(i => (i.children ? i.children.map(c => c.path) : [i.path])))
+  const matchesPath = (p) => (p === '/'
+    ? location.pathname === '/'
+    : location.pathname === p || location.pathname.startsWith(p + '/'))
+  const activeNavPath = navPaths.filter(matchesPath).sort((a, b) => b.length - a.length)[0] || null
+  const isPathActive = (p) => p === activeNavPath
 
   return (
     <div className="flex h-screen bg-page">
@@ -290,46 +362,138 @@ export default function Layout() {
                 <p className="px-3 mb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">{group.label}</p>
               )}
               <div className="space-y-0.5">
-                {group.items.map(({ path, label, icon: Icon, badge }) => {
-                  const isActive = path === '/' ? location.pathname === '/' : location.pathname.startsWith(path)
-                  return (
-                    <Link
-                      key={path}
-                      to={path}
-                      className={`group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 ${
-                        isActive ? 'bg-brand-500/10 text-brand-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                      }`}
-                    >
+                {group.items.map((item) => {
+                  // ── Tab family: ONE row, the page carries the links between
+                  // its siblings. Points at the first child this person can
+                  // actually reach, so someone granted Planning but not
+                  // Overview still has a way in rather than a row that bounces
+                  // them to the Dashboard. Badge is the family's total.
+                  if (item.tabbed) {
+                    const first = item.children[0]
+                    const FamIcon = item.icon
+                    const isActive = item.children.some(c => isPathActive(c.path))
+                    const famBadge = item.children.reduce((n, c) => n + (c.badge || 0), 0)
+                    return (
+                      <Link key={item.key} to={first.path} className={rowClass(isActive)}>
+                        <FamIcon size={17} strokeWidth={isActive ? 2 : 1.5}
+                          className={isActive ? 'text-brand-600' : 'text-gray-400 group-hover:text-gray-600'} />
+                        <span>{item.label}</span>
+                        {famBadge > 0 && <span className={BADGE_CLASS}>{famBadge}</span>}
+                      </Link>
+                    )
+                  }
+
+                  // ── Collapsible sub-group: the rare tools, one chevron.
+                  // Open by default; the closed state is what gets remembered.
+                  if (item.collapsible) {
+                    const isOpen = !collapsed[item.key]
+                    const SubIcon = item.icon
+                    const hasActiveChild = item.children.some(c => isPathActive(c.path))
+                    return (
+                      <div key={item.key}>
+                        <button
+                          type="button"
+                          onClick={() => toggleCollapsed(item.key)}
+                          aria-expanded={isOpen}
+                          className={`w-full group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 ${
+                            hasActiveChild && !isOpen
+                              ? 'bg-brand-500/10 text-brand-700'
+                              : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                          }`}
+                        >
+                          <SubIcon size={17} strokeWidth={1.5}
+                            className={hasActiveChild && !isOpen ? 'text-brand-600' : 'text-gray-400 group-hover:text-gray-600'} />
+                          <span className="flex-1 text-left">{item.label}</span>
+                          <ChevronRight size={13}
+                            className={`text-ink-faint transition-transform duration-150 ${isOpen ? 'rotate-90' : ''}`} />
+                        </button>
+                        {isOpen && (
+                          <div className="ml-5 pl-3 border-l border-divider mt-0.5 space-y-0.5">
+                            {item.children.map(child => {
+                              const ChildIcon = child.icon
+                              const isActive = isPathActive(child.path)
+                              return (
+                                <Link
+                                  key={child.path}
+                                  to={child.path}
+                                  className={`group flex items-center gap-3 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-150 ${
+                                    isActive ? 'bg-brand-500/10 text-brand-700' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                                  }`}
+                                >
+                                  <ChildIcon size={15} strokeWidth={isActive ? 2 : 1.5}
+                                    className={isActive ? 'text-brand-600' : 'text-gray-400 group-hover:text-gray-600'} />
+                                  <span>{child.label}</span>
+                                </Link>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  }
+
+                  // ── Plain page row ──
+                  const { path, label: rowLabel, icon: Icon, badge, external } = item
+                  const isActive = !external && isPathActive(path)
+                  const contents = (
+                    <>
                       <Icon size={17} strokeWidth={isActive ? 2 : 1.5}
                         className={isActive ? 'text-brand-600' : 'text-gray-400 group-hover:text-gray-600'} />
-                      <span>{label}</span>
-                      {badge > 0 && (
-                        <span className="ml-auto bg-brand-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">{badge}</span>
-                      )}
-                    </Link>
+                      <span>{rowLabel}</span>
+                      {badge > 0 && <span className={BADGE_CLASS}>{badge}</span>}
+                    </>
+                  )
+                  // An external row is a hard navigation in a new tab, so the
+                  // current session stays exactly where it is.
+                  return external ? (
+                    <a key={path} href={path} target="_blank" rel="noopener noreferrer" className={rowClass(false)}>{contents}</a>
+                  ) : (
+                    <Link key={path} to={path} className={rowClass(isActive)}>{contents}</Link>
                   )
                 })}
               </div>
             </div>
           ))}
+
+          {/* Utility block — two things people copy all day, kept at the foot of
+              the scrolling rail rather than in the fixed footer so they scroll
+              away with the nav they belong to. */}
+          {(canCopyVendorLink || billingAddress) && (
+            <div className="mt-2 pt-2 border-t border-divider">
+              {canCopyVendorLink && (
+                <button
+                  type="button"
+                  onClick={copyVendorLink}
+                  title={`${window.location.origin}/submit/${label.vendor_form_token}`}
+                  className="group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 text-gray-500 hover:text-gray-900 hover:bg-gray-50 w-full"
+                >
+                  {vendorLinkCopied
+                    ? <Check size={17} strokeWidth={1.5} className="text-success" />
+                    : <Link2 size={17} strokeWidth={1.5} className="text-gray-400 group-hover:text-gray-600" />}
+                  <span>{vendorLinkCopied ? 'Link copied!' : 'Vendor Form'}</span>
+                  {!vendorLinkCopied && <span className="ml-auto text-[10px] text-ink-faint font-normal">Copy link</span>}
+                </button>
+              )}
+              {billingAddress && (
+                <button
+                  type="button"
+                  onClick={copyBillingAddress}
+                  title={billingAddress}
+                  className="group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 text-gray-500 hover:text-gray-900 hover:bg-gray-50 w-full"
+                >
+                  {addressCopied
+                    ? <Check size={17} strokeWidth={1.5} className="text-success" />
+                    : <Building2 size={17} strokeWidth={1.5} className="text-gray-400 group-hover:text-gray-600" />}
+                  <span className="truncate">{addressCopied ? 'Address copied!' : 'Billing Address'}</span>
+                  {!addressCopied && <span className="ml-auto text-[10px] text-ink-faint font-normal flex-shrink-0">Copy address</span>}
+                </button>
+              )}
+            </div>
+          )}
         </nav>
 
         {/* User + logout */}
         <div className="p-3 border-t border-divider">
-          {/* Public vendor form link — per-workspace, easy to copy and share. */}
-          {isApprover && label?.slug && (
-            <button
-              onClick={copyVendorLink}
-              title={`${window.location.origin}/submit/${label.vendor_form_token}`}
-              className="w-full flex items-center gap-2.5 px-3 py-2 mb-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-all border-b border-divider pb-3 rounded-b-none"
-            >
-              <Link2 size={16} strokeWidth={1.5} className="text-gray-400 flex-shrink-0" />
-              <span>Vendor Form</span>
-              <span className={`ml-auto inline-flex items-center gap-1 text-xs font-semibold ${vendorLinkCopied ? 'text-emerald-600' : 'text-gray-400'}`}>
-                {vendorLinkCopied ? <><Check size={13} /> Copied</> : 'Copy link'}
-              </span>
-            </button>
-          )}
           {user && (
             <div className="flex items-center gap-3 px-3 py-2 mb-2">
               <div className="w-8 h-8 rounded-full bg-brand-500/15 flex items-center justify-center flex-shrink-0">

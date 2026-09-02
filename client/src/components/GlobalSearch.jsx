@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import api from '../api'
 import { useAuth } from '../context/AuthContext'
-import { buildNavGroups } from '../constants/navConfig'
+import { navPageGroups } from '../constants/navConfig'
 import { searchPages } from '../lib/pageSearch'
 import { formatDate } from '../utils/dates'
 
@@ -125,7 +125,7 @@ export default function GlobalSearch({ open, onClose }) {
   // The nav definition IS the page vocabulary — one source, so a nav item added
   // tomorrow is searchable tomorrow without a second list to remember.
   const pages = useMemo(
-    () => buildNavGroups({ isAdmin, isApprover }).flatMap(g => g.items),
+    () => navPageGroups({ isAdmin, isApprover }).flatMap(g => g.items),
     [isAdmin, isApprover],
   )
 

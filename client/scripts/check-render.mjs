@@ -178,17 +178,24 @@ const routes = process.argv[2]
 // finding and the route table alone cannot tell them apart.
 const shellFailures = [];
 try {
-  const { buildNavGroups, PAGE_LABELS } = await load('/src/constants/navConfig.jsx');
+  const { buildNavGroups, navPageGroups, PAGE_LABELS } = await load('/src/constants/navConfig.jsx');
   for (const role of [
     { name: 'Admin/Superadmin', isAdmin: true, isApprover: true },
     { name: 'Approver', isAdmin: false, isApprover: true },
     { name: 'User', isAdmin: false, isApprover: false },
   ]) {
     try {
-      const groups = buildNavGroups(role);
-      const items = groups.flatMap((g) => g.items);
-      const noIcon = items.filter((i) => !i.icon).map((i) => i.path);
+      // Rows as the rail draws them (containers intact) AND pages as Settings
+      // and ⌘K read them (containers flattened) — both shapes ship, so both
+      // are checked.
+      const rows = buildNavGroups(role).flatMap((g) => g.items);
+      const items = navPageGroups(role).flatMap((g) => g.items);
+      const noIcon = [...rows, ...items].filter((i) => !i.icon).map((i) => i.path || i.key);
       if (noIcon.length) shellFailures.push(`${role.name}: nav items with no icon — ${noIcon.join(', ')}`);
+      // A container that has been filtered down to nothing is not an empty row,
+      // it is a crash: the sidebar reads children[0].path to place a family row.
+      const hollow = rows.filter((i) => i.children && i.children.length === 0).map((i) => i.key);
+      if (hollow.length) shellFailures.push(`${role.name}: nav containers with no children — ${hollow.join(', ')}`);
       // A nav entry pointing at a route that does not exist is worse than a
       // missing one: it is a dead link the user is invited to click.
       const declared = new Set(routes.map((r) => r.path));

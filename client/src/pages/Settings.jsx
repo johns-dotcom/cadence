@@ -6,7 +6,7 @@ import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
-import { buildNavGroups } from '../constants/navConfig'
+import { navPageGroups } from '../constants/navConfig'
 import { getHiddenPages, setHiddenPages, NEVER_HIDEABLE } from '../utils/navPrefs'
 import { applyAccent, resetAccent, isValidHex, ACCENT_PRESETS } from '../utils/branding'
 import RepsManager from '../components/RepsManager'
@@ -201,7 +201,10 @@ export default function Settings() {
   // for a row that isn't there.
   const [hidden, setHidden] = useState(() => getHiddenPages(user?.id))
   useEffect(() => { setHidden(getHiddenPages(user?.id)) }, [user?.id])
-  const navGroups = buildNavGroups({ isAdmin, isApprover })
+  // navPageGroups, not buildNavGroups: the sidebar's tab families and
+  // sub-groups are single ROWS there, but each of their children is a page you
+  // can hide on its own, so this list has to see them flattened.
+  const navGroups = navPageGroups({ isAdmin, isApprover })
     .map(g => ({ ...g, items: g.items.filter(i => canView(i.path) && !NEVER_HIDEABLE.includes(i.path)) }))
     .filter(g => g.items.length > 0)
   const navTotal = navGroups.reduce((n, g) => n + g.items.length, 0)
