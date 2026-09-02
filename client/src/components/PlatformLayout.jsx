@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Outlet, Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Building2, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users, ShieldCheck, Megaphone, MessageSquare } from 'lucide-react'
+import { LayoutDashboard, Building2, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users, ShieldCheck, Megaphone, MessageSquare, BarChart3 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useSocket } from '../context/SocketContext'
 import { useTheme } from '../context/ThemeContext'
@@ -15,6 +15,7 @@ const NAV = [
   { path: '/messages', label: 'Messages', icon: MessageSquare },
   { path: '/workspaces', label: 'Workspaces', icon: Building2 },
   { path: '/activity', label: 'Activity', icon: ScrollText },
+  { path: '/analytics', label: 'Analytics', icon: BarChart3 },
   { path: '/announcements', label: 'Announcements', icon: Megaphone },
   { path: '/operators', label: 'Operators', icon: Users, ownerOnly: true },
   { path: '/account', label: 'Account', icon: UserCog },

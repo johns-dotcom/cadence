@@ -6,6 +6,7 @@ import Layout from './components/Layout'
 import PlatformLayout from './components/PlatformLayout'
 import PlatformOverview from './pages/PlatformOverview'
 import PlatformActivity from './pages/PlatformActivity'
+import PlatformAnalytics from './pages/PlatformAnalytics'
 import PlatformAnnouncements from './pages/PlatformAnnouncements'
 import PlatformOperators from './pages/PlatformOperators'
 import PlatformAccount from './pages/PlatformAccount'
@@ -64,8 +65,10 @@ import CreateInvoice from './pages/CreateInvoice'
 import VendorSubmit from './pages/VendorSubmit'
 import AcceptInvite from './pages/AcceptInvite'
 import Team from './pages/Team'
+import TeamMember from './pages/TeamMember'
 import Settings from './pages/Settings'
 import Activity from './pages/Activity'
+import Usage from './pages/Usage'
 import InternalRequests from './pages/InternalRequests'
 import Workspaces from './pages/Workspaces'
 import Privacy from './pages/Privacy'
@@ -142,6 +145,7 @@ function AppContent() {
           <Route path="/messages/:channelId" element={<Messages />} />
           <Route path="/workspaces" element={<Workspaces />} />
           <Route path="/activity"   element={<PlatformActivity />} />
+          <Route path="/analytics"  element={<PlatformAnalytics />} />
           <Route path="/announcements" element={<PlatformAnnouncements />} />
           {user?.platform_role === 'owner' && <Route path="/operators" element={<PlatformOperators />} />}
           <Route path="/account"    element={<PlatformAccount />} />
@@ -216,8 +220,20 @@ function AppContent() {
         <Route path="/vendors"      element={<AdminRoute><Vendors /></AdminRoute>} />
         <Route path="/invoices"     element={<AdminRoute><CreateInvoice /></AdminRoute>} />
         <Route path="/invoices/new" element={<AdminRoute><CreateInvoice /></AdminRoute>} />
-        <Route path="/team"         element={<AdminRoute><Team /></AdminRoute>} />
-        <Route path="/activity"     element={<AdminRoute><Activity /></AdminRoute>} />
+        {/* Open to every member: the roster is the workspace's only people
+            directory, and gating it behind AdminRoute meant a plain User had no way
+            to look a colleague up. Every mutation on the page is still admin-tier
+            and enforced in routes/team.js; the page hides what would 403. The
+            member DETAIL page is open on the same reasoning, and filters its task
+            list per viewer server-side. */}
+        <Route path="/team"         element={<Team />} />
+        <Route path="/team/:id"     element={<TeamMember />} />
+        {/* Strict: the server route is requireAdmin, so an Approver admitted by
+            AdminRoute could only ever see a 403 banner. */}
+        <Route path="/activity"     element={<StrictAdminRoute><Activity /></StrictAdminRoute>} />
+        {/* StrictAdminRoute, not AdminRoute: /api/analytics/summary is requireAdmin,
+            so an Approver would get a page that can only ever render a 403. */}
+        <Route path="/usage"        element={<StrictAdminRoute><Usage /></StrictAdminRoute>} />
         <Route path="/requests"     element={<InternalRequests />} />
         <Route path="/settings"     element={<Settings />} />
       </Route>

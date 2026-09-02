@@ -26,6 +26,7 @@ const invoicesRoutes = require('./routes/invoices');
 const vendorRoutes = require('./routes/vendor');
 const dashboardRoutes = require('./routes/dashboard');
 const activityRoutes = require('./routes/activity');
+const analyticsRoutes = require('./routes/analytics');
 const settingsRoutes = require('./routes/settings');
 const searchRoutes = require('./routes/search');
 const notificationsRoutes = require('./routes/notifications');
@@ -195,6 +196,7 @@ app.use('/api/invoices', invoicesRoutes);
 app.use('/api/vendor', vendorRoutes); // public (no auth) — label resolved by slug
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/activity', activityRoutes);
+app.use('/api/analytics', analyticsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/notifications', notificationsRoutes);
@@ -1230,6 +1232,29 @@ const runMigrations = async () => {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  // Entry context on an audit row: which record was touched, and the human name
+  // for it. entry_id is derived from the endpoint by activityLogger; entry_payee
+  // is passed by callers that already hold it.
+  await pool.query(`ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS entry_id INT`);
+  await pool.query(`ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS entry_payee VARCHAR(255)`);
+
+  // In-workspace usage analytics. One row per client route change, label-scoped
+  // so a workspace admin only ever sees their own team's usage. `path` is
+  // normalized (`/releases/123` → `/releases/:id`) before insert so families
+  // roll up. Swept to 180 days at boot — see the retention sweep below.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS page_views (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      path VARCHAR(200) NOT NULL,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_page_views_label_ts ON page_views (label_id, ts DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_page_views_label_path ON page_views (label_id, path)`);
+  // Powers the per-user+path dedup window on insert.
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_page_views_user_ts ON page_views (label_id, user_id, path, ts DESC)`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_login_logs (
@@ -1530,6 +1555,25 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_salary_payments_label ON salary_payments (label_id, year, month)`);
+  // Payroll audit trail. Separate from salary_payments because that table holds
+  // the CURRENT state per (employee, month): un-marking a payment nulls paid_at
+  // and the fact that it was ever paid disappears with it. Every mark/unmark
+  // appends here instead, so "who marked April paid, then reversed it" survives.
+  // Must come after salary_employees/users — it references both.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS salary_payment_history (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      employee_id INT NOT NULL REFERENCES salary_employees(id) ON DELETE CASCADE,
+      month INT NOT NULL,
+      year INT NOT NULL,
+      action VARCHAR(20) NOT NULL,
+      amount NUMERIC(12,2),
+      performed_by INT REFERENCES users(id) ON DELETE SET NULL,
+      performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_salary_history_label ON salary_payment_history (label_id, year, month)`);
 
   // Marketing / influencer campaigns — spend tracking linked to an artist.
   await pool.query(`
@@ -2378,7 +2422,21 @@ const server = app.listen(PORT, () => {
     // Probe for bank_txn_invoice_links so lib/bankEvidence.js fragments can
     // include the link branch (degrades to primary-column-only until then).
     .then(() => require('./lib/bankEvidence').markLinksReady(pool))
+    // Page-view retention: usage analytics answers "who's using this lately",
+    // never "what did someone look at 8 months ago". 180 days, swept at boot
+    // and daily after — keeping it forever would be a per-user browsing
+    // history nobody asked us to hold.
+    .then(() => sweepPageViews())
     .catch(err => console.error('Migration error:', err.message));
+
+  async function sweepPageViews() {
+    try {
+      const { rowCount } = await pool.query(
+        `DELETE FROM page_views WHERE ts < NOW() - INTERVAL '180 days' /* no-tenant */`);
+      if (rowCount) console.log(`page_views retention sweep: removed ${rowCount} rows older than 180 days`);
+    } catch (e) { console.warn('page_views sweep:', e.message); }
+  }
+  setInterval(sweepPageViews, 24 * 60 * 60 * 1000).unref();
 
   // Nightly statement-matcher freshness sweep: an invoice approved AFTER its
   // statement was ingested is otherwise manual-only forever. Additive by

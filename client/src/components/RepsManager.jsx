@@ -19,7 +19,14 @@ export default function RepsManager() {
   const add = async (e) => {
     e.preventDefault()
     if (!name.trim()) return
-    try { await api.post('/reps', { name: name.trim() }); setName(''); load() }
+    try {
+      const { data } = await api.post('/reps', { name: name.trim() })
+      // Re-adding a deactivated name reactivates it. Saying so matters: the row
+      // was struck through further down the list and would otherwise look like
+      // the add silently did nothing.
+      toast(data.reactivated ? `Reactivated ${data.data.name}` : `Added ${data.data.name}`)
+      setName(''); load()
+    }
     catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
   const toggle = async (rep) => {
@@ -27,14 +34,28 @@ export default function RepsManager() {
     catch { toast('Failed', 'error') }
   }
   const remove = async (rep) => {
-    if (!window.confirm(`Remove ${rep.name}?`)) return
-    try { await api.delete(`/reps/${rep.id}`); load() } catch { toast('Failed', 'error') }
+    if (!window.confirm(`Remove ${rep.name}? A rep who appears on existing records is deactivated instead of deleted.`)) return
+    try { await api.delete(`/reps/${rep.id}`); toast(`Removed ${rep.name}`); load() }
+    catch (err) {
+      // 409 + deactivated: the server did the reversible thing instead. That is
+      // a result, not a failure, so it must not read as an error.
+      if (err.response?.status === 409 && err.response?.data?.deactivated) {
+        toast(err.response.data.error)
+        load()
+        return
+      }
+      toast(err.response?.data?.error || 'Failed', 'error')
+    }
   }
 
   return (
     <div className="card p-5">
       <h2 className="text-sm font-bold text-ink mb-1">Reps</h2>
-      <p className="text-xs text-gray-400 mb-4">Names used in ledger and deal dropdowns across this workspace.</p>
+      <p className="text-xs text-ink-muted mb-4">
+        Names used in ledger and deal dropdowns across this workspace. Ledger rows store the rep's <em>name</em>, not a
+        link to this list, so a rep who already appears on records is deactivated rather than deleted — deleting the row
+        would leave a name on your history that nobody could manage again.
+      </p>
       <form onSubmit={add} className="flex gap-2 mb-4">
         <input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="Add a rep name" />
         <button className="btn-primary flex-shrink-0"><Plus size={15} /> Add</button>

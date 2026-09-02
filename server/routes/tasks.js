@@ -4,7 +4,9 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { sendEmail, taskAssignmentEmail } = require('../lib/email');
-const { TASK_STATUSES, PRIORITIES } = require('../lib/constants');
+// TASK_PRIORITIES, not PRIORITIES: tasks carry an 'Urgent' level that releases and
+// deals deliberately do not (lib/constants.js).
+const { TASK_STATUSES, TASK_PRIORITIES } = require('../lib/constants');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -133,7 +135,19 @@ function logCrossUserMutation(req, action, task) {
   logActivity(req, action, `${task.description || `Task #${task.id}`} (owner user #${task.user_id ?? '—'})`);
 }
 
-// Best-effort email to a newly-assigned member.
+/**
+ * Notify a newly-assigned member — or hand the caller a payload to preview first.
+ *
+ * `notify` in the request body picks the mode, defaulting to the historical
+ * fire-and-forget send so every non-UI caller keeps working unchanged:
+ *   'preview' → send nothing; return { kind, ctx } for EmailPreviewModal, which
+ *               posts it to /api/email/send with the admin's edits applied
+ *   'none'    → send nothing, return nothing
+ *   (default) → send in the background, return nothing
+ *
+ * The single SELECT is awaited (it's indexed and tiny); only the SMTP round-trip
+ * stays off the response path.
+ */
 async function notifyAssignee(req, assigneeId, task) {
   try {
     const { rows } = await pool.query(
@@ -142,15 +156,25 @@ async function notifyAssignee(req, assigneeId, task) {
       [assigneeId, req.labelId]
     );
     const a = rows[0];
-    if (!a?.email) return;
+    if (!a?.email) return null;
+    const mode = req.body?.notify;
+    if (mode === 'none') return null;
+
     const origin = process.env.FRONTEND_URL || req.headers.origin || '';
-    const msg = taskAssignmentEmail({
+    // Exactly the shape emailDispatch's `task_assigned` template consumes, so the
+    // preview the admin edits is the email that gets sent.
+    const ctx = {
+      to: a.email,
       assigneeName: a.name, workspaceName: a.workspace, description: task.description,
       dueDate: task.due_date ? String(task.due_date).slice(0, 10) : null, priority: task.priority,
       assignerName: req.user.name, link: origin ? `${origin.replace(/\/$/, '')}/my-work` : null,
-    });
-    await sendEmail({ to: a.email, subject: msg.subject, html: msg.html, text: msg.text });
-  } catch (_) { /* best-effort */ }
+    };
+    if (mode === 'preview') return { kind: 'task_assigned', ctx };
+
+    const msg = taskAssignmentEmail(ctx);
+    sendEmail({ to: a.email, subject: msg.subject, html: msg.html, text: msg.text }).catch(() => {});
+    return null;
+  } catch (_) { return null; /* best-effort */ }
 }
 
 // GET /api/tasks — by default the caller's own tasks (/my-work).
@@ -240,11 +264,13 @@ router.post('/', async (req, res) => {
       [req.labelId, assigneeId, req.user.id, description.trim(), priority || null, status || null,
        due_date || null, release_id || null, text(req.body.notes, NOTES_MAX), text(req.body.category, CATEGORY_MAX)]
     );
+    let pendingEmail = null;
     if (assigneeId !== req.user.id) {
       await logActivity(req, 'Assigned task', description.trim());
-      notifyAssignee(req, assigneeId, rows[0]); // best-effort, fire-and-forget
+      pendingEmail = await notifyAssignee(req, assigneeId, rows[0]);
     }
-    res.status(201).json({ success: true, data: await selectTask(req.labelId, rows[0].id) });
+    // `pending_email` is non-null only when the caller asked for notify:'preview'.
+    res.status(201).json({ success: true, data: await selectTask(req.labelId, rows[0].id), pending_email: pendingEmail });
   } catch (error) {
     console.error('Create task error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -378,20 +404,23 @@ router.patch('/bulk', async (req, res) => {
 
     const params = [req.labelId, ids];
     const sets = [];
-    let statusIdx = null;
+    let hasStatus = false;
     for (const k of BULK_FIELDS) {
       if (fields[k] === undefined) continue;
       params.push(k === 'category' ? text(fields[k], CATEGORY_MAX) : (fields[k] === '' ? null : fields[k]));
       sets.push(`${k} = $${params.length}`);
-      if (k === 'status') statusIdx = params.length;
+      if (k === 'status') hasStatus = true;
     }
     if (reassignTo !== null) {
       params.push(reassignTo);
       sets.push(`user_id = $${params.length}`);
     }
     if (!sets.length) return res.status(400).json({ success: false, error: 'No updatable fields provided' });
-    if (statusIdx) {
-      sets.push(`completed_at = CASE WHEN $${statusIdx} = 'Done' THEN COALESCE(t.completed_at, NOW()) ELSE NULL END`);
+    if (hasStatus) {
+      // A SECOND binding of the same value, not a reuse of its placeholder — see the
+      // 42P08 note on the single-task PATCH below. This is the identical bug.
+      params.push(fields.status);
+      sets.push(`completed_at = CASE WHEN $${params.length} = 'Done' THEN COALESCE(t.completed_at, NOW()) ELSE NULL END`);
     }
 
     // $admin / $self / $dept mirror canMutateTask's three branches in SQL.
@@ -533,7 +562,7 @@ const UPDATABLE = ['description', 'priority', 'status', 'due_date', 'release_id'
 // Shared by PATCH and POST: reject a bad enum rather than letting a typo'd status
 // create a phantom board column that nothing can filter or group.
 function badEnum(body) {
-  if (body.priority !== undefined && !PRIORITIES.includes(body.priority)) return 'Invalid priority';
+  if (body.priority !== undefined && !TASK_PRIORITIES.includes(body.priority)) return 'Invalid priority';
   if (body.status !== undefined && !TASK_STATUSES.includes(body.status)) return 'Invalid status';
   return null;
 }
@@ -600,10 +629,20 @@ router.patch('/:id', async (req, res) => {
     }
 
     // Stamp on the way INTO Done, clear on the way out, and never overwrite an
-    // existing stamp. Reuses the status placeholder rather than binding it twice.
+    // existing stamp.
+    //
+    // The status value is bound a SECOND time rather than reusing its placeholder.
+    // Reuse looks tidier and is broken: Postgres has to deduce ONE type for that
+    // parameter from both `status = $n` (character varying, from the column) and
+    // `$n = 'Done'` (text, from the literal), refuses, and raises 42P08
+    // "inconsistent types deduced for parameter". Every status change on a task —
+    // the drawer select, a drag into the Done column, the card's done toggle, the
+    // bulk bar — 500'd on it. Casting the parameter does not fix it either; it just
+    // constrains the deduction the other way. A separate placeholder, used only
+    // against the literal, has one unambiguous type.
     if (keys.includes('status')) {
-      const si = keys.indexOf('status') + 1;
-      setClauses.push(`completed_at = CASE WHEN $${si} = 'Done' THEN COALESCE(completed_at, NOW()) ELSE NULL END`);
+      values.push(req.body.status);
+      setClauses.push(`completed_at = CASE WHEN $${values.length} = 'Done' THEN COALESCE(completed_at, NOW()) ELSE NULL END`);
     }
 
     values.push(id, req.labelId);
@@ -615,11 +654,12 @@ router.patch('/:id', async (req, res) => {
     );
 
     logCrossUserMutation(req, reassignTo !== null ? 'Reassigned task' : 'Edited teammate task', gate.task);
+    let pendingEmail = null;
     if (reassignTo !== null && reassignTo !== req.user.id) {
-      notifyAssignee(req, reassignTo, rows[0]); // best-effort, fire-and-forget
+      pendingEmail = await notifyAssignee(req, reassignTo, rows[0]);
     }
 
-    res.json({ success: true, data: await selectTask(req.labelId, id) });
+    res.json({ success: true, data: await selectTask(req.labelId, id), pending_email: pendingEmail });
   } catch (error) {
     console.error('Update task error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });

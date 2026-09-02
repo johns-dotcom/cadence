@@ -291,15 +291,63 @@ router.get('/accounts', async (req, res) => {
     res.json({ success: true, data: R.accountsFor(row) });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
+// PUT /accounts — replace this label's account list.
+//
+// `key` is the join between a statement and its account: bank_statements.account
+// stores the key string, and lib/bankEvidence.js builds per-account payment-
+// method compatibility from these rows. So a key that disappears while
+// statements still reference it doesn't fail loudly — those statements quietly
+// fall through to "any method is compatible", weakening every match decision
+// made against them. Removing an in-use key is therefore refused, and renaming
+// a LABEL (display text) is always fine because nothing joins on it.
 router.put('/accounts', async (req, res) => {
   try {
-    const list = Array.isArray(req.body.accounts) ? req.body.accounts
-      .map(a => ({ key: String(a.key || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, ''), label: String(a.label || '').trim(), methods: Array.isArray(a.methods) ? a.methods : null }))
-      .filter(a => a.key && a.label) : [];
+    const raw = Array.isArray(req.body.accounts) ? req.body.accounts : [];
+    if (raw.length > 25) return res.status(400).json({ success: false, error: 'Too many accounts' });
+
+    const seen = new Set();
+    const list = [];
+    for (const a of raw) {
+      const key = String(a?.key || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 40);
+      const label = String(a?.label || '').trim().slice(0, 80);
+      if (!key || !label) continue;
+      // Two rows with one key make the CASE in bankEvidence unreachable past
+      // the first — a silent, order-dependent rule.
+      if (seen.has(key)) return res.status(400).json({ success: false, error: `Duplicate account key "${key}"` });
+      seen.add(key);
+      const methods = Array.isArray(a.methods)
+        ? [...new Set(a.methods.map(m => String(m || '').trim()).filter(Boolean).slice(0, 20))]
+        : null;
+      // An empty array and null mean different things downstream (accountMethods
+      // returns the array as-is), and an empty one would match NOTHING. Normalize
+      // "no restriction" to null.
+      list.push({ key, label, methods: methods && methods.length ? methods : null });
+    }
     if (!list.length) return res.status(400).json({ success: false, error: 'Provide at least one account' });
+
+    const before = R.accountsFor((await pool.query('SELECT bank_accounts FROM labels WHERE id = $1', [req.labelId])).rows[0] || {});
+    const removed = before.map(a => a.key).filter(k => !seen.has(k));
+    if (removed.length) {
+      const { rows } = await pool.query(
+        `SELECT account, COUNT(*)::int AS n FROM bank_statements
+          WHERE label_id = $1 AND account = ANY($2::text[]) GROUP BY account`,
+        [req.labelId, removed]
+      );
+      if (rows.length) {
+        return res.status(409).json({
+          success: false,
+          error: `Can't remove ${rows.map(r => `"${r.account}" (${r.n} statement${r.n === 1 ? '' : 's'})`).join(', ')} — statements are filed under it. Rename its label instead.`,
+        });
+      }
+    }
+
     await pool.query('UPDATE labels SET bank_accounts = $1::jsonb WHERE id = $2', [JSON.stringify(list), req.labelId]);
+    await logActivity(req, 'Updated bank accounts', list.map(a => a.key).join(', '));
     res.json({ success: true, data: list });
-  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+  } catch (error) {
+    console.error('Update bank accounts error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
 });
 
 // ── Housekeeping sweeps (idempotent maintenance, NOT request logic) ─────────

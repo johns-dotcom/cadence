@@ -7,9 +7,10 @@ import {
   Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone, FileBarChart, GitMerge, Scale,
   FileClock, Shield, Lock, FileSignature, FileSpreadsheet, Layers, PiggyBank, FilePlus2,
   MessageSquarePlus, MessageSquare, Landmark, Coins, ShieldCheck, Users2, UploadCloud, FileSearch,
-  PackageCheck,
+  PackageCheck, BarChart3,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
+import { getHiddenPages, onNavPrefsChange } from '../utils/navPrefs'
 import { useSocket } from '../context/SocketContext'
 import { useTheme } from '../context/ThemeContext'
 import api from '../api'
@@ -69,9 +70,102 @@ export const PAGE_LABELS = {
   '/invoices/new': 'Create invoice',
   '/team':       'Team',
   '/activity':   'Activity',
+  '/usage':      'Usage',
   '/requests':   'Requests & feedback',
   '/settings':   'Settings',
   '/workspaces': 'Workspaces',
+}
+
+// Sidebar information architecture — grouped the way a label team works.
+// Module-level and pure so BOTH the sidebar and Settings' "hide items" list
+// read the same definition; two copies would drift and offer people toggles
+// for rows that aren't there.
+// Items are still filtered by canView (role + per-user page permissions) and
+// then by the viewer's own hidden-pages preference.
+export function buildNavGroups({ isAdmin, isApprover, chatUnread = 0, pendingApprovals = 0 }) {
+  return [
+  {
+    label: null,
+    items: [
+      { path: '/',         label: 'Dashboard', icon: LayoutDashboard },
+      { path: '/my-work',  label: 'My Work',   icon: Briefcase },
+      // Team leads only. canView() below still applies, so an admin can revoke it.
+      ...(isApprover ? [{ path: '/team-work', label: 'Team Work', icon: Users2 }] : []),
+      { path: '/messages', label: 'Messages',  icon: MessageSquare, badge: chatUnread },
+      { path: '/calendar', label: 'Calendar',  icon: CalendarDays },
+    ],
+  },
+  {
+    label: 'Catalog',
+    items: [
+      { path: '/releases', label: 'Releases', icon: Music },
+      { path: '/catalog',  label: 'Catalog',  icon: Disc3 },
+      { path: '/artists',  label: 'Roster',  icon: Users },
+      { path: '/brand',    label: 'Brand',    icon: ImageIcon },
+    ],
+  },
+  {
+    label: 'A&R',
+    items: [
+      { path: '/deals',     label: 'Deal Pipeline', icon: TrendingUp },
+      { path: '/marketing', label: 'Marketing',     icon: Megaphone },
+      ...(isApprover ? [{ path: '/artist-campaigns', label: 'Artist Campaigns', icon: Megaphone }] : []),
+    ],
+  },
+  {
+    label: 'Contracts & Legal',
+    items: [
+      ...(isApprover ? [{ path: '/contracts', label: 'Contracts', icon: FileText }] : []),
+      ...(isApprover ? [{ path: '/contracts/create', label: 'Create Contract', icon: FilePlus2 }] : []),
+      ...(isApprover ? [{ path: '/pending-contracts', label: 'Pending', icon: FileClock }] : []),
+      ...(isApprover ? [{ path: '/renewals', label: 'Renewals', icon: RefreshCw }] : []),
+      ...(isApprover ? [{ path: '/legal', label: 'NDAs', icon: Shield }] : []),
+      ...(isApprover ? [{ path: '/create-nda', label: 'Create NDA', icon: FilePlus2 }] : []),
+      ...(isApprover ? [{ path: '/label-waivers', label: 'Label Waivers', icon: FileSignature }] : []),
+      ...(isApprover ? [{ path: '/clearances', label: 'Clearances', icon: FileSpreadsheet }] : []),
+      ...(isAdmin ? [{ path: '/admin-docs', label: 'Admin Docs', icon: Lock }] : []),
+    ],
+  },
+  {
+    label: 'Bookkeeping',
+    items: [
+      { path: '/add-invoice', label: 'Add Invoice', icon: Receipt },
+      ...(isApprover ? [{ path: '/approvals', label: 'Approvals', icon: Check, badge: pendingApprovals }] : []),
+      ...(isApprover ? [{ path: '/ledger', label: 'Ledger', icon: BookOpen }] : []),
+      ...(isApprover ? [{ path: '/invoice-search', label: 'Invoice Search', icon: FileSearch }] : []),
+      ...(isApprover ? [{ path: '/bulk-upload', label: 'Bulk Upload', icon: UploadCloud }] : []),
+      ...(isApprover ? [{ path: '/payments', label: 'Payments', icon: CreditCard }] : []),
+      ...(isAdmin ? [{ path: '/bank-statements', label: 'Bank Statements', icon: Landmark }] : []),
+      ...(isAdmin ? [{ path: '/bank-matching', label: 'Bank Matching', icon: GitMerge }] : []),
+      ...(isAdmin ? [{ path: '/bank-ledger', label: 'Bank Ledger', icon: Coins }] : []),
+      ...(isApprover ? [{ path: '/vendors', label: 'Vendors', icon: Building2 }] : []),
+      ...(isApprover ? [{ path: '/creators', label: 'Creator Payments', icon: Users }] : []),
+      ...(isApprover ? [{ path: '/bulk-deals', label: 'Bulk Deals', icon: PackageCheck }] : []),
+      ...(isApprover ? [{ path: '/invoices', label: 'Create Invoice', icon: Receipt }] : []),
+      ...(isApprover ? [{ path: '/financials', label: 'Financials', icon: PieChart }] : []),
+      ...(isApprover ? [{ path: '/reports', label: 'Reports', icon: FileBarChart }] : []),
+      ...(isApprover ? [{ path: '/ad-allocation', label: 'Allocate Ads', icon: Megaphone }] : []),
+      ...(isApprover ? [{ path: '/artist-budgets', label: 'Artist Budgets', icon: Scale }] : []),
+      ...(isApprover ? [{ path: '/recording-budgets', label: 'Recording Budgets', icon: PiggyBank }] : []),
+      ...(isApprover ? [{ path: '/recoupments', label: 'Recoupments', icon: Wallet }] : []),
+      ...(isApprover ? [{ path: '/recoupments/planning', label: 'Recoup. Planning', icon: Layers }] : []),
+      ...(isAdmin ? [{ path: '/salary', label: 'Salary', icon: Banknote }] : []),
+    ],
+  },
+  {
+    label: 'Workspace',
+    items: [
+      { path: '/team', label: 'Team', icon: UserCheck },
+      ...(isAdmin ? [{ path: '/activity', label: 'Activity', icon: ScrollText }] : []),
+      ...(isAdmin ? [{ path: '/usage', label: 'Usage', icon: BarChart3 }] : []),
+      // Not admin-gated: the catalog + artist checks serve every role, and the
+      // money-shaped sections are role-gated server-side (routes/flags.js).
+      { path: '/data-quality', label: 'Data Quality', icon: ShieldCheck },
+      { path: '/requests', label: 'Requests & feedback', icon: MessageSquarePlus },
+      { path: '/settings', label: 'Settings', icon: Settings },
+    ],
+  },
+  ]
 }
 
 // "View as" dropdown — Superadmin-only impersonation within the workspace.
@@ -202,6 +296,12 @@ export default function Layout() {
 
   useEffect(() => { if (isMobile) setSidebarOpen(false) }, [location.pathname, isMobile])
 
+  // Per-person hidden nav items (Settings → Account → Sidebar). Local
+  // preference only; re-read on change so the sidebar updates without a reload.
+  const [hiddenPages, setHiddenPages] = useState(() => getHiddenPages(user?.id))
+  useEffect(() => { setHiddenPages(getHiddenPages(user?.id)) }, [user?.id])
+  useEffect(() => onNavPrefsChange(() => setHiddenPages(getHiddenPages(user?.id))), [user?.id])
+
   // Platform announcements — dismissible banner stack.
   const [announcements, setAnnouncements] = useState([])
   useEffect(() => {
@@ -238,91 +338,30 @@ export default function Layout() {
   useEffect(() => { refreshChatUnread() }, [location.pathname])
   useEffect(() => onSocket('message:new', () => refreshChatUnread()), [onSocket])
 
-  // Sidebar information architecture — grouped the way a label team works.
-  // Items are filtered by canView (role + per-user page permissions).
-  const navGroups = [
-    {
-      label: null,
-      items: [
-        { path: '/',         label: 'Dashboard', icon: LayoutDashboard },
-        { path: '/my-work',  label: 'My Work',   icon: Briefcase },
-        // Team leads only. canView() below still applies, so an admin can revoke it.
-        ...(isApprover ? [{ path: '/team-work', label: 'Team Work', icon: Users2 }] : []),
-        { path: '/messages', label: 'Messages',  icon: MessageSquare, badge: chatUnread },
-        { path: '/calendar', label: 'Calendar',  icon: CalendarDays },
-      ],
-    },
-    {
-      label: 'Catalog',
-      items: [
-        { path: '/releases', label: 'Releases', icon: Music },
-        { path: '/catalog',  label: 'Catalog',  icon: Disc3 },
-        { path: '/artists',  label: 'Roster',  icon: Users },
-        { path: '/brand',    label: 'Brand',    icon: ImageIcon },
-      ],
-    },
-    {
-      label: 'A&R',
-      items: [
-        { path: '/deals',     label: 'Deal Pipeline', icon: TrendingUp },
-        { path: '/marketing', label: 'Marketing',     icon: Megaphone },
-        ...(isApprover ? [{ path: '/artist-campaigns', label: 'Artist Campaigns', icon: Megaphone }] : []),
-      ],
-    },
-    {
-      label: 'Contracts & Legal',
-      items: [
-        ...(isApprover ? [{ path: '/contracts', label: 'Contracts', icon: FileText }] : []),
-        ...(isApprover ? [{ path: '/contracts/create', label: 'Create Contract', icon: FilePlus2 }] : []),
-        ...(isApprover ? [{ path: '/pending-contracts', label: 'Pending', icon: FileClock }] : []),
-        ...(isApprover ? [{ path: '/renewals', label: 'Renewals', icon: RefreshCw }] : []),
-        ...(isApprover ? [{ path: '/legal', label: 'NDAs', icon: Shield }] : []),
-        ...(isApprover ? [{ path: '/create-nda', label: 'Create NDA', icon: FilePlus2 }] : []),
-        ...(isApprover ? [{ path: '/label-waivers', label: 'Label Waivers', icon: FileSignature }] : []),
-        ...(isApprover ? [{ path: '/clearances', label: 'Clearances', icon: FileSpreadsheet }] : []),
-        ...(isAdmin ? [{ path: '/admin-docs', label: 'Admin Docs', icon: Lock }] : []),
-      ],
-    },
-    {
-      label: 'Bookkeeping',
-      items: [
-        { path: '/add-invoice', label: 'Add Invoice', icon: Receipt },
-        ...(isApprover ? [{ path: '/approvals', label: 'Approvals', icon: Check, badge: pendingApprovals }] : []),
-        ...(isApprover ? [{ path: '/ledger', label: 'Ledger', icon: BookOpen }] : []),
-        ...(isApprover ? [{ path: '/invoice-search', label: 'Invoice Search', icon: FileSearch }] : []),
-        ...(isApprover ? [{ path: '/bulk-upload', label: 'Bulk Upload', icon: UploadCloud }] : []),
-        ...(isApprover ? [{ path: '/payments', label: 'Payments', icon: CreditCard }] : []),
-        ...(isAdmin ? [{ path: '/bank-statements', label: 'Bank Statements', icon: Landmark }] : []),
-        ...(isAdmin ? [{ path: '/bank-matching', label: 'Bank Matching', icon: GitMerge }] : []),
-        ...(isAdmin ? [{ path: '/bank-ledger', label: 'Bank Ledger', icon: Coins }] : []),
-        ...(isApprover ? [{ path: '/vendors', label: 'Vendors', icon: Building2 }] : []),
-        ...(isApprover ? [{ path: '/creators', label: 'Creator Payments', icon: Users }] : []),
-        ...(isApprover ? [{ path: '/bulk-deals', label: 'Bulk Deals', icon: PackageCheck }] : []),
-        ...(isApprover ? [{ path: '/invoices', label: 'Create Invoice', icon: Receipt }] : []),
-        ...(isApprover ? [{ path: '/financials', label: 'Financials', icon: PieChart }] : []),
-        ...(isApprover ? [{ path: '/reports', label: 'Reports', icon: FileBarChart }] : []),
-        ...(isApprover ? [{ path: '/ad-allocation', label: 'Allocate Ads', icon: Megaphone }] : []),
-        ...(isApprover ? [{ path: '/artist-budgets', label: 'Artist Budgets', icon: Scale }] : []),
-        ...(isApprover ? [{ path: '/recording-budgets', label: 'Recording Budgets', icon: PiggyBank }] : []),
-        ...(isApprover ? [{ path: '/recoupments', label: 'Recoupments', icon: Wallet }] : []),
-        ...(isApprover ? [{ path: '/recoupments/planning', label: 'Recoup. Planning', icon: Layers }] : []),
-        ...(isAdmin ? [{ path: '/salary', label: 'Salary', icon: Banknote }] : []),
-      ],
-    },
-    {
-      label: 'Workspace',
-      items: [
-        ...(isAdmin ? [{ path: '/team', label: 'Team', icon: UserCheck }] : []),
-        ...(isAdmin ? [{ path: '/activity', label: 'Activity', icon: ScrollText }] : []),
-        // Not admin-gated: the catalog + artist checks serve every role, and the
-        // money-shaped sections are role-gated server-side (routes/flags.js).
-        { path: '/data-quality', label: 'Data Quality', icon: ShieldCheck },
-        { path: '/requests', label: 'Requests & feedback', icon: MessageSquarePlus },
-        { path: '/settings', label: 'Settings', icon: Settings },
-      ],
-    },
-  ]
-    .map(g => ({ ...g, items: g.items.filter(i => canView(i.path)) }))
+  // ── Usage ping ────────────────────────────────────────────────────────────
+  // Fire-and-forget record of which page was opened, feeding /usage. Three
+  // things make it safe to leave on:
+  //   · the PATHNAME only — `location.search` can carry invite tokens and
+  //     signed-URL signatures, and none of that belongs in an analytics table;
+  //   · consecutive-duplicate dedup here, plus a 30s per-user+path window on
+  //     the server, so a remount storm writes one row;
+  //   · skipped entirely while `impersonating` — a platform operator inside a
+  //     tenant, or a Superadmin viewing-as, would otherwise show up in that
+  //     workspace's "most active people" as traffic its own team never made.
+  const lastPingedPath = useRef(null)
+  useEffect(() => {
+    if (!user || impersonating) return
+    const path = location.pathname
+    if (lastPingedPath.current === path) return
+    lastPingedPath.current = path
+    api.post('/analytics/pageview', { path }).catch(() => {})
+  }, [location.pathname, user?.id, impersonating])
+
+  const navGroups = buildNavGroups({ isAdmin, isApprover, chatUnread, pendingApprovals })
+    // canView is the PERMISSION gate; hiddenPages is the person's own tidying of
+    // what's left. Order matters only in that a hidden item was never granted
+    // extra reach — everything here is still reachable by URL and by ⌘K.
+    .map(g => ({ ...g, items: g.items.filter(i => canView(i.path) && !hiddenPages.includes(i.path)) }))
     .filter(g => g.items.length > 0)
 
   return (

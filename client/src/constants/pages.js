@@ -1,6 +1,9 @@
 // Canonical page catalog for the permissions matrix + nav gating. Grouped the
 // way the sidebar is. `/settings` is intentionally omitted — it's self-service
-// (My Nav / Theme) and always viewable, never permission-gated.
+// (profile, password, appearance, sidebar) and always viewable, never
+// permission-gated. `/usage` is omitted for the opposite reason: its API is
+// requireAdmin, so granting it to a User would hand them a page that only 403s
+// — the same rule that keeps `/admin-docs` out of this list.
 export const PAGE_GROUPS = [
   { group: 'General', pages: [
     { path: '/', label: 'Dashboard' },

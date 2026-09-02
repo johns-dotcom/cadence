@@ -887,7 +887,7 @@ async function createEntry(req, res) {
       }
     } catch { /* no/invalid split — single entry stands */ }
 
-    await logActivity(req, status === 'approved' ? 'Added ledger entry' : 'Submitted invoice for approval', `${b.payee} — ${b.amount}`);
+    await logActivity(req, status === 'approved' ? 'Added ledger entry' : 'Submitted invoice for approval', `${b.payee} — ${b.amount}`, { entryPayee: b.payee });
     res.status(201).json({ success: true, data: { ...rows[0], split_parts: splitParts, pending: status !== 'approved' }, checklist_stored: checklistStored });
   } catch (error) {
     console.error('Create ledger entry error:', error);
@@ -1558,7 +1558,7 @@ router.post('/entries/:id/approve', async (req, res) => {
       [req.user.name, id, req.labelId, notesRider]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
-    await logActivity(req, 'Approved ledger entry', `${rows[0].payee} — ${rows[0].amount}`);
+    await logActivity(req, 'Approved ledger entry', `${rows[0].payee} — ${rows[0].amount}`, { entryPayee: rows[0].payee });
     bkAudit(req, rows[0].id, 'approved', `${rows[0].payee} — ${rows[0].currency} ${rows[0].amount} · checklist ${JSON.stringify(stamped)}`);
     const parts = await applyBreakdownSplits(req.labelId, rows[0], req.user.name);
     if (parts) { await logActivity(req, 'Applied vendor split on approve', `${rows[0].payee} → ${parts} artists`); bkAudit(req, rows[0].id, 'split', `auto-split into ${parts} artists on approve`); }
@@ -1621,7 +1621,7 @@ router.post('/entries/:id/reject', async (req, res) => {
         WHERE parent_id = $2 AND label_id = $3 AND status = 'pending' AND (deleted = false OR deleted IS NULL)`,
       [req.user.name, id, req.labelId]
     );
-    await logActivity(req, 'Rejected ledger entry', rows[0].payee);
+    await logActivity(req, 'Rejected ledger entry', rows[0].payee, { entryPayee: rows[0].payee });
     bkAudit(req, rows[0].id, 'rejected', reason);
     if (req.body.notify === true && rows[0].vendor_submitted) notifyVendor(req.labelId, rows[0], 'rejected', { reason });
     res.json({ success: true, data: rows[0] });
@@ -1812,7 +1812,7 @@ router.post('/entries/:id/mark-paid', async (req, res) => {
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found or not approved' });
     rows.forEach(r => stampFxRateAsync(r.id));
     const head = rows.find(r => String(r.id) === req.params.id) || rows[0];
-    await logActivity(req, 'Marked paid', `${head.payee} — ${head.amount}${rows.length > 1 ? ` (+${rows.length - 1} in family)` : ''}`);
+    await logActivity(req, 'Marked paid', `${head.payee} — ${head.amount}${rows.length > 1 ? ` (+${rows.length - 1} in family)` : ''}`, { entryPayee: head.payee });
     // Family total, never the head's slice — a split invoice's vendor billed ONE
     // number and the auto-notification must state that number (DEF-PAY-02).
     const famTotal = rows.reduce((a, r) => a + Number(r.amount || 0), 0);
@@ -2027,7 +2027,7 @@ router.post('/entries/:id/pay-with-proof', upload.single('proof'), async (req, r
       );
     }
     rows.forEach(r => stampFxRateAsync(r.id));
-    await logActivity(req, 'Paid via proof', `${rows[0]?.payee} — ${rows[0]?.amount}`);
+    await logActivity(req, 'Paid via proof', `${rows[0]?.payee} — ${rows[0]?.amount}`, { entryPayee: rows[0]?.payee });
     res.json({ success: true, data: { paid: rows.length, payment_date: date, reference: ref } });
   } catch (error) {
     console.error('Pay with proof error:', error);
@@ -2781,7 +2781,7 @@ router.post('/entries/:id/split', async (req, res) => {
       );
     }
     await client.query('COMMIT');
-    await logActivity(req, 'Split ledger entry', `${parent.payee} → ${splits.length} slices`);
+    await logActivity(req, 'Split ledger entry', `${parent.payee} → ${splits.length} slices`, { entryPayee: parent.payee });
     bkAudit(req, id, 'split', `${splits.length} slices`);
     res.json({ success: true, data: { slices: splits.length } });
   } catch (error) {
@@ -2839,7 +2839,7 @@ router.delete('/entries/:id/splits', async (req, res) => {
     );
     await client.query('DELETE FROM expenses WHERE parent_id = $1 AND label_id = $2', [id, req.labelId]);
     await client.query('COMMIT');
-    await logActivity(req, 'Unsplit ledger entry', parent.payee);
+    await logActivity(req, 'Unsplit ledger entry', parent.payee, { entryPayee: parent.payee });
     bkAudit(req, id, 'unsplit', `merged ${kids.length} slices`);
     res.json({ success: true, data: { removed: kids.length } });
   } catch (error) {
@@ -3339,7 +3339,7 @@ router.post('/entries/:id/rush', async (req, res) => {
       rush_by: req.user.name, rush_at: new Date(), on_hold: false, hold_reason: null, hold_by: null, hold_at: null,
     });
     const { rows } = await pool.query('SELECT * FROM expenses WHERE id = $1 AND label_id = $2', [id, req.labelId]);
-    await logActivity(req, 'Flagged rush', `${rows[0].payee} — ${rows[0].amount}`);
+    await logActivity(req, 'Flagged rush', `${rows[0].payee} — ${rows[0].amount}`, { entryPayee: rows[0].payee });
     bkAudit(req, id, 'rush', req.body.reason ? String(req.body.reason).slice(0, 200) : null);
     res.json({ success: true, data: rows[0] });
   } catch (error) {
@@ -3405,7 +3405,7 @@ router.post('/entries/:id/hold', async (req, res) => {
       rush: false, rush_reason: null, rush_needed_by: null, rush_by: null, rush_at: null,
     });
     const { rows } = await pool.query('SELECT * FROM expenses WHERE id = $1 AND label_id = $2', [id, req.labelId]);
-    await logActivity(req, 'Put payment on hold', `${rows[0].payee} — ${rows[0].amount}`);
+    await logActivity(req, 'Put payment on hold', `${rows[0].payee} — ${rows[0].amount}`, { entryPayee: rows[0].payee });
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Hold error:', error);
@@ -3807,7 +3807,7 @@ async function sendVendorConfirmation(req, ids, override = {}) {
     [req.labelId, rows.map(r => r.id)]
   );
   rows.forEach(r => bkAudit(req, r.id, 'confirmation_sent', `to ${to}`));
-  await logActivity(req, 'Sent payment confirmation', `${head.payee} — ${rows.length} invoice(s)`);
+  await logActivity(req, 'Sent payment confirmation', `${head.payee} — ${rows.length} invoice(s)`, { entryPayee: head.payee });
   return { status: 200, body: { success: true, data: { sent: rows.length } } };
 }
 
@@ -4123,7 +4123,7 @@ router.post('/entries/:id/void', requireAdmin, async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found' });
     const head = rows.find(r => r.id === id) || rows[0];
-    await logActivity(req, 'Voided ledger entry', `${head.payee} — ${head.amount}${rows.length > 1 ? ` (+${rows.length - 1} in family)` : ''}`);
+    await logActivity(req, 'Voided ledger entry', `${head.payee} — ${head.amount}${rows.length > 1 ? ` (+${rows.length - 1} in family)` : ''}`, { entryPayee: head.payee });
     bkAudit(req, id, 'voided', rows.length > 1 ? `family of ${rows.length}` : null);
     res.json({ success: true, data: head });
   } catch (error) {

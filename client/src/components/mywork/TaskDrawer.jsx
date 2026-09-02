@@ -13,14 +13,17 @@ import Button from '../ui/Button'
 import ConfirmDialog from '../ui/ConfirmDialog'
 import useEscapeStack from '../../hooks/useEscapeStack'
 import useFocusTrap from '../../hooks/useFocusTrap'
-import { TASK_STATUSES, PRIORITIES } from '../../constants'
+import { TASK_STATUSES, TASK_PRIORITIES } from '../../constants'
 import { formatDate } from '../../utils/dates'
 import { categoriesIn, dueLabel } from './taskFields'
 
-export default function TaskDrawer({ task, tasks, members, canEdit, canAssign, canUnassign = false, onClose, onPatch, onDelete }) {
+const NOTES_DEBOUNCE_MS = 600
+
+export default function TaskDrawer({ task, tasks, members, releases = [], canEdit, canAssign, canUnassign = false, onClose, onPatch, onDelete }) {
   const [notes, setNotes] = useState('')
   const [notesDirty, setNotesDirty] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const notesTimer = useRef(null)
 
   // Notes commit on blur, but closing the drawer (or switching task) fires no blur,
   // and this component stays MOUNTED across a close — `task` just goes null — so an
@@ -36,7 +39,12 @@ export default function TaskDrawer({ task, tasks, members, canEdit, canAssign, c
   useEffect(() => {
     setNotes(task?.notes || '')
     setNotesDirty(false)
+    // Any debounce still pending belongs to the PREVIOUS task; the flush below
+    // covers it, so cancel the timer rather than letting it fire with the new id
+    // in scope.
+    clearTimeout(notesTimer.current)
     return () => {
+      clearTimeout(notesTimer.current)
       const p = pending.current
       if (p.dirty && p.id != null) onPatch(p.id, { notes: p.notes.trim() || null })
     }
@@ -74,15 +82,30 @@ export default function TaskDrawer({ task, tasks, members, canEdit, canAssign, c
   }
 
   const saveNotes = () => {
+    clearTimeout(notesTimer.current)
     if (!notesDirty) return
     setNotesDirty(false)
     onPatch(task.id, { notes: notes.trim() || null })
+  }
+
+  // Autosave while typing. Blur-only meant closing the tab mid-paragraph lost the
+  // draft — the drawer's own flush-on-close can't fire if the document goes away.
+  // The id is CAPTURED at schedule time, so a save that lands after the drawer has
+  // moved on still writes to the record it was typed into.
+  const scheduleNotesSave = (value) => {
+    const id = task.id
+    clearTimeout(notesTimer.current)
+    notesTimer.current = setTimeout(() => {
+      setNotesDirty(false)
+      onPatch(id, { notes: value.trim() || null })
+    }, NOTES_DEBOUNCE_MS)
   }
 
   const remove = () => {
     setConfirmDelete(false)
     // Drop the pending notes draft first: the [task?.id] cleanup below would
     // otherwise PATCH notes onto the row we just deleted and toast "Save failed".
+    clearTimeout(notesTimer.current)
     pending.current = { id: null, notes: '', dirty: false }
     setNotesDirty(false)
     onDelete(task.id)
@@ -130,7 +153,7 @@ export default function TaskDrawer({ task, tasks, members, canEdit, canAssign, c
             <div>
               <label className="label">Priority</label>
               <select className={field} value={task.priority} onChange={set('priority')} disabled={!canEdit}>
-                {PRIORITIES.map(p => <option key={p}>{p}</option>)}
+                {TASK_PRIORITIES.map(p => <option key={p}>{p}</option>)}
               </select>
             </div>
             <div>
@@ -167,21 +190,46 @@ export default function TaskDrawer({ task, tasks, members, canEdit, canAssign, c
               rows={5}
               value={notes}
               disabled={!canEdit}
-              onChange={e => { setNotes(e.target.value); setNotesDirty(true) }}
+              onChange={e => { setNotes(e.target.value); setNotesDirty(true); scheduleNotesSave(e.target.value) }}
               onBlur={saveNotes}
               placeholder="Longer detail, links, context…"
             />
             {notesDirty && (
               <div className="flex items-center gap-2 mt-1">
                 <Button size="sm" variant="secondary" onClick={saveNotes}>Save notes</Button>
-                <span className="text-[11px] text-warning">Unsaved</span>
+                <span className="text-[11px] text-warning">Saving…</span>
               </div>
             )}
           </div>
 
+          {/* The link was readonly here even though PATCH has always accepted
+              release_id, so a task attached to the wrong release could never be
+              moved and one attached to none could never be attached. */}
+          <div>
+            <label className="label">Release</label>
+            <select
+              className={field}
+              value={task.release_id ?? ''}
+              disabled={!canEdit}
+              onChange={e => onPatch(task.id, { release_id: e.target.value ? Number(e.target.value) : null })}
+            >
+              <option value="">No release</option>
+              {/* The task's current release is guaranteed present even if it falls
+                  outside the fetched window (limit, or a scope change) — otherwise
+                  the select would silently show "No release" and the next save
+                  would clear a real link. */}
+              {task.release_id && !releases.some(r => r.id === task.release_id) && (
+                <option value={task.release_id}>{task.release_name || `Release #${task.release_id}`}</option>
+              )}
+              {releases.map(r => (
+                <option key={r.id} value={r.id}>{r.project_name}{r.artist_name ? ` · ${r.artist_name}` : ''}</option>
+              ))}
+            </select>
+          </div>
+
           <div className="text-[11px] text-ink-muted space-y-0.5">
             {task.release_name && (
-              <p>Release: <Link to={`/releases/${task.release_id}`} className="text-brand-ink hover:underline">{task.release_name}</Link></p>
+              <p>Open: <Link to={`/releases/${task.release_id}`} className="text-brand-ink hover:underline">{task.release_name}</Link></p>
             )}
             {task.assigner_name && <p>Assigned by {task.assigner_name}</p>}
             {task.completed_at && <p>Completed {formatDate(task.completed_at)}</p>}

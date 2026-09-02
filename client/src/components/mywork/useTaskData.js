@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import api from '../../api'
+import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
 
 const UNDO_DEPTH = 20
@@ -44,11 +45,24 @@ export function midpointFor(tasks, beforeId, afterId) {
 
 export default function useTaskData(surface = 'mine') {
   const { toast } = useToast()
+  // Impersonation and "enter workspace" swap the acting user WITHOUT unmounting the
+  // route, so a load keyed only on `surface` left the previous person's tasks on
+  // screen — editable, and 403ing on save.
+  const { user } = useAuth()
+  const actingUserId = user?.id
   const [tasks, setTasks] = useState([])
   const [members, setMembers] = useState([])
+  const [releases, setReleases] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [undoStack, setUndoStack] = useState([])
+  // The assignment notification the server PREPARED but did not send. Assignment
+  // email used to leave silently, fire-and-forget: no preview, no CC, no way to
+  // skip it, and no way to know whether it went. Holding it here lets TaskSurface
+  // raise EmailPreviewModal — the same review-before-send path every other
+  // outbound email in the app already takes.
+  const [pendingEmail, setPendingEmail] = useState(null)
+  const clearPendingEmail = useCallback(() => setPendingEmail(null), [])
   // Kept in a ref so mutators don't need `tasks` in their dep list (which would
   // rebuild every callback on each keystroke of an inline edit).
   const tasksRef = useRef([])
@@ -61,7 +75,7 @@ export default function useTaskData(surface = 'mine') {
       .then(res => { setTasks(res.data.data || []); setError(null) })
       .catch(err => setError(err.response?.data?.error || 'Failed to load tasks'))
       .finally(() => setLoading(false))
-  }, [surface])
+  }, [surface, actingUserId])
 
   useEffect(() => { load() }, [load])
 
@@ -70,7 +84,13 @@ export default function useTaskData(surface = 'mine') {
   // returns only name/email/role/department, already visible app-wide.
   useEffect(() => {
     api.get('/team').then(res => setMembers(res.data.data || [])).catch(() => {})
-  }, [])
+    // Options for the drawer's release picker. `in_catalog=any&archived=any` opts
+    // OUT of GET /releases' pipeline default — a task can legitimately hang off a
+    // catalogued or archived release, and the default scope would silently drop
+    // those from the list while the task still displayed one.
+    api.get('/releases', { params: { in_catalog: 'any', archived: 'any', limit: 500 } })
+      .then(res => setReleases(res.data.data || [])).catch(() => {})
+  }, [actingUserId])
 
   const applyLocal = useCallback((id, fields) => {
     setTasks(ts => ts.map(t => (t.id === id ? { ...t, ...fields } : t)))
@@ -84,8 +104,13 @@ export default function useTaskData(surface = 'mine') {
       setUndoStack(s => [...s.slice(-(UNDO_DEPTH - 1)), { id, fields: pick(prev, Object.keys(fields)) }])
     }
     try {
-      const { data } = await api.patch(`/tasks/${id}`, fields)
+      // notify:'preview' makes the server PREPARE the assignment email and hand it
+      // back instead of sending it. Only on a reassignment — every other field
+      // patch has nothing to notify about.
+      const body = 'user_id' in fields ? { ...fields, notify: 'preview' } : fields
+      const { data } = await api.patch(`/tasks/${id}`, body)
       if (data?.data) applyLocal(id, data.data)
+      if (data?.pending_email) setPendingEmail(data.pending_email)
       if (!silent) toast('Saved')
       return true
     } catch (err) {
@@ -105,10 +130,12 @@ export default function useTaskData(surface = 'mine') {
 
   const createTask = useCallback(async (form) => {
     try {
-      const { data } = await api.post('/tasks', form)
+      const body = form.user_id ? { ...form, notify: 'preview' } : form
+      const { data } = await api.post('/tasks', body)
       // POST returns RETURNING *, so prepend rather than refetching. It also comes
       // back at the top of the manual order, matching where it lands here.
       if (data?.data) setTasks(ts => [data.data, ...ts])
+      if (data?.pending_email) setPendingEmail(data.pending_email)
       toast('Task added')
       return data?.data || null
     } catch (err) {
@@ -186,8 +213,9 @@ export default function useTaskData(surface = 'mine') {
   }, [applyLocal, load, toast])
 
   return {
-    tasks, members, loading, error, load,
+    tasks, members, releases, loading, error, load,
     createTask, patchTask, bulkPatch, reorderTask, removeTask,
     undoLast, undoDepth: undoStack.length,
+    pendingEmail, clearPendingEmail,
   }
 }

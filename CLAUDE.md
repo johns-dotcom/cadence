@@ -687,7 +687,8 @@ PATCH allow-list, toasts, signed URLs).
   need R2 (dev box has none — uploadFile throws, same as artists.js).
 
 - **M5 "Usage analytics" was never built** — no `page_views`, no `/usage`, no
-  `/api/analytics`. The claim above is false; treat as an open gap.
+  `/api/analytics`. The claim above was false. **Now built for real** — see
+  "Phase 8 — activity + settings + analytics" below.
 - **M3 "Invoice Search"**: `/invoices` is the outbound invoice CREATOR; the
   search surface now exists at `/invoice-search` (see "Phase 3 — bk-invoices
   port (2026-08-31)").
@@ -2574,7 +2575,8 @@ diverge from every other table.
 ### Milestone 5 — Collaboration & polish (§7.6, §9, §10)
 - Campaign chat / review inbox / @mentions (persisted `user_mentions`, per-item mark-read).
 - **Usage analytics**: `page_views` table + Layout route-ping + in-workspace Analytics page
-  (range picker, stat cards, daily chart, most-used pages, active users). — MISSING.
+  (range picker, stat cards, daily chart, most-used pages, active users). — **BUILT**
+  (Phase 8 analytics pass; route is `/usage`, operator counterpart is `/analytics`).
 - **Internal requests** feature (§9.9) — MISSING.
 - **Mobile kit** (§10): `useIsMobile`, `BottomSheet`, `FilterSheet`, `FAB`, permission-
   filtered BottomNav (<640px, safe-area), edge-swipe sidebar, Ledger+Payments card lists
@@ -3330,6 +3332,346 @@ PDF, 5/5 plus bold runs in the DOCX). `jspdf` imported by NAMED export
 Full-export ships `admin_docs.csv`.
 
 ---
+
+## Phase 8 — team + my work + salary (2026-09-01)
+
+Parity pass over the **people surfaces**: `/team`, a new `/team/:id`, My Work, and
+`/salary`. Specs: `_audit/pages/{team,missing--team-member,my-work,salary}.md`.
+Zero new deps. One new table (`salary_payment_history`).
+
+### The bug that mattered most (pre-existing, found live)
+**Every status change on a task 500'd.** `PATCH /tasks/:id` and `PATCH /tasks/bulk`
+both reused the `status` placeholder inside the `completed_at` CASE, so Postgres had
+to deduce ONE type for it from `status = $n` (character varying, from the column)
+and `$n = 'Done'` (text, from the literal). It refuses: **42P08 "inconsistent types
+deduced for parameter"**. Marking a task Done from the drawer, a board drag into
+Done, and the whole bulk bar were all dead. Casting the parameter does NOT fix it
+(it constrains the deduction the other way) — the value is now **bound a second
+time** so the placeholder facing the literal has one unambiguous type.
+Sourcemaps can't see this class of bug and neither can a build; only running it does.
+
+### Team (`routes/team.js`, `pages/Team.jsx`)
+- **P1 escalation guards** — `POST /team` and `PATCH /:id` were plain `requireAdmin`,
+  so an Admin could invite a Superadmin, promote anyone, edit a Superadmin, or demote
+  the last one. `checkEscalation()` now enforces the three rules DELETE has had since
+  M1 (`lib/userDelete.js`): only a Superadmin grants an admin-tier role, only a
+  Superadmin edits an admin-tier member, the last Superadmin can't be demoted. PATCH
+  also **excludes platform operators** — nothing linked to them, but the endpoint
+  could reach one, which is the lockout the operator hardening exists to prevent.
+- **P1 velocity** — `GET /team/velocity` (admin): per-member totals/shipped/upcoming,
+  30- and 90-day counts, avg checklist, on-time rate (`null` ≠ 0% — "nothing shipped"
+  is not "worst on the team"), 12 month buckets keyed `YYYY-MM` (string compare, so a
+  release can't TZ-shift across a month edge). `components/TeamVelocity.jsx` renders 4
+  stat cards, a 9-col table with CSS sparklines, and recently-shipped cards.
+- **P1 rep-visibility editor** — `GET/PUT /settings/visible-reps/:userId` had shipped
+  and the ledger enforced it, but **zero client callers**: restricting someone needed
+  a DB write. `components/VisibleRepsManager.jsx` (Settings → Team, under RepsManager).
+  Load-bearing: **empty set = SEE EVERY REP**, so a full selection is stored as `[]`
+  and the unrestricted state is stated on screen — an admin who ticks nothing has
+  granted everything, not revoked it.
+- **P2 team visibility** — `/team` left `AdminRoute`. It is the workspace's only
+  people directory and gating it meant a plain User could not look a colleague up.
+  Read is open (server GET was always auth-only); every mutation stays admin-tier and
+  the page hides controls it knows will 403. Nav item ungated (still `canView`-filtered).
+- **P2 hierarchy_level** — was orphaned: nothing displayed or set it, everyone landed
+  at 99, roster ordering was frozen flat. Now a Seniority select on the invite form and
+  inline on each row, with the **EXEC** badge back at `<= 2`.
+- **P3 roster rollup** — `GET /team` gains per-member `open/overdue/in_progress/done/
+  total_tasks` computed in SQL (only the server can see tasks the caller isn't scoped
+  to). Drives a done-% bar + count pills per row, the "N members · M active tasks"
+  subtitle, and department tabs. Additive columns — existing `/team` consumers unaffected.
+- **P3 identity styling** — avatars (red-tinted when the person has overdue work),
+  YOU/EXEC badges, Superadmin back to violet.
+- **Skipped**: request-vs-assign `task_type` (P2) — superseded by the documented
+  role/department model; reintroducing upward "requests" would fight `canAssignTo`.
+  The `@`-mention composer + task hotkeys on /team (P3) relocated to /team-work with
+  the rest of the task surface.
+
+### Team member detail (`GET /team/:id` + `pages/TeamMember.jsx`) — the P1 port
+`(\d+)`-constrained and declared last, after `/velocity` and `/workload`. Returns the
+member, assigned unarchived releases with SQL-computed checklist completion, their
+tasks, and 30 activity rows. **[INT] reconciled** as the spec asked: boom's rule was
+admin-or-self → everything, everyone else → delegated only. Here `department` is a
+permission boundary, so a **lead of that person's department** is added as a third
+full-visibility case — the same widening `canMutateTask` already makes, and without it
+a lead could edit a teammate's task on Team Work but not see it on their profile. A
+lead still never looks at an Admin/Superadmin's tasks. Everyone else keeps boom's
+privacy floor (`assigned_by IS NOT NULL AND assigned_by <> user_id`), and the response
+carries `tasks_filtered` so the page **says the list is partial** rather than implying
+three tasks where there are thirty. Page: profile header, 4 stat tiles, 14-day risk
+banner, Releases/Tasks/Activity tabs.
+
+### My Work — judged against "deliberately beyond boom"
+Built: **'Urgent' priority** as its own `TASK_PRIORITIES` vocabulary (NOT added to
+`PRIORITIES` — releases and deals validate against that list server-side and would
+have inherited an option their routes 400); priority colours un-shift with it
+(Urgent red / High amber / Medium blue / Low gray — while the scale topped out at
+High, an ordinary task read one level louder than it was). **One-click done toggle**
+on every card plus hover **Start** and a **one-day snooze** (relative to today, not to
+the old due date — snoozing a task 5 days late must not mean "make it 4 days late").
+**Waiting-on-you rail** ungated and given content: it showed nothing at all to a plain
+User, though overdue counts, unread @mentions and due reminders are nobody's privilege;
+now mentions list with actor + snippet + mark-read, reminders tile, and a
+**"Reschedule all → today"** rollover through one bulk PATCH. **My Releases** rail +
+14-day risk banner (`GET /releases?assigned_to=me|<id>`, new filter; `in_catalog=any`
+opts out of the pipeline default). **Greeting + status pills** (pills live in
+TaskSurface, not the page, so they read the same array and the same `dueBucketOf` as
+the groups below them). **Assignment email preview** — `notify:'preview'` makes the
+server PREPARE the `task_assigned` payload instead of sending it, and `EmailPreviewModal`
+raises; default stays fire-and-forget so non-UI callers are unchanged. **Release select**
+in the drawer (PATCH always accepted `release_id`; no UI could set it). **Notes autosave**
+debounced 600ms with the id captured at schedule time. **Manual-sort fallback** now
+orders never-dragged rows by due date, matching the server's `sort_order NULLS LAST,
+due_date`. **Category tints** hashed from the name (free text, so a fixed map can't
+work). **`?new=task`** consumed by TaskSurface; the FAB's "New task" was a plain
+navigation that created nothing. **Refetch on acting-user change** (impersonation swaps
+the user without unmounting the route).
+
+**Quick-add shorthand** — `!high` / `#A&R` anywhere, dates only in the **trailing run**
+of tokens. That scope is the whole safety of the feature: date words are ordinary
+English, and a parser that grabbed them anywhere turns "ship the Monday newsletter"
+into a task called "ship the newsletter" due next Monday. Verified: that exact string
+parses untouched while "call the distributor friday" resolves. What it parsed is echoed
+live under the input and the mirrored fields lock — a feature that REWRITES what
+somebody typed must never do it invisibly.
+
+**Skipped as superseded**: **pins** (deliberate — they'd fight `sort_order`);
+**instant-create** (form-first is the documented quick-add); **@-mention hand-over in
+the title** (the spec itself calls it partially superseded — assignment is lead-only
+and select-driven now); the **To Do Today tab** as a tab (its live parts — Start,
+snooze, rollover, the cross-app strip — were rebuilt where they work in ALL five views
+instead of one, which the preset Today/Overdue views already slice).
+
+### Salary
+Server: **`salary_payment_history`** (both `marked_paid` and `marked_unpaid`) — history
+was derived from `salary_payments`, whose upsert nulls `paid_at`, so **unmarking erased
+the record it was meant to prove** and an unmark could never be shown at all; history is
+now month-scoped; `amount = EXCLUDED.amount` on re-mark (a raise left the stored paid
+figure stale); **`DELETE /employees/:id` soft-deletes** (`salary_payments` and the new
+history table both cascade off the row — a hard delete would erase January's payment
+because somebody left in March); PATCH/POST field validation (blank name, negative
+amount, unknown currency); roster sorts department → amount DESC → name.
+Client: stat cards, **department-grouped cards with per-group subtotals**, inline edit,
+remove with ConfirmDialog, "This month" reset, paid-date on the row, per-row in-flight
+disable (a double-click fired two PUTs), Skeletons, and history rows with **opposite-
+coloured action badges** — Paid and Unpaid are opposite facts and one neutral row for
+both is worse than none. **Per-currency totals**: employees carry their own currency, so
+one summed "$12,400" was a lie the moment two currencies existed; totals are computed
+and rendered per currency and `Intl` formats them (EUR/GBP/JPY place and shape their
+symbol differently; JPY has no minor unit). Department became a **datalist, not a
+select** — payroll employees are not app users, so `DEPARTMENTS` is a suggestion here,
+not the permission boundary it is on /team.
+Skipped: payment `notes` (no column, no consumer in either app).
+
+### Also
+`RELEASE_CHECKLIST_COLUMNS` moved into `lib/constants.js` and `releases.js` now imports
+it, so completion has one denominator. `GET /team/workload` (releases-by-assignee with
+completion) feeds the Workload bars a second dimension the task payload cannot contain
+— someone carrying four releases and two tasks read "available" next to someone with
+nine trivial tasks; load = open tasks + releases × 2, boom's own weight.
+`db.js` TENANT_TABLES and full-export both gained `salary_payment_history`.
+
+**Verification**: client build clean; `node --check` on every touched server file;
+**finance fixtures 140/140**. Live on :3001 against real second/third/fourth users —
+an Admin (Alice/Operations), two Approvers in DIFFERENT departments (Mara/Marketing,
+Fiona/Finance), two Users, and a Superadmin owner in a separate workspace. Proven, not
+reasoned about: the escalation hole existed before the fix (an Admin really did promote
+a User to Superadmin and invite a second one) and 403s after; only-Superadmin-edits-
+admin-tier; last-Superadmin demote 400s in a workspace with one, succeeds once there
+are two; `teamFilter` gives the Marketing lead 3 tasks, the Finance lead 0 and a plain
+User a 403; `canMutateTask` lets the Marketing lead edit Milo's task and refuses the
+Finance lead; `canAssignTo` refuses cross-department; unassign is admin-only; bulk
+reports 0 of 3 for out-of-scope ids. **Member-detail visibility exercised from all five
+roles**: self, dept lead and Admin see all 3 tasks (`tasks_filtered:false`); the
+other-department Approver and the plain User see only the 2 delegated ones
+(`tasks_filtered:true`). Operator and cross-tenant ids 404. `/team/velocity` 403s for an
+Approver. Salary: mark → unmark → both rows survive in history, month scoping works,
+a raise re-stamps the paid amount, soft delete keeps the history, blank-name and
+negative-amount 400. Task status verified end to end after the 42P08 fix (single, bulk,
+with-other-fields, stamp set and cleared). `parseQuickAdd` and the manual-sort fallback
+exercised as pure functions; deals still reject `Urgent`, proving the vocabularies
+stayed separate. Dev server left running.
+
+
+## Phase 8 — activity + settings + analytics (2026-09-01)
+
+Closing pass over the **workspace-administration surfaces**: `/activity`, `/settings`,
+and the in-workspace usage analytics that M5 claimed and never built. Specs:
+`_audit/pages/{activity,settings,missing--analytics}.md`. Zero new deps. One new table
+(`page_views`), two new `activity_log` columns.
+
+### The bug that mattered most (found live, same family as Phase 8's 42P08)
+The page-view ping wrote **nothing**, and said `{"success":true}` while doing it. The
+dedup INSERT reused one placeholder in `SELECT $1,$2,$3` and in `WHERE path = $3`, so
+Postgres deduced `text` from the bare select list and `character varying` from the
+column comparison → **42P08 "inconsistent types deduced for parameter"**. The route
+swallows errors by design (analytics must never break navigation), so the only symptom
+was an analytics page that stayed empty forever. Every value is now bound TWICE and
+cast. **The landmine already in this file was right and still isn't enough on its own:
+a swallowed error means the 42P08 never surfaces — only checking that the row landed
+does.**
+
+### Activity (`routes/activity.js`, `pages/Activity.jsx`) — a genuine regression, restored
+A 729-line audit browser had become a 46-line unfiltered 100-row table, and the server
+had dropped every filter, pagination and the `/users` endpoint.
+- **P1 filters + `/activity/users`** — user, date range (Today/7d/30d/All + custom),
+  free-text search, department, HTTP method, sort, and category buckets, all server-side
+  and all label-scoped (the user JOIN is label-constrained so a filter can't reach across
+  tenants). **Buckets are ILIKE patterns, not boom's `action IN (...)` list**: boom's ~40
+  action strings were a closed set; cadence logs 150+ and gains more every phase, so an
+  IN-list would stop matching the moment somebody wrote a new phrase — and would look
+  like it worked while hiding events. Search also covers `detail` and `entry_payee`.
+- **P1 pagination + total** — LIMIT/OFFSET plus a parallel COUNT over the same JOIN, a
+  7-page numbered window, and a live "N events matching filters" subtitle. `ORDER BY
+  created_at, id` so two events in the same second can't swap between pages.
+- **P2 `entry_id` / `entry_payee`** — added to the schema and the writer. `entry_id` is
+  **derived from the endpoint inside `logActivity`** (`/api/ledger/1234/approve` → 1234),
+  which is what made it free across ~100 existing call sites without touching one of
+  them; `entry_payee` can't be derived, so it's an optional 4th `opts` arg wired into the
+  11 ledger sites that already hold a payee (approve/reject/pay/void/rush/hold/split/…).
+  Rows also carry the actor's `role` and `department` again.
+- **P2 `humanizeAction`** — inverted from boom's. Cadence's log phrases are already
+  past-tense English, so a verb-prefix pass-through is the PRIMARY path and the ~27-rule
+  endpoint map is the fallback; an unmapped phrase is shown rather than replaced with
+  "Activity".
+- **P2 detail formatting** — `{field:{from,to}}` renders as `Changed amount from "X" to
+  "Y"` via FIELD_LABELS, `{field:value}` as pairs, plain text as-is, else `Entry #id`.
+- **P2 category chips + P2 user cell** — 8 categories with icon + tint, avatar initial,
+  and a department badge that **deep-filters the feed** on click. Per-row classification
+  is a PRECEDENCE-ordered client classifier, deliberately narrower than the server's
+  inclusive filter: "Set artist budget" filters under both Artists and Finance but can
+  only wear one chip, and it reads as Finance.
+- **P3s**: two-line time cell (absolute + relative), Refresh with a silent-refetch
+  spinner, an error banner with Retry (the old page swallowed 500s into "No activity
+  recorded yet"), the `s` sort hotkey, the Last-7d default window, the "Activity History"
+  title, and Skeleton/iconed-empty states. The filtered-empty state offers Clear filters.
+- `/activity` moved `AdminRoute` → **`StrictAdminRoute`**: the server is `requireAdmin`,
+  so admitting Approvers only ever bought them a 403 banner.
+- **Date presets use a local-calendar day string, not `toISOString()`** — a UTC
+  conversion after 5pm PT asks for tomorrow and silently drops today's events.
+
+### Settings
+- **S1 full export, rebuilt as a STREAM.** `lib/zip.js` gained `createZipStream(out, ts)`
+  — a ZIP is [local header + name + data] runs followed by a central directory, so with
+  STORE there is no compression state and the format streams natively; only the central
+  directory stays in memory, and backpressure is respected. That's what made it safe to
+  put the **uploaded documents** back in (invoices, receipts, payment proofs, W9s,
+  attachments, one at a time from R2 with the inline base64 fallback — and a `data:` URL
+  prefix stripped, since handing that to `Buffer.from(…, 'base64')` yields silent
+  garbage, not an error). Row ids prefix every filename because **a ZIP with duplicate
+  names loses files silently on extract** and twelve vendors all send "invoice.pdf". Also
+  **3 formatted Excel workbooks** (exceljs, already a dep) built from the SAME rows the
+  CSVs came from, so the two copies can't disagree. README manifest lists per-section
+  counts AND everything that couldn't be retrieved. On mid-stream failure the socket is
+  destroyed — headers are already out, and the alternative is a truncated archive that
+  looks valid.
+- **S2 the permission model's inverse state.** Row-absence means unrestricted
+  (`canView` returns true when `pagePermissions` is null), so saving `[]` is the server's
+  spelling of "grant everything" — the exact opposite of an admin who has just unticked
+  every box. Rather than flip the default (which would lock every existing user out of
+  every workspace on deploy), **access level is now an explicit two-way choice on
+  screen**, and the restricted branch never sends a bare `[]`: nothing ticked saves the
+  `['/']` Dashboard floor, and the button says `Save — Dashboard only` before it's
+  pressed. Default-open for a brand-new User is left as the documented model.
+- **S3 My Nav**, rebuilt as Settings → Account → **Sidebar**. `utils/navPrefs.js` holds
+  the per-user localStorage list plus a custom event — **localStorage's own `storage`
+  event only fires in OTHER tabs**, so without it the sidebar in this one keeps the stale
+  list until reload. `/settings` is never hideable (hiding the page that owns "Show all"
+  leaves no way back). To keep one definition, `Layout.jsx` now exports a pure
+  **`buildNavGroups({isAdmin,isApprover,…})`** that both the sidebar and the hide-list
+  read; two copies would drift and offer toggles for rows that aren't there. This is a
+  view preference, never a permission — everything hidden is still reachable by URL and ⌘K.
+- **S4 Permissions Overview** — the no-selection state is a table of every member with
+  role, department, page count and Configure. Counts are fetched **sequentially**: a
+  roster is tens of people and a parallel burst against the general rate limiter is a
+  worse trade than a second of latency on a panel nobody is blocked by.
+- **S5 reps** — POST **reactivates** a deactivated name instead of answering "already
+  exists" about a struck-through row the admin can't act on; DELETE is now **guarded**:
+  `expenses.rep` / `deals.ar_rep` / `user_visible_reps.rep_name` store the NAME, not a
+  FK, so deleting a used rep doesn't orphan a join — it makes the name unmanageable
+  forever. A referenced rep is **deactivated instead** and the route answers 409 +
+  `deactivated:true`, which the client surfaces as a result, not an error.
+- **S6 export UX** — a confirm modal that states what's inside (N CSVs / M rows, the
+  workbooks, the document count), a confidentiality banner, an include-documents toggle
+  (`?files=0` for data-only), a size warning past 200 files, and a "Preparing your
+  archive…" state. Backed by `GET /full-export/summary`, which **COUNTs over the same SQL
+  rather than running it** — the dialog must not cost as much as the export it's asking
+  permission for. The client still uses a blob (downloads carry the Authorization header,
+  so an anchor can't authenticate); the multi-GB problem was moved off the server, which
+  is the half that was actually unbounded.
+- **S7** full-export regated **Superadmin-only**. **S9** only a Superadmin may write an
+  admin-tier account's allow-list (+ page-shape and count validation on both the
+  permissions PUT and templates). **S10** template names ≤60 chars, `/`-paths, and
+  **empty templates refused** — an empty one "applies" nothing, which under the clear-all
+  convention reads as grant-everything. **S12** theme now persists: `ThemeContext` paints
+  from localStorage first (a server round trip here is a white flash on every dark-mode
+  load), then adopts the account's stored value unless the person has already toggled in
+  this session. **S13** a Light/Dark picker with an Active badge is back on Settings.
+- **S11 — the bank-accounts finding.** The audit said no endpoint and no UI existed. Half
+  of that has since changed: `GET/PUT /api/bank-statements/accounts` **does** exist and
+  the GET is consumed by the statement-upload picker — but the **PUT had zero callers**,
+  so the list was still unmanageable. New `components/BankAccountsManager.jsx` (Settings →
+  Finance). The PUT was hardened first, because this is not cosmetic: an account's `key`
+  is what `bank_statements.account` stores and what `lib/bankEvidence.js` turns into
+  per-account payment-method compatibility SQL. **Removing an in-use key doesn't fail
+  loudly — those statements quietly fall through to "any method is compatible", weakening
+  every match decision made against them**, so it's now refused with the statement count.
+  Duplicate keys are refused too (the second CASE arm is unreachable, an order-dependent
+  silent rule), and `methods: []` normalizes to `null` because an empty array would match
+  NOTHING while reading as "no restriction".
+- **Skipped**: S8's remaining depth is done except preset descriptions as visible prose
+  (they're `title` tooltips); **S14** (`n` = add user) is superseded — the Users tab moved
+  to `/team` in an earlier phase, so there is no add-user form on Settings to open.
+
+### Usage analytics (the P1 that was never built)
+`page_views` (label-scoped, 3 indexes, in `db.js` TENANT_TABLES), `routes/analytics.js`,
+a `Layout` route-ping, a 180-day retention sweep at boot + daily, and `/usage`
+(StrictAdminRoute: range picker, 4 stat cards, daily area chart, most-used pages with
+proportional bars, most-active people merging views + logins + actions by name).
+`user_login_logs` and `activity_log` already existed and were read by nothing.
+- **Ping hygiene, all three deliberate**: the **pathname only** — `location.search` can
+  carry invite tokens and signed-URL signatures and none of that belongs in a table
+  admins read; **consecutive-duplicate dedup client-side plus a 30-second per-user+path
+  window server-side**, so a remount storm writes one row; and **skipped entirely while
+  `impersonating`** — a platform operator inside a tenant, or a Superadmin viewing-as,
+  would otherwise appear in that workspace's "most active people" as traffic its own team
+  never made. Stated on the page so the number isn't quietly wrong.
+- Numeric path segments normalize to `/:id` before insert so families roll up. The route
+  **always answers success**, and the admin summary **degrades to an empty payload on
+  42P01** rather than 500ing, so a container running ahead of its migration doesn't break
+  navigation or the page.
+- full-export gained `usage_by_page.csv` as a per-page **rollup, not the raw rows** —
+  exporting the raw table would hand out a permanent copy of the per-person browsing
+  history that the 180-day retention exists to expire.
+- **P2 operator analytics — built, not deleted.** `GET /api/platform/analytics` had zero
+  consumers. New `pages/PlatformAnalytics.jsx` + a nav item in `PlatformLayout`: 4 stat
+  cards, a 12-month growth bar chart (months **filled**, so a zero-signup month shows as
+  a zero bar instead of vanishing and making growth look smooth), and busiest-workspace /
+  largest-catalog rankings. It stays a different question from `/usage` — tenant growth,
+  never per-person page usage — and says so on the page.
+
+### Verification
+Client build clean; `node --check` on all 11 touched server files; **finance fixtures
+140/140**. Live on :3001 against the Phase-8 users. Proven, not reasoned about: every
+activity filter (category/user/department/method/search/from-to/sort/page) returns
+different, correct totals off 300 real rows, `sort=asc` really returns the oldest, a NaN
+`user_id` no longer reaches Postgres; `/activity` and `/analytics/summary` 403 for both
+an Approver and a plain User while a plain User's ping is accepted and attributed;
+`entry_id` derives from the endpoint on a live PATCH and `entry_payee` lands from a live
+rush flag and is then findable by search. Pings: `/releases/123` + `/releases/456` roll to
+one `/releases/:id`, `?token=SECRET` is stored as a bare path, `no-slash` is dropped, two
+rapid pings write ONE row and a third writes a second once the window has passed, and a
+200-day-old row is deleted by the boot sweep (log line confirmed). Export: 403 for an
+Admin, 200 for the Superadmin, and the streamed 29-entry archive unzips cleanly with
+readable workbooks (73-row `ledger` sheet) and a README that discloses the 5 documents R2
+couldn't serve in dev. Settings: an Admin is refused an Admin's permissions and the
+Superadmin isn't; a non-`/` page string 400s; empty and 61-char templates 400; a rep
+round-trips add → deactivate → re-add-reactivates → delete, and a rep matching 3 ledger
+rows is deactivated with a 409 instead; bank accounts reject duplicate keys and an empty
+list, accept a third account, and refuse to drop `bofa`/`paypal` while 4 statements are
+filed under them. Dev server left running.
+
+---
 ## Standing invariants already honored (keep honoring)
 - Every query scoped by `label_id`; client FKs re-validated against the label.
 - `useEffect(() => { load() }, [])` — never `useEffect(load, [])` (Promise-as-cleanup crash).
@@ -3340,3 +3682,11 @@ Full-export ships `admin_docs.csv`.
 - Deployed-bundle sourcemaps + ErrorBoundary are how minified crashes get diagnosed.
 - SMTP host typos surface via the Team-invite error banner.
 - Migration ordering: a FK ALTER must come AFTER its referenced table's CREATE.
+- **Never reuse one `$n` against both a column and a literal.** `SET col = $1, other
+  = CASE WHEN $1 = 'Done' …` makes Postgres deduce two types for $1 and raise 42P08
+  "inconsistent types deduced for parameter". Casting the parameter doesn't help —
+  bind the value twice. This silently killed every task status change (Phase 8).
+  The same shape bites `INSERT … SELECT $1,$2,$3 WHERE NOT EXISTS (… col = $3)`: the
+  bare select list deduces `text`, the comparison deduces the column's type. And when
+  the route swallows errors on purpose (the analytics ping), 42P08 produces **no
+  symptom at all** — verify the row landed, not that the call returned 200.

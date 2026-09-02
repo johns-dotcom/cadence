@@ -29,6 +29,23 @@ const TASK_STATUSES = ['To Do', 'In Progress', 'Done'];
 
 const PRIORITIES = ['High', 'Medium', 'Low'];
 
+// Tasks carry their own priority vocabulary. 'Urgent' exists on tasks and NOT on
+// releases or deals: a release is either a priority record or it isn't, whereas a
+// task queue needs a level above High to triage a day by. Kept as its own list so
+// adding it here can't leak an 'Urgent' option into the release/deal pickers, which
+// validate against PRIORITIES. Ordered most- to least-urgent (the rank index).
+const TASK_PRIORITIES = ['Urgent', 'High', 'Medium', 'Low'];
+
+// The 14 release-prep checklist booleans, in display order. Shared so anything
+// computing a completion % (releases.js patch allow-list, team velocity/workload,
+// the member detail page) counts the same denominator.
+const RELEASE_CHECKLIST_COLUMNS = [
+  'cover_art_received', 'audio_uploaded', 'pitched_spotify', 'pitched_apple',
+  'marketing_plan', 'content_ready', 'dsp_email_sent', 'lyrics_submitted',
+  'pitched_amazon', 'pitched_pandora', 'youtube_video', 'official_thread',
+  'musixmatch', 'recoup_setup',
+];
+
 // A member's department is a PERMISSION BOUNDARY, not just a label: Team Work
 // scopes an Approver to their own department (see routes/tasks.js teamFilter),
 // so an unvalidated typo would create a one-person department nobody can lead
@@ -48,6 +65,6 @@ const DEAL_TYPES = ['360 Deal', 'Master License', 'Single License', 'Distributio
 
 module.exports = {
   ROLES, CURRENCIES, RELEASE_TYPES, RELEASE_STATUSES, DSP_PLATFORMS, DSP_STATUSES,
-  DEV_LOG_TYPES, TASK_STATUSES, PRIORITIES, DEPARTMENTS,
-  DEAL_STAGES, DEAL_TYPES,
+  DEV_LOG_TYPES, TASK_STATUSES, PRIORITIES, TASK_PRIORITIES, DEPARTMENTS,
+  DEAL_STAGES, DEAL_TYPES, RELEASE_CHECKLIST_COLUMNS,
 };

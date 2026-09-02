@@ -9,7 +9,7 @@ import GroupHeader from './GroupHeader'
 
 export default function TaskBoard({
   groups, members, collapsed, onToggleGroup, selected, onToggleSelect,
-  onOpen, onAdd, showAssignee,
+  onOpen, onAdd, showAssignee, onPatch, canEditTask,
   drag, over, dragHandlersFor, groupDragProps, groupDroppable,
 }) {
   return (
@@ -51,6 +51,8 @@ export default function TaskBoard({
                     task={task}
                     showAssignee={showAssignee}
                     onOpen={onOpen}
+                    onPatch={onPatch}
+                    canEdit={canEditTask?.(task)}
                     selected={selected.has(task.id)}
                     onToggleSelect={onToggleSelect}
                     draggable={!!dragHandlersFor}

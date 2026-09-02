@@ -66,6 +66,8 @@ export default function TaskTable({
                       task={task}
                       showAssignee
                       onOpen={onOpen}
+                      onPatch={onPatch}
+                      canEdit={canEditTask ? canEditTask(task) : true}
                       selected={selected.has(task.id)}
                       onToggleSelect={onToggleSelect}
                       draggable={!!dragHandlersFor}

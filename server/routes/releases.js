@@ -6,6 +6,7 @@ const { logActivity } = require('../middleware/activityLogger');
 const { recordMentions } = require('../lib/mentions');
 const activityBot = require('../lib/activityBot');
 const spotify = require('../lib/spotify');
+const { RELEASE_CHECKLIST_COLUMNS } = require('../lib/constants');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -221,6 +222,16 @@ router.get('/', async (req, res) => {
 
     if (status) { params.push(status); where += ` AND r.status = $${params.length}`; }
 
+    // assigned_to: an integer user id, or 'me'. Powers My Work's release rail —
+    // "the records I own" is otherwise only answerable by fetching the pipeline and
+    // filtering in the browser.
+    if (req.query.assigned_to) {
+      const owner = req.query.assigned_to === 'me' ? req.user.id : parseInt(req.query.assigned_to, 10);
+      if (!Number.isInteger(owner)) return res.status(400).json({ success: false, error: 'Invalid assigned_to' });
+      params.push(owner);
+      where += ` AND r.assigned_to = $${params.length}`;
+    }
+
     // `q` (cadence) and `search` (boom) are the same 4-field search.
     const term = search || q;
     if (term) {
@@ -337,12 +348,7 @@ router.post('/', async (req, res) => {
 
 // Columns the client is allowed to patch. Anything else in the body is
 // ignored — keeps an updatable allowlist instead of trusting arbitrary keys.
-const CHECKLIST_COLUMNS = [
-  'cover_art_received', 'audio_uploaded', 'pitched_spotify', 'pitched_apple',
-  'marketing_plan', 'content_ready', 'dsp_email_sent', 'lyrics_submitted',
-  'pitched_amazon', 'pitched_pandora', 'youtube_video', 'official_thread',
-  'musixmatch', 'recoup_setup',
-];
+const CHECKLIST_COLUMNS = RELEASE_CHECKLIST_COLUMNS;
 const UPDATABLE = [
   'artist_id', 'project_name', 'release_date', 'release_type', 'genre', 'subgenre', 'status',
   'upc', 'isrc', 'spotify_uri', 'cover_art_url', 'priority', 'notes',

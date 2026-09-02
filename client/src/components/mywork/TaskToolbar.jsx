@@ -11,7 +11,7 @@ import {
 import Button from '../ui/Button'
 import ConfirmDialog from '../ui/ConfirmDialog'
 import Popover from './Popover'
-import { TASK_STATUSES, PRIORITIES } from '../../constants'
+import { TASK_STATUSES, TASK_PRIORITIES } from '../../constants'
 import {
   categoriesIn, COLS, DUE_FILTERS, GROUP_BYS, SORTS, UNCATEGORIZED,
 } from './taskFields'
@@ -248,7 +248,7 @@ export default function TaskToolbar({
               </div>
               <div>
                 <p className="label">Priority</p>
-                {PRIORITIES.map(p => (
+                {TASK_PRIORITIES.map(p => (
                   <CheckRow key={p} label={p} checked={f.priority.includes(p)} onChange={() => toggleFilterValue('priority', p)} />
                 ))}
               </div>

@@ -6,21 +6,22 @@
 // is identical, so the two pages cannot drift.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { AlertTriangle, CheckSquare, ChevronDown, Filter, Plus, RefreshCw, X } from 'lucide-react'
 import Button from '../ui/Button'
 import Skeleton from '../Skeleton'
 import BottomSheet from '../ui/BottomSheet'
 import Modal from '../ui/Modal'
+import EmailPreviewModal from '../EmailPreviewModal'
 import useHotkeys from '../../hooks/useHotkeys'
 import useIsMobile from '../../hooks/useIsMobile'
 import { useAuth } from '../../context/AuthContext'
-import { TASK_STATUSES, PRIORITIES } from '../../constants'
-import { localDateStr } from '../../utils/dates'
+import { TASK_STATUSES, TASK_PRIORITIES } from '../../constants'
+import { formatDate, localDateStr } from '../../utils/dates'
 import useTaskData from './useTaskData'
 import useTaskView from './useTaskView'
 import useTaskDnd from './useTaskDnd'
-import { canDropInGroup, categoriesIn, groupFieldFor, groupTasks } from './taskFields'
+import { canDropInGroup, categoriesIn, dueBucketOf, groupFieldFor, groupTasks, isOpen, parseQuickAdd } from './taskFields'
 import TaskToolbar from './TaskToolbar'
 import Popover from './Popover'
 import TaskBoard from './TaskBoard'
@@ -66,6 +67,56 @@ function BulkMenu({ label, items, open, busy, isMobile, onToggle, onClose, onPic
 
 const BLANK = { description: '', priority: 'Medium', status: 'To Do', due_date: '', user_id: '', category: '' }
 
+// What the shorthand parser pulled out of the Task field, echoed back live.
+// Non-negotiable for a feature that REWRITES what somebody typed: without it,
+// `#A&R` just disappears from the title and lands in a field two columns away with
+// no indication the two events are related.
+function ShorthandHint({ parsed, raw }) {
+  const hits = [
+    parsed.priority && `!${parsed.priority.toLowerCase()} → ${parsed.priority}`,
+    parsed.category && `#${parsed.category} → category`,
+    parsed.due_date && `due ${formatDate(parsed.due_date)}`,
+  ].filter(Boolean)
+
+  if (!hits.length) {
+    // Only advertise the syntax on a field somebody is actually using.
+    return raw.trim()
+      ? <p className="mt-1 text-[10px] text-ink-faint">Try <code>!high</code> · <code>#A&amp;R</code> · <code>friday</code></p>
+      : null
+  }
+  return (
+    <p className="mt-1 text-[10px] text-brand-ink">
+      {hits.join(' · ')}
+    </p>
+  )
+}
+
+// Day-state at a glance, above the toolbar. Counts come from the SAME array the
+// board renders and the same dueBucketOf, so the pills can never disagree with the
+// groups underneath them — which is why this lives here rather than on the page,
+// where it would need its own fetch and its own overdue rule.
+function StatusPills({ tasks }) {
+  const open = tasks.filter(isOpen)
+  const overdue = open.filter(t => dueBucketOf(t) === 'overdue').length
+  const today = open.filter(t => dueBucketOf(t) === 'today').length
+  const inProgress = open.filter(t => t.status === 'In Progress').length
+  const pills = [
+    overdue && { key: 'o', text: `${overdue} overdue`, cls: 'bg-red-500 text-white' },
+    today && { key: 't', text: `${today} due today`, cls: 'bg-amber-500 text-white' },
+    inProgress && { key: 'p', text: `${inProgress} in progress`, cls: 'bg-blue-500 text-white' },
+    open.length && { key: 'n', text: `${open.length} open`, cls: 'bg-elev text-ink-muted' },
+  ].filter(Boolean)
+
+  if (!pills.length) return null
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 mb-4">
+      {pills.map(p => (
+        <span key={p.key} className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${p.cls}`}>{p.text}</span>
+      ))}
+    </div>
+  )
+}
+
 export default function TaskSurface({ surface = 'mine' }) {
   const { user, label } = useAuth()
   const isMobile = useIsMobile()
@@ -80,7 +131,7 @@ export default function TaskSurface({ surface = 'mine' }) {
   const capacity = Number(label?.settings?.task_capacity) || DEFAULT_CAPACITY
 
   const data = useTaskData(surface)
-  const { tasks, members, loading, error } = data
+  const { tasks, members, releases, loading, error } = data
 
   const [collapsed, setCollapsed] = useState(() => new Set())
   const [selected, setSelected] = useState(() => new Set())
@@ -167,17 +218,23 @@ export default function TaskSurface({ surface = 'mine' }) {
     setShowForm(true)
   }
 
+  // Shorthand typed into the Task field wins over the form's own selects — you only
+  // reach for `!high` when you mean it, and having the Priority dropdown quietly
+  // override it would make the syntax untrustworthy. What it parsed is rendered
+  // back under the input, so nothing is applied invisibly.
+  const parsed = useMemo(() => parseQuickAdd(form.description), [form.description])
+
   const submitForm = async (e) => {
     e?.preventDefault()
-    if (!form.description.trim()) return
+    if (!parsed.description.trim()) return
     setSaving(true)
     const created = await data.createTask({
-      description: form.description.trim(),
-      priority: form.priority,
+      description: parsed.description.trim(),
+      priority: parsed.priority || form.priority,
       status: form.status || undefined,
-      due_date: form.due_date || undefined,
+      due_date: parsed.due_date || form.due_date || undefined,
       user_id: form.user_id || undefined,
-      category: form.category?.trim() || undefined,
+      category: parsed.category || form.category?.trim() || undefined,
     })
     setSaving(false)
     if (created) { setForm(BLANK); setShowForm(false) }
@@ -196,6 +253,19 @@ export default function TaskSurface({ surface = 'mine' }) {
     // the selection along with the error, leaving nothing to retry.
     if (rows) clearSelection()
   }
+
+  // `?new=task` deep link — the mobile FAB's "New task" navigated here and then did
+  // nothing, landing you on a board with no form open. The param is consumed (not
+  // just read) so a back-navigation or refresh doesn't reopen the form.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    if (searchParams.get('new') !== 'task') return
+    openAdd(null)
+    const next = new URLSearchParams(searchParams)
+    next.delete('new')
+    setSearchParams(next, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
   const drillDown = (userId) => {
     v.setFilter('user_id', [userId])
@@ -348,7 +418,8 @@ export default function TaskSurface({ surface = 'mine' }) {
     <div>
       {/* Personal rail, rendered here rather than in the page so it can reuse the
           task list this hook already fetched instead of asking for it again. */}
-      {surface === 'mine' && !loading && <WaitingOnYou tasks={tasks} />}
+      {surface === 'mine' && !loading && <WaitingOnYou tasks={tasks} onBulkPatch={data.bulkPatch} />}
+      {!loading && !error && <StatusPills tasks={tasks} />}
 
       <TaskToolbar
         surface={surface}
@@ -394,20 +465,26 @@ export default function TaskSurface({ surface = 'mine' }) {
             <label className="label">Task</label>
             <input className="input" value={form.description} autoFocus
               onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+            <ShorthandHint parsed={parsed} raw={form.description} />
           </div>
           <div>
+            {/* The three fields below MIRROR what the shorthand parsed and lock while
+                it holds them: two live controls for one value is how a form ends up
+                sending something nobody chose. Clear the token to hand control back. */}
             <label className="label">Priority</label>
-            <select className="input" value={form.priority} onChange={e => setForm(f => ({ ...f, priority: e.target.value }))}>
-              {PRIORITIES.map(p => <option key={p}>{p}</option>)}
+            <select className="input" value={parsed.priority || form.priority} disabled={!!parsed.priority}
+              onChange={e => setForm(f => ({ ...f, priority: e.target.value }))}>
+              {TASK_PRIORITIES.map(p => <option key={p}>{p}</option>)}
             </select>
           </div>
           <div>
             <label className="label">Due date</label>
-            <input type="date" className="input" value={form.due_date} onChange={e => setForm(f => ({ ...f, due_date: e.target.value }))} />
+            <input type="date" className="input" value={parsed.due_date || form.due_date} disabled={!!parsed.due_date}
+              onChange={e => setForm(f => ({ ...f, due_date: e.target.value }))} />
           </div>
           <div>
             <label className="label">Category</label>
-            <input className="input" list="quickadd-categories" value={form.category}
+            <input className="input" list="quickadd-categories" value={parsed.category || form.category} disabled={!!parsed.category}
               onChange={e => setForm(f => ({ ...f, category: e.target.value }))} />
             <datalist id="quickadd-categories">
               {categoriesIn(tasks).map(c => <option key={c} value={c} />)}
@@ -430,20 +507,26 @@ export default function TaskSurface({ surface = 'mine' }) {
             <label className="label">Task</label>
             <input className="input" value={form.description} autoFocus
               onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+            <ShorthandHint parsed={parsed} raw={form.description} />
           </div>
           <div>
+            {/* The three fields below MIRROR what the shorthand parsed and lock while
+                it holds them: two live controls for one value is how a form ends up
+                sending something nobody chose. Clear the token to hand control back. */}
             <label className="label">Priority</label>
-            <select className="input" value={form.priority} onChange={e => setForm(f => ({ ...f, priority: e.target.value }))}>
-              {PRIORITIES.map(p => <option key={p}>{p}</option>)}
+            <select className="input" value={parsed.priority || form.priority} disabled={!!parsed.priority}
+              onChange={e => setForm(f => ({ ...f, priority: e.target.value }))}>
+              {TASK_PRIORITIES.map(p => <option key={p}>{p}</option>)}
             </select>
           </div>
           <div>
             <label className="label">Due date</label>
-            <input type="date" className="input" value={form.due_date} onChange={e => setForm(f => ({ ...f, due_date: e.target.value }))} />
+            <input type="date" className="input" value={parsed.due_date || form.due_date} disabled={!!parsed.due_date}
+              onChange={e => setForm(f => ({ ...f, due_date: e.target.value }))} />
           </div>
           <div>
             <label className="label">Category</label>
-            <input className="input" list="quickadd-categories" value={form.category}
+            <input className="input" list="quickadd-categories" value={parsed.category || form.category} disabled={!!parsed.category}
               onChange={e => setForm(f => ({ ...f, category: e.target.value }))} />
             <datalist id="quickadd-categories">
               {categoriesIn(tasks).map(c => <option key={c} value={c} />)}
@@ -498,7 +581,7 @@ export default function TaskSurface({ surface = 'mine' }) {
             label="Priority" open={bulkMenu === 'priority'} busy={bulkBusy} isMobile={isMobile}
             onToggle={() => setBulkMenu(m => (m === 'priority' ? null : 'priority'))}
             onClose={() => setBulkMenu(null)}
-            items={PRIORITIES.map(x => ({ key: x, label: x, fields: { priority: x } }))}
+            items={TASK_PRIORITIES.map(x => ({ key: x, label: x, fields: { priority: x } }))}
             onPick={bulkSet}
           />
           <Button size="sm" variant="secondary" disabled={bulkBusy} onClick={() => bulkSet({ due_date: localDateStr() })}>Due today</Button>
@@ -524,6 +607,7 @@ export default function TaskSurface({ surface = 'mine' }) {
       <TaskDrawer
         task={drawerTask}
         tasks={tasks}
+        releases={releases}
         members={assignableMembers}
         canEdit={canEditTask(drawerTask)}
         canAssign={isLead && assignableMembers.length > 0}
@@ -544,6 +628,19 @@ export default function TaskSurface({ surface = 'mine' }) {
           This task was deleted, or reassigned somewhere you can't see it.
         </p>
       </Modal>
+
+      {/* Review-before-send for the assignment notification. The task is already
+          saved by the time this appears — the email is the only thing still pending,
+          so closing it is a legitimate "don't email them", not a cancelled edit. */}
+      {data.pendingEmail && (
+        <EmailPreviewModal
+          open
+          kind={data.pendingEmail.kind}
+          ctx={data.pendingEmail.ctx}
+          onClose={data.clearPendingEmail}
+          onSent={data.clearPendingEmail}
+        />
+      )}
     </div>
   )
 }

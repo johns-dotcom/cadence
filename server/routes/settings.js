@@ -68,16 +68,36 @@ router.get('/permissions/:userId', requireAdmin, async (req, res) => {
 });
 
 // PUT /api/settings/permissions/:userId — replace a user's page allowlist.
-// An empty array means "unrestricted" (we clear all rows).
+//
+// An empty array means UNRESTRICTED (we clear all rows), because `canView`
+// treats "no rows" as no restriction. That makes `[]` genuinely ambiguous from
+// the UI's side — an admin who unticks every box means the opposite. The client
+// never sends a bare `[]` for that case (PermissionsManager writes an explicit
+// minimum instead); this comment is the contract that makes that necessary.
 router.put('/permissions/:userId', requireAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
     const userId = parseInt(req.params.userId, 10);
     const pages = Array.isArray(req.body.pages) ? req.body.pages : [];
 
+    if (!Number.isInteger(userId)) return res.status(400).json({ success: false, error: 'Invalid user' });
+
     // Confirm the target user is in this label before touching their perms.
-    const { rows: u } = await client.query('SELECT 1 FROM users WHERE id = $1 AND label_id = $2', [userId, req.labelId]);
+    const { rows: u } = await client.query('SELECT role FROM users WHERE id = $1 AND label_id = $2', [userId, req.labelId]);
     if (!u.length) return res.status(404).json({ success: false, error: 'User not found' });
+    // Only a Superadmin may touch an admin-tier account's allow-list. Rows
+    // don't bind those roles today, but writing them is still a claim on an
+    // account above the caller's own — the same rule DELETE and PATCH on
+    // /team already enforce.
+    if (['Superadmin', 'Admin'].includes(u[0].role) && req.user.role !== 'Superadmin') {
+      return res.status(403).json({ success: false, error: 'Only a Superadmin can set permissions for an admin account' });
+    }
+
+    // Pages must be known-shaped paths. An unbounded array of arbitrary strings
+    // is a row-per-string write from an admin-authenticated endpoint.
+    const bad = pages.find(p => typeof p !== 'string' || !p.startsWith('/') || p.length > 100);
+    if (bad !== undefined) return res.status(400).json({ success: false, error: 'Pages must be "/"-prefixed paths under 100 characters' });
+    if (pages.length > 200) return res.status(400).json({ success: false, error: 'Too many pages' });
 
     await client.query('BEGIN');
     await client.query('DELETE FROM user_page_permissions WHERE user_id = $1 AND label_id = $2', [userId, req.labelId]);
@@ -149,7 +169,7 @@ router.put('/visible-reps/:userId', requireAdmin, async (req, res) => {
 router.get('/permission-templates', requireAdmin, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, name, pages FROM permission_templates WHERE label_id = $1 ORDER BY LOWER(name)',
+      'SELECT id, name, pages, created_by FROM permission_templates WHERE label_id = $1 ORDER BY LOWER(name)',
       [req.labelId]
     );
     res.json({ success: true, data: rows });
@@ -165,6 +185,14 @@ router.post('/permission-templates', requireAdmin, async (req, res) => {
     const name = String(req.body.name || '').trim();
     const pages = Array.isArray(req.body.pages) ? req.body.pages : [];
     if (!name) return res.status(400).json({ success: false, error: 'Template name is required' });
+    if (name.length > 60) return res.status(400).json({ success: false, error: 'Template name must be 60 characters or fewer' });
+    // An empty template silently "applies" nothing — which, under the
+    // clear-all-rows convention below, reads as GRANT EVERYTHING. Refuse it.
+    if (!pages.length) return res.status(400).json({ success: false, error: 'A template needs at least one page' });
+    if (pages.length > 200) return res.status(400).json({ success: false, error: 'Too many pages' });
+    if (pages.some(p => typeof p !== 'string' || !p.startsWith('/') || p.length > 100)) {
+      return res.status(400).json({ success: false, error: 'Pages must be "/"-prefixed paths under 100 characters' });
+    }
     const existing = await pool.query('SELECT id FROM permission_templates WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [req.labelId, name]);
     if (existing.rows.length) {
       await pool.query('UPDATE permission_templates SET pages = $1::jsonb, name = $2 WHERE id = $3', [JSON.stringify(pages), name, existing.rows[0].id]);

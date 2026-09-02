@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Upload, Trash2, Check, Link2, Copy, RefreshCw, Plus, X, LayoutDashboard, Mail, Send, Gauge } from 'lucide-react'
+import { Upload, Trash2, Check, Link2, Copy, RefreshCw, Plus, X, LayoutDashboard, Mail, Send, Gauge, PanelLeft, Moon, Sun, Eye, EyeOff } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
+import { useTheme } from '../context/ThemeContext'
+import { buildNavGroups } from '../components/Layout'
+import { getHiddenPages, setHiddenPages, NEVER_HIDEABLE } from '../utils/navPrefs'
 import { applyAccent, resetAccent, isValidHex, ACCENT_PRESETS } from '../utils/branding'
 import RepsManager from '../components/RepsManager'
+import VisibleRepsManager from '../components/VisibleRepsManager'
 import PermissionsManager from '../components/PermissionsManager'
 import DataTools from '../components/DataTools'
+import BankAccountsManager from '../components/BankAccountsManager'
 import { dropTarget } from '../utils/drop'
 
 // Home-dashboard widgets an owner can show/hide (all default on).
@@ -24,9 +29,11 @@ const DASH_WIDGETS = [
 ]
 
 export default function Settings() {
-  const { user, label, updateLabel } = useAuth()
+  const { user, label, updateLabel, canView } = useAuth()
+  const { theme, setTheme } = useTheme()
   const { toast } = useToast()
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
+  const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
   const [tab, setTab] = useState('account')
   const TABS = [
     { key: 'account', label: 'Account' },
@@ -187,6 +194,26 @@ export default function Settings() {
     catch { toast('Failed', 'error') }
   }
 
+  // ── Sidebar (My Nav) ──────────────────────────────────────────────────────
+  // A per-person view preference, NOT a permission: everything hidden here is
+  // still reachable by URL, by ⌘K and by every link in the app. It reads the
+  // SAME buildNavGroups the sidebar renders, so the list can't offer a toggle
+  // for a row that isn't there.
+  const [hidden, setHidden] = useState(() => getHiddenPages(user?.id))
+  useEffect(() => { setHidden(getHiddenPages(user?.id)) }, [user?.id])
+  const navGroups = buildNavGroups({ isAdmin, isApprover })
+    .map(g => ({ ...g, items: g.items.filter(i => canView(i.path) && !NEVER_HIDEABLE.includes(i.path)) }))
+    .filter(g => g.items.length > 0)
+  const navTotal = navGroups.reduce((n, g) => n + g.items.length, 0)
+  const navShown = navTotal - navGroups.reduce((n, g) => n + g.items.filter(i => hidden.includes(i.path)).length, 0)
+  const toggleNav = (path) => setHidden(h => setHiddenPages(user?.id, h.includes(path) ? h.filter(p => p !== path) : [...h, path]))
+  const showAllNav = () => setHidden(setHiddenPages(user?.id, []))
+
+  // ThemeContext.setTheme both applies and persists (PATCH /settings/theme), so
+  // a new device opens in the theme this person chose instead of resetting to
+  // light. Calling the endpoint again here would just double the write.
+  const chooseTheme = (t) => setTheme(t)
+
   const changePassword = async (e) => {
     e.preventDefault()
     if (pw.new_password.length < 8) { toast('New password must be 8+ characters', 'error'); return }
@@ -243,6 +270,73 @@ export default function Settings() {
             <button className="btn-primary">Change password</button>
           </div>
         </form>
+
+        {/* Appearance */}
+        <div className="card p-5">
+          <h2 className="text-sm font-bold text-ink mb-1">Appearance</h2>
+          <p className="text-xs text-ink-muted mb-4">Applies to your account on every device you sign in from.</p>
+          <div className="grid grid-cols-2 gap-3 max-w-sm">
+            {[
+              { key: 'light', label: 'Light', icon: Sun },
+              { key: 'dark', label: 'Dark', icon: Moon },
+            ].map(t => {
+              const Icon = t.icon
+              const active = theme === t.key
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => chooseTheme(t.key)}
+                  aria-pressed={active}
+                  className={`rounded-xl border p-4 text-left transition ${active ? 'border-brand-600 bg-brand-500/10' : 'border-rule hover:border-gray-300'}`}
+                >
+                  <Icon size={18} className={active ? 'text-brand-ink' : 'text-ink-muted'} />
+                  <p className="mt-2 text-sm font-semibold text-ink">{t.label}</p>
+                  {active && <span className="inline-flex items-center gap-1 mt-1 text-[11px] font-bold text-brand-ink"><Check size={11} /> Active</span>}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* Sidebar (My Nav) */}
+        <div className="card p-5">
+          <div className="flex flex-wrap items-baseline gap-2 mb-1">
+            <h2 className="text-sm font-bold text-ink inline-flex items-center gap-1.5"><PanelLeft size={15} /> Sidebar</h2>
+            <span className="text-xs text-ink-muted">{navShown} of {navTotal} items shown</span>
+            {hidden.length > 0 && (
+              <button type="button" onClick={showAllNav} className="ml-auto text-xs font-semibold text-brand-ink hover:underline">Show all</button>
+            )}
+          </div>
+          <p className="text-xs text-ink-muted mb-4">
+            Hide items you never use. This only tidies <em>your</em> sidebar — hidden pages stay open to you by link,
+            by search and from anywhere else in the app, and nobody else's view changes.
+          </p>
+          <div className="space-y-4">
+            {navGroups.map(g => (
+              <div key={g.label || 'general'}>
+                <p className="text-[11px] font-bold uppercase tracking-wide text-ink-muted mb-1.5">{g.label || 'General'}</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5">
+                  {g.items.map(i => {
+                    const isHidden = hidden.includes(i.path)
+                    return (
+                      <button
+                        key={i.path}
+                        type="button"
+                        onClick={() => toggleNav(i.path)}
+                        aria-pressed={!isHidden}
+                        className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-left hover:bg-brand-500/10"
+                      >
+                        {isHidden ? <EyeOff size={14} className="text-ink-faint flex-shrink-0" /> : <Eye size={14} className="text-brand-ink flex-shrink-0" />}
+                        <span className={`text-sm truncate ${isHidden ? 'text-ink-faint line-through' : 'text-ink'}`}>{i.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
         </>)}
 
         {/* ── Workspace ── */}
@@ -428,6 +522,9 @@ export default function Settings() {
               <button disabled={savingInv} className="btn-primary">{savingInv ? 'Saving…' : 'Save invoice details'}</button>
             </div>
           </form>
+
+          {/* Feeds lib/bankEvidence.js — see the component for why this is not cosmetic. */}
+          <BankAccountsManager />
         </>)}
 
         {/* ── Team ── */}
@@ -457,6 +554,9 @@ export default function Settings() {
           </form>
           <PermissionsManager />
           <RepsManager />
+          {/* After RepsManager: you pick reps for a member FROM the roster it manages,
+              so the roster has to be the thing above it. */}
+          <VisibleRepsManager />
         </>)}
 
         {/* ── Data ── */}

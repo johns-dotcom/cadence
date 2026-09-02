@@ -24,6 +24,13 @@ export const DEPARTMENTS = ['Executive', 'A&R', 'Marketing', 'Operations', 'Fina
 export const PRIORITIES = ['High', 'Medium', 'Low']
 export const PRIORITY_TONES = { High: 'danger', Medium: 'warning', Low: 'info' }
 
+// Task priority is its OWN vocabulary — tasks have an 'Urgent' level, releases and
+// deals do not. Kept separate (rather than adding 'Urgent' to PRIORITIES) so the
+// release and deal pickers, which validate against PRIORITIES server-side, can't
+// be handed a value their routes would 400. Mirrored in server/lib/constants.js.
+// Order is the rank: index 0 is most urgent.
+export const TASK_PRIORITIES = ['Urgent', 'High', 'Medium', 'Low']
+
 // Genres offered on the release + catalog filters. Data-derived values are
 // merged in on top of these so a workspace's own spellings still appear.
 export const GENRE_OPTIONS = [

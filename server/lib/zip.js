@@ -96,6 +96,97 @@ function buildZip(entries, epochSeconds) {
   return Buffer.concat([filesBuf, centralBuf, end]);
 }
 
+
+/**
+ * Streaming variant of buildZip: writes each entry to `out` (a Writable —
+ * normally the HTTP response) as it arrives and keeps only the central
+ * directory in memory. This is what makes a whole-workspace archive safe:
+ * buildZip holds every byte of every file at once, so an export with the
+ * uploaded documents in it would be bounded by RAM rather than by disk.
+ *
+ * A ZIP is a sequence of [local header + name + data] runs followed by a
+ * central directory, so the format streams natively — no compression state to
+ * carry, since we only ever STORE.
+ *
+ *   const z = createZipStream(res, ts)
+ *   await z.add('a.csv', buf)   // resolves once the chunk is flushed
+ *   await z.finish()
+ */
+function createZipStream(out, epochSeconds) {
+  const { time, date } = dosDateTime(epochSeconds);
+  const central = [];
+  let offset = 0;
+  let count = 0;
+
+  // Respect backpressure — an unbounded write loop over R2 objects would
+  // re-create the memory problem inside the socket buffer instead.
+  const write = (buf) => new Promise((resolve, reject) => {
+    if (out.write(buf)) return resolve();
+    out.once('drain', resolve);
+    out.once('error', reject);
+  });
+
+  async function add(name, content) {
+    const nameBuf = Buffer.from(name, 'utf8');
+    const data = Buffer.isBuffer(content) ? content : Buffer.from(String(content), 'utf8');
+    const crc = crc32(data);
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt16LE(time, 10);
+    local.writeUInt16LE(date, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    local.writeUInt16LE(0, 28);
+    await write(Buffer.concat([local, nameBuf]));
+    await write(data);
+
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0);
+    cd.writeUInt16LE(20, 4);
+    cd.writeUInt16LE(20, 6);
+    cd.writeUInt16LE(0, 8);
+    cd.writeUInt16LE(0, 10);
+    cd.writeUInt16LE(time, 12);
+    cd.writeUInt16LE(date, 14);
+    cd.writeUInt32LE(crc, 16);
+    cd.writeUInt32LE(data.length, 20);
+    cd.writeUInt32LE(data.length, 24);
+    cd.writeUInt16LE(nameBuf.length, 28);
+    cd.writeUInt16LE(0, 30);
+    cd.writeUInt16LE(0, 32);
+    cd.writeUInt16LE(0, 34);
+    cd.writeUInt16LE(0, 36);
+    cd.writeUInt32LE(0, 38);
+    cd.writeUInt32LE(offset, 42);
+    central.push(cd, nameBuf);
+
+    offset += local.length + nameBuf.length + data.length;
+    count += 1;
+  }
+
+  async function finish() {
+    const centralBuf = Buffer.concat(central);
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0);
+    end.writeUInt16LE(0, 4);
+    end.writeUInt16LE(0, 6);
+    end.writeUInt16LE(count, 8);
+    end.writeUInt16LE(count, 10);
+    end.writeUInt32LE(centralBuf.length, 12);
+    end.writeUInt32LE(offset, 16);   // central directory offset = bytes written so far
+    end.writeUInt16LE(0, 20);
+    await write(Buffer.concat([centralBuf, end]));
+  }
+
+  return { add, finish, get count() { return count; } };
+}
+
 // CSV helper — array of objects → CSV string given an ordered column list.
 function toCsv(cols, rows) {
   const esc = (v) => {
@@ -106,4 +197,4 @@ function toCsv(cols, rows) {
   return [cols.join(','), ...rows.map(r => cols.map(c => esc(r[c])).join(','))].join('\n');
 }
 
-module.exports = { buildZip, toCsv };
+module.exports = { buildZip, createZipStream, toCsv };

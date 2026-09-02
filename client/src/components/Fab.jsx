@@ -11,7 +11,9 @@ export default function Fab() {
   const [open, setOpen] = useState(false)
 
   const actions = [
-    canView('/my-work') && { label: 'New task', icon: CheckSquare, to: '/my-work' },
+    // `?new=task` — TaskSurface consumes the param and opens the quick-add. Without
+    // it this button was a plain navigation labelled "New task" that created nothing.
+    canView('/my-work') && { label: 'New task', icon: CheckSquare, to: '/my-work?new=task' },
     canView('/releases') && { label: 'Add release', icon: Disc3, to: '/releases' },
     canView('/ledger') && { label: 'Add invoice', icon: Receipt, to: '/ledger/new-invoice' },
   ].filter(Boolean)
