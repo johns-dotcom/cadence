@@ -264,6 +264,10 @@ export default function Ledger({ bank = false }) {
   const [draft, setDraft] = useState('')
   const [undoStack, setUndoStack] = useState([])
   const [artists, setArtists] = useState([])   // [{id, name}] for profile links
+  // Declared here, not beside its fetch effect below: songsByArtist's useMemo
+  // dependency array is evaluated during render, so a later const would be in
+  // the TDZ and the page would crash on mount.
+  const [releases, setReleases] = useState([])
   const artistNames = useMemo(() => artists.map(a => a.name).filter(Boolean), [artists])
   const artistIdByName = useMemo(() => { const m = {}; artists.forEach(a => { if (a.name) m[a.name.toLowerCase()] = a.id }); return m }, [artists])
 
@@ -582,7 +586,6 @@ export default function Ledger({ bank = false }) {
     finally { setTxBusy(null) }
   }
   useEffect(() => { api.get('/artists').then(r => setArtists((r.data.data || []).filter(a => a.name))).catch(() => {}) }, [])
-  const [releases, setReleases] = useState([])
   useEffect(() => { api.get('/releases').then(r => setReleases(r.data.data || [])).catch(() => {}) }, [])
   // Duplicate-invoice groups (admin endpoint; non-admins just don't see the banner).
   useEffect(() => { api.get('/flags').then(r => setDupGroups(r.data.data?.invoice_dupes || [])).catch(() => {}) }, [])
