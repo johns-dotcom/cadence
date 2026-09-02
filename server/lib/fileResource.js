@@ -4,7 +4,7 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
-const { uploadFile, getSignedFileUrl, deleteFile } = require('./r2');
+const { uploadFile, getSignedFileUrl, deleteFile, isConfigured: r2Configured } = require('./r2');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
@@ -42,6 +42,7 @@ function fileResourceRouter({ table, prefix, required, fields, orderBy = 'create
     try {
       const { rows } = await pool.query(`SELECT r2_key FROM ${table} WHERE id = $1 AND label_id = $2`, [parseInt(req.params.id, 10), req.labelId]);
       if (!rows.length || !rows[0].r2_key) return res.status(404).json({ success: false, error: 'No file' });
+      if (!r2Configured()) return res.status(503).json({ success: false, error: "File storage is not configured on this deployment." });
       const url = await getSignedFileUrl(rows[0].r2_key, 3600);
       res.json({ success: true, data: { url } });
     } catch (error) {

@@ -27,7 +27,7 @@ Structural deltas: stat cards row, search+filter bar, expandable row detail, cou
 | Refresh button | bordered icon button, RefreshCw w-4 | absent | OLD :249-251 |
 | Loading state | centered `RefreshCw animate-spin` + "Loading…" py-24 | bare `text-sm text-gray-400` "Loading…" line | OLD :295-298 / NEW :74 |
 | Empty state | FileText w-8 opacity-50 + "No artists found", py-24, no card | card p-10 w/ FileClock size 26 + "No pending contracts." | OLD :299-303 / NEW :76 |
-| Status-pill colors in dark | OLD relies on `.dark .badge-*`-style overrides for its raw tints (index.css:483-486 pattern) | NEW uses raw `bg-amber-100/red-... -100` utilities with no dark override | dark rendering `UNVERIFIED — needs runtime check` |
+| Status-pill colors in dark | OLD relies on `.dark .badge-*`-style overrides for its raw tints (index.css:483-486 pattern) | NEW uses raw `bg-amber-100/red-... -100` utilities with no dark override | dark rendering REFUTED 2026-09-02 (Phase 10) — premise is inverted: `client/src/index.css:154-320` carries a bounded `.dark` remap layer covering red/rose/amber/orange/yellow/emerald/green/teal/sky/blue/indigo/violet/purple/pink at `-50`/`-100`, plus their `border-`/`ring-`/`hover:` variants, and pushes `-600/-700/-800` text to the `-400` tier. Specificity (0,2,0) beats the utility's (0,1,0), so no `!important` is needed. Raw tints DO remap in dark |
 | Modal | `fixed inset-0 bg-overlay backdrop-blur-sm`, `max-w-xl rounded-2xl` two-column form | no modal at all (inline form card) | OLD :76-113 / NEW :62-71 |
 
 ## 3. Copy & content differences

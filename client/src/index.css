@@ -134,6 +134,29 @@
   /* Shell chrome never belongs on paper. */
   nav, aside, .no-print { display: none !important; }
   body { background: #fff; }
+
+  /* The user manual is a drawer on screen and a handout on paper. Un-fix it,
+     drop the scrim and the panel chrome, and let it flow to full page width so
+     "Print / Save as PDF" produces a document rather than a screenshot of a
+     sidebar. The button expands every section first — collapsed sections are
+     not in the DOM, so CSS alone could not reveal them. */
+  .manual-drawer {
+    position: static !important;
+    display: block !important;
+    background: none !important;
+    z-index: auto !important;
+  }
+  .manual-panel {
+    max-width: none !important;
+    width: 100% !important;
+    height: auto !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    display: block !important;
+  }
+  .manual-panel > div { overflow: visible !important; height: auto !important; }
+  /* Never break a help topic across a page. */
+  .manual-panel [id^='man-'] { break-inside: avoid; page-break-inside: avoid; }
 }
 
 /* ── Scrollbars ──────────────────────────────────────────────────────────────

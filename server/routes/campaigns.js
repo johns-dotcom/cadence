@@ -139,6 +139,8 @@ router.post('/:id/link', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const expenseId = parseInt(req.body.expense_id, 10);
+    // A NaN reaches Postgres as an integer type error → a 500 on a bad body.
+    if (!Number.isInteger(expenseId)) return res.status(400).json({ success: false, error: 'expense_id is required' });
     const camp = await pool.query('SELECT 1 FROM campaigns WHERE id = $1 AND label_id = $2', [id, req.labelId]);
     if (!camp.rows.length) return res.status(404).json({ success: false, error: 'Campaign not found' });
     const upd = await pool.query('UPDATE expenses SET campaign_id = $1 WHERE id = $2 AND label_id = $3 RETURNING id', [id, expenseId, req.labelId]);
@@ -155,7 +157,9 @@ router.post('/:id/link', async (req, res) => {
 router.post('/:id/unlink', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    await pool.query('UPDATE expenses SET campaign_id = NULL WHERE id = $1 AND campaign_id = $2 AND label_id = $3', [parseInt(req.body.expense_id, 10), id, req.labelId]);
+    const expenseId = parseInt(req.body.expense_id, 10);
+    if (!Number.isInteger(expenseId)) return res.status(400).json({ success: false, error: 'expense_id is required' });
+    await pool.query('UPDATE expenses SET campaign_id = NULL WHERE id = $1 AND campaign_id = $2 AND label_id = $3', [expenseId, id, req.labelId]);
     await recomputeSpend(id, req.labelId);
     res.json({ success: true });
   } catch (error) {

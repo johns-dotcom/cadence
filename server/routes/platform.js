@@ -288,7 +288,7 @@ router.put('/operators/:email/access', requirePlatformOwner, async (req, res) =>
     const email = (req.params.email || '').toLowerCase();
     // Never restrict an owner-tier operator.
     const { rows: who } = await client.query('SELECT platform_role FROM users WHERE LOWER(email) = $1 AND is_platform_admin = true LIMIT 1', [email]);
-    if (who[0]?.platform_role === 'owner') { client.release(); return res.status(400).json({ success: false, error: 'Owners cannot be restricted' }); }
+    if (who[0]?.platform_role === 'owner') { return res.status(400).json({ success: false, error: 'Owners cannot be restricted' }); }
 
     const workspaces = Array.isArray(req.body.workspaces) ? req.body.workspaces.map(n => parseInt(n, 10)).filter(Boolean) : [];
     const pages = Array.isArray(req.body.pages) ? req.body.pages.filter(p => RESTRICTABLE_PAGES.includes(p)) : [];
@@ -885,10 +885,9 @@ router.delete('/workspaces/:id', requirePlatformOwner, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const label = await client.query('SELECT name, is_system FROM labels WHERE id = $1', [id]);
-    if (!label.rows.length) { client.release(); return res.status(404).json({ success: false, error: 'Workspace not found' }); }
-    if (label.rows[0].is_system) { client.release(); return res.status(400).json({ success: false, error: 'The platform system workspace cannot be deleted.' }); }
+    if (!label.rows.length) { return res.status(404).json({ success: false, error: 'Workspace not found' }); }
+    if (label.rows[0].is_system) { return res.status(400).json({ success: false, error: 'The platform system workspace cannot be deleted.' }); }
     if ((req.body.confirm || '').trim() !== label.rows[0].name) {
-      client.release();
       return res.status(400).json({ success: false, error: 'Type the exact workspace name to confirm deletion' });
     }
 

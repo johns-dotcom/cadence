@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { X, Search, ChevronDown, ChevronRight, Sparkles, Loader2, BookOpen, Compass } from 'lucide-react'
+import { X, Search, ChevronDown, ChevronRight, Sparkles, Loader2, BookOpen, Compass, Printer } from 'lucide-react'
 import api from '../api'
 import { useAuth } from '../context/AuthContext'
 import { buildManual } from '../constants/manual'
@@ -33,6 +33,15 @@ export default function UserManual({ open, onClose }) {
     setExpanded(s => new Set(s).add(path))
     setQ('')
     setTimeout(() => document.getElementById(slug(path))?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+  }
+
+  // Print / Save-as-PDF. Collapsed sections are not in the DOM, so print CSS
+  // alone would emit a document of headings — expand everything first, clear
+  // any search narrowing, then let the browser paint.
+  const printAll = () => {
+    setQ('')
+    setExpanded(new Set(manual.accessible.map(s => s.path)))
+    setTimeout(() => window.print(), 80)
   }
 
   const ask = async () => {
@@ -87,8 +96,8 @@ export default function UserManual({ open, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[70] flex justify-end bg-overlay" onClick={onClose}>
-      <div className="w-full max-w-md h-full bg-card border-l border-rule shadow-modal flex flex-col" onClick={e => e.stopPropagation()}>
+    <div className="manual-drawer fixed inset-0 z-[70] flex justify-end bg-overlay" onClick={onClose}>
+      <div className="manual-panel w-full max-w-md h-full bg-card border-l border-rule shadow-modal flex flex-col" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="px-5 py-4 border-b border-divider flex items-start justify-between gap-3">
           <div>
@@ -98,13 +107,17 @@ export default function UserManual({ open, onClose }) {
               {user?.role ? ` · ${user.role}` : ''}{user?.department ? ` · ${user.department}` : ''}
             </p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1"><X size={18} /></button>
+          <div className="flex items-center gap-1 no-print">
+            <button onClick={printAll} title="Print or save as PDF" aria-label="Print or save as PDF"
+              className="text-ink-faint hover:text-ink p-1"><Printer size={17} /></button>
+            <button onClick={onClose} aria-label="Close manual" className="text-ink-faint hover:text-ink p-1"><X size={18} /></button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
           {/* Ask */}
-          <div className="card p-3 bg-page/40">
-            <p className="text-xs font-semibold text-ink mb-2 inline-flex items-center gap-1.5"><Sparkles size={13} className="text-brand-600" /> Ask about your workspace</p>
+          <div className="card p-3 bg-page/40 no-print">
+            <p className="text-xs font-semibold text-ink mb-2 inline-flex items-center gap-1.5"><Sparkles size={13} className="text-brand-ink" /> Ask about your workspace</p>
             <div className="flex gap-2">
               <input
                 value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && ask()}
@@ -120,8 +133,8 @@ export default function UserManual({ open, onClose }) {
           </div>
 
           {/* Search */}
-          <div className="relative">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <div className="relative no-print">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint" />
             <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search the manual…" className="input !pl-9 !py-2 text-sm" />
           </div>
 

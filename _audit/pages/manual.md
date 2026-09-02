@@ -32,7 +32,7 @@
 - OLD per-user `USER_OVERRIDES` (name-keyed extra guidance, e.g. bradley's ingestion runbook, :466-489) — [INT] dropped: single-tenant personal content, not portable to multi-tenant.
 - OLD print → PDF via `window.print()` with full print CSS (:604-666). NEW: no print/export path at all; the drawer's `max-w-md` column (components/UserManual.jsx:91) can't produce a handout.
 - NEW-only: text search with match list + "No help topics match" (:26-29,128-132); click-to-open + smooth-scroll section deep link (:32-36); AI Q&A w/ loading/error/graceful-503 states (:38-52,105-120).
-- NEW `/manual` visited directly in a fresh tab: `navigate(-1)` has no history to pop, so Close appears to do nothing — minor; `UNVERIFIED — needs runtime check`.
+- NEW `/manual` visited directly in a fresh tab: `navigate(-1)` has no history to pop, so Close appears to do nothing — minor; CONFIRMED AND FIXED 2026-09-02 (Phase 10) — `navigate(-1)` with no history to pop is a no-op by definition. `ManualPage` in `App.jsx` now falls back to `/` when there is nothing to go back to.
 
 ## 6. Visual/design diff
 

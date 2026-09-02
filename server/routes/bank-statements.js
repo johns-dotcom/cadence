@@ -1353,11 +1353,11 @@ router.post('/:id(\\d+)/misfiled/repair', async (req, res) => {
   const client = await pool.connect();
   try {
     const st = (await pool.query('SELECT * FROM bank_statements WHERE id = $1 AND label_id = $2', [parseInt(req.params.id, 10), req.labelId])).rows[0];
-    if (!st) { client.release(); return res.status(404).json({ success: false, error: 'Statement not found' }); }
+    if (!st) { return res.status(404).json({ success: false, error: 'Statement not found' }); }
     const a = await auditStatementExtrasRaw(st, req.labelId);
-    if (!a.reconciles) { client.release(); return res.status(400).json({ success: false, error: `Refusing to change anything: ${a.reason}` }); }
+    if (!a.reconciles) { return res.status(400).json({ success: false, error: `Refusing to change anything: ${a.reason}` }); }
     const repairs = a.misfiled?.repairs || [];
-    if (!repairs.length) { client.release(); return res.json({ success: true, data: { repaired: 0, unmatched: 0, unbooked: 0, rows: [], unclear: (a.misfiled?.unclear || []).length } }); }
+    if (!repairs.length) { return res.json({ success: true, data: { repaired: 0, unmatched: 0, unbooked: 0, rows: [], unclear: (a.misfiled?.unclear || []).length } }); }
 
     // Honour a caller's narrowing, never a caller's list: ids SELECT from what
     // the statement already proved — a client can repair one row without being

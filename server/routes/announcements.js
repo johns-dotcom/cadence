@@ -31,11 +31,20 @@ router.get('/active', async (req, res) => {
 // POST /api/announcements/:id/dismiss — dismiss for the current user.
 router.post('/:id/dismiss', async (req, res) => {
   try {
-    await pool.query(
-      `INSERT INTO announcement_dismissals (announcement_id, user_id) VALUES ($1, $2)
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ success: false, error: 'Invalid announcement id' });
+    // SELECT the id rather than passing it straight in: an unknown id would
+    // otherwise fail the FK and surface as a 500 on what is really a 404.
+    const { rowCount } = await pool.query(
+      `INSERT INTO announcement_dismissals (announcement_id, user_id)
+       SELECT a.id, $2 FROM announcements a WHERE a.id = $1
        ON CONFLICT (announcement_id, user_id) DO NOTHING`,
-      [parseInt(req.params.id, 10), req.user.id]
+      [id, req.user.id]
     );
+    if (!rowCount) {
+      const exists = await pool.query('SELECT 1 FROM announcements WHERE id = $1', [id]);
+      if (!exists.rows.length) return res.status(404).json({ success: false, error: 'Announcement not found' });
+    }
     res.json({ success: true });
   } catch (error) {
     console.error('Dismiss announcement error:', error);

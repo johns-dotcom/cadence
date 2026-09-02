@@ -637,6 +637,7 @@ router.get('/funding-pairs/cross-currency', async (req, res) => {
 router.post('/tx/:ppId(\\d+)/funding-pair', async (req, res) => {
   try {
     const bankId = parseInt(req.body.bank_txn_id, 10);
+    if (!Number.isInteger(bankId)) return res.status(400).json({ success: false, error: 'bank_txn_id is required' });
     if (req.body.undo) {
       const r = await pool.query(
         `UPDATE bank_transactions SET dismissed = FALSE, dismissed_reason = NULL WHERE id = $1 AND label_id = $2 AND dismissed_reason = 'funding' RETURNING id`,
@@ -833,6 +834,10 @@ router.post('/duplicate-pairs/merge', async (req, res) => {
     await client.query(`SET LOCAL lock_timeout = '10s'`);
     const orphanId = parseInt(req.body.orphan_id, 10);
     const twinId = parseInt(req.body.twin_id, 10);
+    if (!Number.isInteger(orphanId) || !Number.isInteger(twinId)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, error: 'orphan_id and twin_id are required' });
+    }
     const [orphan, twin] = await Promise.all([
       client.query(`SELECT * FROM expenses WHERE id = $1 AND label_id = $2 FOR UPDATE`, [orphanId, req.labelId]),
       client.query(`SELECT * FROM expenses WHERE id = $1 AND label_id = $2 FOR UPDATE`, [twinId, req.labelId]),
@@ -899,6 +904,7 @@ router.post('/duplicate-pairs/merge', async (req, res) => {
 router.post('/duplicate-pairs/reject', async (req, res) => {
   try {
     const orphanId = parseInt(req.body.orphan_id, 10);
+    if (!Number.isInteger(orphanId)) return res.status(400).json({ success: false, error: 'orphan_id is required' });
     await pool.query(
       `INSERT INTO statement_match_rejections (label_id, txn_fingerprint, expense_root_id, source, created_by)
        VALUES ($1, $2, $3, 'dup-pair', $4) ON CONFLICT DO NOTHING`,

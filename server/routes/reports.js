@@ -23,6 +23,7 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { usdOf, round2 } = require('../lib/usd');
+const { isValidDay } = require('../lib/calendarDay');
 const { artistBucketKey, artistLabel } = require('../lib/artistKey');
 const { fingerprintOfExpense, fingerprintOfIncome, ymd } = require('../lib/reportFingerprint');
 const { loadLabelLevelRules, SCOPES: LL_SCOPES, norm: llNorm } = require('../lib/labelLevel');
@@ -62,15 +63,6 @@ function monthsBetween(from, to) {
   }
   return out;
 }
-// A real calendar day, not just the right shape: '2026-02-31' matches the
-// regex, reaches SQL, and Postgres rejects it as a 500 instead of a 400.
-const isValidDay = (s) => {
-  const v = String(s || '');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
-  const [y, m, d] = v.split('-').map(Number);
-  if (m < 1 || m > 12 || d < 1) return false;
-  return d <= new Date(y, m, 0).getDate();
-};
 function rangeProblem(from, to) {
   if (!isValidDay(from) || !isValidDay(to)) return 'from and to must be YYYY-MM-DD';
   if (from > to) return 'The range is backwards — from is after to';

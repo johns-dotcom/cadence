@@ -6,7 +6,13 @@ const pool = require('../db');
 
 // Resolve the family root id for any member (parent keeps its own id).
 async function familyRoot(db, id, labelId) {
-  const { rows } = await (db || pool).query('SELECT COALESCE(parent_id, id) AS root FROM expenses WHERE id = $1 AND label_id = $2', [id, labelId]);
+  // A non-integer id (a missing/garbage body field parsed to NaN) must resolve
+  // to "no such family", not reach Postgres — `WHERE id = NaN` is a type error
+  // that surfaces as a 500 on what is really a 400/404. Every caller already
+  // treats null as not-found, so guarding here fixes all of them at once.
+  const n = Number(id);
+  if (!Number.isInteger(n)) return null;
+  const { rows } = await (db || pool).query('SELECT COALESCE(parent_id, id) AS root FROM expenses WHERE id = $1 AND label_id = $2', [n, labelId]);
   return rows[0]?.root || null;
 }
 

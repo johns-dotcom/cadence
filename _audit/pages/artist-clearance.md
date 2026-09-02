@@ -51,7 +51,7 @@ Design-system-level diffs (Inter font, accent default, control heights, radii) a
 - **Chart preview side panel**: sticky card mirroring 7 header values + numbered track list ("untitled" italics) (:483-521). NEW: none. (AC-7)
 - **Track expansion model**: OLD `expanded` Set — multiple tracks open at once, first open by default, form always seeded with 1 blank track, removeTrack refuses to drop the last one (:81,124-127,144,66-68). NEW single-index accordion (`openTrack`), opening one closes the other, form starts with 0 tracks, no minimum (:24,36-38). (AC-8)
 - **Loading/error surfaces**: OLD Skeleton blocks on load (:224) + persistent red error banner (:463-465); NEW no loading state and errors only as transient toasts (:28,61). (AC-13)
-- Artists fetch: OLD `/artists?limit=500` (:94); NEW `/artists` unbounded default (:28) — roster completeness `UNVERIFIED — needs runtime check` (depends on NEW /artists default limit).
+- Artists fetch: OLD `/artists?limit=500` (:94); NEW `/artists` unbounded default (:28) — roster completeness RESOLVED 2026-09-02 (Phase 10) — `/artists` is not unbounded: `artists.js:56` clamps to `Math.min(1000, Math.max(1, parseInt(limit) || 1000))`. Default AND cap are 1000, so the real (narrower) risk is silent truncation above 1000 artists (depends on NEW /artists default limit).
 
 ### Features in NEW not in OLD
 - Success toasts on save/update (NEW :60).

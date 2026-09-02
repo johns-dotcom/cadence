@@ -43,13 +43,13 @@ OLD page had zero interactions, so these are NEW-internal findings:
 - `BLANK` form state carries `status` and `notes` (:10) but the form renders no inputs for either (:41-46) — notes can never be entered or seen anywhere in the UI even though the server accepts it (ndas.js:8); status is settable only after creation via the row pill.
 - Status change PATCHes then reloads (:29); failure toasts and the controlled select snaps back — sound.
 - Delete uses `window.confirm` (:30) although the repo now ships `ui/ConfirmDialog` (01-design-system.md, Shared UI primitives) — consistency gap.
-- Dates render via `new Date(dateOnly).toLocaleDateString()` (:70-71) — the UTC-parse off-by-one-day class this repo already fixed in MyWork (cadence CLAUDE.md "Also fixed"). If the API returns date-only strings, west-of-UTC users see the prior day. `UNVERIFIED — needs runtime check` whether pg returns these columns as timestamps or date strings here.
+- Dates render via `new Date(dateOnly).toLocaleDateString()` (:70-71) — the UTC-parse off-by-one-day class this repo already fixed in MyWork (cadence CLAUDE.md "Also fixed"). If the API returns date-only strings, west-of-UTC users see the prior day. CONFIRMED AND FIXED 2026-09-02 (Phase 10) — `ndas.effective_date`/`expiration_date` are Postgres `date` columns, and `pg` hands a DATE back as a JS Date that serialises to `2026-09-02T07:00:00.000Z` (midnight SERVER-local as UTC). Any reader west of the server's zone renders the prior day. Legal.jsx now uses `formatDate` whether pg returns these columns as timestamps or date strings here.
 
 ## 6. Visual/design diff
 
 - RC-1, RC-2, RC-5, RC-6 apply. OLD page was a stub, so no page-level visual baseline exists.
 - OLD's amber "Work in progress" badge and Scale-icon placeholder are correctly absent.
-- NEW status pills use raw `emerald/amber/red-100/700` utilities (Legal.jsx:9) rather than the semantic `success/warning/danger` tokens — dark-mode rendering of raw tints `UNVERIFIED — needs runtime check` (01-design-system.md, Dark strategy row).
+- NEW status pills use raw `emerald/amber/red-100/700` utilities (Legal.jsx:9) rather than the semantic `success/warning/danger` tokens — dark-mode rendering of raw tints REFUTED 2026-09-02 (Phase 10) — premise is inverted: `client/src/index.css:154-320` carries a bounded `.dark` remap layer covering red/rose/amber/orange/yellow/emerald/green/teal/sky/blue/indigo/violet/purple/pink at `-50`/`-100`, plus their `border-`/`ring-`/`hover:` variants, and pushes `-600/-700/-800` text to the `-400` tier. Specificity (0,2,0) beats the utility's (0,1,0), so no `!important` is needed. Raw tints DO remap in dark. (The pills were moved to `success`/`warning`/`danger` tokens anyway in Phase 10) (01-design-system.md, Dark strategy row).
 - NEW table header row `text-[10px] uppercase bg-page/50` (:57) is denser than most NEW tables — closer to OLD's RC-3 density; fine.
 
 ## 7. Defect table

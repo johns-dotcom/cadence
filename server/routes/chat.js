@@ -351,7 +351,7 @@ router.post('/dm', async (req, res) => {
         LIMIT 1`,
       [req.labelId, req.user.id, target]
     );
-    if (existing.rows.length) { client.release(); return res.json({ success: true, data: { id: existing.rows[0].id } }); }
+    if (existing.rows.length) { return res.json({ success: true, data: { id: existing.rows[0].id } }); }
 
     await client.query('BEGIN');
     const c = await client.query(

@@ -5,7 +5,7 @@ import {
   CalendarDays, PieChart, Wallet, Banknote, Megaphone, FileBarChart, GitMerge, Scale,
   FileClock, Shield, Lock, FileSignature, FileSpreadsheet, Layers, PiggyBank, FilePlus2,
   MessageSquarePlus, MessageSquare, Landmark, Coins, ShieldCheck, Users2, UploadCloud, FileSearch,
-  PackageCheck, BarChart3,
+  PackageCheck, BarChart3, Check,
 } from 'lucide-react'
 
 // THE nav definition — one module, three consumers.
@@ -22,11 +22,13 @@ import {
 export const PAGE_LABELS = {
   '/':           'Dashboard',
   '/my-work':    'My Work',
+  '/messages':   'Messages',
   '/team-work':  'Team Work',
   '/calendar':   'Calendar',
   '/financials': 'Financials',
   '/reports': 'Reports',
   '/ad-allocation': 'Allocate Advertising',
+  '/bank-statements': 'Bank Statements',
   '/bank-matching': 'Bank Matching',
   '/bank-ledger': 'Bank Ledger',
   '/bulk-upload': 'Bulk Upload',
@@ -66,6 +68,7 @@ export const PAGE_LABELS = {
   '/add-invoice': 'Add Invoice',
   '/invoices/new': 'Create invoice',
   '/team':       'Team',
+  '/data-quality': 'Data Quality',
   '/activity':   'Activity',
   '/usage':      'Usage',
   '/requests':   'Requests & feedback',

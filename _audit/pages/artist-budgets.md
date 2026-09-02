@@ -69,7 +69,7 @@ Same feature, same shape: budget = six section numbers per artist; blur-saved in
 - **Export transport.** OLD `window.open(…/export?token=)` (boom :132-139); NEW axios blob + object-URL download (cadence sheet :57-65) — **intentional divergence** (cadence removed `?token=` query auth app-wide in the security pass).
 - **Age arithmetic.** OLD anchors at `T12:00:00Z` to dodge TZ edges (boom :397); NEW `new Date(slice(0,10))` — ISO date-only parses UTC-midnight, so a UTC-negative viewer can be a day off. Folded into DEF-AB-13.
 - **Note preservation** — NEW improvement, see §3 table (OLD's client wipes a section note on every amount save).
-- **Per-row async USD** — NEW awaits `rowUsd2` inside per-row loops (routes :108, :175). Same totals; potential N-row latency vs OLD's sync `rowUsd`. `UNVERIFIED — needs runtime check` (depends on whether rowUsd2 resolves without I/O when the locked rate is present).
+- **Per-row async USD** — NEW awaits `rowUsd2` inside per-row loops (routes :108, :175). Same totals; potential N-row latency vs OLD's sync `rowUsd`. RESOLVED 2026-09-02 (Phase 10) — not an N-query problem. `lib/usd.js:39-41` returns `n / locked` immediately when `fx_rate_to_usd > 0`, and `:42` early-outs for USD/zero rows, so the per-row `await` costs one microtask tick. Only unpaid FOREIGN rows (never fx-stamped) fall through to `fx.js:41` `getRates(date)` (depends on whether rowUsd2 resolves without I/O when the locked rate is present).
 
 ## 6. Visual/design diff
 

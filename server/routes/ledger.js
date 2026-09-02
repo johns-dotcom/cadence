@@ -4,7 +4,7 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
-const { uploadFile, getSignedFileUrl, deleteFile, loadFileBuffer, loadFileBase64 } = require('../lib/r2');
+const { uploadFile, getSignedFileUrl, deleteFile, loadFileBuffer, loadFileBase64, isConfigured: r2Configured } = require('../lib/r2');
 const { computeDueDate, PAYMENT_TERMS } = require('../lib/payments');
 const { upsertVendor } = require('../lib/vendors');
 const claude = require('../lib/claude');
@@ -2783,6 +2783,7 @@ router.get('/entries/:id/file/:type', async (req, res) => {
       [parseInt(req.params.id, 10), req.labelId]
     );
     if (!rows.length || !rows[0].key) return res.status(404).json({ success: false, error: 'File not found' });
+    if (!r2Configured()) return res.status(503).json({ success: false, error: "File storage is not configured on this deployment." });
     const url = await getSignedFileUrl(rows[0].key, 3600);
     res.json({ success: true, data: { url } });
   } catch (error) {
@@ -4668,6 +4669,7 @@ router.get('/installments/:installmentId/proof', async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT proof_r2_key FROM payment_installments WHERE id = $1 AND label_id = $2', [parseInt(req.params.installmentId, 10), req.labelId]);
     if (!rows.length || !rows[0].proof_r2_key) return res.status(404).json({ success: false, error: 'No proof on file' });
+    if (!r2Configured()) return res.status(503).json({ success: false, error: "File storage is not configured on this deployment." });
     const url = await getSignedFileUrl(rows[0].proof_r2_key, 3600);
     res.json({ success: true, data: { url } });
   } catch (error) {

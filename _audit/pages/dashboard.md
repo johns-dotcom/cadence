@@ -79,7 +79,7 @@ Structural deltas: NEW has **no Latest Releases carousel and no Notifications pa
 - Prior-year comparison series: server computes same-filters year-1 (`prevYearParams[0] = selectedYear - 1`, OLD server :75-89), gray bars + legend + "this year/last year" tooltip (OLD :539-550, :626-628, :188).
 - This Week / Next Week calendar-week bucketing (server `date_trunc('week', …)` OLD server :103-114) with distinct dot colors; NEW uses a rolling 21-day window (NEW server :68).
 - `r` hotkey → refetch (OLD :346-348 via `useHotkeys`). NEW Dashboard imports no hotkeys.
-- Refetch on `user?.id` change ("view-as" switching, OLD :237-239). NEW fetches once on mount (:34-39). Impact under cadence impersonation UNVERIFIED — needs runtime check (cadence may remount the tree on enter-workspace).
+- Refetch on `user?.id` change ("view-as" switching, OLD :237-239). NEW fetches once on mount (:34-39). Impact under cadence impersonation CONFIRMED 2026-09-02 (Phase 10) — enter-workspace/impersonation is setState-only: `AuthContext.jsx:97-129` calls setToken/setUser/setLabel with no reload and no `key` change, and `App.jsx` puts no `key` on Layout. The tree does NOT remount, so this stale-data defect is real (cadence may remount the tree on enter-workspace).
 - Full-page load skeleton + error screen (OLD :356-375).
 - My Tasks / Pending Approvals as top-row **link cards** with count pills; Pending Approvals card is admin-gated client-side via `isAdmin` (OLD :218, :437-448). NEW gates via server `isBkAdmin` (Approver included — wider than OLD's Admin/Superadmin check; NEW server :10, :41).
 - Team Members stat (OLD :390; server :15,:138).
@@ -113,7 +113,7 @@ Structural deltas: NEW has **no Latest Releases carousel and no Notifications pa
 | Filters | year/genre/format as query params, case-insensitive trim match (server :44-56) | none |
 | Prior-year series | yes (server :74-89) | none |
 | Bookkeeping source | external Flask app `${BK_URL}/api/dashboard-summary` with cookies (OLD :42, :83-92) | native SQL + `toUSD` FX (NEW server :95-111) — [INT] |
-| N+1 note | — | `/widgets` awaits `toUSD` per MTD expense row in a loop (server :110); fine at small volume, UNVERIFIED — needs runtime check at scale |
+| N+1 note | — | `/widgets` awaits `toUSD` per MTD expense row in a loop (server :110); fine at small volume, CONFIRMED 2026-09-02 (Phase 10) — measured against the seeded workspace (86 expenses): `/api/dashboard/widgets` took 0.66s / 1.14s / 1.53s across three calls. Already slow at trivial volume, so the per-row `await` is a real scaling risk, not a theoretical one at scale |
 
 ## 6. Tables & forms (if present)
 
@@ -137,6 +137,6 @@ No tables or forms on either side. Form-adjacent controls: OLD's three filter `<
 14. **P2** — Bookkeeping widget lost recent-invoices mini list, invoice-count and "% of logged" sublabels, "Review now →" CTA and "Open Ledger" link (OLD :94-173 vs NEW :94-106) — fix: cadence Dashboard.jsx:94-106 + extend `/widgets` bookkeeping payload (server :113-119). (MED — OLD widget wasn't rendered in OLD's current JSX and hit an external app; "Pending QB" omission is [INT], QB scoped out)
 15. **P3** — Upcoming headline count off-by-one vs OLD: `>= CURRENT_DATE` (counts today) + `status != 'Archived'` vs OLD `> CURRENT_DATE`, no archive filter — fix: cadence server/routes/dashboard.js:20 if strict parity wanted. (HIGH)
 16. **P3** — Overdue/due-today task buckets computed against server `CURRENT_DATE` instead of OLD's local-calendar client helpers — can disagree with My Work near midnight for non-server-TZ users — fix: cadence server/routes/dashboard.js:86-92 or compute client-side per OLD :283-289. (MED)
-17. **P3** — No refetch on acting-user switch (OLD refetched on `user?.id` change) — fix: cadence Dashboard.jsx:34-39 dependency array. Impact UNVERIFIED — needs runtime check (cadence enter-workspace may remount). (LOW)
+17. **P3** — No refetch on acting-user switch (OLD refetched on `user?.id` change) — fix: cadence Dashboard.jsx:34-39 dependency array. Impact CONFIRMED 2026-09-02 (Phase 10) — enter-workspace/impersonation is setState-only: `AuthContext.jsx:97-129` calls setToken/setUser/setLabel with no reload and no `key` change, and `App.jsx` puts no `key` on Layout. The tree does NOT remount, so this stale-data defect is real (cadence enter-workspace may remount). (LOW)
 
 Intentional divergences (not defects): brand accent in chart/pie firsts (RC-2); "at Boom Records" → `{label.name}` subtitle; label-scoped queries throughout; native bookkeeping vs Flask BK app (+ `/bk/*` → `/approvals` link targets); ReconciledBadge target `/bk/statements` → `/bank-matching` with reopened state (cadence bank-matching model); welcome banner / pinned links / widget visibility from `label.settings.dashboard`; "Pending QB" metric dropped (QB import scoped out).

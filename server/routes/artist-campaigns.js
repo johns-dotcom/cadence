@@ -50,6 +50,7 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant, requireApprover } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { toUSD } = require('../lib/fx');
+const { isValidDay } = require('../lib/calendarDay');
 const { usdOf, round2 } = require('../lib/usd');
 const { recordMentions } = require('../lib/mentions');
 const { excludeBankRows } = require('../lib/ledgerSource');
@@ -65,7 +66,6 @@ const bucketKey = S.artistBucketKey;   // money buckets — folds placeholders t
 const songKeyOf = S.songKeyOf;
 const rowUsd = (r) => round2(usdOf(r.amount, r.currency, r.fx_rate_to_usd));
 const isAdmin = (req) => ['Superadmin', 'Admin'].includes(req.user.role);
-const isValidDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
 const today = () => new Date().toISOString().slice(0, 10);
 
 // Missing socials: a row's own social_handles is empty AND it is not a split
@@ -574,9 +574,11 @@ router.post('/review-assign', async (req, res) => {
   const client = await pool.connect();
   try {
     const expenseId = parseInt(req.body.expense_id, 10);
+    // NaN would reach Postgres as an integer type error → a 500 on a bad body.
+    if (!Number.isInteger(expenseId)) return res.status(400).json({ success: false, error: 'expense_id is required' });
     const ids = Array.isArray(req.body.user_ids) ? req.body.user_ids.map((n) => parseInt(n, 10)).filter(Boolean) : [];
     const ent = await client.query('SELECT id FROM expenses WHERE id = $1 AND label_id = $2', [expenseId, req.labelId]);
-    if (!ent.rows.length) { client.release(); return res.status(404).json({ success: false, error: 'Entry not found' }); }
+    if (!ent.rows.length) { return res.status(404).json({ success: false, error: 'Entry not found' }); }
     // Reviewers must be in this workspace — a client-supplied id is never trusted.
     const ok = ids.length
       ? (await client.query('SELECT id FROM users WHERE label_id = $1 AND id = ANY($2::int[])', [req.labelId, ids])).rows.map((r) => r.id)
@@ -694,9 +696,10 @@ router.post('/not-campaign', async (req, res) => {
   const client = await pool.connect();
   try {
     const id = parseInt(req.body.expense_id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ success: false, error: 'expense_id is required' });
     const on = req.body.value !== false;
     const cur = await client.query('SELECT id, parent_id FROM expenses WHERE id = $1 AND label_id = $2', [id, req.labelId]);
-    if (!cur.rows.length) { client.release(); return res.status(404).json({ success: false, error: 'Not found' }); }
+    if (!cur.rows.length) { return res.status(404).json({ success: false, error: 'Not found' }); }
     const root = cur.rows[0].parent_id || id;
     const fam = await client.query('SELECT id FROM expenses WHERE label_id = $1 AND (id = $2 OR parent_id = $2)', [req.labelId, root]);
     const ids = fam.rows.map((f) => f.id);
@@ -848,9 +851,9 @@ router.post('/:artist/rename-song', async (req, res) => {
     const artistKey = normKey(req.params.artist);
     const fromKey = songKeyOf(req.body.from);
     const to = String(req.body.to || '').trim();
-    if (!to) { client.release(); return res.status(400).json({ success: false, error: 'New song name required' }); }
+    if (!to) { return res.status(400).json({ success: false, error: 'New song name required' }); }
     const toKey = songKeyOf(to);
-    if (toKey === S.NO_SONG_KEY) { client.release(); return res.status(400).json({ success: false, error: 'A song needs a name' }); }
+    if (toKey === S.NO_SONG_KEY) { return res.status(400).json({ success: false, error: 'A song needs a name' }); }
 
     await client.query('BEGIN');
     // The ledger. `song_key` is a JS rule (blank → __no_song__), so the rows are

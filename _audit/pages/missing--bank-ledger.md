@@ -127,7 +127,7 @@ What OLD has that NEW's bank-matching does NOT:
 - **Schema**: none new — NEW already has `entry_source='bank_statement'` rows,
   `bank_transactions`-equivalents, statement balances, `bank_txn_invoice_links`,
   settlement analog. `no_invoice_expected` on bank transactions needs verifying
-  in NEW's statement schema (`UNVERIFIED — needs runtime check`).
+  in NEW's statement schema (RESOLVED 2026-09-02 (Phase 10) — the capability exists under a different name: the column is `bank_transactions.no_invoice` BOOLEAN (`server/index.js:2216`); `no_invoice_expected` is the COMPUTED bucket name derived from it plus rule hits (`bank-matching.js:214`). No schema work needed).
 - **Server**: add `?source=bank|invoices` (reuse `lib/ledgerSource.js`
   `excludeBankRows` / `BANK_SOURCE` — the IS DISTINCT FROM rule is already
   codified there) to the ledger list + any export; add the `no_invoice_expected`

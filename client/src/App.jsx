@@ -100,7 +100,14 @@ function ProtectedRoute({ children }) {
 // The in-app manual as a routable page (also available as a modal in Layout).
 function ManualPage() {
   const navigate = useNavigate()
-  return <UserManual open onClose={() => navigate(-1)} />
+  // navigate(-1) is a no-op when there is nothing to pop — opening /manual in a
+  // fresh tab left Close doing visibly nothing. history.state.idx is React
+  // Router's own position counter; 0 means this entry is the start of the stack.
+  const close = () => {
+    if (window.history.state?.idx > 0) navigate(-1)
+    else navigate('/', { replace: true })
+  }
+  return <UserManual open onClose={close} />
 }
 
 function AdminRoute({ children }) {

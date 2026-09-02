@@ -2403,194 +2403,59 @@ diverge from every other table.
 
 ---
 
-## Built inventory (what works today)
+## Built inventory — rewritten 2026-09-02 (Phase 10 QA)
 
-### Foundation / tenancy / platform (spec §3, §5) — strong
-- Strict multi-tenancy: `label_id` on every tenant table; `withTenant` →
-  `req.labelId`; tenant middleware `requireAdmin`/`requireApprover`/`requirePlatformAdmin`/
-  `requirePlatformOwner`.
-- Platform operators via `users.is_platform_admin` + `platform_role` (owner|admin).
-  "Enter workspace" mints a 2h scoped token; acting-operator banner in `Layout.jsx`
-  (tracked in AuthContext state, NOT a JWT claim).
-- Platform console pages: Workspaces (list/create/suspend/reactivate/edit-branding/
-  delete-with-type-name-confirm), Overview (KPIs), Analytics (cross-tenant, 12-mo),
-  Activity (cross-tenant audit), Operators (invite/revoke), Account. `platform.js`.
-- Auth: no public signup; workspace owner provisioned + emailed a 7-day invite link.
-  Suspended labels block non-operator logins.
+**This section replaces the pre-audit "Built inventory" and "Gap map" that stood
+here until Phase 10.** Those were written against the 2026-07-27 audit and were
+repeatedly proven wrong by later phases — they still called Usage analytics,
+`/manual`, the platform Analytics page and the mobile BottomNav "MISSING" long
+after each had shipped. A gap map that has to be corrected in a footnote is worse
+than no gap map, so the milestone-by-milestone version is gone. **The single
+source of truth for what is still open is now `_audit/97-remaining.md`**; the
+dated phase entries below and above are the record of how each area got built.
 
-### Roles / permissions (spec §4) — partial
-- Roles Superadmin/Admin/Approver/User; `requireApprover` = the isBkAdmin gate.
-- `user_page_permissions` + `canView(path)` client mirror (`AuthContext.jsx`) + AdminRoute
-  guards. `user_visible_reps` rep-visibility on ledger. Impersonation (2h, banner, exit).
+### How to check a claim rather than trust one
+Every statement here was re-verified live on 2026-09-02 against a seeded
+workspace. Three harnesses exist and should be re-run rather than reasoned about:
 
-### Finance core (spec §7.5, §7.9) — the deepest area
-- **Ledger** (`Ledger.jsx`, `ledger.js`): master `expenses` table; list w/ status/
-  category/artist/search filters; per-entry drawer (`LedgerEntryDrawer.jsx`) with History /
-  Installments / Bulk-items / **AI scan** tabs; rush + AI-flag badges on rows.
-- **Splits**: parent/child via `parent_id`; split across artists, unsplit. Children hidden
-  from main list.
-- **Add Invoice / Add Reimbursement** (`AddLedgerEntry.jsx`, mode-driven, own routes):
-  AI parse-invoice pre-fill; reimbursement requires receipt; live duplicate-invoice warning
-  via `/ledger/check-dup`.
-- **Approvals**: NOT a dedicated page — folded into Ledger status filters + drawer.
-- **Payments** (`Payments.jsx`): Due/Paid tabs; per-currency totals; batch mark-paid;
-  schedule; **rush** (set/clear/bulk); **installments w/ proof upload**; **payment
-  confirmations** (per-row + bulk, sent/unsent tracking). FX-stamps on pay.
-- **Vendors** (`Vendors.jsx`): list w/ spend + W9-on-file; detail drawer; **rename /
-  merge / aliases CRUD**; **batch "Scan all W9s"**. Exact case-insensitive payee match.
-- **Public vendor form** (`VendorSubmit.jsx`, `/submit/:slug`): single-page (not 3-step
-  wizard); W9-on-file skip; invoice/receipt/W9 gates; AI autofill; per-IP rate limit;
-  duplicate check; creates pending expense + R2.
-- **Create Invoice (outbound)** (`CreateInvoice.jsx`): label-branded, auto-number, line
-  items, currency, remittance block (from `labels.invoice_settings`), PO#, print-to-PDF,
-  saved list w/ Table/Cards toggle.
-- **Libs**: `claude.js` (parse/scan/W9/marketing, structured JSON schema; NO rate-limit
-  buckets), `aiScan.js` (persisted invoice+W9 discrepancy scans), `fx.js` + `fxStamp.js`
-  (locked `fx_rate_to_usd`, startup backfill), `normalizeInvoiceNum.js`, `spotify.js`,
-  `zip.js`, `email.js` (Resend→SendGrid→SMTP; templates: invite, vendorDecision,
-  paymentConfirmation, taskAssignment).
+| Harness | Proves | Command |
+|---|---|---|
+| `client/scripts/check-render.mjs` | every route in `App.jsx` module-loads AND server-renders | `node scripts/check-render.mjs <routes.json>` |
+| `client/scripts/check-tdz.cjs` | no const/let read before its declaration in the same scope | `npm run check:tdz` |
+| `server/scripts/finance-fixtures.cjs` | 164 pure-function money/date assertions | `node server/scripts/finance-fixtures.cjs` |
 
-### Label ops (spec §7.1–7.4) — mixed
-- **Global search** (`GlobalSearch.jsx`) — DONE (⌘K, min-2, grouped releases/artists/
-  contracts/deals).
-- **Calendar** — DONE (month grid, 6 event types, per-type filters, manual CRUD; no hotkeys).
-- **Deal pipeline** (`Deals.jsx`) — kanban stages + advance button + card detail (button
-  advance, not true drag-drop; no mobile snap-scroll).
-- **Artist profile** (`ArtistProfile.jsx`) — devlog, Spotify stats, releases tab, links,
-  files, archive (no contracts tab; devlog not color-coded).
-- **Releases** (`Releases.jsx`, `ReleaseDetail.jsx`, `DspTracker.jsx`, `ReleaseExtras.jsx`)
-  — list; add-release; 14-item checklist w/ %; expanded tabs Metadata/DSP(9)/Budget/
-  Comments/Details (no Checklist-as-tab grouping Content/Distribution/Pitching, no
-  Activity tab, no merge flow, no assignment, no hotkeys, no calendar view).
-- **Contracts / Pending / Renewals** — DONE as trackers (no AI clause gen, no Create-contract).
-- **NDAs / Legal / Label waivers / Artist clearances** — CRUD + trackers exist; waiver has
-  live-preview + print (no template variants, no Word .docx, no jsPDF selectable-text).
-- **Duplicates** (`Duplicates.jsx`) — release/artist/vendor merge (no invoice-dupe tiers,
-  no ledger artist-flags, no dismissal audit/restore, no normalization bulk-apply).
-- **Salary** — DONE (separate roster, per-month toggles + history, admin-gated).
+`npm run build` proves **none** of these. It is a bundler, not an interpreter: it
+happily ships a `useMemo` dep referencing a `const` 300 lines below (the `/ledger`
+crash) and an undefined JSX component (the `Check` crash in Phase 10 — see below).
 
-### Cross-cutting (spec §9) — partial
-- Notifications: computed bell (`notifications.js`, `NotificationBell.jsx`, polled); NO
-  persisted @mentions.
-- Audit: `activity_log` + `logActivity`; NO separate `bk_audit_log`. `ledger_history`
-  gives per-field entry history.
-- Security: helmet (CSP off for SSO), sanitize middleware, auth + general rate limiters.
-  Hardening (2026 audit): user files served via `lib/safeFiles.js sendFileSafely`
-  (inline only for an image/PDF allowlist, else octet-stream + attachment +
-  `nosniff` — kills same-origin SVG/HTML XSS) on chat attachments + `/uploads/:filename`;
-  platform member/owner routes gated by `requireWorkspaceAccess` (admin-tier
-  operators confined to their `operator_workspace_access` allowlist, matching
-  `/enter`); email link builders (invite/mention) no longer fall back to the raw
-  Host header (`FRONTEND_URL || req.headers.origin` only). IDOR sweep of all
-  ~40 route files found tenant scoping clean. Set `FRONTEND_URL` in prod.
-  Second pass: chat attachments now served via **file-scoped expiring signed
-  URLs** (`lib/mediaToken.js`, `?exp=&sig=` HMAC over the attachment id) instead
-  of the session JWT — the public `/chat/attachments/:id` route sits above the
-  auth gate and the sig is the capability (minted only into messages a member
-  can see; url added per-attachment in `signAttachments`). Vendor form is now
-  **token-only** (`labelBySlug` + `/submit/:token` OG route drop the enumerable
-  slug; client links use `vendor_form_token` only). Upload **concurrency guard**
-  in index.js caps concurrent multipart requests (`MAX_CONCURRENT_UPLOADS`, def 8)
-  to bound multer memoryStorage RAM. (Socket auth already uses the handshake
-  `auth` payload, not a URL query, so it wasn't log-exposed.)
-  Third pass (residual): dropped the vulnerable `xlsx` package — `/ledger/bulk-zip`
-  now parses uploaded spreadsheets with `exceljs` (+ 20k-row cap) so a crafted
-  `.xlsx` can't hit SheetJS's prototype-pollution/ReDoS CVEs; removed `?token=`
-  query-param session auth entirely (Authorization header only — files use
-  signed URLs, socket uses handshake auth); @mention emails throttled per
-  recipient (5-min window, in-memory) to stop email-bombing; **CSP enabled** via
-  helmet — REPORT-ONLY by default (script-src has no `unsafe-inline`), flip
-  `CSP_ENFORCE=true` after confirming the browser console is clean. Still to
-  verify OUTSIDE code: R2 bucket must deny public read (rely on signed URLs);
-  tighten prod CORS from `origin:true`. Known trade-offs left: no maker-checker
-  on approvals (an Approver can self-approve); AI-parsed fields are human-gated
-  but not visually flagged; login 409 reveals an email's workspaces.
-- Keyboard: global help modal (`?`) + a handful of `g`-nav shortcuts in Layout; NO
-  reusable `useHotkeys`, NO per-page hotkeys.
+### Surface inventory (all verified rendering + responding 2026-09-02)
+- **562 server routes** across 47 mounts, all enumerated by introspecting the
+  Express routers. Every GET returns 2xx or a deliberate 4xx; no 500s. Every
+  write route rejects an empty body with a validation error rather than a crash.
+- **84 client routes** in `App.jsx`, all of which module-load and render.
+- **Nav integrity**: every `buildNavGroups` entry resolves to a real `<Route>`,
+  and every `PAGE_LABELS` key resolves to a real `<Route>`. Nav item counts by
+  role: Admin 49 · Approver 42 · User 16.
+- Routes deliberately absent from nav: the public/auth pages (`/login`,
+  `/accept-invite`, `/reset-password`, `/privacy`, `/eula`), the platform-shell
+  pages (`/analytics`, `/announcements`, `/operators`, `/account` — they have
+  their own `PlatformLayout` nav), and `/notifications` + `/manual`, which are
+  reached from the bell and the header help button respectively.
 
----
-
-## Gap map (mapped to spec §§, ordered by the spec's build milestones)
-
-### Milestone 1 — Foundation gaps (§2, §4, §5)
-- **UI kit** `components/ui/` (Button/Card/Input/Select/Textarea/Badge/BottomSheet) — MISSING.
-- **Skeleton** loaders (PageHeader/StatCards/Table/Card/Block/KanbanBoard) — MISSING.
-- **Date helpers** `formatDate` + local-calendar (`localDateStr/dateOnly/isPastLocal/
-  daysUntilLocal`) + `getDarkColors(theme)` JS mirror — MISSING.
-- **Permission templates** (`permission_templates` table, presets, apply/save/copy-from-user)
-  — MISSING. Parent-grant-covers-subpage in `canView` — not modeled.
-- **Test users + mock axios adapter + `testUserGuard`** — MISSING (is_test-ish only).
-- **Delete guards**: last-Superadmin protection, only-Superadmin-deletes-Admins, dynamic
-  information_schema FK sweep — MISSING.
-- **labels.vendor_form_token** (unguessable public token + rotation) — MISSING (uses slug);
-  labels also lack `plan`, `settings` JSONB (has `invoice_settings`).
-- Dev-mode label-scoping assertion middleware — MISSING.
-
-### Milestone 2 — Finance core gaps (§7.5, §7.9, §8)
-- **Ledger**: frozen sticky columns; ~28 persisted toggleable columns; true inline cell
-  edit (socials popover, inline file cells); 20-deep undo stack w/ toast-undo; amount-range
-  filter `500|500-1000|>500` + QB/recoup/method/flag/bulk/source filters + sorts;
-  per-currency totals footer; auto-split on comma songs, carve-off-reimbursement,
-  children-own-toggles; `?focus=<id>` deep link + spotlight; hotkeys z/c/x. — MOSTLY MISSING.
-- **Dedicated Approvals page** (cards, j/k/a/r, edit-in-place re-runs scans, dismiss-per-
-  discrepancy, split-before-approve, notify-vendor preview, bulk approve email queue,
-  audit drawer, `bk_audit_log`) — MISSING (currently ledger filters).
-- **Payments**: quick filters (Due Soon/Overdue/Rush/Hold/Paid); 5 USD-equiv stat cards;
-  family-aware amount sort; calendar view; Send-for-Approval (Excel+PDF email); proof→AI→
-  auto-mark-paid; split-family payment cascade; rush/hold mutex (no `on_hold` yet);
-  per-vendor confirmation wizard + CC-rep toggle + EmailPreviewModal. — PARTIAL.
-- **Vendors**: `vendor_emails` saved-emails (multi/labeled/auto-CC/carried on rename/merge);
-  canonical-W9 `w9_entry_id||id` rule; Added-expense-vendors subpage; name-mismatch batch
-  surfaced in list. — PARTIAL/MISSING.
-- **Public vendor form**: 3-step wizard; up to 4 extra emails; server+client invoice-number
-  gate; artist-row splits + live rep list + socials; draft autosave/resume; similar-amount
-  warning; served OG tags. — PARTIAL.
-- **Email dispatch layer** `emailDispatch.prepareEmail(kind,ctx)` (9 kinds) + **EmailPreviewModal**
-  (editable To/CC chip input, attachments, queue mode) + per-label Gmail OAuth — MISSING.
-
-### Milestone 3 — Finance depth (§7.5 depth, §7.6, §7.7)
-- **Recoupments** to spec: UFR toggle + `statementMonthFor()` stamping (cutoff day 20),
-  statement tabs, priority H/M/L tag+subtabs, ready-for-planning markers, prior-year subpage,
-  socials editor w/ running total, notes, add-expense flow. Needs `ufr/ufr_marked_at/
-  entry_source/prior_year_tag/social_handles/recoupment_label` columns. — MOSTLY MISSING.
-- **Recoupment Planning** page — MISSING.
-- **Artist Campaigns** page + `/artist-campaigns` (index cards, per-artist detail, cobrand
-  rollups, review inbox, per-page chat rooms, reviewers). Needs `review_assignments,
-  expense_comments, campaign_chat_messages, campaign_chat_reads, user_mentions,
-  song_campaign_status`, `cobrand`, `artist_breakdown` cols. — MISSING (only basic Campaigns).
-- **Bulk Deals**: add quantity/unit/socials/stalled-detection/completed section. — PARTIAL.
-- **Financials** depth: artist/month P&L, KPI deltas, multi-chart, pivots, drill-through,
-  CSV/Excel. — PARTIAL (basic summary only).
-- **Recording Budgets** (draft→approved→locked lifecycle, sections, costs-to-date) — MISSING.
-- **Invoices index** — DONE at `/invoice-search` (Phase 3 bk-invoices port,
-  2026-08-31). **Expense Lookup**, **Archive**, **Bulk Upload**, **Bulk Re-upload**,
-  **QB Import**, **Ledger matching**, **Master-sheet import UI** — MISSING (master-sheet
-  import API exists, no UI).
-
-### Milestone 4 — Label ops depth (§7.1–7.4)
-- **Dashboard** widgets: latest-releases carousel, pipeline bar chart, genre pie, upcoming
-  timeline, notifications panel, my-tasks summary, pending-approvals card, bookkeeping widget.
-  — MISSING (basic stat cards + activity only).
-- **My Work** command center — DONE and beyond spec (see "Post-spec: task database
-  views + Team Work" above). Not carried over from the spec: quick-add shorthand
-  parsing (`!high` / `#Finance` / natural dates), pins (superseded by drag-to-top),
-  and assigned-releases/contracts rails.
-- **Catalog** page — MISSING.
-- **Releases**: 7-tab (add Activity + Checklist grouping), merge flow, assignment, hotkeys,
-  mobile tab strip. Deal pipeline true drag-drop. Artist roster search/filter + delete gate.
-  Contracts AI clause gen + Create-contract + NDA template variants + Word export. — PARTIAL.
-- **User manual** `/manual` — MISSING.
-
-### Milestone 5 — Collaboration & polish (§7.6, §9, §10)
-- Campaign chat / review inbox / @mentions (persisted `user_mentions`, per-item mark-read).
-- **Usage analytics**: `page_views` table + Layout route-ping + in-workspace Analytics page
-  (range picker, stat cards, daily chart, most-used pages, active users). — **BUILT**
-  (Phase 8 analytics pass; route is `/usage`, operator counterpart is `/analytics`).
-- **Internal requests** feature (§9.9) — MISSING.
-- **Mobile kit** (§10): `useIsMobile`, `BottomSheet`, `FilterSheet`, `FAB`, permission-
-  filtered BottomNav (<640px, safe-area), edge-swipe sidebar, Ledger+Payments card lists
-  <768px, 36px touch targets, `viewport-fit=cover`. — MOSTLY MISSING.
-- `useHotkeys` + per-page hotkeys; AI rate-limit buckets; MIME sniff on upload; ≈USD suffixes.
+### Areas, and where their detail lives
+Foundation/tenancy, roles/permissions, the finance core (Ledger · Approvals ·
+Payments · Vendors · public vendor form · Create Invoice), finance depth
+(Reports · Bank Statements · Bank Matching · Recoupments + Planning + Audit ·
+Creators · Artist Budgets · Recording Budgets · Artist Campaigns · Ad
+Allocation), label ops (Releases · Catalog · Roster · Deals · Contracts +
+generation · Legal/NDAs · Clearances · Admin Docs · Salary · Duplicates),
+collaboration (Messages/chat + attachments + mentions + activity bot · My Work ·
+Team Work · Internal Requests · Notifications · Usage analytics) and the
+cross-cutting shell (⌘K search · notification bell · dark mode · mobile shell ·
+hotkeys · `components/ui` kit · escape stack · focus trap) are all **built and
+live**. Each was brought to boom parity by a dated campaign in this file; read
+the campaign entry for that surface for its exact closure count and its
+documented skips, and `_audit/pages/<surface>.md` for the row-level register.
 
 ---
 
@@ -3688,17 +3553,73 @@ filed under them. Dev server left running.
 - New `expenses` column → add to the list-endpoint column set + PATCH allow-list.
 
 ## Known landmines (from prior bugs)
-- Deployed-bundle sourcemaps + ErrorBoundary are how minified crashes get diagnosed.
+
+Each of these shipped at least once. They are ordered by how silent they are —
+the ones at the bottom produce no error at all.
+
+**Postgres / node-pg**
+- **`pg` hands a DATE column back as a JS `Date`, not a string.** A `date` column
+  serialises to `"2026-09-02T07:00:00.000Z"` — midnight *server-local* rendered as
+  UTC. `new Date(that).toLocaleDateString()` in a browser west of the server shows
+  the **previous day**. Verified live in Phase 10. Three sightings (MyWork,
+  notifications overdue, Legal). Use `utils/dates.js formatDate`, never a bare
+  `new Date(...)`, on anything that came from a `date` column.
+- **Never reuse one `$n` against both a column and a literal.** `SET col = $1,
+  other = CASE WHEN $1 = 'Done' …` makes Postgres deduce two types for `$1` and
+  raise 42P08 "inconsistent types deduced for parameter". Casting doesn't help —
+  bind the value twice. Three sightings; this silently killed every task status
+  change (Phase 8). Same shape bites `INSERT … SELECT $1,$2,$3 WHERE NOT EXISTS
+  (… col = $3)`: the bare select list deduces `text`, the comparison deduces the
+  column's type.
+- **A NaN reaches Postgres as a type error, so a bad request becomes a 500.**
+  `parseInt(req.body.x, 10)` on a missing field is `NaN`; `WHERE id = $1` then
+  raises 22P02. Guard with `Number.isInteger` and return 400. Phase 10 found six
+  more of these after the first was fixed in `tasks.js`; `lib/paymentFamily.js
+  familyRoot` is now hardened centrally so every caller inherits the guard.
+- **An unknown FK is a 404, not a 500.** Inserting a child row for an id that
+  doesn't exist raises a foreign-key violation. `INSERT … SELECT … WHERE
+  EXISTS`, then treat `rowCount === 0` as not-found (Phase 10, announcements).
+- **`ALTER TYPE … USING` will not accept a subquery.** The expression is
+  evaluated per row; it has to be a pure expression over that row's columns.
+- **`runMigrations()` is ONE promise chain.** A failure anywhere aborts every
+  migration after it, so boot succeeds with a half-built schema. A FK `ALTER`
+  must come AFTER its referenced table's `CREATE`.
+
+**Node process safety**
+- **A double `client.release()` kills the whole process.** An early `return` that
+  releases the client, in a handler that also has `finally { client.release() }`,
+  makes pg-pool throw *outside* the try — an unhandled rejection that takes the
+  server down for every tenant. It is reachable from ordinary not-found and
+  validation paths. Phase 10 found **12 live sites** (including `POST /chat/dm`
+  returning an existing DM — the common path). Let the `finally` do it, always.
+
+**Client / build**
+- **`vite build` does not execute anything.** It will not catch a `useMemo` dep
+  array referencing a `const` declared below it (TDZ — the `/ledger` crash), nor a
+  JSX component that was never imported. Phase 10's `Check` bug — one missing name
+  in a lucide import in `constants/navConfig.jsx` — white-screened **every page for
+  every Approver, Admin and Superadmin**, because `Layout` calls `buildNavGroups`
+  on every render. It built clean. Run `check-tdz.cjs` and `check-render.mjs`.
+- **Alpha on a `var()`-backed token emits no CSS** under Tailwind's
+  `rgb(var()/<alpha-value>)` scheme when the var holds a hex. The semantic status
+  colors route `/NN` through `color-mix` in `tailwind.config.js` specifically to
+  fix this — and **non-scale opacities emit nothing regardless**, so stick to the
+  default opacity steps. Verify a new tint by grepping the built CSS.
+- **Two `!important` background utilities tie on specificity**, so the winner is
+  stylesheet order — this is how the My Work drop-target fill went dead. The
+  `.dark` raw-tint remap layer in `index.css` deliberately uses specificity
+  (0,2,0) instead of `!important` for the same reason.
+- **`box-shadow` on a `<tr>` is not painted** by Blink/WebKit under
+  `border-collapse: collapse`. Put it on the `<td>`s.
+- Deployed-bundle sourcemaps + ErrorBoundary are how minified crashes get
+  diagnosed. Keep `build.sourcemap` on.
+
+**Verification discipline**
+- **When a route swallows errors by design, a 200 proves nothing — verify the row
+  landed.** The analytics page-view ping returned 200 while writing nothing for
+  weeks, because it caught and discarded a 42P08. Any best-effort/fire-and-forget
+  write needs a read-back assertion, not a status-code assertion.
 - SMTP host typos surface via the Team-invite error banner.
-- Migration ordering: a FK ALTER must come AFTER its referenced table's CREATE.
-- **Never reuse one `$n` against both a column and a literal.** `SET col = $1, other
-  = CASE WHEN $1 = 'Done' …` makes Postgres deduce two types for $1 and raise 42P08
-  "inconsistent types deduced for parameter". Casting the parameter doesn't help —
-  bind the value twice. This silently killed every task status change (Phase 8).
-  The same shape bites `INSERT … SELECT $1,$2,$3 WHERE NOT EXISTS (… col = $3)`: the
-  bare select list deduces `text`, the comparison deduces the column's type. And when
-  the route swallows errors on purpose (the analytics ping), 42P08 produces **no
-  symptom at all** — verify the row landed, not that the call returned 200.
 
 ---
 
@@ -4094,3 +4015,205 @@ detector is worse than leaving it scheduled. Still open, still P1.
 - `expenses.budget_section_override` is a **report-only** attribution: it never
   touches the row's category on /ledger, and it is trusted as stored on READ
   (re-validating would silently reclassify a row whose category was renamed).
+
+---
+
+## Phase 10 — final QA (2026-09-02)
+
+A verification pass, not a build pass: find what nine phases of campaigns broke
+or missed, and make the documentation honest. **Zero new deps.** The premise was
+that the `/ledger` TDZ crash two days earlier was not unique — a clean
+`npm run build` had shipped it, so more of that class had to exist. It did.
+
+### The two P0s — both shipped, both invisible to `npm run build`
+
+**1. `Check` was used but never imported** (`constants/navConfig.jsx:134`,
+introduced in the Phase 9/9.5 commit). Evaluating the nav array reads `Check`,
+which is `undefined`, which throws. `Layout.jsx:243` calls `buildNavGroups` on
+**every authenticated page**, so this was not a broken page — it was a **white
+screen on every page for every Approver, Admin and Superadmin**. Only plain
+Users could use the app at all. Verified by role before and after:
+
+```
+CRASH Admin/Superadmin :: Check is not defined      →  OK  Admin  49 nav items
+CRASH Approver         :: Check is not defined      →  OK  Approver 42 items
+OK    User (16 items, unaffected — the item is Approver-gated)
+```
+
+Rollup does not error on an unresolved global, so the build was clean. This is
+the single most important finding of the phase.
+
+**2. A double `client.release()` kills the entire Node process** — 12 live sites.
+An early `return` that releases the pooled client, in a handler that also has
+`finally { client.release() }`, makes pg-pool throw *from the finally block* —
+outside the try, so the route's own catch never sees it. Node turns that into an
+unhandled rejection and exits. One request kills the server **for every tenant**.
+
+The reachable paths were not exotic: `POST /api/chat/dm` returning an
+already-existing DM (i.e. opening a DM with anyone you have DM'd before),
+`PUT /api/platform/operators/:email/access` on an owner, `POST
+/api/artist-campaigns/:artist/rename-song` with no new name, `POST
+/api/bank-statements/:id/misfiled/repair` on a missing statement, `DELETE
+/api/platform/workspaces/:id` on an unknown id. `routes/flags.js:906` already
+carried a comment explaining this exact failure — one site had been fixed and the
+pattern never swept. Now swept: `artist-campaigns.js` ×4, `bank-statements.js`
+×3, `chat.js` ×1, `platform.js` ×4. All 15 `pool.connect()` sites re-checked for
+the inverse bug (a leak) — all release exactly once.
+
+### Proving the routes, rather than asserting them
+
+**Server — 562 routes across 47 mounts.** Enumerated by introspecting the Express
+routers' own `.stack` rather than by grepping, so the list cannot drift from what
+is actually mounted. Every route hit with a valid token; writes hit with an empty
+body (a 500 on `{}` is an unguarded destructure, a 400 is a working guard);
+DELETEs aimed at a ghost id so the handler runs without destroying data. Paced
+under the 200/min limiter, with 429s retried — an un-retried 429 is an *untested*
+route, not a passing one.
+
+| Sweep | Result |
+|---|---|
+| GET × Superadmin (214) | 185 × 200, 9 × 400, 12+ × 404, 1 × 403 — **0 × 5xx** |
+| WRITE × Superadmin (348) | 70 × 200, 4 × 201, 205 × 400, 61 × 404, 2 × 403 — **0 × 5xx, 0 process kills** |
+| GET × Approver (214) | 131 × 200, 57 × 403, 9 × 400, 16 × 404 — **0 × 5xx** |
+| GET × User (214) | 46 × 200, 159 × 403, 9 × 404 — **0 × 5xx** |
+
+The only remaining 5xx are deliberate: a 502 from `/label/test-email` ("no email
+provider configured") and a 503 from the file routes ("file storage is not
+configured"). Both are correct degradation, not crashes.
+
+**Client — 84 routes, all actually rendered.** No jsdom, playwright, puppeteer,
+vitest or jest exists in the tree, and none was added. But **vite is already a
+devDependency and ships an SSR module loader**, and `react-dom/server` ships with
+`react-dom` — so `client/scripts/check-render.mjs` uses `vite.ssrLoadModule` to
+genuinely execute every page module, then `renderToString` to genuinely run its
+render function inside the app's real providers. Auth and Socket are stubbed to a
+signed-in Superadmin; without that, `loading` never flips (SSR runs no effects)
+and every page would render its spinner and prove nothing.
+
+All 84 render. The harness is self-parsing (it reads `App.jsx`, so it cannot
+drift from the route table), wired as `npm run check:render`, and was verified to
+have teeth by re-introducing the `Check` bug and confirming it fails with a
+precise stack. It also carries a **shell pre-flight** that exercises
+`buildNavGroups` per role — without it the `Check` bug reported as "one route
+broke" (`/settings`, which imports the builder directly) instead of "the app is
+gone for three roles", which is a materially different finding.
+
+**What this does NOT prove, stated plainly:** only the first paint. Effects, data
+fetching, event handlers, drag-and-drop, focus behaviour, layout, and every CSS
+outcome are out of scope. It is a "does it throw" gate, not a browser. The 6
+audit rows that need a real browser are still marked as needing one.
+
+**Nav integrity.** Every `buildNavGroups` entry resolves to a real `<Route>`;
+every `PAGE_LABELS` key resolves to a real `<Route>`. No dead nav links. Three
+nav entries had no `PAGE_LABEL` (`/messages`, `/bank-statements`,
+`/data-quality`) — `Layout.jsx:385` renders that map as the topbar title, so
+those three pages showed a blank title and appeared as raw paths in Usage
+analytics. Added. The routes that are in no nav are all correct: public/auth
+pages, the platform shell's own pages, and `/notifications` + `/manual`, reached
+from the bell and the header help button.
+
+### Other defects found and fixed
+
+- **Six NaN-into-Postgres 500s.** `parseInt(req.body.x)` on a missing field is
+  `NaN`; `WHERE id = $1` raises 22P02, so a bad request became a crash. Fixed at
+  `campaigns/:id/link` + `/unlink`, `bank-matching` funding-pair +
+  duplicate-pairs merge/reject, `artist-campaigns` review-assign + not-campaign —
+  and centrally in `lib/paymentFamily.js familyRoot`, which every caller already
+  treats as returning null for not-found, so one guard fixed all of them.
+- **`announcements/:id/dismiss` 500'd on an unknown id** — a raw FK violation.
+  Now `INSERT … SELECT … WHERE EXISTS` + a 404.
+- **Six unguarded `getSignedFileUrl` calls 500'd with R2 unconfigured**, while
+  `admin-docs.js` already had the right `isConfigured()` guard. The pattern had
+  been fixed once and never propagated (same shape as the release bug above).
+  Now 503 with a real message at all seven sites.
+- **`isValidDay` existed twice and had already drifted** — `reports.js` checked
+  date realness, `artist-campaigns.js:68` checked only the regex, so `2026-02-31`
+  reached SQL. Extracted to `server/lib/calendarDay.js`; both callers share it.
+- **`/manual` Close did nothing in a fresh tab** — `navigate(-1)` with an empty
+  history. Falls back to `/`.
+
+### The four cosmetic pages (Priority 3)
+
+- **Privacy + EULA**: the auto-updating `new Date().getFullYear()` dateline is
+  gone — a live year silently re-dates a legal document every January and claims
+  a review that never happened. Fixed constant instead. `/eula` was titled "Terms
+  of Service", agreeing with neither its route nor its name. Dead `prose prose-sm`
+  classes removed (the typography plugin is not installed). Both now carry an
+  explicit placeholder banner. **The real legal text was deliberately not
+  written** — that needs product/legal sign-off, not an agent.
+- **Login**: `useOneTap` restored; the degraded Google-failure copy and the
+  "Use your work Google account" helper restored; session-expired copy fixed.
+  The raw `bg-green-50`/`amber-50`/`red-50` status blocks moved to semantic
+  tokens. LG-3 (brand vs neutral submit button) left as an intentional divergence.
+- **Legal/NDAs**: `notes` and `status` were in the form state and the server's
+  field list but **rendered nowhere** — both were dead on every row created here.
+  Both now have inputs, and notes render under the counterparty. Dates moved to
+  `formatDate` (see the DATE landmine below). `window.confirm` → `ui/ConfirmDialog`.
+- **Manual**: Print / Save-as-PDF restored — a button that expands every section
+  first (collapsed sections are not in the DOM, so print CSS alone would emit a
+  document of headings) plus an `@media print` block that un-fixes the drawer into
+  a full-width document. The remaining manual rows are content ports, logged.
+
+### The UNVERIFIED marks — 52 triaged, 44 resolved
+
+`_audit/pages/*.md` carried 52 `UNVERIFIED — needs runtime check` notes written
+when cadence had no runtime. Each now carries a dated verdict in place. **None of
+them actually needed R2, AI or SMTP credentials** — the two that mentioned
+external services were answerable from the database and from source.
+
+Six of them were **REFUTED**, and are cleared rather than deferred. The largest
+was `payments.md` DEF-PAY-01, a standing **P1** claiming EmailPreviewModal is
+rendered without its required `open` prop and so "can never send" — all four
+render sites pass it; the line numbers were stale. The next largest was the
+entire dark-mode raw-tint cluster (~10 rows) claiming cadence has no `.dark`
+remap layer: `client/src/index.css:154-320` *is* that layer, covering 14 colour
+families. Also refuted: `autoLinkRelease` is called from both bank-matching
+artist writes; the Calendar and ArtistProfile modals are `ui/Modal` and do close
+on Escape; `payment_terms`/`scheduled_payment_date` and `paid_by`/`paid_marked_at`
+are all stamped at create (exercised live); and there is no browser-TZ
+`isReleased` in `Catalog.jsx` — released-or-not is decided server-side.
+
+Several were **CONFIRMED** and are now known-real rather than suspected: the
+Ledger's 9 hand-rolled overlays genuinely have no Escape handling (the one real
+remaining Escape gap); `enter-workspace` is setState-only with no remount, so the
+Dashboard/My Work stale-data defect is live; `/dashboard/widgets` measured
+0.66–1.53s on 86 expenses; a `w9_filename`-without-key row genuinely exists.
+
+The 8 that remain are labelled with what they would take — 6 need a real browser,
+1 needs a split fixture, 1 needs the OLD app running. See `_audit/97-remaining.md`.
+
+### Documentation
+
+The pre-audit **"Built inventory" and "Gap map" sections are gone**. They dated
+from 2026-07-27 and had been proven wrong repeatedly — still calling Usage
+analytics, `/manual`, the platform Analytics page and the mobile BottomNav
+"MISSING" long after each shipped. A gap map corrected by footnote is worse than
+none. `_audit/97-remaining.md` is now the single source of truth for open work;
+the dated phase entries are the build record. **"Known landmines" was rewritten**
+into the full list, ordered by how silent each failure is — the pg DATE-as-JS-Date
+trap (3 sightings, confirmed live this phase), the 42P08 reused-placeholder trap
+(3 sightings, one silent), NaN-into-Postgres, FK-violation-as-500, `ALTER TYPE
+USING` not taking a subquery, `runMigrations` being one promise chain, the
+double-release process kill, the TDZ/undefined-import class that builds clean,
+alpha-on-`var()`-tokens emitting no CSS, `!important` ties resolving by source
+order, `box-shadow` on a `<tr>`, and "when a route swallows errors by design, a
+200 proves nothing — verify the row landed".
+
+### Verification
+
+`node server/scripts/finance-fixtures.cjs` → **164/164 PASS**, 0 fail.
+`node client/scripts/check-tdz.cjs` → **190 files clean**.
+`npm run check:render` → **shell clean for all roles; 84/84 routes rendered**.
+`cd client && npm run build` → clean; the new `/NN` token classes confirmed
+present in the emitted CSS (that check matters — see the alpha landmine).
+`node --check` on all 13 changed server files. All four server sweeps re-run
+green after the fixes. Dev server left running on :3001.
+
+### Not done, deliberately
+
+The Ledger's 9 overlays were not migrated to `ui/Modal` — the primitives exist,
+but each overlay has its own dismissal semantics and that is a campaign, not a QA
+fix. Privacy/EULA legal text was not authored. The Legal page's Approver access
+was not tightened — that is a policy call with live users behind it, and silently
+removing access is not a QA change. The manual's workflow/keyboard/TOC sections
+were not ported (content, not defect). All logged in `_audit/97-remaining.md`.

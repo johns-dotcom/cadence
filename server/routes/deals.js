@@ -5,7 +5,7 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const activityBot = require('../lib/activityBot');
-const { uploadFile, getSignedFileUrl, deleteFile } = require('../lib/r2');
+const { uploadFile, getSignedFileUrl, deleteFile, isConfigured: r2Configured } = require('../lib/r2');
 const { DEAL_STAGES, DEAL_TYPES, PRIORITIES } = require('../lib/constants');
 
 const router = express.Router();
@@ -253,6 +253,7 @@ router.get('/:id(\\d+)/files/:fileId(\\d+)', async (req, res) => {
       [parseInt(req.params.fileId, 10), req.labelId, dealId(req)]
     );
     if (!rows.length || !rows[0].r2_key) return res.status(404).json({ success: false, error: 'File not found' });
+    if (!r2Configured()) return res.status(503).json({ success: false, error: "File storage is not configured on this deployment." });
     const url = await getSignedFileUrl(rows[0].r2_key, 3600);
     res.json({ success: true, data: { url } });
   } catch (error) {

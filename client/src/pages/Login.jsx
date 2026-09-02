@@ -74,12 +74,16 @@ export default function Login() {
             <>
               {googleEnabled && (
                 <>
-                  <div className="flex justify-center">
-                    <GoogleLogin onSuccess={handleGoogle} onError={() => setError('Google sign-in failed.')} theme="outline" size="large" width="288" />
+                  <div className="flex flex-col items-center gap-2">
+                    {/* useOneTap restores the returning-user auto sign-in prompt. */}
+                    <GoogleLogin onSuccess={handleGoogle} useOneTap
+                      onError={() => setError('Google sign-in was cancelled or failed. Try again.')}
+                      theme="outline" size="large" width="288" />
+                    <p className="text-[11px] text-ink-faint">Use your work Google account</p>
                   </div>
                   <div className="flex items-center gap-3">
                     <div className="flex-1 h-px bg-rule" />
-                    <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">or</span>
+                    <span className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider">or</span>
                     <div className="flex-1 h-px bg-rule" />
                   </div>
                 </>
@@ -105,7 +109,7 @@ export default function Login() {
               </form>
 
               <button type="button" onClick={() => switchMode('forgot')}
-                className="text-xs text-brand-600 hover:underline text-center">Forgot your password?</button>
+                className="text-xs text-brand-ink hover:underline text-center">Forgot your password?</button>
             </>
           ) : (
             <form onSubmit={handleForgot} className="space-y-3">
@@ -129,18 +133,18 @@ export default function Login() {
           )}
 
           {forgotMsg && (
-            <div className="bg-green-50 border border-green-100 rounded-lg px-3 py-2.5">
-              <p className="text-green-700 text-xs text-center">{forgotMsg}</p>
+            <div className="bg-success/10 border border-success/30 rounded-lg px-3 py-2.5">
+              <p className="text-success text-xs text-center">{forgotMsg}</p>
             </div>
           )}
           {expired && !error && mode === 'login' && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
-              <p className="text-amber-700 text-xs text-center font-medium">Your session expired. Please sign in again.</p>
+            <div className="bg-warning/10 border border-warning/30 rounded-lg px-3 py-2.5">
+              <p className="text-warning text-xs text-center font-medium">Your session has expired. Please sign in again.</p>
             </div>
           )}
           {error && (
-            <div className="bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
-              <p className="text-red-600 text-xs text-center">{error}</p>
+            <div className="bg-danger/10 border border-danger/30 rounded-lg px-3 py-2.5">
+              <p className="text-danger text-xs text-center">{error}</p>
             </div>
           )}
         </div>
