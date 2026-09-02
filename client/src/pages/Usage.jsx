@@ -4,8 +4,9 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
-import { PAGE_LABELS } from '../components/Layout'
+import { PAGE_LABELS } from '../constants/navConfig'
 import { formatDate } from '../utils/dates'
+import { TOOLTIP, AXIS_TICK } from '../utils/chartTheme'
 
 const RANGES = [
   { days: 7, label: '7 days' },
@@ -151,9 +152,10 @@ export default function Usage() {
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(128,128,128,0.15)" />
-                    <XAxis dataKey="day" tick={{ fontSize: 10 }} tickFormatter={d => d.slice(5)} />
-                    <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
+                    <XAxis dataKey="day" tick={AXIS_TICK} tickFormatter={d => d.slice(5)} />
+                    <YAxis tick={AXIS_TICK} allowDecimals={false} />
                     <Tooltip
+                      {...TOOLTIP}
                       formatter={(v, name) => [v, name === 'views' ? 'Page views' : 'Active users']}
                       labelFormatter={d => formatDate(d)}
                     />

@@ -2,8 +2,8 @@
 // total) drills. The frozen region is exactly ONE sticky cell per row —
 // multiple sticky cells produce sub-pixel gaps that flicker (Ledger's rule).
 
-import { useState } from 'react'
-import { AlertTriangle, MoreHorizontal } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { AlertTriangle, MoreHorizontal, Search } from 'lucide-react'
 import api from '../../api'
 import { money } from '../../utils/money'
 import { Modal, ConfirmDialog } from '../ui'
@@ -12,16 +12,24 @@ import useCategories from '../../hooks/useCategories'
 const STICKY_TH = 'sticky left-0 z-20 bg-page shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)]'
 const STICKY_TD = 'sticky left-0 z-10 bg-card shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)]'
 
-function Cell({ value, onClick, dismissedBadge, negative }) {
-  if (!value && !dismissedBadge) return <td className="px-3 py-1.5 text-right text-gray-300">—</td>
+function Cell({ value, onClick, dismissedBadge, negative, onDismissedClick }) {
+  if (!value && !dismissedBadge) return <td className="px-3 py-1.5 text-right text-ink-faint">—</td>
   return (
     <td className="px-3 py-1.5 text-right tabular-nums whitespace-nowrap">
       {value ? (
-        <button onClick={onClick} className={`hover:underline ${negative ? 'text-rose-600' : value < 0 ? 'text-emerald-600' : 'text-ink'}`}>
+        <button onClick={onClick} className={`hover:underline ${negative ? 'text-danger' : value < 0 ? 'text-success' : 'text-ink'}`}>
           {money(value)}
         </button>
-      ) : <span className="text-gray-300">—</span>}
-      {dismissedBadge ? <span className="ml-1 text-[10px] text-amber-600" title={`$${dismissedBadge.toFixed(2)} dismissed from this line`}>◦</span> : null}
+      ) : <span className="text-ink-faint">—</span>}
+      {/* The dismissed badge names the AMOUNT and goes to the Dismissed tab —
+          a bare glyph tells the reader something is missing without telling
+          them how much or where to look for it. */}
+      {dismissedBadge ? (
+        <button onClick={onDismissedClick} className="ml-1.5 text-[10px] text-warning hover:underline"
+          title={`${money(dismissedBadge)} dismissed from this line — open the Dismissed tab`}>
+          +{money(dismissedBadge)}
+        </button>
+      ) : null}
     </td>
   )
 }
@@ -41,7 +49,7 @@ function MonthHeader({ m, cov }) {
   )
 }
 
-export default function PnlTable({ pnl, onDrill, refetch, toast }) {
+export default function PnlTable({ pnl, onDrill, refetch, toast, onShowDismissed }) {
   const months = pnl.months
   const cats = useCategories()
   const [kebab, setKebab] = useState(null) // { kind, name }
@@ -52,11 +60,26 @@ export default function PnlTable({ pnl, onDrill, refetch, toast }) {
   const [dismissLineOpen, setDismissLineOpen] = useState(false)
   const [movedOutOpen, setMovedOutOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Line filter. Filtering a P&L is dangerous unless the reader can tell the
+  // difference between "this is the total" and "this is the total of what you
+  // can see" — so every section grows a "Subtotal of shown" row and the real
+  // totals get relabelled "(all lines)" the moment a filter is on.
+  const [q, setQ] = useState('')
+  const filtering = q.trim().length > 0
 
   const dismissedForCell = (kind, name) => pnl.dismissed.by_cell[`${kind}|${name}`]
 
+  const matches = (name) => !filtering || name.toLowerCase().includes(q.trim().toLowerCase())
+  const shownEntries = (bag) => Object.entries(bag).filter(([name]) => matches(name))
+  const matchCount = useMemo(() => {
+    if (!filtering) return 0
+    const bags = [pnl.income, pnl.expenses, pnl.below.income, pnl.below.expenses,
+      pnl.non_recurring?.income || {}, pnl.non_recurring?.expenses || {}]
+    return bags.reduce((n, b) => n + shownEntries(b).length, 0)
+  }, [pnl, q]) // eslint-disable-line
+
   const lineRows = (bag, kind, negate = false) =>
-    Object.entries(bag).map(([name, line]) => (
+    shownEntries(bag).map(([name, line]) => (
       <tr key={`${kind}-${name}`} className="group border-t border-divider">
         <td className={`px-3 py-1.5 text-sm ${STICKY_TD}`}>
           <span className="flex items-center gap-1">
@@ -74,6 +97,7 @@ export default function PnlTable({ pnl, onDrill, refetch, toast }) {
         ))}
         <Cell value={negate ? -line.total : line.total} negative={negate}
           dismissedBadge={dismissedForCell(kind, name)}
+          onDismissedClick={() => onShowDismissed?.()}
           onClick={() => onDrill({ kind, key: name, month: null, label: `${name} · ${months[0]} – ${months[months.length - 1]}`, cellTotal: line.total })} />
       </tr>
     ))
@@ -90,13 +114,39 @@ export default function PnlTable({ pnl, onDrill, refetch, toast }) {
     </tr>
   )
 
+  // A "subtotal of shown" is derived from the SAME entries the rows render,
+  // so it can never disagree with the lines above it.
+  const subtotalOfShown = (bag, negate = false) => {
+    const series = {}
+    let total = 0
+    for (const [, line] of shownEntries(bag)) {
+      total += line.total
+      for (const m of months) series[m] = (series[m] || 0) + (line.series[m] || 0)
+    }
+    const sign = negate ? -1 : 1
+    return { series: Object.fromEntries(months.map((m) => [m, sign * (series[m] || 0)])), total: sign * total }
+  }
+  const shownRow = (label, bag, negate = false) => (filtering && shownEntries(bag).length
+    ? totalRow(label, subtotalOfShown(bag, negate), 'text-ink-muted')
+    : null)
+  const noMatch = (label) => (
+    <tr className="border-t border-divider"><td className={`px-3 py-1.5 text-xs text-ink-faint italic ${STICKY_TD}`}>no {label} lines match “{q.trim()}”</td>{months.map((m) => <td key={m} />)}<td /></tr>
+  )
+  const all = (label) => (filtering ? `${label} (all lines)` : label)
+
+  const nr = pnl.non_recurring || { income: {}, expenses: {}, income_totals: { series: {}, total: 0 }, expense_totals: { series: {}, total: 0 }, net: 0 }
   const netSeries = {}
   for (const m of months) netSeries[m] = (pnl.income_totals.series[m] || 0) - (pnl.expense_totals.series[m] || 0)
   const belowNetSeries = {}
   for (const m of months) belowNetSeries[m] = (pnl.below.income_totals.series[m] || 0) - (pnl.below.expense_totals.series[m] || 0)
+  const nrNetSeries = {}
+  for (const m of months) nrNetSeries[m] = (nr.income_totals.series[m] || 0) - (nr.expense_totals.series[m] || 0)
+  // Net Change in Cash is the THREE-section sum. Leaving non-recurring out of
+  // it would make the bottom line disagree with the sections above it.
   const cashSeries = {}
-  for (const m of months) cashSeries[m] = netSeries[m] + belowNetSeries[m]
+  for (const m of months) cashSeries[m] = netSeries[m] + belowNetSeries[m] + nrNetSeries[m]
   const hasBelow = Object.keys(pnl.below.income).length > 0 || Object.keys(pnl.below.expenses).length > 0
+  const hasNr = Object.keys(nr.income).length > 0 || Object.keys(nr.expenses).length > 0
 
   const doDismissLine = async () => {
     setBusy(true)
@@ -110,7 +160,11 @@ export default function PnlTable({ pnl, onDrill, refetch, toast }) {
     setBusy(true)
     try {
       const r = await api.post('/reports/rename-category', { kind: kebab.kind, from: kebab.name, to: renameTo })
-      toast(r.data.data.merged ? `Merged into "${renameTo}"` : `Renamed to "${renameTo}"`)
+      // Say what MOVED. A rename touches several tables; "Renamed" alone
+      // leaves the operator guessing whether the booking rules came along.
+      const counts = r.data.data.counts || {}
+      const detail = Object.entries(counts).filter(([, n]) => n > 0).map(([t, n]) => `${t} ${n}`).join(', ')
+      toast(`${r.data.data.merged ? `Merged into "${renameTo}"` : `Renamed to "${renameTo}"`}${detail ? ` — updated ${detail}` : ''}`)
       setRenameOpen(false); setKebab(null); refetch()
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') } finally { setBusy(false) }
   }
@@ -159,6 +213,19 @@ export default function PnlTable({ pnl, onDrill, refetch, toast }) {
         </div>
       ))}
 
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <div className="relative flex-1 min-w-[220px] max-w-sm">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint" />
+          <input className="input !pl-8 !py-1.5 text-sm" placeholder="Filter lines…" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        {filtering && (
+          <span className="text-xs text-ink-muted">
+            {matchCount} line{matchCount === 1 ? '' : 's'} shown · totals below are still the real ones
+            <button className="ml-2 underline" onClick={() => setQ('')}>clear</button>
+          </span>
+        )}
+      </div>
+
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -169,22 +236,42 @@ export default function PnlTable({ pnl, onDrill, refetch, toast }) {
             </tr>
           </thead>
           <tbody>
-            <tr><td className={`px-3 pt-3 pb-1 text-xs font-bold uppercase tracking-wide text-gray-400 ${STICKY_TD}`}>Income</td>{months.map((m) => <td key={m} />)}<td /></tr>
+            <tr><td className={`px-3 pt-3 pb-1 text-xs font-bold uppercase tracking-wide text-ink-muted ${STICKY_TD}`}>Income</td>{months.map((m) => <td key={m} />)}<td /></tr>
             {lineRows(pnl.income, 'income')}
-            {totalRow('Total Income', pnl.income_totals)}
-            <tr><td className={`px-3 pt-4 pb-1 text-xs font-bold uppercase tracking-wide text-gray-400 ${STICKY_TD}`}>Expenses</td>{months.map((m) => <td key={m} />)}<td /></tr>
+            {filtering && !shownEntries(pnl.income).length ? noMatch('income') : null}
+            {shownRow('Subtotal of shown income', pnl.income)}
+            {totalRow(all('Total Income'), pnl.income_totals)}
+            <tr><td className={`px-3 pt-4 pb-1 text-xs font-bold uppercase tracking-wide text-ink-muted ${STICKY_TD}`}>Expenses</td>{months.map((m) => <td key={m} />)}<td /></tr>
             {lineRows(pnl.expenses, 'expense')}
-            {totalRow('Total Expenses', pnl.expense_totals)}
-            {totalRow('Net Income (operating)', { series: netSeries, total: pnl.net }, pnl.net >= 0 ? 'text-emerald-600' : 'text-rose-600')}
+            {filtering && !shownEntries(pnl.expenses).length ? noMatch('expense') : null}
+            {shownRow('Subtotal of shown expenses', pnl.expenses)}
+            {totalRow(all('Total Expenses'), pnl.expense_totals)}
+            {totalRow(all('Net Income (operating)'), { series: netSeries, total: pnl.net }, pnl.net >= 0 ? 'text-success' : 'text-danger')}
             {hasBelow && (
               <>
-                <tr><td className={`px-3 pt-4 pb-1 text-xs font-bold uppercase tracking-wide text-gray-400 ${STICKY_TD}`}>Below the line — advances & pass-through</td>{months.map((m) => <td key={m} />)}<td /></tr>
+                <tr><td className={`px-3 pt-4 pb-1 text-xs font-bold uppercase tracking-wide text-ink-muted ${STICKY_TD}`}>Below the line — advances &amp; pass-through</td>{months.map((m) => <td key={m} />)}<td /></tr>
                 {lineRows(pnl.below.income, 'income')}
                 {lineRows(pnl.below.expenses, 'expense', true)}
-                {totalRow('Below-line net', { series: belowNetSeries, total: pnl.below.net }, 'text-gray-500')}
-                {totalRow('Net Change in Cash', { series: cashSeries, total: pnl.net + pnl.below.net }, (pnl.net + pnl.below.net) >= 0 ? 'text-emerald-600' : 'text-rose-600')}
+                {totalRow(all('Below-line net'), { series: belowNetSeries, total: pnl.below.net }, 'text-ink-muted')}
               </>
             )}
+            {hasNr && (
+              <>
+                <tr>
+                  <td className={`px-3 pt-4 pb-1 text-xs font-bold uppercase tracking-wide text-ink-muted ${STICKY_TD}`}>
+                    Non-recurring
+                    <span className="block normal-case font-normal tracking-normal text-[10px] text-ink-faint">One-off items held out of operating results so a trend line isn't set by something that happens once.</span>
+                  </td>
+                  {months.map((m) => <td key={m} />)}<td />
+                </tr>
+                {lineRows(nr.income, 'income')}
+                {lineRows(nr.expenses, 'expense', true)}
+                {totalRow(all('Non-recurring net'), { series: nrNetSeries, total: nr.net }, 'text-ink-muted')}
+              </>
+            )}
+            {(hasBelow || hasNr) && totalRow(all('Net Change in Cash'),
+              { series: cashSeries, total: pnl.net + pnl.below.net + nr.net },
+              (pnl.net + pnl.below.net + nr.net) >= 0 ? 'text-success' : 'text-danger')}
           </tbody>
         </table>
       </div>

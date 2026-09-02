@@ -62,7 +62,15 @@ function monthsBetween(from, to) {
   }
   return out;
 }
-const isValidDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+// A real calendar day, not just the right shape: '2026-02-31' matches the
+// regex, reaches SQL, and Postgres rejects it as a 500 instead of a 400.
+const isValidDay = (s) => {
+  const v = String(s || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const [y, m, d] = v.split('-').map(Number);
+  if (m < 1 || m > 12 || d < 1) return false;
+  return d <= new Date(y, m, 0).getDate();
+};
 function rangeProblem(from, to) {
   if (!isValidDay(from) || !isValidDay(to)) return 'from and to must be YYYY-MM-DD';
   if (from > to) return 'The range is backwards — from is after to';
@@ -182,8 +190,12 @@ function placeRow(row, fp, physDate, wanted, overrides, dismissed, cellKind, cel
     if (wanted.has(phys) && ov) movedOut.push({ ...row, fp, from_month: phys, to_month: reported });
     return null;
   }
-  const isDismissed = dismissed.itemFps.has(fp) || dismissed.categoryCells.has(`${cellKind}|${catKeyOf(cellKey)}`);
-  return { report_month: reported, moved_from: ov && reported !== phys ? phys : null, dismissed: isDismissed };
+  // Which RULE suppressed the row matters downstream: a whole-line rule wants
+  // to advertise "$X excluded in range" on the Dismissed tab, and folding
+  // one-off item dismissals into that figure would overstate the rule.
+  const byRule = dismissed.categoryCells.has(`${cellKind}|${catKeyOf(cellKey)}`);
+  const isDismissed = dismissed.itemFps.has(fp) || byRule;
+  return { report_month: reported, moved_from: ov && reported !== phys ? phys : null, dismissed: isDismissed, by_rule: byRule };
 }
 
 // ── buildPnl ─────────────────────────────────────────────────────────────────
@@ -230,6 +242,11 @@ async function buildPnl(labelId, from, to, artist, opts = {}) {
 
   const op = { income: {}, expenses: {} };
   const below = { income: {}, expenses: {} };
+  // Non-recurring is its OWN presented section, not a silent tenant of the
+  // below-line block. The classify UI offers it as a third choice; folding it
+  // into "advances & pass-through" left an unlabelled line the reader has no
+  // way to account for.
+  const nonRec = { income: {}, expenses: {} };
   const contra = []; // { income_type, target, total }
   const contraTotals = new Map();
   const byArtist = new Map(); // bucketKey -> { total, by_category, spellings: Map }
@@ -260,7 +277,7 @@ async function buildPnl(labelId, from, to, artist, opts = {}) {
     const placed = placeRow(r, fp, r.payment_date, wanted, overrides, dismissed, 'expense', cat, movedOut);
     if (!placed) continue;
     const usd = usdOf(r.amount, r.currency, r.fx_rate_to_usd);
-    if (placed.dismissed) { dismissedRows.push({ kind: 'expense', cell: cat, month: placed.report_month, usd, row: r, fp }); continue; }
+    if (placed.dismissed) { dismissedRows.push({ kind: 'expense', cell: cat, month: placed.report_month, usd, row: r, fp, by_rule: placed.by_rule }); continue; }
     if (placed.moved_from) { reassignedCount += 1; reassignedTotal += usd; }
     const section = sectionFor('expense', cat);
     if (section === 'below_line') {
@@ -271,7 +288,7 @@ async function buildPnl(labelId, from, to, artist, opts = {}) {
         entry.total += usd;
       } else advOther += usd;
     } else if (section === 'non_recurring') {
-      bump(below.expenses, cat, placed.report_month, usd); // presented below the line, labelled by the client
+      bump(nonRec.expenses, cat, placed.report_month, usd);
     } else {
       bump(op.expenses, cat, placed.report_month, usd);
       opExpenseRaw += usd;
@@ -302,7 +319,7 @@ async function buildPnl(labelId, from, to, artist, opts = {}) {
     const placed = placeRow(r, fp, r.income_date, wanted, overrides, dismissed, 'income', type, movedOut);
     if (!placed) continue;
     const usd = usdOf(r.amount, r.currency, null);
-    if (placed.dismissed) { dismissedRows.push({ kind: 'income', cell: type, month: placed.report_month, usd, row: r, fp }); continue; }
+    if (placed.dismissed) { dismissedRows.push({ kind: 'income', cell: type, month: placed.report_month, usd, row: r, fp, by_rule: placed.by_rule }); continue; }
     if (placed.moved_from) { reassignedCount += 1; reassignedTotal += usd; }
     const target = contraOf.get(catKeyOf(type));
     if (target) {
@@ -312,7 +329,8 @@ async function buildPnl(labelId, from, to, artist, opts = {}) {
       continue;
     }
     const section = sectionFor('income', type);
-    bump(section === 'operating' ? op.income : below.income, type, placed.report_month, usd);
+    bump(section === 'non_recurring' ? nonRec.income : section === 'operating' ? op.income : below.income,
+      type, placed.report_month, usd);
   }
   for (const [key, total] of contraTotals) {
     const [income_type, target] = key.split('→');
@@ -340,6 +358,8 @@ async function buildPnl(labelId, from, to, artist, opts = {}) {
   const expenseTotals = sumBag(op.expenses);
   const belowIncomeTotals = sumBag(below.income);
   const belowExpenseTotals = sumBag(below.expenses);
+  const nrIncomeTotals = sumBag(nonRec.income);
+  const nrExpenseTotals = sumBag(nonRec.expenses);
 
   // Spend by Artist — operating expense slice + advances beside it.
   // Row set = UNION of both key sets so an advance-only artist still appears.
@@ -354,9 +374,17 @@ async function buildPnl(labelId, from, to, artist, opts = {}) {
   const artistRows = [...allKeys].map((key) => {
     const spend = byArtist.get(key);
     const adv = advByArtist.get(key);
+    // Every spelling that folded into this row travels with it. Collecting
+    // them and then keeping only the best one hides the merge from the reader,
+    // who has no way to know "Ezra" also absorbed "ezra " and "EZRA".
+    const spellings = [...new Set([
+      ...(spend?.spellings ? [...spend.spellings.keys()] : []),
+      ...(adv?.spellings ? [...adv.spellings.keys()] : []),
+    ])];
     return {
       key,
       name: bestSpelling(spend || adv, key),
+      spellings,
       total: round2(spend?.total || 0),
       advances: round2(adv?.total || 0),
       total_out: round2((spend?.total || 0) + (adv?.total || 0)),
@@ -367,13 +395,17 @@ async function buildPnl(labelId, from, to, artist, opts = {}) {
   const tiesToPnl = Math.abs(byArtistRawTotal - expenseTotals.total) < 0.005;
 
   // Dismissed summary — same code path as reported totals, disclosed 3 ways.
-  const dSeries = {}, dByCell = {};
+  const dSeries = {}, dByCell = {}, dByRule = {};
   let dTotal = 0;
   for (const d of dismissedRows) {
     dTotal += d.usd;
     dSeries[d.month] = (dSeries[d.month] || 0) + d.usd;
     const cellId = `${d.kind}|${d.cell}`;
     dByCell[cellId] = (dByCell[cellId] || 0) + d.usd;
+    if (d.by_rule) {
+      const b = dByRule[cellId] || (dByRule[cellId] = { usd: 0, count: 0 });
+      b.usd += d.usd; b.count += 1;
+    }
   }
 
   const movedOutRows = movedOut.map((r) => ({
@@ -402,12 +434,22 @@ async function buildPnl(labelId, from, to, artist, opts = {}) {
       expense_totals: { series: Object.fromEntries(Object.entries(belowExpenseTotals.series).map(([m, n]) => [m, round2(n)])), total: round2(belowExpenseTotals.total) },
       net: round2(belowIncomeTotals.total - belowExpenseTotals.total),
     },
+    non_recurring: {
+      income: roundBag(nonRec.income),
+      expenses: roundBag(nonRec.expenses),
+      income_totals: { series: Object.fromEntries(Object.entries(nrIncomeTotals.series).map(([m, n]) => [m, round2(n)])), total: round2(nrIncomeTotals.total) },
+      expense_totals: { series: Object.fromEntries(Object.entries(nrExpenseTotals.series).map(([m, n]) => [m, round2(n)])), total: round2(nrExpenseTotals.total) },
+      net: round2(nrIncomeTotals.total - nrExpenseTotals.total),
+    },
     contra,
     dismissed: {
       count: dismissedRows.length,
       total: round2(dTotal),
       series: Object.fromEntries(Object.entries(dSeries).map(([m, n]) => [m, round2(n)])),
       by_cell: Object.fromEntries(Object.entries(dByCell).map(([c, n]) => [c, round2(n)])),
+      // Per whole-line RULE, in this range: what the rule is actually keeping
+      // out right now, rather than a rule that reads as free until you look.
+      by_rule: Object.fromEntries(Object.entries(dByRule).map(([c, v]) => [c, { usd: round2(v.usd), count: v.count }])),
       category_count: dismissed.categoryRules.length,
       item_count: dismissed.itemFps.size,
     },
@@ -603,7 +645,29 @@ router.get('/pnl/detail', async (req, res) => {
       }
     }
 
-    rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    // Sort applies to the FULL set before the cap, so "biggest first" really
+    // shows the biggest rows rather than the biggest of an arbitrary 500.
+    const sort = String(req.query.sort || 'date');
+    const dir = req.query.dir === 'asc' ? 1 : -1;
+    const cmp = {
+      date: (a, b) => String(a.date || '').localeCompare(String(b.date || '')),
+      name: (a, b) => String(a.payee || '').localeCompare(String(b.payee || ''), undefined, { sensitivity: 'base' }),
+      amount: (a, b) => a.usd - b.usd,
+    }[sort] || ((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+    // Name reads naturally A→Z; date and amount read biggest/newest first.
+    const effDir = req.query.dir ? dir : (sort === 'name' ? 1 : -1);
+    rows.sort((a, b) => cmp(a, b) * effDir);
+
+    // "What backs these figures" — the same rows, aggregated by the evidence
+    // behind them. Sums to the cell total by construction (it is built from
+    // the same array), so it can never claim a different figure.
+    const evidence = { invoice: { usd: 0, rows: 0 }, invented: { usd: 0, rows: 0 } };
+    for (const r of rows) {
+      const b = evidence[r.evidence] || (evidence[r.evidence] = { usd: 0, rows: 0 });
+      b.usd += r.usd; b.rows += 1;
+    }
+    for (const k of Object.keys(evidence)) evidence[k].usd = round2(evidence[k].usd);
+
     res.json({
       success: true,
       data: {
@@ -613,6 +677,8 @@ router.get('/pnl/detail', async (req, res) => {
         recoveries,
         dismissed: { count: dismissedCount, total: round2(dismissedTotal) },
         all_expense_ids: allExpenseIds,
+        evidence,
+        sort: { by: sort, dir: effDir === 1 ? 'asc' : 'desc' },
       },
     });
   } catch (e) { console.error('pnl detail error:', e); res.status(500).json({ success: false, error: 'Drill failed' }); }
@@ -665,10 +731,30 @@ async function shapeSpendByArtist(labelId, from, to, pnl) {
       total: pnl.advances.total,
       attributed_total: round2(advAttributed),
       other_total: pnl.advances.other_total,
+      // Artists that appear ONLY because they took an advance — they have no
+      // operating spend at all, so a reader comparing this table to the P&L
+      // expense total needs to know why there are more rows than spenders.
+      advance_only_artists: attributed.filter((r) => r.advances > 0 && r.total === 0).length,
     },
+    // Category columns ordered by ARTIST-ATTRIBUTABLE spend, with columns that
+    // only ever carry unattributed money pushed to the end: sorting by the
+    // grand total lets overhead lead a sheet whose subject is artists.
+    category_order: (() => {
+      const attrib = {}, all = {};
+      for (const r of pnl.by_artist.rows) {
+        for (const [c, v] of Object.entries(r.by_category || {})) {
+          all[c] = (all[c] || 0) + v;
+          if (r.key !== '') attrib[c] = (attrib[c] || 0) + v;
+        }
+      }
+      return Object.keys(all)
+        .sort((a, b) => (attrib[b] || 0) - (attrib[a] || 0) || (all[b] || 0) - (all[a] || 0))
+        .map((c) => ({ category: c, attributed: round2(attrib[c] || 0), total: round2(all[c] || 0), overhead_only: !attrib[c] }));
+    })(),
     total_out: round2(pnl.by_artist.rows.reduce((s, r) => s + r.total_out, 0)),
     excluded: {
       below_line: pnl.below.expense_totals.total,
+      non_recurring: pnl.non_recurring.expense_totals.total,
       dismissed: { total: pnl.dismissed.total, count: pnl.dismissed.count },
       moved_out: { total: pnl.reassigned.moved_out.total, count: pnl.reassigned.moved_out.count },
       unpaid,
@@ -784,22 +870,96 @@ async function buildBalanceSheet(labelId, asOf) {
   const apTotal = lineExcluded.ap ? 0 : sum(apRows);
   const advTotal = lineExcluded.adv ? 0 : sum(advRows);
   const assets = round2(cashTotal + arTotal);
-  const liabilities = round2(apTotal + advTotal);
+  // ── Drawdowns are FUNDING, not debt ──────────────────────────────────────
+  // Adding drawdowns received into total_liabilities made the sheet unreadable
+  // in the reference app: a label financed by a distribution advance showed
+  // millions of "liabilities" and an equity figure that meant nothing. The
+  // 2026-08-07 call stands — Liabilities is unpaid bills only, and the money
+  // that funded the label is presented in its own "Funded by" block with the
+  // accumulated deficit it has been spent into. This is a PRESENTATION, not a
+  // proof: the deficit is derived (funding minus net assets), so the block
+  // always balances by construction and proves nothing on its own.
+  const liabilities = apTotal;
+  const netAssets = round2(assets - liabilities);
+  const fundingExcluded = dismissed.bsLines.has('funding');
+  const fundingTotal = fundingExcluded ? 0 : advTotal;
+  const accumulatedDeficit = round2(netAssets - fundingTotal);
+
+  // Aging — how OLD the money owed to and by the label is. A/R and A/P totals
+  // say how much; only the buckets say whether it is a timing question or a
+  // collection problem.
+  const ageBuckets = (rows) => {
+    const b = { current: 0, d31_60: 0, d61_90: 0, d90_plus: 0 };
+    const asOfMs = Date.parse(`${ymd(asOf)}T00:00:00Z`);
+    for (const r of rows) {
+      if (r.excluded) continue;
+      const d = r.date ? Date.parse(`${r.date}T00:00:00Z`) : NaN;
+      const days = Number.isFinite(d) ? Math.floor((asOfMs - d) / 86400000) : 0;
+      if (days <= 30) b.current += r.usd;
+      else if (days <= 60) b.d31_60 += r.usd;
+      else if (days <= 90) b.d61_90 += r.usd;
+      else b.d90_plus += r.usd;
+    }
+    return Object.fromEntries(Object.entries(b).map(([k, v]) => [k, round2(v)]));
+  };
+  // Composition — built from the SAME filtered rows as the line total, so the
+  // parts sum to the line by construction rather than by a second query.
+  const composition = (rows, keyOf) => {
+    const m = {};
+    for (const r of rows) { if (r.excluded) continue; const k = keyOf(r) || '—'; m[k] = (m[k] || 0) + r.usd; }
+    return Object.entries(m).map(([key, usd]) => ({ key, usd: round2(usd) })).sort((a, b) => b.usd - a.usd).slice(0, 12);
+  };
+
+  // Paid bills with no payment date cannot be placed in time, so the as-of
+  // A/P rule ("paid AFTER as-of was still owed") can't judge them. Say so
+  // rather than letting them vanish silently.
+  let undatedPaid = { count: 0, total: 0 };
+  try {
+    const { rows } = await pool.query(
+      `SELECT e.amount, COALESCE(e.currency, r.currency, 'USD') AS currency,
+              COALESCE(e.fx_rate_to_usd, r.fx_rate_to_usd) AS fx_rate_to_usd
+         FROM expenses e JOIN expenses r ON r.id = COALESCE(e.parent_id, e.id)
+        WHERE e.label_id = $1 AND r.label_id = $1 AND r.parent_id IS NULL AND r.status = 'approved'
+          AND (r.deleted IS NULL OR r.deleted = FALSE) AND (r.voided IS NULL OR r.voided = FALSE)
+          AND (e.deleted IS NULL OR e.deleted = FALSE) AND (e.voided IS NULL OR e.voided = FALSE)
+          AND r.payment_status = 'Paid' AND r.payment_date IS NULL
+          AND COALESCE(r.invoice_date, r.created_at::date) <= $2`,
+      [labelId, asOf]);
+    undatedPaid = { count: rows.length, total: round2(rows.reduce((t, r) => t + usdOf(r.amount, r.currency, r.fx_rate_to_usd), 0)) };
+  } catch { /* disclosure only */ }
 
   return {
     as_of: ymd(asOf),
     cash: { accounts: cash, total: cashTotal },
-    accounts_receivable: { total: arTotal, count: arRows.filter((r) => !r.excluded).length, rows_available: arRows.length, line_excluded: lineExcluded.ar },
-    accounts_payable: { total: apTotal, count: apRows.filter((r) => !r.excluded).length, rows_available: apRows.length, line_excluded: lineExcluded.ap },
+    accounts_receivable: {
+      total: arTotal, count: arRows.filter((r) => !r.excluded).length, rows_available: arRows.length,
+      line_excluded: lineExcluded.ar, aging: ageBuckets(arRows),
+      composition: composition(arRows, (r) => r.counterparty),
+      note: 'outbound invoices have no payment date, so an invoice paid after this date cannot be restated back into A/R',
+    },
+    accounts_payable: {
+      total: apTotal, count: apRows.filter((r) => !r.excluded).length, rows_available: apRows.length,
+      line_excluded: lineExcluded.ap, aging: ageBuckets(apRows),
+      composition: composition(apRows, (r) => r.category),
+      undated_paid: undatedPaid,
+    },
     advances_outstanding: { total: advTotal, count: advRows.filter((r) => !r.excluded).length, line_excluded: lineExcluded.adv, note: 'gross received — repayments/recoupment not yet netted' },
+    funding: {
+      line_excluded: fundingExcluded,
+      drawdowns: fundingTotal,
+      accumulated_deficit: accumulatedDeficit,
+      total: round2(fundingTotal + accumulatedDeficit),
+      composition: composition(advRows, (r) => r.counterparty),
+      note: 'a presentation of where the money came from, not a proof — the deficit is derived, so this block balances by construction',
+    },
     total_assets: assets,
     total_liabilities: liabilities,
-    net_assets: round2(assets - liabilities),
+    net_assets: netAssets,
     memo: { recoupable: { ...memo, note: 'recoupable artist spend submitted to date — shown for context, counted in nothing' } },
     excluded: {
       item_total: round2(excludedTotal(arRows) + excludedTotal(apRows) + excludedTotal(advRows)),
       item_count: [...arRows, ...apRows, ...advRows].filter((r) => r.excluded).length,
-      lines: Object.entries(lineExcluded).filter(([, v]) => v).map(([k]) => k),
+      lines: [...Object.entries(lineExcluded).filter(([, v]) => v).map(([k]) => k), ...(fundingExcluded ? ['funding'] : [])],
     },
     first_close: floor ? ymd(floor) : null,
   };

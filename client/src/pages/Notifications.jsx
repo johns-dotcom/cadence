@@ -1,14 +1,20 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, Music, FileText, CheckSquare, Receipt, AtSign, Package, CheckCheck, X } from 'lucide-react'
+import { Bell, Music, FileText, CheckSquare, Receipt, AtSign, Package, CheckCheck, X, Zap, Inbox, Wallet, AlarmClock } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 
-const ICONS = { release: Music, task: CheckSquare, contract: FileText, approval: Receipt, mention: AtSign, bulk_deal: Package }
-const SEVERITY = { danger: 'text-red-600 bg-red-50', warning: 'text-amber-600 bg-amber-50', info: 'text-brand-600 bg-brand-500/10' }
-const FILTERS = [['all', 'All'], ['mention', 'Mentions'], ['smart', 'Smart alerts']]
+const ICONS = {
+  release: Music, release_behind: Zap, release_unassigned: Zap,
+  task: CheckSquare, task_overdue: Zap,
+  contract: FileText, contract_renewal: Zap,
+  approval: Receipt, vendor_submission: Inbox, mention: AtSign,
+  bulk_deal: Package, payment_rush: Zap, budget_burn: Wallet, reminder: AlarmClock,
+}
+const SEVERITY = { danger: 'text-red-600 bg-red-50', warning: 'text-amber-600 bg-amber-50', info: 'text-brand-ink bg-brand-500/10' }
+const FILTERS = [['all', 'All'], ['mention', 'Mentions'], ['smart', 'Alerts']]
 
 export default function Notifications() {
   const { toast } = useToast()
@@ -31,7 +37,11 @@ export default function Notifications() {
 
   if (loading) return <div><PageHeader title="Notifications" /><div className="card p-6"><Skeleton.Block /></div></div>
   const mentions = data?.mentions || []
-  const smart = data?.smart_alerts || []
+  // Everything that isn't a mention. `smart_alerts` on the payload is narrower
+  // than that — it is only the group the BELL labels "Smart alerts" — and
+  // reading it here silently dropped releases, contracts, tasks, budgets and
+  // the approval queue from the page that promises to show them all.
+  const smart = (data?.items || []).filter(i => i.type !== 'mention')
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''
 
   const Row = ({ item }) => {
@@ -53,7 +63,7 @@ export default function Notifications() {
 
   return (
     <div>
-      <PageHeader title="Notifications" subtitle="Mentions and smart alerts across your workspace"
+      <PageHeader title="Notifications" subtitle="Mentions and alerts across your workspace"
         action={<div className="flex items-center gap-2">
           {mentions.length > 0 && <button onClick={readAllMentions} className="btn-secondary"><CheckCheck size={15} /> Mark mentions read</button>}
           {smart.length > 0 && <button onClick={clearAlerts} className="btn-secondary">Clear alerts</button>}
@@ -77,7 +87,7 @@ export default function Notifications() {
           )}
           {showSmart && smart.length > 0 && (
             <div className="card overflow-hidden">
-              <div className="px-4 py-2 bg-page/50 border-b border-divider text-[11px] font-semibold uppercase tracking-wide text-gray-400">Smart alerts</div>
+              <div className="px-4 py-2 bg-page/50 border-b border-divider text-[11px] font-semibold uppercase tracking-wide text-gray-400">Alerts</div>
               {smart.map(s => <Row key={s.key} item={s} />)}
             </div>
           )}

@@ -13,7 +13,13 @@ import useFocusTrap from '../../hooks/useFocusTrap'
 // Escape that participates in the overlay stack instead of racing page hotkeys, and
 // a body-scroll lock. Portals to document.body to escape overflow/stacking contexts.
 
-const WIDTHS = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-lg', xl: 'max-w-2xl' }
+// The ladder tops out where the hand-rolled dialogs do. It used to stop at
+// `max-w-2xl`, which meant the five 3xl/4xl/5xl overlays in pages/ literally
+// could not migrate onto the kit — the part-blocker behind the adoption gap.
+const WIDTHS = {
+  sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-lg', xl: 'max-w-2xl',
+  '2xl': 'max-w-3xl', '3xl': 'max-w-4xl', '4xl': 'max-w-5xl', full: 'max-w-6xl',
+}
 
 export default function Modal({
   open, onClose, title, children, footer, size = 'md', className = '',
@@ -32,7 +38,7 @@ export default function Modal({
   if (!open) return null
 
   return createPortal(
-    <div className="fixed inset-0 z-[60] bg-overlay flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-[60] bg-overlay backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div
         ref={panelRef}
         tabIndex={-1}

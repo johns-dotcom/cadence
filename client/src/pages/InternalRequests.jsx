@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Lightbulb, Bug, HelpCircle, Send, Eye, ArrowLeft, CheckCircle2 } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
@@ -24,10 +25,20 @@ export default function InternalRequests() {
   const [sending, setSending] = useState(false)
   const [mine, setMine] = useState([])
 
-  // Best-effort capture of where the user came from.
+  // Where the user came from. `?from=` is authoritative — the header's
+  // quick-compose button passes it — because document.referrer is EMPTY on a
+  // client-side route change, which is every navigation inside the app. The
+  // referrer is kept only as the fallback for a hard load or an external link.
+  const [params] = useSearchParams()
   useEffect(() => {
+    const from = params.get('from')
+    if (from && from !== '/requests') { setPageContext(from); return }
     try { const r = document.referrer ? new URL(document.referrer).pathname : ''; if (r && r !== '/requests') setPageContext(r) } catch { /* ignore */ }
-  }, [])
+  }, [params])
+  useEffect(() => {
+    const k = params.get('kind')
+    if (k && KINDS.some(x => x.key === k)) setKind(k)
+  }, [params])
   const load = () => api.get('/internal-requests').then(r => setMine(r.data.data || [])).catch(() => {})
   useEffect(() => { load() }, [])
 

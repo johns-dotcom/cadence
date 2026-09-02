@@ -17,7 +17,8 @@ const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
 const paymentCrypto = require('../lib/paymentCrypto');
 const aiScan = require('../lib/aiScan');
 const bankEvidence = require('../lib/bankEvidence');
-const { excludeBankRows, excludeCreatorRows, BANK_SOURCE } = require('../lib/ledgerSource');
+const { excludeBankRows, excludeCreatorRows, BANK_SOURCE, reportingThresholdFor } = require('../lib/ledgerSource');
+const w9NameMatch = require('../lib/w9NameMatch');
 const { validateApprovalChecklist, stampChecklist, writeApprovalChecklist } = require('../lib/approvalChecklist');
 const activityBot = require('../lib/activityBot');
 const { BULK_DEALS_SQL, deriveDeal } = require('../lib/bulkDeals');
@@ -2138,36 +2139,96 @@ router.post('/send-for-approval', async (req, res) => {
 // carries one OR the vendor record has one.
 router.get('/vendors', async (req, res) => {
   try {
+    // GROUP BY LOWER(payee): grouping by the raw string listed "Acme" and
+    // "ACME" as two vendors while every mutation route below matches LOWER(),
+    // so the drawer for either one showed BOTH sets of invoices. The display
+    // name is the spelling with the most rows behind it.
+    //
+    // Voided rows are excluded here as they are in every other aggregate —
+    // a voided invoice is money that never moved, and leaving it in makes a
+    // vendor's spend disagree with the ledger's own totals.
     const { rows } = await pool.query(
       `SELECT
-         agg.payee AS name,
+         agg.name,
+         agg.spellings,
          agg.invoice_count,
          agg.total_spent,
+         agg.total_spent_usd,
+         agg.currency_count,
          agg.paid_amount,
          agg.last_invoice,
          (agg.entry_has_w9 OR v.w9_r2_key IS NOT NULL) AS w9_on_file,
          COALESCE(v.email, agg.vendor_email) AS email,
-         v.address
+         v.address,
+         agg.w9_names,
+         agg.alias_count
        FROM (
          SELECT
-           payee,
-           COUNT(*) FILTER (WHERE status = 'approved')::int AS invoice_count,
-           COALESCE(SUM(amount) FILTER (WHERE status = 'approved'), 0) AS total_spent,
-           COALESCE(SUM(amount) FILTER (WHERE status = 'approved' AND payment_status = 'Paid'), 0) AS paid_amount,
-           MAX(invoice_date) FILTER (WHERE status = 'approved') AS last_invoice,
-           BOOL_OR(w9_r2_key IS NOT NULL) AS entry_has_w9,
-           MAX(vendor_email) AS vendor_email
-         FROM expenses
-         WHERE label_id = $1 AND (deleted = false OR deleted IS NULL)
-           AND payee IS NOT NULL AND payee != '' AND status = 'approved'
-           AND entry_source IS DISTINCT FROM 'creator_payment'
-         GROUP BY payee
+           (ARRAY_AGG(payee ORDER BY n DESC, payee))[1] AS name,
+           ARRAY_AGG(DISTINCT payee) AS spellings,
+           SUM(invoice_count)::int AS invoice_count,
+           SUM(total_spent) AS total_spent,
+           SUM(total_spent_usd) AS total_spent_usd,
+           COUNT(DISTINCT cur) FILTER (WHERE cur IS NOT NULL)::int AS currency_count,
+           SUM(paid_amount) AS paid_amount,
+           MAX(last_invoice) AS last_invoice,
+           BOOL_OR(entry_has_w9) AS entry_has_w9,
+           MAX(vendor_email) AS vendor_email,
+           ARRAY_REMOVE(ARRAY_AGG(DISTINCT w9_name), NULL) AS w9_names,
+           (SELECT COUNT(*) FROM vendor_aliases va
+             WHERE va.label_id = $1 AND LOWER(va.canonical) = LOWER((ARRAY_AGG(payee ORDER BY n DESC, payee))[1]))::int AS alias_count
+         FROM (
+           SELECT
+             payee,
+             LOWER(payee) AS pkey,
+             COUNT(*)::int AS n,
+             -- Families, not slices: a split invoice is ONE invoice the vendor
+             -- sent, however many artists it was carved across.
+             COUNT(*) FILTER (WHERE parent_id IS NULL)::int AS invoice_count,
+             COALESCE(SUM(amount), 0) AS total_spent,
+             COALESCE(SUM(amount / COALESCE(NULLIF(fx_rate_to_usd, 0), 1)), 0) AS total_spent_usd,
+             MAX(COALESCE(currency, 'USD')) AS cur,
+             COALESCE(SUM(amount) FILTER (WHERE payment_status = 'Paid'), 0) AS paid_amount,
+             MAX(invoice_date) AS last_invoice,
+             BOOL_OR(w9_r2_key IS NOT NULL) AS entry_has_w9,
+             MAX(vendor_email) AS vendor_email,
+             MAX(w9_scan->>'w9_name') AS w9_name
+           FROM expenses
+           WHERE label_id = $1 AND (deleted = false OR deleted IS NULL)
+             AND (voided = false OR voided IS NULL)
+             AND payee IS NOT NULL AND payee != '' AND status = 'approved'
+             AND entry_source IS DISTINCT FROM 'creator_payment'
+           GROUP BY payee, COALESCE(currency, 'USD')
+         ) per_spelling
+         GROUP BY pkey
        ) agg
-       LEFT JOIN vendors v ON v.label_id = $1 AND LOWER(v.name) = LOWER(agg.payee)
-       ORDER BY agg.total_spent DESC`,
+       LEFT JOIN vendors v ON v.label_id = $1 AND LOWER(v.name) = LOWER(agg.name)
+       ORDER BY agg.total_spent_usd DESC`,
       [req.labelId]
     );
-    res.json({ success: true, data: rows });
+    // Name-mismatch flag from the PERSISTED W9 scan (expenses.w9_scan) — the
+    // batch scanner writes it, so the signal survives the results panel being
+    // closed instead of dying with it.
+    const data = rows.map((r) => {
+      const w9Name = (r.w9_names || []).find((n) => n && n.trim()) || null;
+      // Only claim a mismatch when there is a W9 to look at. A scan result
+      // outliving its file (replaced, deleted) would otherwise badge a vendor
+      // who has no W9 at all — two different problems, one of which is louder.
+      const mismatch = w9Name && r.w9_on_file ? w9NameMatch.mismatchOf(r.name, w9Name) : null;
+      return {
+        ...r,
+        w9_names: undefined,
+        w9_name: r.w9_on_file ? w9Name : null,
+        w9_mismatch: !!mismatch,
+        total_spent: Number(r.total_spent),
+        total_spent_usd: Number(r.total_spent_usd),
+        paid_amount: Number(r.paid_amount),
+        // OBBBA: the 1099 reporting floor is $600 through 2025 and $2,000 from
+        // 2026. Same rule the ledger's 1099 report already adopted.
+        qualifies_1099: Number(r.total_spent_usd) >= reportingThresholdFor(new Date().getFullYear()),
+      };
+    });
+    res.json({ success: true, data });
   } catch (error) {
     console.error('Vendors error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -2183,6 +2244,16 @@ router.get('/vendors/:name', async (req, res) => {
       [req.labelId, name]
     );
     const vendor = vrows[0] || { name };
+    if (!vendor.w9_r2_key) {
+      // Fall back to the most recent W9 on any of this vendor's ledger rows,
+      // under any spelling it answers to — an alias's W9 is this vendor's W9.
+      const alt = await vendorNameSet(req.labelId, name);
+      const { rows: wr } = await pool.query(
+        `SELECT w9_r2_key, w9_filename FROM expenses
+          WHERE label_id = $1 AND LOWER(payee) = ANY($2) AND w9_r2_key IS NOT NULL
+            AND (deleted = false OR deleted IS NULL) ORDER BY id DESC LIMIT 1`, [req.labelId, alt]);
+      if (wr[0]) { vendor.w9_r2_key = wr[0].w9_r2_key; vendor.w9_filename = wr[0].w9_filename; vendor.w9_from_entry = true; }
+    }
     if (vendor.w9_r2_key) { vendor.w9_url = await getSignedFileUrl(vendor.w9_r2_key, 3600).catch(() => null); }
     delete vendor.w9_r2_key;
 
@@ -2213,13 +2284,58 @@ router.get('/vendors/:name', async (req, res) => {
       }
     } catch { /* summary is decoration; the drawer degrades to "nothing on file" */ }
 
+    // Alias-aware, family-grouped. The canonical W9 rule is `w9_entry_id || id`:
+    // an entry that names another entry's W9 is covered by it, so the drawer
+    // must not report the vendor as missing a W9 because THIS row has no file.
+    const names = await vendorNameSet(req.labelId, name);
     const { rows: entries } = await pool.query(
-      `SELECT id, invoice_date, invoice_number, amount, currency, category, status, payment_status, scheduled_payment_date, w9_r2_key
-       FROM expenses WHERE label_id = $1 AND LOWER(payee) = LOWER($2) AND (deleted = false OR deleted IS NULL)
-       ORDER BY COALESCE(invoice_date, created_at::date) DESC`,
-      [req.labelId, name]
+      `SELECT e.id, e.parent_id, e.payee, e.invoice_date, e.invoice_number, e.amount, e.currency, e.category,
+              e.artist, e.status, e.payment_status, e.payment_date, e.scheduled_payment_date, e.voided,
+              -- The canonical-W9 rule (the reference app's w9_entry_id || id): the row that
+              -- HOLDS this vendor's W9, alias-aware. A row without its own file
+              -- is still covered by a sibling's, so "no W9" here must mean the
+              -- VENDOR has none — not that this particular invoice lacked one.
+              COALESCE(
+                (SELECT x.id FROM expenses x
+                  WHERE x.label_id = e.label_id AND x.w9_r2_key IS NOT NULL
+                    AND (x.deleted = false OR x.deleted IS NULL) AND x.status <> 'rejected'
+                    AND LOWER(TRIM(x.payee)) = ANY($2)
+                  ORDER BY x.id DESC LIMIT 1),
+                CASE WHEN e.w9_r2_key IS NOT NULL THEN e.id END) AS w9_entry_id,
+              (e.amount + COALESCE((SELECT SUM(c.amount) FROM expenses c
+                 WHERE c.parent_id = e.id AND (c.deleted = false OR c.deleted IS NULL)), 0)) AS family_amount
+       FROM expenses e
+       WHERE e.label_id = $1 AND LOWER(e.payee) = ANY($2) AND (e.deleted = false OR e.deleted IS NULL)
+       ORDER BY COALESCE(e.invoice_date, e.created_at::date) DESC, e.id DESC`,
+      [req.labelId, names]
     );
-    res.json({ success: true, data: { vendor, entries: entries.map(e => ({ ...e, has_w9: !!e.w9_r2_key, w9_r2_key: undefined })) } });
+    const byParent = new Map();
+    for (const e of entries) if (e.parent_id) {
+      if (!byParent.has(e.parent_id)) byParent.set(e.parent_id, []);
+      byParent.get(e.parent_id).push(e);
+    }
+    // Per-currency stat strip. The invariant the reference app enforces is
+    // Total === Paid + Outstanding BY CONSTRUCTION — computed from one pass
+    // over the same families the list renders, never from a second query.
+    const stats = {};
+    const shaped = entries.filter((e) => !e.parent_id).map((e) => {
+      const cur = e.currency || 'USD';
+      const fam = Number(e.family_amount) || 0;
+      const st = stats[cur] || (stats[cur] = { total: 0, paid: 0, outstanding: 0, count: 0 });
+      if (e.status === 'approved' && !e.voided) {
+        st.total += fam; st.count += 1;
+        if (e.payment_status === 'Paid') st.paid += fam; else st.outstanding += fam;
+      }
+      return {
+        ...e, family_amount: fam, has_w9: !!e.w9_entry_id, w9_entry_id: undefined,
+        children: (byParent.get(e.id) || []).map((c) => ({ ...c, has_w9: !!c.w9_entry_id, w9_entry_id: undefined, family_amount: undefined })),
+      };
+    });
+    const round2s = (n) => Math.round(n * 100) / 100;
+    for (const c of Object.keys(stats)) {
+      stats[c] = { total: round2s(stats[c].total), paid: round2s(stats[c].paid), outstanding: round2s(stats[c].outstanding), count: stats[c].count };
+    }
+    res.json({ success: true, data: { vendor, entries: shaped, stats, alias_names: names.filter((n) => n !== String(name).toLowerCase()) } });
   } catch (error) {
     console.error('Vendor detail error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -2343,7 +2459,7 @@ router.get('/vendor-suggest', async (req, res) => {
               MAX(vendor_bank) AS bank
          FROM expenses
         WHERE label_id = $1 AND payee IS NOT NULL AND payee <> '' AND LOWER(payee) LIKE $2
-          AND (deleted = false OR deleted IS NULL)
+          AND (deleted = false OR deleted IS NULL) AND (voided = false OR voided IS NULL)
           AND entry_source IS DISTINCT FROM 'creator_payment'
         GROUP BY payee ORDER BY invoices DESC LIMIT 12`,
       [req.labelId, q]
@@ -2372,31 +2488,99 @@ router.get('/vendor-suggest', async (req, res) => {
   }
 });
 
+// Every name that resolves to this vendor: the canonical name, its aliases,
+// and (walking the other direction) the canonical of an alias it is itself.
+// Saved emails and the W9 were keyed to whichever spelling was current when
+// they were captured, so an exact-name read silently loses them.
+async function vendorNameSet(labelId, name) {
+  const out = new Set([String(name || '').trim().toLowerCase()]);
+  try {
+    const { rows } = await pool.query(
+      `SELECT canonical, alias FROM vendor_aliases
+        WHERE label_id = $1 AND (LOWER(canonical) = LOWER($2) OR LOWER(alias) = LOWER($2))`,
+      [labelId, name]);
+    for (const r of rows) { out.add(String(r.canonical).toLowerCase()); out.add(String(r.alias).toLowerCase()); }
+  } catch { /* the exact name alone is still a correct, narrower answer */ }
+  return [...out].filter(Boolean);
+}
+
+// Move saved emails onto a new canonical name. A single UPDATE aborts on the
+// FIRST collision with the unique index and — because the old code swallowed
+// the error — left EVERY address stranded under the dead name. Delete the
+// would-collide rows first, then move the rest.
+async function carryVendorEmails(labelId, from, into) {
+  const { rows: dropped } = await pool.query(
+    `DELETE FROM vendor_emails a
+      WHERE a.label_id = $1 AND LOWER(a.vendor) = LOWER($2)
+        AND EXISTS (SELECT 1 FROM vendor_emails b
+                     WHERE b.label_id = $1 AND LOWER(b.vendor) = LOWER($3) AND LOWER(b.email) = LOWER(a.email))
+      RETURNING id`, [labelId, from, into]);
+  const { rows: moved } = await pool.query(
+    `UPDATE vendor_emails SET vendor = $1 WHERE label_id = $2 AND LOWER(vendor) = LOWER($3) RETURNING id`,
+    [into, labelId, from]);
+  return { moved: moved.map((r) => r.id), dropped: dropped.length };
+}
+
+// Fold the source vendor RECORD into the target instead of deleting it. The
+// old code dropped the source row outright, discarding its W9 file, contact
+// details and notes even when the target had none of them — the merge threw
+// away the very information it was supposed to consolidate.
+async function foldVendorRecord(labelId, from, into) {
+  const { rows: src } = await pool.query(
+    'SELECT * FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [labelId, from]);
+  if (!src.length) return null;
+  const { rows: dst } = await pool.query(
+    'SELECT id FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [labelId, into]);
+  if (!dst.length) {
+    await pool.query('UPDATE vendors SET name = $1, updated_at = NOW() WHERE id = $2', [into, src[0].id]);
+    return { moved_record: true };
+  }
+  // COALESCE keeps whatever the target already has and fills its gaps from the
+  // source; the target's own values always win.
+  await pool.query(
+    `UPDATE vendors t SET
+       email = COALESCE(NULLIF(t.email, ''), $1), address = COALESCE(NULLIF(t.address, ''), $2),
+       w9_r2_key = COALESCE(t.w9_r2_key, $3), w9_filename = COALESCE(t.w9_filename, $4),
+       notes = CASE WHEN COALESCE(NULLIF(t.notes, ''), '') = '' THEN $5
+                    WHEN COALESCE(NULLIF($5::text, ''), '') = '' THEN t.notes
+                    ELSE t.notes || E'\n' || $5 END,
+       updated_at = NOW()
+     WHERE t.id = $6`,
+    [src[0].email, src[0].address, src[0].w9_r2_key, src[0].w9_filename, src[0].notes, dst[0].id]);
+  await pool.query('DELETE FROM vendors WHERE id = $1', [src[0].id]);
+  return { folded_record: true };
+}
+
 // PUT /api/ledger/vendors/rename { from, to } — rename a vendor everywhere
-// (expenses.payee + vendor record). The old name becomes an alias.
+// (expenses.payee + expenses.vendor_name + vendor record). The old name
+// becomes an alias, and the whole thing is logged so it can be reversed.
 router.put('/vendors/rename', requireAdmin, async (req, res) => {
   try {
     const from = String(req.body.from || '').trim();
     const to = String(req.body.to || '').trim();
     if (!from || !to) return res.status(400).json({ success: false, error: 'from and to are required' });
     if (from.toLowerCase() === to.toLowerCase()) return res.status(400).json({ success: false, error: 'Names are the same' });
-    const upd = await pool.query(`UPDATE expenses SET payee = $1 WHERE label_id = $2 AND LOWER(payee) = LOWER($3)`, [to, req.labelId, from]);
-    // Move the vendor record (or merge into an existing `to`).
-    const existing = await pool.query('SELECT id FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [req.labelId, to]);
-    if (existing.rows.length) {
-      await pool.query('DELETE FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [req.labelId, from]);
-    } else {
-      await pool.query('UPDATE vendors SET name = $1, updated_at = NOW() WHERE label_id = $2 AND LOWER(name) = LOWER($3)', [to, req.labelId, from]);
-    }
-    await pool.query(
+    const upd = await pool.query(
+      `UPDATE expenses SET payee = $1 WHERE label_id = $2 AND LOWER(payee) = LOWER($3) RETURNING id`,
+      [to, req.labelId, from]);
+    // `vendor_name` is what the public vendor form captured. Leaving it behind
+    // makes the submission record disagree with the ledger row it created.
+    const vn = await pool.query(
+      `UPDATE expenses SET vendor_name = $1 WHERE label_id = $2 AND LOWER(vendor_name) = LOWER($3) RETURNING id`,
+      [to, req.labelId, from]);
+    const rec = await foldVendorRecord(req.labelId, from, to);
+    const alias = await pool.query(
       `INSERT INTO vendor_aliases (label_id, canonical, alias, created_by) VALUES ($1,$2,$3,$4)
-       ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical`,
-      [req.labelId, to, from, req.user.name]
-    );
-    // Carry saved emails over to the new canonical name.
-    await pool.query(`UPDATE vendor_emails SET vendor = $1 WHERE label_id = $2 AND LOWER(vendor) = LOWER($3)`, [to, req.labelId, from]).catch(() => {});
+       ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical RETURNING id`,
+      [req.labelId, to, from, req.user.name]);
+    const emails = await carryVendorEmails(req.labelId, from, to);
+    await pool.query(
+      `INSERT INTO vendor_merge_log (label_id, kind, from_name, into_name, expense_ids, vendor_name_ids, email_ids, created_alias, merged_by)
+       VALUES ($1,'rename',$2,$3,$4,$5,$6,$7,$8)`,
+      [req.labelId, from, to, JSON.stringify(upd.rows.map((r) => r.id)),
+        JSON.stringify(vn.rows.map((r) => r.id)), JSON.stringify(emails.moved), !!alias.rows.length, req.user.name]);
     await logActivity(req, 'Renamed vendor', `${from} → ${to}`);
-    res.json({ success: true, data: { updated: upd.rowCount } });
+    res.json({ success: true, data: { updated: upd.rowCount, vendor_names: vn.rowCount, emails_moved: emails.moved.length, emails_dropped: emails.dropped, ...(rec || {}) } });
   } catch (error) {
     console.error('Vendor rename error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -2410,18 +2594,82 @@ router.post('/vendors/merge', requireAdmin, async (req, res) => {
     const into = String(req.body.into || '').trim();
     if (!from || !into) return res.status(400).json({ success: false, error: 'from and into are required' });
     if (from.toLowerCase() === into.toLowerCase()) return res.status(400).json({ success: false, error: 'Pick two different vendors' });
-    const upd = await pool.query(`UPDATE expenses SET payee = $1 WHERE label_id = $2 AND LOWER(payee) = LOWER($3)`, [into, req.labelId, from]);
-    await pool.query('DELETE FROM vendors WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [req.labelId, from]);
-    await pool.query(
+    const upd = await pool.query(
+      `UPDATE expenses SET payee = $1 WHERE label_id = $2 AND LOWER(payee) = LOWER($3) RETURNING id`,
+      [into, req.labelId, from]);
+    const vn = await pool.query(
+      `UPDATE expenses SET vendor_name = $1 WHERE label_id = $2 AND LOWER(vendor_name) = LOWER($3) RETURNING id`,
+      [into, req.labelId, from]);
+    const rec = await foldVendorRecord(req.labelId, from, into);
+    const alias = await pool.query(
       `INSERT INTO vendor_aliases (label_id, canonical, alias, created_by) VALUES ($1,$2,$3,$4)
-       ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical`,
-      [req.labelId, into, from, req.user.name]
-    );
-    await pool.query(`UPDATE vendor_emails SET vendor = $1 WHERE label_id = $2 AND LOWER(vendor) = LOWER($3)`, [into, req.labelId, from]).catch(() => {});
-    await logActivity(req, 'Merged vendor', `${from} → ${into}`);
-    res.json({ success: true, data: { moved: upd.rowCount } });
+       ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical RETURNING id`,
+      [req.labelId, into, from, req.user.name]);
+    const emails = await carryVendorEmails(req.labelId, from, into);
+    // Log the exact ids. Reversing by NAME would drag rows that were always
+    // under the target back out with the ones that arrived — the failure that
+    // made the reference app's first unmerge unusable.
+    const { rows: logRow } = await pool.query(
+      `INSERT INTO vendor_merge_log (label_id, kind, from_name, into_name, expense_ids, vendor_name_ids, email_ids, created_alias, merged_by)
+       VALUES ($1,'merge',$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [req.labelId, from, into, JSON.stringify(upd.rows.map((r) => r.id)),
+        JSON.stringify(vn.rows.map((r) => r.id)), JSON.stringify(emails.moved), !!alias.rows.length, req.user.name]);
+    await logActivity(req, 'Merged vendor', `${from} → ${into} (${upd.rowCount} entries)`);
+    res.json({ success: true, data: { moved: upd.rowCount, vendor_names: vn.rowCount, emails_moved: emails.moved.length, emails_dropped: emails.dropped, merge_id: logRow[0].id, ...(rec || {}) } });
   } catch (error) {
     console.error('Vendor merge error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/ledger/vendors/:name/merges — what was folded INTO this vendor.
+router.get('/vendors/:name/merges', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, kind, from_name, into_name, merged_by, merged_at, undone_at, undone_by, created_alias,
+              jsonb_array_length(expense_ids) AS entry_count
+         FROM vendor_merge_log
+        WHERE label_id = $1 AND LOWER(into_name) = LOWER($2)
+        ORDER BY merged_at DESC LIMIT 50`,
+      [req.labelId, req.params.name]);
+    // A merge that predates this log cannot be listed — say so rather than
+    // implying the vendor was never merged into.
+    const { rows: since } = await pool.query(
+      `SELECT MIN(merged_at) AS since FROM vendor_merge_log WHERE label_id = $1`, [req.labelId]);
+    res.json({ success: true, data: { merges: rows, logged_since: since[0]?.since || null } });
+  } catch (error) {
+    console.error('Vendor merges error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/ledger/vendors/unmerge/:id — reverse a merge BY ID.
+router.post('/vendors/unmerge/:id(\\d+)', requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { rows } = await pool.query('SELECT * FROM vendor_merge_log WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    const log = rows[0];
+    if (!log) return res.status(404).json({ success: false, error: 'Merge not found' });
+    if (log.undone_at) return res.status(400).json({ success: false, error: 'That merge has already been undone' });
+    const eIds = (log.expense_ids || []).map(Number).filter(Number.isFinite);
+    const vIds = (log.vendor_name_ids || []).map(Number).filter(Number.isFinite);
+    const mIds = (log.email_ids || []).map(Number).filter(Number.isFinite);
+    const back = eIds.length
+      ? await pool.query(`UPDATE expenses SET payee = $1 WHERE label_id = $2 AND id = ANY($3::int[]) RETURNING id`, [log.from_name, req.labelId, eIds])
+      : { rowCount: 0 };
+    if (vIds.length) await pool.query(`UPDATE expenses SET vendor_name = $1 WHERE label_id = $2 AND id = ANY($3::int[])`, [log.from_name, req.labelId, vIds]);
+    if (mIds.length) await pool.query(`UPDATE vendor_emails SET vendor = $1 WHERE label_id = $2 AND id = ANY($3::int[])`, [log.from_name, req.labelId, mIds]);
+    // Only remove the alias this merge created — an alias that already existed
+    // is somebody else's fact.
+    if (log.created_alias) {
+      await pool.query('DELETE FROM vendor_aliases WHERE label_id = $1 AND LOWER(alias) = LOWER($2) AND LOWER(canonical) = LOWER($3)',
+        [req.labelId, log.from_name, log.into_name]);
+    }
+    await pool.query('UPDATE vendor_merge_log SET undone_at = NOW(), undone_by = $1 WHERE id = $2', [req.user.name, id]);
+    await logActivity(req, 'Unmerged vendor', `${log.into_name} → ${log.from_name} (${back.rowCount} entries)`);
+    res.json({ success: true, data: { restored: back.rowCount } });
+  } catch (error) {
+    console.error('Vendor unmerge error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
@@ -2433,16 +2681,34 @@ router.get('/vendors/:name/aliases', async (req, res) => {
     res.json({ success: true, data: rows });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
+
+// Words that are not a vendor. Accepting "LLC" as an alias points every
+// company whose name ends in LLC at one vendor the next time dup-check runs.
+const NOISE_ALIASES = new Set(['llc', 'l.l.c.', 'inc', 'inc.', 'incorporated', 'corp', 'corp.',
+  'corporation', 'ltd', 'ltd.', 'limited', 'co', 'co.', 'company', 'the', 'and', 'llp', 'lp', 'plc', 'gmbh', 'dba']);
+
 router.post('/vendors/:name/aliases', async (req, res) => {
   try {
     const alias = String(req.body.alias || '').trim();
     if (!alias) return res.status(400).json({ success: false, error: 'Alias is required' });
+    if (NOISE_ALIASES.has(alias.toLowerCase())) {
+      return res.status(400).json({ success: false, error: `"${alias}" is a company suffix, not a vendor name — it would match every company that ends in it.` });
+    }
+    if (alias.toLowerCase() === String(req.params.name || '').toLowerCase()) {
+      return res.status(400).json({ success: false, error: 'That is already this vendor\'s name' });
+    }
+    // ON CONFLICT re-points an existing alias silently. Report it instead:
+    // moving an alias off another vendor changes THAT vendor's identity too.
+    const { rows: prior } = await pool.query(
+      'SELECT canonical FROM vendor_aliases WHERE label_id = $1 AND LOWER(alias) = LOWER($2)', [req.labelId, alias]);
     await pool.query(
       `INSERT INTO vendor_aliases (label_id, canonical, alias, created_by) VALUES ($1,$2,$3,$4)
        ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical`,
       [req.labelId, req.params.name, alias, req.user.name]
     );
-    res.json({ success: true });
+    const reassigned = prior[0] && prior[0].canonical.toLowerCase() !== String(req.params.name).toLowerCase()
+      ? prior[0].canonical : null;
+    res.json({ success: true, data: { reassigned_from: reassigned } });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 router.delete('/vendors/aliases/:id', async (req, res) => {
@@ -2452,38 +2718,53 @@ router.delete('/vendors/aliases/:id', async (req, res) => {
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
 
-// POST /api/ledger/vendors/scan-w9s — batch-validate every vendor's W9 on file.
-// Returns one result per vendor (form type, name match, signature, notes).
+// POST /api/ledger/vendors/scan-w9s — batch-validate W9s on file.
+//
+// UNSCANNED ONLY, capped, and throttled. The previous version rescanned every
+// W9-bearing payee in one unbounded request: on a large tenant that is a
+// request timeout and an AI bill for work already done. `remaining` lets the
+// client say how much is left and click again.
+const W9_SCAN_BATCH = 10;
 router.post('/vendors/scan-w9s', requireAdmin, async (req, res) => {
   try {
     if (!claude.isEnabled()) return res.status(400).json({ success: false, error: 'AI is not configured on the server' });
+    const rescanAll = req.body?.rescan_all === true;
     // One representative W9-bearing entry per payee. Creator rows are excluded
     // for the same reason they never enter the vendors directory: a creator is
     // not a vendor, their W9 exposure is per calendar YEAR and is answered on
     // /creators. Sweeping them in here puts them in a batch whose results are
     // rendered against a vendor list they are absent from.
+    const scanned = rescanAll ? '' : 'AND e.w9_scan IS NULL';
     const { rows } = await pool.query(
       `SELECT DISTINCT ON (LOWER(payee)) id, payee, w9_r2_key, w9_filename
          FROM expenses e
         WHERE label_id = $1 AND w9_r2_key IS NOT NULL AND payee IS NOT NULL
           AND (deleted = false OR deleted IS NULL)
           AND ${excludeCreatorRows('e')}
+          ${scanned}
         ORDER BY LOWER(payee), id DESC`,
       [req.labelId]
     );
+    const batch = rows.slice(0, W9_SCAN_BATCH);
     const out = [];
-    for (const e of rows) {
+    for (const e of batch) {
       const r = await aiScan.rescanW9(req.labelId, e.id);
+      const w9Name = r.ok ? r.scan.w9_name : null;
       out.push({
         vendor: e.payee,
         ok: r.ok,
         reason: r.ok ? null : r.reason,
         flags: r.ok ? (r.scan.discrepancies || []) : [],
         summary: r.ok ? r.scan.summary : null,
+        w9_name: r.w9_on_file ? w9Name : null,
+        // The mismatch is computed the same way the vendor LIST computes it,
+        // so the panel and the badge can never disagree.
+        name_mismatch: w9Name ? !w9NameMatch.namesMatch(e.payee, w9Name) : false,
       });
+      await new Promise((r2) => setTimeout(r2, 200));
     }
     await logActivity(req, 'Batch W9 scan', `${out.length} vendors`);
-    res.json({ success: true, data: out });
+    res.json({ success: true, data: out, meta: { scanned: out.length, remaining: Math.max(0, rows.length - batch.length) } });
   } catch (error) {
     console.error('Batch W9 scan error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -3707,20 +3988,35 @@ router.get('/invoices', async (req, res) => {
 });
 
 // ── Vendor saved emails (auto-CC on confirmations) ─────────────────────────
+// Alias-aware: addresses saved under a spelling this vendor was merged from
+// are still this vendor's addresses.
 router.get('/vendors/:name/emails', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT id, email, label_text FROM vendor_emails WHERE label_id = $1 AND LOWER(vendor) = LOWER($2) ORDER BY id', [req.labelId, req.params.name]);
-    res.json({ success: true, data: rows });
+    const names = await vendorNameSet(req.labelId, req.params.name);
+    const { rows } = await pool.query(
+      'SELECT id, vendor, email, label_text FROM vendor_emails WHERE label_id = $1 AND LOWER(vendor) = ANY($2) ORDER BY id',
+      [req.labelId, names]);
+    res.json({ success: true, data: rows.map((r) => ({ ...r, via_alias: r.vendor.toLowerCase() !== String(req.params.name).toLowerCase() })) });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
 });
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 router.post('/vendors/:name/emails', async (req, res) => {
   try {
     const email = String(req.body.email || '').trim();
     if (!email) return res.status(400).json({ success: false, error: 'Email is required' });
+    // A malformed address saved here is auto-CC'd on every future payment
+    // confirmation and fails silently in the provider — reject it at the door.
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ success: false, error: `"${email}" is not a valid email address` });
+    const { rows: dup } = await pool.query(
+      'SELECT id FROM vendor_emails WHERE label_id = $1 AND LOWER(vendor) = LOWER($2) AND LOWER(email) = LOWER($3)',
+      [req.labelId, req.params.name, email]);
+    if (dup.length && !req.body.label_text) {
+      return res.status(409).json({ success: false, error: 'That address is already saved for this vendor' });
+    }
     await pool.query(
       `INSERT INTO vendor_emails (label_id, vendor, email, label_text, created_by) VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (label_id, LOWER(vendor), LOWER(email)) DO UPDATE SET label_text = EXCLUDED.label_text`,
-      [req.labelId, req.params.name, email, req.body.label_text || null, req.user.name]
+      [req.labelId, req.params.name, email, String(req.body.label_text || '').trim() || null, req.user.name]
     );
     res.json({ success: true });
   } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
@@ -4436,20 +4732,24 @@ router.get('/1099-report', async (req, res) => {
 });
 
 // Build a branded XLSX ledger for a set of expense rows.
-async function vendorLedgerXlsx(vendorName, rows) {
+// `accent` is the workspace's brand color as ARGB. Every other export in the
+// app is workspace-branded; hardcoding indigo here shipped one tenant's accent
+// to every other tenant's vendors.
+async function vendorLedgerXlsx(vendorName, rows, accent = 'FF4F46E5') {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Ledger');
   const cols = ['Invoice date', 'Invoice #', 'Artist', 'Category', 'Amount', 'Currency', 'Status', 'Payment', 'Paid date', 'Method', 'Notes'];
   const title = ws.addRow([`${vendorName} — invoice ledger`]); title.font = { bold: true, size: 14 }; ws.mergeCells(`A1:${String.fromCharCode(64 + cols.length)}1`);
   const head = ws.addRow(cols); head.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  head.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } }; });
+  head.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: accent } }; });
   ws.views = [{ state: 'frozen', ySplit: 2 }];
   let total = 0;
   for (const e of rows) {
-    total += Number(e.amount || 0);
+    const amount = Number(e.family_amount ?? e.amount ?? 0);
+    total += amount;
     ws.addRow([
       e.invoice_date ? String(e.invoice_date).slice(0, 10) : '', e.invoice_number || '', e.artist || '', e.category || '',
-      Number(e.amount || 0), e.currency || 'USD', e.status || '', e.payment_status || '',
+      amount, e.currency || 'USD', e.status || '', e.payment_status || '',
       e.payment_date ? String(e.payment_date).slice(0, 10) : '', e.payment_method || '', e.notes || '',
     ]);
   }
@@ -4458,21 +4758,39 @@ async function vendorLedgerXlsx(vendorName, rows) {
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
+// The workspace accent as an ExcelJS ARGB string, falling back to the app's
+// default rather than failing an export over a color.
+async function labelAccentArgb(labelId) {
+  try {
+    const { rows } = await pool.query('SELECT accent_color FROM labels WHERE id = $1', [labelId]);
+    const hex = String(rows[0]?.accent_color || '').trim().replace('#', '');
+    if (/^[0-9a-fA-F]{6}$/.test(hex)) return `FF${hex.toUpperCase()}`;
+  } catch { /* default accent */ }
+  return 'FF4F46E5';
+}
+
 // GET /api/ledger/vendor-zip?payee= — ZIP with a vendor's invoices + W9 + a
 // branded Excel ledger.
 router.get('/vendor-zip', async (req, res) => {
   try {
     const payee = (req.query.payee || '').trim();
     if (!payee) return res.status(400).json({ success: false, error: 'payee is required' });
+    // Roots only, but with the FAMILY total: cadence's splits carve the
+    // parent's amount, so exporting the raw parent amount omits every child
+    // slice from both the rows and the TOTAL — the vendor's own bundle would
+    // understate what they billed.
     const { rows } = await pool.query(
-      `SELECT * FROM expenses WHERE label_id = $1 AND LOWER(payee) = LOWER($2)
-         AND (deleted = false OR deleted IS NULL) AND status != 'rejected' AND parent_id IS NULL
-       ORDER BY invoice_date DESC NULLS LAST`,
+      `SELECT e.*,
+              (e.amount + COALESCE((SELECT SUM(c.amount) FROM expenses c
+                 WHERE c.parent_id = e.id AND (c.deleted = false OR c.deleted IS NULL)), 0)) AS family_amount
+         FROM expenses e WHERE e.label_id = $1 AND LOWER(e.payee) = LOWER($2)
+         AND (e.deleted = false OR e.deleted IS NULL) AND e.status != 'rejected' AND e.parent_id IS NULL
+       ORDER BY e.invoice_date ASC NULLS LAST`,
       [req.labelId, payee]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'No invoices found for that vendor' });
 
-    const entries = [{ name: `00 - ${safe(payee)} ledger.xlsx`, content: await vendorLedgerXlsx(payee, rows) }];
+    const entries = [{ name: `00 - ${safe(payee)} ledger.xlsx`, content: await vendorLedgerXlsx(payee, rows, await labelAccentArgb(req.labelId)) }];
     let w9Key = null;
     for (const e of rows) {
       if (e.invoice_r2_key) {

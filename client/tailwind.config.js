@@ -1,3 +1,14 @@
+// A CSS-variable-backed color that still honours Tailwind's `/NN` opacity
+// modifier. The variables hold HEX (they flip wholesale between light and
+// dark), so the rgb(var()/<alpha-value>) form is unavailable; color-mix is the
+// only way to make `bg-card/60` mean anything at all instead of emitting
+// nothing. Returns the bare var when no modifier was used so the common case
+// stays a plain `var()` reference.
+const tokenColor = (name) => ({ opacityValue }) =>
+  opacityValue === undefined
+    ? `var(${name})`
+    : `color-mix(in srgb, var(${name}) ${opacityValue * 100}%, transparent)`
+
 export default {
   darkMode: 'class',
   content: [
@@ -55,21 +66,32 @@ export default {
         },
 
         // Semantic aliases backed by CSS variables (theme-aware).
-        page:    'var(--color-bg-page)',
-        card:    'var(--color-bg-card)',
-        elev:    'var(--color-bg-elev)',
+        //
+        // These are theme-flipped HEX vars, so Tailwind's
+        // rgb(var(--…)/<alpha-value>) trick cannot apply — a bare
+        // `var(--color-bg-page)` makes `bg-page/50` emit NOTHING (Tailwind has
+        // nowhere to put the alpha, so it drops the declaration and the class
+        // silently does nothing). 66 sites in this repo were written that way,
+        // including the `bg-page/50` on every table <thead>. Routing the
+        // opacity modifier through color-mix fixes all of them at once — the
+        // same treatment success/warning/danger/info already got below, and the
+        // same browser floor bg-selected already accepted (Chrome 111 /
+        // Safari 16.2 / FF 113).
+        page:     tokenColor('--color-bg-page'),
+        card:     tokenColor('--color-bg-card'),
+        elev:     tokenColor('--color-bg-elev'),
         // bg-selected — multi-select row tint. Opaque; see tokens.css for why.
-        selected: 'var(--color-bg-selected)',
-        sidebar: 'var(--color-bg-sidebar)',
-        header:  'var(--color-bg-header)',
+        selected: tokenColor('--color-bg-selected'),
+        sidebar:  tokenColor('--color-bg-sidebar'),
+        header:   tokenColor('--color-bg-header'),
 
-        ink:         'var(--color-text)',
-        'ink-muted': 'var(--color-text-muted)',
-        'ink-faint': 'var(--color-text-faint)',
+        ink:         tokenColor('--color-text'),
+        'ink-muted': tokenColor('--color-text-muted'),
+        'ink-faint': tokenColor('--color-text-faint'),
 
-        rule:         'var(--color-border)',
-        'rule-light': 'var(--color-border-light)',
-        divider:      'var(--color-divider)',
+        rule:         tokenColor('--color-border'),
+        'rule-light': tokenColor('--color-border-light'),
+        divider:      tokenColor('--color-divider'),
 
         // Semantic status colors are theme-flipped HEX vars, so Tailwind's
         // rgb(var()/<alpha-value>) trick can't apply. Function colors route
@@ -77,10 +99,10 @@ export default {
         // color-mix instead — same floor the repo already accepted for
         // bg-selected (Chrome 111 / Safari 16.2 / FF 113). Without this the
         // /NN variants silently emit NOTHING.
-        success: ({ opacityValue }) => opacityValue === undefined ? 'var(--color-success)' : `color-mix(in srgb, var(--color-success) ${opacityValue * 100}%, transparent)`,
-        warning: ({ opacityValue }) => opacityValue === undefined ? 'var(--color-warning)' : `color-mix(in srgb, var(--color-warning) ${opacityValue * 100}%, transparent)`,
-        danger:  ({ opacityValue }) => opacityValue === undefined ? 'var(--color-danger)' : `color-mix(in srgb, var(--color-danger) ${opacityValue * 100}%, transparent)`,
-        info:    ({ opacityValue }) => opacityValue === undefined ? 'var(--color-info)' : `color-mix(in srgb, var(--color-info) ${opacityValue * 100}%, transparent)`,
+        success: tokenColor('--color-success'),
+        warning: tokenColor('--color-warning'),
+        danger:  tokenColor('--color-danger'),
+        info:    tokenColor('--color-info'),
 
         overlay: 'var(--color-overlay)',
       },

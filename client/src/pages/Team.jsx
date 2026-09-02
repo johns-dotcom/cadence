@@ -21,6 +21,7 @@ import TeamVelocity from '../components/TeamVelocity'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, DEPARTMENTS } from '../constants'
+import EmailPreviewModal from '../components/EmailPreviewModal'
 
 // boom's tones, restored: Superadmin is violet (the "above admin" colour), Admin
 // carries the accent, Approver amber. Translucent `/15` fills — the solid `-100`
@@ -95,6 +96,8 @@ export default function Team() {
   const [form, setForm] = useState({ name: '', email: '', role: 'User', department: 'Operations', hierarchy_level: 99 })
   const [saving, setSaving] = useState(false)
   const [invite, setInvite] = useState(null) // last invite: { link, email_sent, email }
+  // Pending invite email awaiting review in EmailPreviewModal ({ kind, ctx }).
+  const [inviteEmail, setInviteEmail] = useState(null)
   const [copied, setCopied] = useState(false)
 
   const load = () => {
@@ -112,9 +115,14 @@ export default function Team() {
     }
     setSaving(true)
     try {
-      const { data } = await api.post('/team', { ...form, hierarchy_level: Number(form.hierarchy_level) || 99 })
-      setInvite({ link: data.data.invite_link, email_sent: data.data.email_sent, email: data.data.email, email_error: data.data.email_error })
-      toast(data.data.email_sent ? `Invite emailed to ${data.data.email}` : 'Member added — share the invite link')
+      // notify:false — the invite email goes through the SAME review-before-send
+      // modal as every other outbound. An invite carries a workspace's name and
+      // a live 7-day credential; firing it blind was the one email nobody could
+      // check before it left.
+      const { data } = await api.post('/team', { ...form, hierarchy_level: Number(form.hierarchy_level) || 99, notify: false })
+      setInvite({ link: data.data.invite_link, email_sent: false, email: data.data.email, email_error: null })
+      setInviteEmail(inviteCtx(data.data))
+      toast('Member added — review the invite email')
       setForm({ name: '', email: '', role: 'User', department: 'Operations', hierarchy_level: 99 })
       setShowForm(false); load()
     } catch (err) {
@@ -122,13 +130,28 @@ export default function Team() {
     } finally { setSaving(false) }
   }
 
+  // The `welcome` dispatch kind renders lib/email.js inviteEmail — the exact
+  // template the server would have sent — so what is previewed is what goes.
+  const inviteCtx = (d) => ({
+    kind: 'welcome',
+    ctx: {
+      to: d.email,
+      inviteeName: d.name,
+      workspaceName: d.workspace_name,
+      inviterName: d.inviter_name,
+      link: d.invite_link,
+      expiresDays: d.expires_days,
+    },
+  })
+
   const copyInvite = (link) => navigator.clipboard.writeText(link).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
 
   const resend = async (id, name) => {
     try {
-      const { data } = await api.post(`/team/${id}/resend`)
-      setInvite({ link: data.data.invite_link, email_sent: data.data.email_sent, email: name, email_error: data.data.email_error })
-      toast(data.data.email_sent ? 'Invite resent' : 'New invite link ready — share it')
+      const { data } = await api.post(`/team/${id}/resend`, { notify: false })
+      setInvite({ link: data.data.invite_link, email_sent: false, email: name, email_error: null })
+      setInviteEmail(inviteCtx(data.data))
+      toast('New invite ready — review the email')
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
 
@@ -367,6 +390,16 @@ export default function Team() {
             </div>
           )}
         </>
+      )}
+
+      {inviteEmail && (
+        <EmailPreviewModal
+          open
+          kind={inviteEmail.kind}
+          ctx={inviteEmail.ctx}
+          onClose={() => setInviteEmail(null)}
+          onSent={() => setInvite(i => (i ? { ...i, email_sent: true } : i))}
+        />
       )}
     </div>
   )

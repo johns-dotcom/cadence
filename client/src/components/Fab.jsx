@@ -26,7 +26,9 @@ export default function Fab() {
     <div className="lg:hidden fixed right-4 z-30" style={{ bottom: 'calc(3.5rem + env(safe-area-inset-bottom) + 1rem)' }}>
       {open && (
         <>
-          <div className="fixed inset-0 -z-10" onClick={() => setOpen(false)} />
+          {/* Dimmed, not transparent: an open FAB is a modal choice, and the
+              page behind it should stop competing for attention. */}
+          <div className="fixed inset-0 -z-10 bg-black/20" onClick={() => setOpen(false)} />
           <div className="flex flex-col items-end gap-2 mb-3">
             {actions.map(a => {
               const Icon = a.icon

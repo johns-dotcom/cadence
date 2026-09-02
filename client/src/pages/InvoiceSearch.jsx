@@ -17,6 +17,7 @@ import { useToast } from '../context/ToastContext'
 import useIsMobile from '../hooks/useIsMobile'
 import { formatDate, localDateStr } from '../utils/dates'
 import { moneyOrig, moneyCompact } from '../utils/money'
+import { AXIS_TICK_SM } from '../utils/chartTheme'
 
 const STATUS_TONE = { approved: 'success', pending: 'warning', rejected: 'danger' }
 const StatusBadge = ({ status }) => (
@@ -114,7 +115,7 @@ function WeeklyChart({ title, subtitle, headlineLabel, series, selectedWeekStart
           <div style={{ height: 130 }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
-                <XAxis dataKey="label" tick={{ fontSize: 9, fill: '#9ca3af' }} interval={interval} axisLine={false} tickLine={false} />
+                <XAxis dataKey="label" tick={AXIS_TICK_SM} interval={interval} axisLine={false} tickLine={false} />
                 <Tooltip
                   cursor={{ fill: 'rgba(0,0,0,0.04)' }}
                   content={({ active, payload }) => {

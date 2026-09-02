@@ -24,6 +24,7 @@ import MonthlyRollup from '../components/financials/MonthlyRollup'
 import BreakdownSection from '../components/financials/BreakdownSection'
 import CategoryTrend from '../components/financials/CategoryTrend'
 import KpiDrillModal from '../components/financials/KpiDrillModal'
+import { AXIS_TICK } from '../utils/chartTheme'
 
 const INCOME_SOURCES = ['Streaming', 'Sync', 'Physical', 'YouTube', 'Merch', 'Performance', 'Publishing', 'Other']
 const PIE = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#0ea5e9', '#8b5cf6', '#ec4899', '#14b8a6', '#a3a3a3']
@@ -351,8 +352,8 @@ export default function Financials() {
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={analytics.monthlySeries || []}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
-                  <XAxis dataKey="month" tick={{ fontSize: 10 }} tickFormatter={(m) => String(m).slice(2)} />
-                  <YAxis tick={{ fontSize: 10 }} width={48} tickFormatter={moneyCompact} />
+                  <XAxis dataKey="month" tick={AXIS_TICK} tickFormatter={(m) => String(m).slice(2)} />
+                  <YAxis tick={AXIS_TICK} width={48} tickFormatter={moneyCompact} />
                   <Tooltip formatter={(v, k) => [money(v), { income: 'Income', expenses_paid: 'Expenses (paid)', expenses_unpaid: 'Expenses (unpaid)', net: 'Net' }[k] || k]}
                     contentStyle={{ fontSize: 12, borderRadius: 8, background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', color: 'var(--color-text)' }} />
                   <Bar dataKey="income" fill="#10b981" radius={[3, 3, 0, 0]} />

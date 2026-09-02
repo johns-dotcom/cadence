@@ -1,13 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Music, Users, UserCheck, Settings, ScrollText,
-  LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, Building2, Image as ImageIcon,
-  Briefcase, TrendingUp, FileText, RefreshCw, BookOpen, Receipt, CreditCard,
-  Link2, Check, CalendarDays, Search, PieChart, Wallet, Banknote, Megaphone, FileBarChart, GitMerge, Scale,
-  FileClock, Shield, Lock, FileSignature, FileSpreadsheet, Layers, PiggyBank, FilePlus2,
-  MessageSquarePlus, MessageSquare, Landmark, Coins, ShieldCheck, Users2, UploadCloud, FileSearch,
-  PackageCheck, BarChart3,
+  Settings, LogOut, LogIn, Eye, ChevronDown, Menu, X, Moon, Sun, Disc3, BookOpen, Link2, Check, Search, Megaphone, MessageSquarePlus, Keyboard,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { getHiddenPages, onNavPrefsChange } from '../utils/navPrefs'
@@ -21,152 +15,10 @@ import BottomNav from './BottomNav'
 import Fab from './Fab'
 import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
 import ErrorBoundary from './ErrorBoundary'
+import { PAGE_LABELS, buildNavGroups } from '../constants/navConfig'
 
-export const PAGE_LABELS = {
-  '/':           'Dashboard',
-  '/my-work':    'My Work',
-  '/team-work':  'Team Work',
-  '/calendar':   'Calendar',
-  '/financials': 'Financials',
-  '/reports': 'Reports',
-  '/ad-allocation': 'Allocate Advertising',
-  '/bank-matching': 'Bank Matching',
-  '/bank-ledger': 'Bank Ledger',
-  '/bulk-upload': 'Bulk Upload',
-  '/approvals/archive': 'Approvals Archive',
-  '/creators': 'Creator Payments',
-  '/bulk-deals': 'Bulk Deals',
-  '/artist-budgets': 'Artist Budgets',
-  '/recording-budgets': 'Recording Budgets',
-  '/recoupments':'Recoupments',
-  '/recoupments/planning': 'Recoupment Planning',
-  '/recoupments/audit': 'Recoupment Audit',
-  '/salary':     'Salary',
-  '/marketing':  'Marketing',
-  '/artist-campaigns': 'Artist Campaigns',
-  '/pending-contracts': 'Pending Contracts',
-  '/legal':      'NDAs',
-  '/create-nda': 'Create NDA',
-  '/label-waivers': 'Label Waivers',
-  '/clearances': 'Clearances',
-  '/admin-docs': 'Admin Docs',
-  '/releases':   'Releases',
-  '/catalog':    'Catalog',
-  '/brand':      'Brand',
-  '/artists':    'Roster',
-  '/deals':      'Deal Pipeline',
-  '/contracts':  'Contracts',
-  '/contracts/create': 'Create Contract',
-  '/renewals':   'Renewals',
-  '/approvals':  'Approvals',
-  '/ledger':     'Ledger',
-  '/invoice-search': 'Invoice Search',
-  '/ledger/new-invoice': 'Add invoice',
-  '/ledger/new-reimbursement': 'Add reimbursement',
-  '/payments':   'Payments',
-  '/vendors':    'Vendors',
-  '/invoices':   'Create Invoice',
-  '/add-invoice': 'Add Invoice',
-  '/invoices/new': 'Create invoice',
-  '/team':       'Team',
-  '/activity':   'Activity',
-  '/usage':      'Usage',
-  '/requests':   'Requests & feedback',
-  '/settings':   'Settings',
-  '/workspaces': 'Workspaces',
-}
-
-// Sidebar information architecture — grouped the way a label team works.
-// Module-level and pure so BOTH the sidebar and Settings' "hide items" list
-// read the same definition; two copies would drift and offer people toggles
-// for rows that aren't there.
-// Items are still filtered by canView (role + per-user page permissions) and
-// then by the viewer's own hidden-pages preference.
-export function buildNavGroups({ isAdmin, isApprover, chatUnread = 0, pendingApprovals = 0 }) {
-  return [
-  {
-    label: null,
-    items: [
-      { path: '/',         label: 'Dashboard', icon: LayoutDashboard },
-      { path: '/my-work',  label: 'My Work',   icon: Briefcase },
-      // Team leads only. canView() below still applies, so an admin can revoke it.
-      ...(isApprover ? [{ path: '/team-work', label: 'Team Work', icon: Users2 }] : []),
-      { path: '/messages', label: 'Messages',  icon: MessageSquare, badge: chatUnread },
-      { path: '/calendar', label: 'Calendar',  icon: CalendarDays },
-    ],
-  },
-  {
-    label: 'Catalog',
-    items: [
-      { path: '/releases', label: 'Releases', icon: Music },
-      { path: '/catalog',  label: 'Catalog',  icon: Disc3 },
-      { path: '/artists',  label: 'Roster',  icon: Users },
-      { path: '/brand',    label: 'Brand',    icon: ImageIcon },
-    ],
-  },
-  {
-    label: 'A&R',
-    items: [
-      { path: '/deals',     label: 'Deal Pipeline', icon: TrendingUp },
-      { path: '/marketing', label: 'Marketing',     icon: Megaphone },
-      ...(isApprover ? [{ path: '/artist-campaigns', label: 'Artist Campaigns', icon: Megaphone }] : []),
-    ],
-  },
-  {
-    label: 'Contracts & Legal',
-    items: [
-      ...(isApprover ? [{ path: '/contracts', label: 'Contracts', icon: FileText }] : []),
-      ...(isApprover ? [{ path: '/contracts/create', label: 'Create Contract', icon: FilePlus2 }] : []),
-      ...(isApprover ? [{ path: '/pending-contracts', label: 'Pending', icon: FileClock }] : []),
-      ...(isApprover ? [{ path: '/renewals', label: 'Renewals', icon: RefreshCw }] : []),
-      ...(isApprover ? [{ path: '/legal', label: 'NDAs', icon: Shield }] : []),
-      ...(isApprover ? [{ path: '/create-nda', label: 'Create NDA', icon: FilePlus2 }] : []),
-      ...(isApprover ? [{ path: '/label-waivers', label: 'Label Waivers', icon: FileSignature }] : []),
-      ...(isApprover ? [{ path: '/clearances', label: 'Clearances', icon: FileSpreadsheet }] : []),
-      ...(isAdmin ? [{ path: '/admin-docs', label: 'Admin Docs', icon: Lock }] : []),
-    ],
-  },
-  {
-    label: 'Bookkeeping',
-    items: [
-      { path: '/add-invoice', label: 'Add Invoice', icon: Receipt },
-      ...(isApprover ? [{ path: '/approvals', label: 'Approvals', icon: Check, badge: pendingApprovals }] : []),
-      ...(isApprover ? [{ path: '/ledger', label: 'Ledger', icon: BookOpen }] : []),
-      ...(isApprover ? [{ path: '/invoice-search', label: 'Invoice Search', icon: FileSearch }] : []),
-      ...(isApprover ? [{ path: '/bulk-upload', label: 'Bulk Upload', icon: UploadCloud }] : []),
-      ...(isApprover ? [{ path: '/payments', label: 'Payments', icon: CreditCard }] : []),
-      ...(isAdmin ? [{ path: '/bank-statements', label: 'Bank Statements', icon: Landmark }] : []),
-      ...(isAdmin ? [{ path: '/bank-matching', label: 'Bank Matching', icon: GitMerge }] : []),
-      ...(isAdmin ? [{ path: '/bank-ledger', label: 'Bank Ledger', icon: Coins }] : []),
-      ...(isApprover ? [{ path: '/vendors', label: 'Vendors', icon: Building2 }] : []),
-      ...(isApprover ? [{ path: '/creators', label: 'Creator Payments', icon: Users }] : []),
-      ...(isApprover ? [{ path: '/bulk-deals', label: 'Bulk Deals', icon: PackageCheck }] : []),
-      ...(isApprover ? [{ path: '/invoices', label: 'Create Invoice', icon: Receipt }] : []),
-      ...(isApprover ? [{ path: '/financials', label: 'Financials', icon: PieChart }] : []),
-      ...(isApprover ? [{ path: '/reports', label: 'Reports', icon: FileBarChart }] : []),
-      ...(isApprover ? [{ path: '/ad-allocation', label: 'Allocate Ads', icon: Megaphone }] : []),
-      ...(isApprover ? [{ path: '/artist-budgets', label: 'Artist Budgets', icon: Scale }] : []),
-      ...(isApprover ? [{ path: '/recording-budgets', label: 'Recording Budgets', icon: PiggyBank }] : []),
-      ...(isApprover ? [{ path: '/recoupments', label: 'Recoupments', icon: Wallet }] : []),
-      ...(isApprover ? [{ path: '/recoupments/planning', label: 'Recoup. Planning', icon: Layers }] : []),
-      ...(isAdmin ? [{ path: '/salary', label: 'Salary', icon: Banknote }] : []),
-    ],
-  },
-  {
-    label: 'Workspace',
-    items: [
-      { path: '/team', label: 'Team', icon: UserCheck },
-      ...(isAdmin ? [{ path: '/activity', label: 'Activity', icon: ScrollText }] : []),
-      ...(isAdmin ? [{ path: '/usage', label: 'Usage', icon: BarChart3 }] : []),
-      // Not admin-gated: the catalog + artist checks serve every role, and the
-      // money-shaped sections are role-gated server-side (routes/flags.js).
-      { path: '/data-quality', label: 'Data Quality', icon: ShieldCheck },
-      { path: '/requests', label: 'Requests & feedback', icon: MessageSquarePlus },
-      { path: '/settings', label: 'Settings', icon: Settings },
-    ],
-  },
-  ]
-}
+// Re-exported so existing importers (`from '../components/Layout'`) keep working.
+export { PAGE_LABELS, buildNavGroups }
 
 // "View as" dropdown — Superadmin-only impersonation within the workspace.
 function ViewAsDropdown() {
@@ -275,6 +127,10 @@ export default function Layout() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setSearchOpen(v => !v); return }
       if (inField(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
       if (e.key === '?') { e.preventDefault(); setHelpOpen(v => !v); return }
+      // `/` opens the palette — the muscle memory every search-first app trains.
+      // inField() above already excused it while typing, so it can't eat a slash
+      // in a filename or a date.
+      if (e.key === '/') { e.preventDefault(); setSearchOpen(true); return }
       if (gPending) {
         const dest = { d: '/', r: '/releases', a: '/artists', c: '/calendar', w: '/my-work' }[e.key.toLowerCase()]
         if (dest) { e.preventDefault(); navigate(dest) }
@@ -295,6 +151,33 @@ export default function Layout() {
   }, [])
 
   useEffect(() => { if (isMobile) setSidebarOpen(false) }, [location.pathname, isMobile])
+
+  // Edge-swipe the drawer open / drag it closed. Touch listeners are passive —
+  // this never calls preventDefault, so vertical page scrolling is untouched;
+  // the gesture only fires when the horizontal travel dominates and the swipe
+  // STARTED within 24px of the left edge (otherwise every carousel and
+  // horizontally-scrolling table on a phone would open the nav).
+  useEffect(() => {
+    if (!isMobile) return
+    let x0 = null, y0 = null, fromEdge = false
+    const start = (e) => {
+      const t = e.touches[0]
+      x0 = t.clientX; y0 = t.clientY
+      fromEdge = t.clientX <= 24
+    }
+    const end = (e) => {
+      if (x0 === null) return
+      const t = e.changedTouches[0]
+      const dx = t.clientX - x0, dy = t.clientY - y0
+      x0 = null
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return
+      if (dx > 0 && fromEdge) setSidebarOpen(true)
+      else if (dx < 0) setSidebarOpen(false)
+    }
+    document.addEventListener('touchstart', start, { passive: true })
+    document.addEventListener('touchend', end, { passive: true })
+    return () => { document.removeEventListener('touchstart', start); document.removeEventListener('touchend', end) }
+  }, [isMobile])
 
   // Per-person hidden nav items (Settings → Account → Sidebar). Local
   // preference only; re-read on change so the sidebar updates without a reload.
@@ -474,11 +357,23 @@ export default function Layout() {
 
       {/* Main */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* The amber "Operating in X as platform admin" / "Viewing as" banner used to
-            live here. Removed — the header's "Exit — back to <name>" button carries
-            the same state and the same escape hatch, so the bar was pure duplication.
-            That button is force-shown while impersonating (see ViewAsDropdown's
-            wrapper below), because it is now the ONLY way out. */}
+        {/* Impersonation banner. The header Exit pill carries the escape hatch, but
+            it names the ADMIN you'd return to — not whose view you are currently
+            in. Without this bar the only signal that the page is showing someone
+            else's permissions, department and tasks is a button that says
+            "Exit". Every destructive thing done from here is done AS them. */}
+        {impersonating && (
+          <div className="px-4 lg:px-6 py-2 flex items-center gap-2.5 text-xs font-semibold bg-warning/15 text-warning border-b border-warning/30 flex-shrink-0">
+            <Eye size={14} className="flex-shrink-0" />
+            <span className="min-w-0 truncate">
+              Viewing as <span className="font-bold">{user?.name}</span>
+              {user?.role ? ` · ${user.role}` : ''}{user?.department ? ` · ${user.department}` : ''}
+            </span>
+            <button onClick={exitImpersonation} className="ml-auto underline underline-offset-2 hover:no-underline flex-shrink-0">
+              Exit
+            </button>
+          </div>
+        )}
 
         {/* Header */}
         <div className="h-14 flex items-center gap-3 px-4 lg:px-6 border-b border-divider bg-header flex-shrink-0">
@@ -492,16 +387,41 @@ export default function Layout() {
           {/* Workspace-wide search (⌘K) */}
           <button
             onClick={() => setSearchOpen(true)}
-            title="Search (⌘K)"
+            title="Search (⌘K or /)"
+            aria-label="Search"
             className="inline-flex items-center gap-2 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-rule text-gray-400 hover:text-gray-700 hover:bg-gray-50 transition-all"
           >
             <Search size={14} />
             <span className="hidden md:inline">Search</span>
             <kbd className="hidden md:inline text-[10px] border border-rule rounded px-1 leading-tight">⌘K</kbd>
           </button>
+          {/* Quick-compose a request from wherever you are, carrying the page as
+              context — the whole point of an in-app feedback channel is that
+              you file it at the moment you hit the thing. Suppressed while
+              impersonating: the request would be attributed to the person whose
+              view you borrowed. */}
+          {!impersonating && (
+            <button
+              onClick={() => navigate(`/requests?from=${encodeURIComponent(location.pathname)}`)}
+              title="Send a request or report a bug"
+              aria-label="Send a request or report a bug"
+              className="hidden md:inline-flex items-center text-xs font-semibold p-1.5 rounded-lg border border-rule text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-all"
+            >
+              <MessageSquarePlus size={15} />
+            </button>
+          )}
+          <button
+            onClick={() => setHelpOpen(true)}
+            title="Keyboard shortcuts (?)"
+            aria-label="Keyboard shortcuts"
+            className="hidden sm:inline-flex items-center text-xs font-semibold p-1.5 rounded-lg border border-rule text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-all"
+          >
+            <Keyboard size={15} />
+          </button>
           <button
             onClick={() => setManualOpen(true)}
             title="User manual"
+            aria-label="User manual"
             className="inline-flex items-center text-xs font-semibold p-1.5 rounded-lg border border-rule text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-all"
           >
             <BookOpen size={15} />
@@ -512,6 +432,7 @@ export default function Layout() {
           <button
             onClick={toggleTheme}
             title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
             className="inline-flex items-center text-xs font-semibold px-3 py-1.5 rounded-lg border border-rule text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-all"
           >
             {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
@@ -546,7 +467,7 @@ export default function Layout() {
       <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
       <KeyboardShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <UserManual open={manualOpen} onClose={() => setManualOpen(false)} />
-      {isMobile && <BottomNav onMenu={() => setSidebarOpen(true)} />}
+      {isMobile && <BottomNav onMenu={() => setSidebarOpen(true)} chatUnread={chatUnread} />}
       {isMobile && <Fab />}
     </div>
   )

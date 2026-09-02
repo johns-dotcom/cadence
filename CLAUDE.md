@@ -374,8 +374,10 @@ missing). full-export gained categories/report_dismissals/artist_budget_sections
   client consumers — the "Platform console pages: … Analytics" claim above is
   false). `/manual` **DOES exist** (App.jsx → `components/UserManual.jsx` +
   `server/routes/manual.js` AI-ask) — earlier "missing /manual" notes were
-  stale. Mobile BottomNav has **no live unread badge** (the M6 claim above
-  overstates; badge exists on the desktop nav item only).
+  stale. Mobile BottomNav had **no live unread badge** (the M6 claim above
+  overstated it; the badge existed on the desktop nav item only) — **fixed in
+  Phase 9**: `Layout` now passes `chatUnread` into `BottomNav` and the Chat tab
+  carries the same live count, so the M6 claim is true as of 2026-09-02.
 
 ### Build-order Phase 1 (2026-08-31) — runtime + safety valves
 - **Local runtime EXISTS now**: `server/.env` points at a throwaway Neon project
@@ -2386,7 +2388,14 @@ diverge from every other table.
 - **Deploy**: Railway, push-to-`main`. Push via
   `GIT_SSH_COMMAND="ssh -i ~/.ssh/cadence_deploy -o IdentitiesOnly=yes" git push origin main`.
   Commit trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
-- **Verify before push**: `cd client && npm run build`; `node --check` changed server files.
+- **Verify before push**: `cd client && npm run build`; `npm run check:tdz` (see below);
+  `node --check` changed server files; `node server/scripts/finance-fixtures.cjs` (140 assertions).
+  `client/scripts/check-tdz.cjs` is a Babel scope analyzer that fails the build on a
+  `const`/`let` READ before its own declaration in the same function scope — a
+  ReferenceError at runtime that `vite build` accepts happily. It exists because a
+  `useMemo` dependency array referencing a `const` 300 lines below it shipped a
+  production crash. Nested-function references are excused (they run later), as is a
+  reference on the declaration's own line.
 - **Design tokens**: `client/src/styles/tokens.css` (light+dark CSS vars + full gray
   palette + semantic aliases bg-card/text-ink/border-rule/border-divider/bg-overlay).
   NO `getDarkColors(theme)` JS mirror yet; NO `components/ui/` kit; NO `Skeleton`; NO
@@ -3690,3 +3699,398 @@ filed under them. Dev server left running.
   bare select list deduces `text`, the comparison deduces the column's type. And when
   the route swallows errors on purpose (the analytics ping), 42P08 produces **no
   symptom at all** — verify the row landed, not that the call returned 200.
+
+---
+
+## Build-order Phase 9 (2026-09-02) — global surfaces + app-wide polish
+
+The shell itself, plus the two systemic passes (dark-mode residue, mobile layer)
+that no per-page audit owns. Zero new deps.
+
+### ⌘K palette — it can now find a PAGE, a VENDOR and an INVOICE
+`components/GlobalSearch.jsx` searched four entity types, none of which is what
+people reach for. It is now two halves that deliberately do not wait for each
+other: **pages** matched LOCALLY (`lib/pageSearch.js`, pure + assertable) against
+the nav vocabulary already in the bundle, rendering on the first keystroke; and
+the server half. Because pages paint during the server flight, a query never
+flashes "No results" on its way to an answer.
+
+- **`constants/navConfig.jsx` is now THE nav definition** — extracted out of
+  Layout, which re-exports `PAGE_LABELS`/`buildNavGroups` so existing importers
+  are untouched. Three consumers: the sidebar, Settings' hide-items editor, and
+  the palette's page ranking. Every item carries a **`synonyms`** string (48
+  tagged), which is the vocabulary people actually type — "w9" reaches Vendors,
+  "p&l" reaches Reports, "payroll" reaches Salary. `canView` is applied BEFORE
+  ranking, so the cap of six is six pages you can actually open.
+- **Server `routes/search.js`**: + vendors (derived from `expenses.payee`,
+  alias-aware via `vendor_aliases.canonical`, creator rows excluded, spend-
+  ordered) and + leaf-only ledger entries (invoice#/payee/description, split
+  parents excluded so the same money isn't offered twice). Both gated on
+  Approver — the same tier `routes/ledger.js:108` enforces, asked rather than
+  restated. Archived releases no longer leak; artists ordered by derived
+  release count; contracts by `expiration_date ASC`.
+- Restored from boom: **recents** (last 8, typed, deduped, Clear), **category
+  pills**, per-group counts, release type-chip + date, artist avatar + release
+  count, contract status badge, deal stage. Artist rows go to `/artists/:id`
+  (the profile exists), vendors to `/vendors?vendor=`, entries to
+  `/ledger?focus=`. **`/` opens the palette** (Layout).
+- Also added a nav row for **Add Reimbursement**: the page existed but was
+  reachable only from a button on `/ledger`, which a User without the ledger
+  page can never see — so it was unreachable for exactly the people who file
+  reimbursements.
+
+### Notification bell — five missing alert kinds, and sections instead of a list
+`routes/notifications.js` gained `release_behind` (≤7d and <50% checklist, danger
+≤3d), `release_unassigned`, `payment_rush`, `budget_burn` (≥80% of
+`artist_budget_sections`, artist-keyed the same canonical way `lib/artistKey.js`
+is), `contract_renewal` (expiry × unreleased tracks) and **team overdue tasks**
+scoped by the SAME department boundary `routes/tasks.js` `teamFilter` enforces.
+Contract alerts widened back to Approver + 90 days. Titles are sentences with
+the numbers in them again.
+
+- Releases produce ONE dataset and two outcomes — behind-and-inside-a-week
+  escalates, everything else is the plain upcoming row — so a release can never
+  appear in two sections at once, which two queries would have allowed.
+- Every item carries a **`group`**, so grouping is a property of the alert, not
+  of the component: the dropdown and `/notifications` cannot disagree.
+- Client: per-kind sections, **per-type preferences** (gear, localStorage,
+  merged over defaults so new types default ON) which filter the COUNT as well
+  as the list, tiered days-until / % chips, reminder **Done** (advances the
+  cadence via `/bank-statements/reminders/:id/done`), severity sort, and the
+  badge back to **red** — `bg-red-500`, not `bg-danger`, because that token is
+  tuned as a *foreground* and flips pale in dark, where white would vanish on it.
+- Approval alerts deep-link to **`/approvals`** (the page NEW ships) instead of
+  `/ledger`, and vendor submissions are their own kind again.
+- `pages/Notifications.jsx` read `smart_alerts`, which is narrower than "not a
+  mention" — it was silently dropping releases/contracts/tasks/budgets from the
+  page that promises all of them. Now derives from `items`.
+
+### Dark mode — the RC-9 residue
+The token half was already fixed (gray-50/100 split; 0 `bg-brand-50` sites
+remain). What was left was raw Tailwind tints and two dead-CSS traps:
+
+- **`tailwind.config.js` `tokenColor()`** — `page/card/elev/sidebar/header/ink/
+  rule/divider/selected` are theme-flipped HEX vars, so Tailwind's
+  `rgb(var()/<alpha-value>)` trick cannot apply and **`bg-page/50` emitted
+  NOTHING**. 66 sites were written that way, including the `bg-page/50` on
+  essentially every table `<thead>`. They now route through `color-mix`, the
+  same treatment `success/warning/danger/info` already had. Verified in the
+  built CSS:
+  `.bg-page\/50{background-color:color-mix(in srgb,var(--color-bg-page) 50%,transparent)}`.
+- **Consequence to know**: two FROZEN first cells (`Ledger` split rows,
+  `Payments` child rows) were `bg-page/40|60` — dead, therefore transparent.
+  Making them live made them *translucent*, which is still wrong for a cell that
+  must paint over the columns sliding under it. Both are now opaque `bg-elev`
+  on the row AND the cell (same reason `--color-bg-selected` is opaque).
+- **`.dark` tint compatibility layer** (index.css, ~90 selectors): 14 colour
+  families × `bg-50/100`, `border-100/200/300`, `ring-200/300`, and
+  `text-600/700/800` pushed to the `-400` tier, plus the `hover:` variants and
+  the four alpha-modified classes in use (`bg-amber-50/60` is a DIFFERENT class
+  name — the base rules never see it). No `!important` needed:
+  `.dark .bg-amber-50` is (0,2,0) vs the utility's (0,1,0), and the `:hover`
+  rules land at (0,3,0) so a hover tint still beats its own resting fill
+  regardless of source order. Class count 93 across 31 files (was 213/59 at
+  audit, 73/29 at phase start) — **0 of them unremapped**; no colour family in
+  the codebase falls outside the layer.
+- **Recharts** (`utils/chartTheme.js`): `TOOLTIP` + `AXIS_TICK`/`AXIS_TICK_SM`.
+  The default `<Tooltip />` is a white box with dark text — a glaring light popup
+  in dark — and an axis with no `fill` renders Recharts' default #666 at 2.8:1 on
+  the dark page. Neither responds to a class; both are inline/SVG. Applied to
+  Usage, PlatformAnalytics, Payments, Financials, InvoiceSearch, CategoryTrend,
+  WeeklyChart (Dashboard already had a tokenized CustomTooltip).
+- **Scrollbars**: `color-scheme: light|dark` (fixes native widgets and form
+  controls too) + a 6px WebKit gutter with dark thumb overrides.
+- `Brand.jsx`'s three image-overlay chips were `bg-white/90 text-gray-700` —
+  `text-gray-700` is var-backed and flips to a near-WHITE tier in dark, so they
+  rendered white-on-white. Now `bg-card/95 text-ink`.
+
+### Mobile shell
+Edge-swipe drawer (passive listeners, ≥60px travel, must START within 24px of
+the left edge, horizontal must beat vertical 1.5× — otherwise every horizontally
+scrolling table opens the nav). Universal **36px touch target** under 768px
+(`button, a[role=button], [role=tab], summary`) plus an app-wide mobile layer:
+h1 downscale, momentum scroll, press feedback, a 480px form-grid collapse and
+print styles. Deals kanban gets horizontal **snap-scroll** on phones (240px
+columns) — the first consumer of the `.snap-x-mandatory` helper index.css has
+always shipped. FAB open-state dims the page. BottomNav Chat tab carries the
+live unread badge the docs already claimed. Approvals toolbar goes full-width
+search + two-up filters below 640px.
+*Already closed by earlier phases*: FilterSheet on both Ledger and Payments,
+Payments card → `PaymentSheet` tap-through, FAB `?new=task` deep link.
+
+### Shell, shortcuts, primitives
+- **Impersonation banner restored.** The header Exit pill names the ADMIN you'd
+  return to, not whose view you are in — and every destructive action taken from
+  there is taken AS them. Header also gains a **Keyboard** button (`?` was the
+  only way to discover the modal), a **request quick-compose** carrying
+  `?from=<pathname>` (`document.referrer` is EMPTY on a client-side route change,
+  which is every navigation inside the app — the page's referrer capture never
+  worked), and `aria-label`s.
+- **Ledger `z`/`c`/`x`** wired — the Columns and Export buttons had been
+  advertising "(c)" and "(x)" in their tooltips with nothing behind them.
+- **`constants/shortcuts.js` reconciled against every live handler.** It was
+  missing Approvals' j/k/a/r/⇧A, the Releases list keys, Calendar, Catalog,
+  Create Invoice's ⌘-combos and five of the bank deck's ten keys — while
+  promising a Ledger `z` that did not exist.
+- **Toasts** gained `toast(msg, type, { action, duration })` — the action slot is
+  what makes toast-undo possible (`duration <= 0` = sticky) — plus an `info`
+  variant, per-type durations, entrance animation, max-width,
+  `pointer-events-none` on the column (the gap between stacked toasts was
+  swallowing clicks) and a mobile offset clear of `BottomNav`. Payments' bespoke
+  fixed undo bar is now a toast action.
+- **`ui/Modal`** width ladder extended to 3xl/4xl/5xl/6xl — it stopped at
+  `max-w-2xl`, which is why the five widest hand-rolled overlays *could not*
+  migrate. `backdrop-blur-sm` on Modal + BottomSheet.
+- **404**: unknown URLs rendered a silent redirect to the dashboard, which looks
+  exactly like "the link worked". `components/NotFound.jsx` now renders INSIDE
+  the shell (being lost is when you need the nav most) on both shells.
+- `Skeleton.ArtistProfile` added; `ArtistCampaignDetail` uses it.
+- **Filter-aware empty states** on Ledger and Payments — "All caught up 🎉" was
+  gated on the POST-filter list, so an active quick filter put a celebration over
+  rows that were merely hidden.
+- **Emails**: team invites (+resend) accept `notify: false` and route through
+  EmailPreviewModal (`welcome` kind, previously orphaned) — an invite carries a
+  workspace name and a live 7-day credential and was the one email nobody could
+  check before it left. Payment-confirmation previews now list the attachments
+  the feature route resolves server-side.
+
+### `client/scripts/check-tdz.cjs` — a build cannot catch this
+Babel scope analyzer, `npm run check:tdz`, exits non-zero on a genuine hazard:
+a `const`/`let` READ before its own declaration in the same function scope. That
+is legal syntax, so `vite build` is perfectly happy with it; the ReferenceError
+only appears when the module runs. It exists because a `useMemo` dependency array
+referencing a `const` 300 lines below it shipped a production crash. References
+from inside a NESTED function are excused (that body runs later), as is a
+reference on the declaration's own line (destructuring defaults that mention a
+sibling, self-referential arrows). Reports are deduped per source position —
+Babel visits a binding once per Scopable that resolves to its scope. Added to
+"Verify before push".
+
+### Also fixed
+`client/src/pages/Ledger.jsx` contained a literal NUL byte (a null-value sentinel
+written raw instead of escaped), which made grep, ripgrep and editors treat the
+entire 1,979-line file as binary. Now written as an escape sequence instead.
+
+### Deliberately not done (logged)
+Sidebar group taxonomy re-shuffle to boom's IA; collapsible sub-groups + tabbed
+family rows; Bookkeeping item order; boom-billing copy-address; `external` nav
+items. Migrating the remaining ~34 hand-rolled `fixed inset-0` overlays and 52
+`window.confirm` sites onto the kit (the width-ladder blocker is gone; the work
+is mechanical). Solid colour-coded toast surfaces (the neutral card is deliberate
+and dark-safe). Bank deck `p` preview / `↓` dismiss alias.
+
+---
+
+## Phase 9.5 (2026-09-02) — recording budgets + reports + vendors
+
+The three real pages `97-remaining.md` found with no campaign. **Zero new deps.**
+Fixtures 140 → **164** (23 new: recording-budget money rules + W9 name matching).
+
+### A · Recording Budgets — 30 of 32 closed
+
+Was a 131-line inline expander over a 124-line router. Now an index + a routed
+detail document, ported from the reference app's Budget/Fund/Costs-to-Date
+templates. **The budget is a typed document, not a titled list row.**
+
+- **Schema** (`index.js`, all IF-NOT-EXISTS after the CREATE): `recording_budgets`
+  gains `artist_id` FK + freeform `artist_name`, `release_id`, `project_title`,
+  `type` (budget|fund), `currency`, `advance_amount`, `fund_amount`,
+  `proposed_tracks`, `locked_by`, `updated_by/at`; `title` **drops NOT NULL**
+  (identity is artist + project — a blank draft has to be creatable so the header
+  grid can BE the form). `recording_budget_items` gains `qty`, `unit_price`,
+  `notes`, `sort_order`. `expenses.budget_section_override` for costs-to-date
+  reclassification. Data migrations run once and idempotently: legacy `title` →
+  `project_title`, display-label sections → the six keys, `amount` → `1 × amount`.
+  Both tables added to `db.js` TENANT_TABLES + full-export.
+- **`lib/recordingBudget.js`** (new, pure, fixture-backed) holds the three money
+  rules: a line is `qty × unit_price` **rounded AT THE LINE** (so the six section
+  totals and the subtotal always tie); contingency is a % **on top of** the
+  subtotal, never inside it; a fund's waterfall takes the advance out FIRST
+  (`fund − advance − plan`), and an overrun reports a NEGATIVE balance rather
+  than clamping. The route computes nothing itself — index and detail both go
+  through `budgetTotals`, so they cannot drift.
+- **Router**: routed index + `GET /:id` emitting **all six sections even when
+  empty**; blank `POST /` (contingency default 7.5); `PUT/PATCH /:id` allow-list
+  with in-tenant FK re-validation; three verb transitions (`approve|lock|reopen`,
+  `/status` kept for back-compat) where **reopen NULLs both stamp pairs** — a
+  draft carrying an `approved_by` claims an approval that was withdrawn; DELETE
+  **403s when locked** (previously the one mutation a frozen budget accepted was
+  destruction); line-item POST/PUT/DELETE with `SECTION_SET` validation on both
+  create AND update; `touch()` on every item write so `updated_at DESC` floats
+  active budgets. All `:id` routes are `(\d+)`-constrained so `/expense/:id/section`
+  isn't swallowed.
+- **`GET /:id/actuals`** — the real fix to the old "always over budget" row: was
+  the artist's ENTIRE all-category all-time approved spend converted with
+  date-based `toUSD`. Now scoped to the budget's artist (`LOWER(TRIM)` equality,
+  never the bucket key), optionally its release, **every live split slice counted
+  once carrying its own artist**, and converted through `lib/usd` `rowUsd2` so the
+  locked `fx_rate_to_usd` always wins and rounding happens at the row. Proven
+  live: by-category spent, row sum and summary spent all equal 1493.79.
+- **Client**: `RecordingBudgets.jsx` (index — 5-card summary over FILTERED rows,
+  search + status filter, filtered-empty copy, row anatomy with Fund/Budget chip,
+  status chip + icon, "Unnamed artist"/"no project title", N tracks · N line
+  items, right-aligned Total + Advance/Fund, error card + Retry) and new
+  **`RecordingBudgetDetail.jsx`** at `/recording-budgets/:id` — masthead +
+  lifecycle with three distinct ConfirmDialog strings, `readOnly` disabling every
+  input, header grid (artist combobox filtering the roster but freeform-capable
+  with ↑/↓/Enter/Esc and an explicit "use as freeform" escape; project, release,
+  currency, Budget|Fund segmented, `MoneyInput` committing on Enter/blur only,
+  fund-only Total Recording Fund, proposed tracks, contingency), fund summary
+  panel, and **two tabs** — Planning (sticky running-total strip, six always-
+  rendered sections with per-section icon/tint and the templates' own qty/price
+  header labels, compact-when-empty chevrons, expand-all, live share bar, inline
+  add + click-to-edit rows + per-row delete confirm naming the description,
+  bottom total block) and Costs to Date (fund/budget summary, by-category
+  planned/spent/remaining/% with overspend tone, ledger expense list with a
+  per-row budget-category override select, amber-bordered when overridden).
+- **Add-item draft state is per SECTION CARD** — the old single shared `item`
+  leaked typed values between budgets.
+- **Not done**: DEF-RBUD-31's `created_by`/`approved_by` are still name strings
+  (now displayed, at least); no artist-picker "no matches" keyboard-create.
+
+### B · Reports — 19 of 24 closed (both named issues fixed)
+
+- **[P1] Balance sheet no longer counts drawdowns as debt.** `total_liabilities`
+  is A/P only; drawdowns move into a **"Funded by"** block (drawdowns + derived
+  accumulated deficit + total + the "presentation, not a proof" note), hideable
+  via `bs_line:funding` with an inline "Show Funded by" way back. This reverses
+  the exact `$5.49M liabilities / meaningless equity` failure the reference app
+  documents (John's 2026-08-07 call). Verified live: liabilities === A/P, and
+  `drawdowns + accumulated_deficit === net_assets` by construction.
+- **[P1] P&L line filter.** `pnlQ` input with a match count, per-section
+  "Subtotal of shown" rows derived from the SAME entries the rows render, real
+  totals relabelled "(all lines)" while filtering, and per-section no-match rows.
+- **[P2, named issue] `non_recurring` is its own labelled section.** It was being
+  bumped into `below.expenses` and rendered unlabelled inside "advances &
+  pass-through" while the classify UI offered it as a third choice. `buildPnl`
+  now emits a `non_recurring` block (income + expenses + totals + net); the client
+  renders it with its own net and explanation; **Net Change in Cash is the
+  three-section sum**; `reportRows.js` exports it as a third block. Proven live:
+  classifying Travel → non_recurring moves the line, `ties_to_pnl` stays true,
+  and the cash line equals the three nets.
+- **[P2, named issue] `all_expense_ids` is now used.** Past the 500-row render cap
+  the drill offers **"Attribute all N"** against the full id list, plus select-all,
+  a selected-$ readout, selection **pruned when the filter changes**, bulk month
+  move, and eligibility-split copy ("Set artist on 4 of 6" — income rows have no
+  artist to set).
+- **[P2] BS depth**: A/R + A/P **aging buckets** (current/31-60/61-90/90+),
+  per-line **composition** breakdowns built from the same filtered rows so the
+  parts sum to the line by construction, and the **undated-paid disclosure**
+  (paid bills with no payment date can't be placed in time). All three also in the
+  Excel workbook.
+- **[P2] BS whole-line exclusion has UI** — hover Ban / Undo2 on every line
+  including per-cash-account, so an excluded line is reachable from the sheet
+  that shows it (the server + Dismissed-tab restore already existed).
+- **[P2] Drill sort** (Date/Name/Amount pills with stated default direction and
+  click-to-flip) applied **server-side over the full set before the cap**, so
+  "biggest first" isn't the biggest of an arbitrary 500.
+- **[P2] "What backs these figures"** evidence aggregate — invoice vs
+  bank-invented $ + row counts + a bar, summing to the cell total by construction.
+- **[P3s]**: rename toast names the touched tables; the per-line dismissed badge
+  is a clickable **+$amount** that jumps to the Dismissed tab (was an inert `◦`);
+  the drill's "+$Y dismissed" jumps too; SBA **Top-N lifted to the page so Export
+  follows the screen**; **merged-spelling `×N`** chip + tooltip (buildPnl kept the
+  spellings instead of discarding them); SBA category columns ordered by
+  **artist-attributable** spend with overhead-only columns greyed and last;
+  advance-only-artist sentence restored; Dismissed-tab line rules carry a live
+  **"$X excluded in range · N rows"** chip (new `dismissed.by_rule`, split from
+  `by_cell` so item dismissals don't inflate a rule's claim); `isValidDay` does a
+  **real-date** check (`2026-02-31` now 400s instead of reaching SQL); from/to
+  `max`/`min` cross-clamps; Financials cross-link; the subtitle no longer says
+  "statement-verified" (it overstated a ledger-mastered basis).
+- **`buildPnl`'s shipped contracts are untouched**: `collectCountedIds`,
+  `collectLabelLevel` and `by_artist.ties_to_pnl` semantics are unchanged, and
+  `ties_to_pnl` was re-verified true before and after every change.
+- **Not done** (logged): the review deck over drill rows (P1 — the largest single
+  item; `components/ReviewDeck.jsx` exists and the drill already returns
+  everything it needs); drill-row document buttons / FilePreview (needs
+  `withFileFlags`-equivalent plumbing); `classify`/`rename` staying Admin+ rather
+  than Approver — treated as deliberate hardening, not reverted.
+
+### C · Vendors — 21 of 27 closed, 1 already-closed
+
+**Already closed by the Phase-2 vault campaign: #2** (encrypted
+`vendor_payment_details`, Admin-gated, audit row per READ, masked summary,
+key-missing state). Not redone — the drawer's vault card is untouched.
+
+- **[P1 #1] Merges are reversible and recorded.** New `vendor_merge_log`
+  (kind, from/into, `expense_ids` + `vendor_name_ids` + `email_ids` JSONB,
+  `created_alias`, `undone_at/by`) written by both merge AND rename;
+  `GET /vendors/:name/merges` + `POST /vendors/unmerge/:id`; drawer shows
+  "Merged into this vendor" with per-merge Unmerge, undone merges staying
+  visible, and a `logged_since` disclosure. **Reverses BY ID** — reversing by name
+  drags rows that were always the target back out with the ones that arrived.
+  Proven live: 7 entries + 1 saved email out and back, totals identical, second
+  unmerge refused.
+- **[P2 #3] Saved emails survive a rename/merge.** The single UPDATE aborted on
+  the first unique-index collision and the swallow-all `.catch` left EVERY address
+  stranded under the dead name. `carryVendorEmails` deletes would-collide rows
+  first, then moves the rest, and reports both counts in the toast.
+- **[P2 #4] `foldVendorRecord`** COALESCEs the source's W9 file / contact /
+  notes into the target (target's own values win, notes concatenate) instead of
+  `DELETE FROM vendors` discarding them.
+- **[P2 #5]** voided rows excluded from `/vendors` and `/vendor-suggest`, matching
+  every other aggregate. **[P2 #6]** `invoice_count` counts FAMILIES
+  (`FILTER (WHERE parent_id IS NULL)`) and the drawer nests split children under
+  their parent. **[P2 #7]** `total_spent_usd` + `currency_count`, rendered as
+  "≈USD · N currencies" instead of netting currencies into one `$`.
+  **[P2 #16]** `GROUP BY LOWER(payee)` with the most-used spelling as the display
+  name — "Acme"/"ACME" were two rows while every mutation route matched `LOWER()`.
+  **[P2 #17]** `vendorNameSet()` walks aliases both directions, so saved emails
+  and the canonical W9 (`w9_entry_id || id`, alias-aware) follow the vendor.
+- **[P2 #13/#14] W9 name-mismatch pipeline.** New `lib/w9NameMatch.js` — lenient
+  on FORM (entity suffixes, punctuation, name order, middle initials, `&`/`and`,
+  accents) and strict on IDENTITY, because a badge that fires on "Smith, LLC" vs
+  "Smith LLC" trains everyone to ignore the one that matters. The list computes
+  `w9_mismatch` from the **persisted** `expenses.w9_scan.w9_name` (gated on
+  `w9_on_file` so a scan outliving its file can't badge a vendor with no W9), and
+  surfaces it as a banner + per-row AlertTriangle + a "Name mismatch" filter.
+  Scan-all is now **unscanned-only, capped at 10, 200ms apart**, returning
+  `remaining` — it previously rescanned every W9-bearing payee unbounded in one
+  request.
+- **[P2 #11/#12/#27] Vendor bundle.** The uncalled `GET /ledger/vendor-zip` gets a
+  drawer button (busy state, disabled with a reason when there are no invoices,
+  JSON-error unwrapping from the blob); the xlsx now writes **`family_amount`** so
+  split child slices are no longer omitted from both the rows and the TOTAL; the
+  header fill reads the **workspace accent** instead of hardcoded indigo.
+- **[P2 #15] List tooling**: search over name/email/**alternate spellings**, W9
+  filter (all/on/missing/mismatch), 5 sorts, "N of M" count, Clear, a **1099
+  column** using `reportingThresholdFor` (OBBBA $600→$2,000 from 2026 — the same
+  rule the ledger's 1099 report adopted), and a per-currency stat strip in the
+  drawer where **Total === Paid + Outstanding by construction**.
+- **[P3s]**: email format validation + 409 on duplicate + the `label_text` field
+  the API always had but the drawer never collected (now shown as a chip badge,
+  with an `alias` marker on inherited addresses); noise-alias guard (`LLC`/`Inc`/…
+  refused at the door) + an explicit "alias moved here from X" notice instead of a
+  silent `ON CONFLICT` re-point; `formatDate` everywhere (dates were TZ-shifting a
+  day west of UTC); merge/rename toasts name what moved; merge picker is a
+  **debounced `/vendor-suggest` typeahead** instead of a `<select>` over every
+  name; W9 upload gets `accept`, a busy state and a drag-over ring; rename now
+  also updates `expenses.vendor_name`; drawer invoice rows (and child slices) link
+  to `/ledger?focus=`.
+- **Kept by design**: creator rows stay excluded from `/vendors` and
+  `/vendor-suggest` (prior-phase contract).
+- **Not done** (logged, each a surface of its own): #8 the vendor dupe deck
+  (scoring endpoint, auto-merge exact tier, swap/custom-name/alias-only, "not
+  duplicates" ack, merge-all ≥85 — DataQuality's vendor tab is the partial), #9
+  the unified ledger+bank company view and its `?tab=` worklists, #10 bulk
+  multi-select merge with a survivor picker, #18 move-ONE-invoice from the vendor
+  surface, #15's cards view and the Added-expenses subpage.
+
+### D · `missing--vendors-added-expenses` — SKIPPED
+
+Not started. Its spec warns the port must use cadence's **`'recoupment'`
+(SINGULAR)** `entry_source`, and half-building an implicit-vendor + variant
+detector is worse than leaving it scheduled. Still open, still P1.
+
+### Gap-map corrections
+
+- "**Recording Budgets** (draft→approved→locked lifecycle, sections,
+  costs-to-date) — MISSING" under Milestone 3 is now **built** (this entry).
+- Reports' P&L now has three presented sections, not two. Anything reading
+  `pnl.below` for "everything below the operating line" must also read
+  `pnl.non_recurring` — `reportRows.js` and `PnlTable` were both updated; a new
+  consumer that forgets will silently under-report Net Change in Cash.
+- `expenses.budget_section_override` is a **report-only** attribution: it never
+  touches the row's category on /ledger, and it is trusted as stored on READ
+  (re-validating would silently reclassify a row whose category was renamed).

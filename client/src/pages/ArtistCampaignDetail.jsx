@@ -16,6 +16,7 @@ import { CURRENCIES } from '../constants'
 import CategoryOptions from '../components/CategoryOptions'
 import useCollapsed from '../hooks/useCollapsed'
 import useFocusRefetch from '../hooks/useFocusRefetch'
+import Skeleton from '../components/Skeleton'
 
 // Everything for one artist — deliberately UNSCOPED.
 //
@@ -146,7 +147,7 @@ export default function ArtistCampaignDetail() {
 
   const shownGroups = songParam ? groups.filter((g) => g.key === keyOfSlug(songParam)) : groups
 
-  if (loading) return <p className="text-sm text-ink-muted">Loading…</p>
+  if (loading) return <Skeleton.ArtistProfile />
   if (error) return (
     <div className="card p-8 text-center">
       <p className="text-sm text-danger">{error}</p>

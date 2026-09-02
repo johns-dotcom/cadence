@@ -13,6 +13,7 @@ import { BarChart, Bar, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import { formatDate, isPastLocal, daysUntilLocal } from '../utils/dates'
 import useIsMobile from '../hooks/useIsMobile'
 import useEscapeStack from '../hooks/useEscapeStack'
+import { TOOLTIP, AXIS_TICK_SM } from '../utils/chartTheme'
 
 const fmt = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })
 const usd = (n) => `$${fmt(n)}`
@@ -119,8 +120,6 @@ export default function Payments() {
   // Marking a rush row paid keeps it under the Rush chip for 10s — long enough
   // to reach its send-confirmation affordance before it re-files under All.
   const [rushGrace, setRushGrace] = useState(() => new Set())
-  const [undo, setUndo] = useState(null) // { label, fn }
-  const undoTimer = useRef(null)
 
   const isPaid = filter === 'paid'
 
@@ -139,16 +138,19 @@ export default function Payments() {
 
   const repEmail = (name) => reps.find(x => x.name === name)?.email || null
 
+  // Undo rides in the toast rather than a bespoke fixed bar: same 6s window,
+  // one overlay system, and it can't collide with the mobile BottomNav.
   const pushUndo = (label, fn) => {
-    if (undoTimer.current) clearTimeout(undoTimer.current)
-    setUndo({ label, fn })
-    undoTimer.current = setTimeout(() => setUndo(null), 6000)
-  }
-  const runUndo = async () => {
-    const u = undo
-    setUndo(null)
-    if (undoTimer.current) clearTimeout(undoTimer.current)
-    try { await u.fn(); toast('Undone'); load() } catch (err) { toast(err.response?.data?.error || 'Undo failed', 'error') }
+    toast(label, 'info', {
+      duration: 6000,
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          try { await fn(); toast('Undone'); load() }
+          catch (err) { toast(err.response?.data?.error || 'Undo failed', 'error') }
+        },
+      },
+    })
   }
 
   // ── Vendor batching worklist (Multi-invoice) ─────────────────────────────
@@ -403,6 +405,14 @@ export default function Payments() {
           currency: head.currency, method: head.payment_method, date: head.payment_date ? String(head.payment_date).slice(0, 10) : null,
           invoices: multi ? group.map(r => ({ invoiceNumber: r.invoice_number, amount: famAmt(r), currency: r.currency, date: r.payment_date ? String(r.payment_date).slice(0, 10) : null, method: r.payment_method })) : null,
           totalLine: multi ? totalsLine(totalsByCurrency(group)) : null,
+          // Display-only: /email/preview strips real attachments as a security
+          // boundary, so the modal is told what the FEATURE route will attach
+          // (invoice + proof per row, deduped) rather than showing an empty
+          // attachment list for an email that arrives with two PDFs on it.
+          attachmentLabels: [...new Set(group.flatMap(r => [
+            r.invoice_r2_key ? (r.invoice_filename || `invoice-${r.id}.pdf`) : null,
+            (r.proof_r2_key || r.receipt_r2_key) ? (r.proof_filename || r.receipt_filename || `proof-${r.id}.pdf`) : null,
+          ]).filter(Boolean))],
         },
         onCustomSend: async ({ to, cc, subject, note }) => {
           await api.post('/ledger/send-vendor-confirmation', { ids, to, cc, subject, note, force: group.some(r => !hasProof(r)) })
@@ -574,7 +584,21 @@ export default function Payments() {
       ) : view === 'calendar' ? (
         <CalendarView rows={shown} />
       ) : shown.length === 0 ? (
-        <div className="card p-10 text-center"><CreditCard size={28} className="text-ink-faint mx-auto mb-3" /><p className="text-sm text-ink-muted">{isPaid ? 'Nothing paid in the last 14 days.' : 'Nothing here. All caught up. 🎉'}</p></div>
+        // The celebration is only honest when the tab is GENUINELY clear.
+        // Gating it on the post-filter list meant an active quick filter or a
+        // search term put "All caught up 🎉" over rows that were merely hidden.
+        <div className="card p-10 text-center">
+          <CreditCard size={28} className="text-ink-faint mx-auto mb-3" />
+          <p className="text-sm text-ink-muted">
+            {isPaid ? 'Nothing paid in the last 14 days.'
+              : rows.length === 0 ? 'Nothing here. All caught up. 🎉'
+              : 'No payments match the current filters.'}
+          </p>
+          {rows.length > 0 && !isPaid && (
+            <button onClick={() => { setFilter('all'); setQ(''); setAmountQ(''); setMethodF(''); setStatusF('') }}
+              className="mt-2 text-xs font-semibold text-brand-ink hover:underline">Clear filters</button>
+          )}
+        </div>
       ) : isMobile ? (
         <div className="space-y-2">
           {shown.map(r => (
@@ -644,15 +668,6 @@ export default function Payments() {
         </div>
       )}
 
-      {/* 6s undo toast */}
-      {undo && (
-        <div className={`fixed ${isMobile ? 'bottom-28' : 'bottom-16'} left-1/2 -translate-x-1/2 z-40 bg-ink text-page rounded-lg px-4 py-2.5 flex items-center gap-3 shadow-modal text-sm`}>
-          <span>{undo.label}</span>
-          <button onClick={runUndo} className="font-bold inline-flex items-center gap-1 hover:underline"><Undo2 size={14} /> Undo</button>
-          <button onClick={() => setUndo(null)} className="opacity-70 hover:opacity-100"><X size={14} /></button>
-        </div>
-      )}
-
       {payModal && <PayModal count={payModal.ids.length} onClose={() => setPayModal(null)} onConfirm={doPay} />}
       {schedModal && <ScheduleModal initialTerms={schedModal.terms} onClose={() => setSchedModal(null)} onConfirm={doSchedule} />}
       {instModal && <InstallmentsModal row={instModal} onClose={() => { setInstModal(null); load() }} toast={toast} />}
@@ -718,8 +733,9 @@ function RowSet(props) {
     {isPaid ? <PaidRow {...props} /> : <UnpaidRow {...props} />}
     {editId === r.id && <EditRow {...props} />}
     {props.expanded.has(r.id) && (props.childrenOf[r.id] || []).map(ch => (
-      <tr key={ch.id} className="bg-page/40">
-        <td className="sticky left-0 z-10 bg-page/40 px-3 py-2 pl-10 text-xs text-ink-muted whitespace-nowrap shadow-[8px_0_8px_-8px_rgba(0,0,0,0.15)]">↳ {ch.artist || '—'}{ch.song ? ` — ${ch.song}` : ''}</td>
+      // Opaque on both the row and the frozen cell — see Ledger's split rows.
+      <tr key={ch.id} className="bg-elev">
+        <td className="sticky left-0 z-10 bg-elev px-3 py-2 pl-10 text-xs text-ink-muted whitespace-nowrap shadow-[8px_0_8px_-8px_rgba(0,0,0,0.15)]">↳ {ch.artist || '—'}{ch.song ? ` — ${ch.song}` : ''}</td>
         <td colSpan={props.isPaid ? 5 : 11} className="px-3 py-2 text-xs text-ink-muted">{ch.category || '—'} · {ch.currency} {fmt(ch.amount)}{ch.notes ? ` · ${ch.notes}` : ''}</td>
       </tr>
     ))}
@@ -1235,8 +1251,8 @@ function WeeklyTrend({ title, series, color }) {
       <div style={{ height: 120 }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
-            <XAxis dataKey="label" tick={{ fontSize: 9, fill: '#9ca3af' }} interval={1} axisLine={false} tickLine={false} />
-            <Tooltip cursor={{ fill: 'rgba(0,0,0,0.04)' }} contentStyle={{ fontSize: 12, borderRadius: 8 }} formatter={(v, n) => [v, n === 'count' ? 'entries' : n]} labelFormatter={(l) => `Week of ${l}`} />
+            <XAxis dataKey="label" tick={AXIS_TICK_SM} interval={1} axisLine={false} tickLine={false} />
+            <Tooltip {...TOOLTIP} formatter={(v, n) => [v, n === 'count' ? 'entries' : n]} labelFormatter={(l) => `Week of ${l}`} />
             <Bar dataKey="count" fill={color} radius={[3, 3, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>

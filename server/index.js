@@ -689,6 +689,29 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_emails_uniq ON vendor_emails (label_id, LOWER(vendor), LOWER(email))`);
+  // Vendor merge log — every merge records the EXACT row ids it touched, so it
+  // can be reversed by id rather than by name. Reversing by name is what makes
+  // an unmerge destructive: rows that were always under the target get dragged
+  // back out with the ones that arrived. `undone_at` keeps an undone merge
+  // visible instead of deleting the only record that a merge ever happened.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS vendor_merge_log (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL DEFAULT 'merge',
+      from_name TEXT NOT NULL,
+      into_name TEXT NOT NULL,
+      expense_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      vendor_name_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      email_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_alias BOOLEAN DEFAULT FALSE,
+      merged_by TEXT,
+      merged_at TIMESTAMP DEFAULT NOW(),
+      undone_at TIMESTAMP,
+      undone_by TEXT
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_vendor_merge_log_label ON vendor_merge_log (label_id, merged_at DESC)`);
   // Admin-built permission templates — named page-sets applied to users.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS permission_templates (
@@ -971,6 +994,63 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_recording_budget_items ON recording_budget_items (budget_id)`);
+
+  // Recording budgets, phase 9.5: the reference app's full document model.
+  // A budget is typed (Budget | Fund), carries an artist (roster FK or a
+  // freeform name), a project title, a release link, its own currency, an
+  // advance, a fund amount and a proposed track count. Line items are
+  // quantity-driven (amount = qty × unit_price) — the source Excel templates
+  // read "10 tracks × $1,500", and a single typed amount cannot express that.
+  for (const [col, type] of [
+    ['artist_id', 'INT REFERENCES artists(id) ON DELETE SET NULL'],
+    ['release_id', 'INT REFERENCES releases(id) ON DELETE SET NULL'],
+    ['artist_name', 'TEXT'],
+    ['project_title', 'TEXT'],
+    ['type', "TEXT DEFAULT 'budget'"],
+    ['currency', "TEXT DEFAULT 'USD'"],
+    ['advance_amount', 'NUMERIC(14,2) DEFAULT 0'],
+    ['fund_amount', 'NUMERIC(14,2) DEFAULT 0'],
+    ['proposed_tracks', 'INT'],
+    ['locked_by', 'TEXT'],
+    ['updated_by', 'TEXT'],
+    ['updated_at', 'TIMESTAMP DEFAULT NOW()'],
+  ]) {
+    await pool.query(`ALTER TABLE recording_budgets ADD COLUMN IF NOT EXISTS ${col} ${type}`);
+  }
+  // Identity is artist + project, not a title — a blank draft has to be
+  // creatable so the header grid can BE the form (there is no pre-form).
+  await pool.query(`ALTER TABLE recording_budgets ALTER COLUMN title DROP NOT NULL`).catch(() => {});
+  // Legacy rows carried their name in `title` only; seed artist_name from it
+  // once so nothing created before this migration renders as "Unnamed artist".
+  await pool.query(
+    `UPDATE recording_budgets SET project_title = title
+      WHERE project_title IS NULL AND title IS NOT NULL AND title <> ''`);
+  for (const [col, type] of [
+    ['qty', 'NUMERIC(12,2) DEFAULT 1'],
+    ['unit_price', 'NUMERIC(14,2) DEFAULT 0'],
+    ['notes', 'TEXT'],
+    ['sort_order', 'INT DEFAULT 0'],
+  ]) {
+    await pool.query(`ALTER TABLE recording_budget_items ADD COLUMN IF NOT EXISTS ${col} ${type}`);
+  }
+  // Sections were stored as raw display labels; the catalog is now keyed, and
+  // the server 400s on anything outside it. Fold the old labels onto their key
+  // (idempotent — a second run matches nothing).
+  for (const [label, key] of [
+    ['Producers', 'producers'], ['Studio', 'studio'], ['Mixing/Mastering', 'mixing_mastering'],
+    ['Musicians', 'musicians'], ['Travel', 'travel'], ['Other', 'other'],
+  ]) {
+    await pool.query(`UPDATE recording_budget_items SET section = $1 WHERE section = $2`, [key, label]);
+  }
+  await pool.query(`UPDATE recording_budget_items SET section = 'other' WHERE section IS NULL OR section NOT IN
+    ('producers','studio','mixing_mastering','musicians','travel','other')`);
+  // A pre-existing amount with no qty/price reads as "1 × amount" so the
+  // computed column and the stored one agree from the first edit.
+  await pool.query(`UPDATE recording_budget_items SET qty = 1, unit_price = amount
+    WHERE (qty IS NULL OR unit_price IS NULL OR unit_price = 0) AND amount IS NOT NULL AND amount <> 0`);
+  // Costs-to-Date reclassification: attribute a matched ledger row to a budget
+  // category without touching the row's own category on /ledger.
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS budget_section_override TEXT`);
 
   // Per-entry field-level change history (audit trail for the ledger).
   await pool.query(`

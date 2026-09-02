@@ -136,9 +136,9 @@ export default function Brand() {
               <div className="aspect-square bg-gray-50 flex items-center justify-center relative border-b border-divider" style={{ backgroundImage: 'linear-gradient(45deg,#f3f4f6 25%,transparent 25%),linear-gradient(-45deg,#f3f4f6 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#f3f4f6 75%),linear-gradient(-45deg,transparent 75%,#f3f4f6 75%)', backgroundSize: '16px 16px', backgroundPosition: '0 0,0 8px,8px -8px,-8px 0' }}>
                 {a.url ? <img src={a.url} alt={a.name} className="max-w-full max-h-full object-contain p-3" /> : <ImageIcon size={28} className="text-gray-300" />}
                 <div className="absolute inset-x-0 bottom-0 p-2 flex justify-center gap-1 opacity-0 group-hover:opacity-100 transition bg-gradient-to-t from-black/40 to-transparent">
-                  <a href={a.url || '#'} download={a.name} target="_blank" rel="noopener noreferrer" title="Download" className="p-1.5 rounded-lg bg-white/90 text-gray-700 hover:bg-white"><Download size={14} /></a>
-                  <button onClick={() => copyLink(a)} title="Copy link" className="p-1.5 rounded-lg bg-white/90 text-gray-700 hover:bg-white">{copied === a.id ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}</button>
-                  {canDelete(a) && <button onClick={() => remove(a)} title="Delete" className="p-1.5 rounded-lg bg-white/90 text-gray-700 hover:text-red-600 hover:bg-white"><Trash2 size={14} /></button>}
+                  <a href={a.url || '#'} download={a.name} target="_blank" rel="noopener noreferrer" title="Download" className="p-1.5 rounded-lg bg-card/95 text-ink hover:bg-card"><Download size={14} /></a>
+                  <button onClick={() => copyLink(a)} title="Copy link" className="p-1.5 rounded-lg bg-card/95 text-ink hover:bg-card">{copied === a.id ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}</button>
+                  {canDelete(a) && <button onClick={() => remove(a)} title="Delete" className="p-1.5 rounded-lg bg-card/95 text-ink hover:text-red-600 hover:bg-card"><Trash2 size={14} /></button>}
                 </div>
               </div>
               <div className="p-2.5">

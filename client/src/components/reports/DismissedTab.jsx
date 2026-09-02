@@ -9,7 +9,10 @@ import { money, moneyOrig } from '../../utils/money'
 import Skeleton from '../Skeleton'
 import { formatDate } from '../../utils/dates'
 
-export default function DismissedTab({ toast, onChanged }) {
+// `pnl` rides in so a standing line rule can advertise what it is ACTUALLY
+// keeping out of the current range. A rule with no live figure beside it reads
+// as free; the figure is what makes someone revisit it.
+export default function DismissedTab({ toast, onChanged, pnl }) {
   const [rows, setRows] = useState(null)
   const [error, setError] = useState(null)
   const [q, setQ] = useState('')
@@ -74,7 +77,12 @@ export default function DismissedTab({ toast, onChanged }) {
                         : scope === 'bs_line' ? r.cell_key
                         : scope === 'bs_item' ? (r.payee ? `${r.payee} (${r.bs_ref})` : r.bs_ref)
                         : (r.payee || <span className="font-mono text-xs text-gray-400">{r.row_fingerprint}</span>)}
-                      {r.orphaned && <span className="ml-2 text-[10px] uppercase text-amber-600" title="The row behind this rule is gone (statement re-uploaded). The exclusion still applies if a matching row comes back.">no longer present</span>}
+                      {r.orphaned && <span className="ml-2 text-[10px] uppercase text-warning" title="The row behind this rule is gone (statement re-uploaded). The exclusion still applies if a matching row comes back.">no longer present</span>}
+                      {scope === 'category' && (() => {
+                        const hit = pnl?.dismissed?.by_rule?.[`${r.cell_kind}|${r.cell_key}`]
+                        if (!hit) return <span className="ml-2 text-[10px] text-ink-faint">nothing in this range</span>
+                        return <span className="ml-2 text-[10px] text-warning">{money(hit.usd)} excluded in range · {hit.count} row{hit.count === 1 ? '' : 's'}</span>
+                      })()}
                     </span>
                     <span className="text-[11px] text-gray-400 block truncate">
                       {[r.reason, r.dismissed_by && `by ${r.dismissed_by}`, r.dismissed_at && formatDate(r.dismissed_at)].filter(Boolean).join(' · ')}

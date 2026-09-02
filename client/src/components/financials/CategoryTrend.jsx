@@ -3,6 +3,7 @@
 // this gives composition change over time.
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { money, moneyCompact } from '../../utils/money'
+import { AXIS_TICK } from '../../utils/chartTheme'
 
 const COLORS = ['#10b981', '#6366f1', '#f59e0b', '#ec4899', '#0ea5e9', '#a855f7', '#f43f5e', '#84cc16', '#94a3b8']
 const colorFor = (cat, i) => (cat === 'Other' ? COLORS[COLORS.length - 1] : COLORS[i % (COLORS.length - 1)])
@@ -25,8 +26,8 @@ export default function CategoryTrend({ trend }) {
       <ResponsiveContainer width="100%" height={240}>
         <AreaChart data={data} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
-          <XAxis dataKey="label" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fontSize: 10 }} tickFormatter={moneyCompact} axisLine={false} tickLine={false} width={52} />
+          <XAxis dataKey="label" tick={AXIS_TICK} axisLine={false} tickLine={false} />
+          <YAxis tick={AXIS_TICK} tickFormatter={moneyCompact} axisLine={false} tickLine={false} width={52} />
           <Tooltip
             formatter={(v, key) => [money(v), key]}
             labelFormatter={(l, payload) => payload?.[0]?.payload?.month || l}

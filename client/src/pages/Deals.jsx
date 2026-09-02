@@ -196,7 +196,13 @@ export default function Deals() {
       ) : (
         // Six stages, six columns. A funnel capped at three columns is two
         // half-funnels stacked, which is the one shape a pipeline must not have.
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        //
+        // On a phone that means horizontal snap-scroll rather than a 2-wide
+        // grid: 240px columns you flick through keep the funnel's ORDER
+        // legible, which a wrapped grid destroys. `.snap-x-mandatory` /
+        // `.snap-start` are the helpers index.css has always shipped and
+        // nothing consumed.
+        <div className="flex snap-x-mandatory overflow-x-auto gap-3 -mx-4 px-4 pb-2 md:mx-0 md:px-0 md:grid md:grid-cols-3 lg:grid-cols-6 md:overflow-visible">
           {DEAL_STAGES.map(stage => {
             const tone = STAGE_TONE[stage] || FALLBACK_TONE
             const count = grouped[stage].length
@@ -220,7 +226,7 @@ export default function Deals() {
                 }}
                 onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
                 onDrop={e => { e.preventDefault(); if (dragId != null) moveToStage(dragId, stage); endDrag() }}
-                className={`rounded-xl border p-3 min-h-[16rem] transition-colors duration-150 ${
+                className={`snap-start shrink-0 w-[240px] md:w-auto rounded-xl border p-3 min-h-[16rem] transition-colors duration-150 ${
                   isTarget ? 'border-brand-400 bg-brand-500/10 ring-1 ring-brand-300' : 'border-rule bg-card'
                 }`}
               >

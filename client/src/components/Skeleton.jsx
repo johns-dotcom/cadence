@@ -85,5 +85,30 @@ function KanbanBoard({ cols = 6, cards = 2 }) {
   )
 }
 
-const Skeleton = { Line, Block, Circle, Card, Table, TableRow, PageHeader, StatCards, TaskList, KanbanBoard }
+// Composite for the artist profile: avatar + identity block, the stat strip,
+// then the tabbed body. A page whose whole layout arrives at once shouldn't
+// announce itself with one line of grey text.
+function ArtistProfile() {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-4">
+        <Circle size="w-16 h-16" />
+        <div className="flex-1 space-y-2">
+          <Line w="w-48" h="h-5" />
+          <Line w="w-32" h="h-3" />
+        </div>
+        <Line w="w-24" h="h-8" />
+      </div>
+      <StatCards count={4} />
+      <div className="flex gap-2">
+        {Array.from({ length: 4 }).map((_, i) => <Line key={i} w="w-20" h="h-7" />)}
+      </div>
+      <div className="card px-5 py-4 space-y-2">
+        {Array.from({ length: 5 }).map((_, i) => <Line key={i} w={i % 2 ? 'w-2/3' : 'w-full'} h="h-3" />)}
+      </div>
+    </div>
+  )
+}
+
+const Skeleton = { Line, Block, Circle, Card, Table, TableRow, PageHeader, StatCards, TaskList, KanbanBoard, ArtistProfile }
 export default Skeleton

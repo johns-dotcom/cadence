@@ -17,6 +17,7 @@ import { PAYMENT_METHODS, CURRENCIES } from '../constants'
 import useCategories from '../hooks/useCategories'
 import CategoryOptions from '../components/CategoryOptions'
 import { dropTarget } from '../utils/drop'
+import useHotkeys from '../hooks/useHotkeys'
 import BankEvidenceDot from '../components/BankEvidenceDot'
 
 const STATUS_STYLES = { pending: 'bg-amber-100 text-amber-700', approved: 'bg-emerald-100 text-emerald-700', rejected: 'bg-red-100 text-red-700' }
@@ -353,7 +354,7 @@ export default function Ledger({ bank = false }) {
         // Regroup by held value: one call per distinct old value (boom's revertBulk).
         const byVal = new Map()
         for (const p of last.previous) {
-          const k = p.value === null || p.value === undefined ? ' null' : String(p.value)
+          const k = p.value === null || p.value === undefined ? '\u0000null' : String(p.value)
           if (!byVal.has(k)) byVal.set(k, { value: p.value, ids: [] })
           byVal.get(k).ids.push(p.id)
         }
@@ -517,6 +518,18 @@ export default function Ledger({ bank = false }) {
       else setVisible(bank ? BANK_DEFAULT_COLS : DEFAULT_COLS)
     } catch { /* default */ }
   }, [storeKey]) // eslint-disable-line
+  // Page hotkeys. The Columns and Export buttons already advertise "(c)" and
+  // "(x)" in their tooltips and neither key was wired; `z` is the undo the
+  // shortcuts registry has been promising since the inline-edit pass. Declared
+  // here because `colMenu`/`exportMenu` are the two toggles it drives, and
+  // useHotkeys ignores keystrokes while an input, textarea or select has focus —
+  // which is every inline cell edit on this page.
+  useHotkeys({
+    z: () => undoLast(),
+    c: () => { setColMenu(v => !v); setExportMenu(false) },
+    x: () => { setExportMenu(v => !v); setColMenu(false) },
+  }, [undoStack])
+
   // One-click preset rather than a default — see BANK_TIDY_HIDDEN.
   const applyBankTidy = () => {
     const n = (bank ? BANK_DEFAULT_COLS : DEFAULT_COLS).filter(k => !BANK_TIDY_HIDDEN.includes(k) || ALWAYS_ON.includes(k))
@@ -1197,8 +1210,13 @@ export default function Ledger({ bank = false }) {
       ) : filtered.length === 0 ? (
         <div className="card p-10 text-center">
           <BookOpen size={28} className="text-gray-300 mx-auto mb-3" />
+          {/* Truly-empty and filtered-empty are different news. "No entries
+              match." on a brand-new workspace reads as a filter you can't find,
+              and sends people hunting for a control that isn't set. */}
           <p className="text-sm text-gray-500">
-            {stmtId ? 'No ledger rows on this statement — every line it holds is in the list below.' : 'No entries match.'}
+            {stmtId ? 'No ledger rows on this statement — every line it holds is in the list below.'
+              : entries.length === 0 ? 'No entries yet. Invoices land here once they are added or approved.'
+              : 'No entries match the current filters.'}
           </p>
           {anyFilter && <button onClick={clearAll} className="mt-2 text-xs font-semibold text-brand-600 hover:underline">Clear filters</button>}
         </div>
@@ -1294,9 +1312,13 @@ export default function Ledger({ bank = false }) {
                   </td>
                 </tr>
                 {expanded[en.id] && (childrenMap[en.id] || []).map(kid => (
-                  <tr key={`k-${kid.id}`} ref={el => (rowRefs.current[kid.id] = el)} className="bg-page/40 text-[13px]">
+                  // OPAQUE, and the same fill on the row and its frozen first cell:
+                  // that cell has to paint over the columns sliding underneath it
+                  // during horizontal scroll, and a translucent one lets them
+                  // show through (the same reason --color-bg-selected is opaque).
+                  <tr key={`k-${kid.id}`} ref={el => (rowRefs.current[kid.id] = el)} className="bg-elev text-[13px]">
                     {shownCols.map((c, ci) => (
-                      <td key={c.key} className={`px-3 py-2 ${ci === 0 ? 'sticky left-0 z-10 bg-page/60 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)]' : ''}`}>
+                      <td key={c.key} className={`px-3 py-2 ${ci === 0 ? 'sticky left-0 z-10 bg-elev shadow-[2px_0_5px_-2px_rgba(0,0,0,0.12)]' : ''}`}>
                         {ci === 0 ? <span className="flex items-center gap-1.5 text-gray-500 pl-4"><span className="text-gray-300">{'↳'}</span>{c.render(kid)}</span> : c.render(kid)}
                       </td>
                     ))}

@@ -5,6 +5,7 @@
 // loud, and nothing here sums across them.
 import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from 'recharts'
 import { money, moneyCompact } from '../../utils/money'
+import { AXIS_TICK } from '../../utils/chartTheme'
 
 const C = { paid: '#10b981', unpaid: '#f43f5e', received: '#0ea5e9', ma: '#f59e0b', avg: '#94a3b8' }
 
@@ -76,8 +77,8 @@ export default function WeeklyChart({ weeks }) {
       <ResponsiveContainer width="100%" height={300}>
         <ComposedChart data={data} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
-          <XAxis dataKey="label" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fontSize: 10 }} tickFormatter={moneyCompact} axisLine={false} tickLine={false} width={52} />
+          <XAxis dataKey="label" tick={AXIS_TICK} axisLine={false} tickLine={false} />
+          <YAxis tick={AXIS_TICK} tickFormatter={moneyCompact} axisLine={false} tickLine={false} width={52} />
           <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(148, 163, 184, 0.08)' }} />
           {avgPerWeek > 0 && (
             <ReferenceLine y={avgPerWeek} stroke={C.avg} strokeDasharray="4 4"

@@ -492,4 +492,68 @@ assert('a deal with no quantity and no items has no per-unit cost to invent',
 assert('singularUnit trims the plural for "$100/video"',
   BD.singularUnit('videos') === 'video' && BD.singularUnit('') === 'item');
 
+// ── Recording budgets: qty × price, contingency on top, fund waterfall ───────
+const RB = require('../lib/recordingBudget');
+
+assert('a line item is qty × unit_price, rounded AT THE LINE',
+  RB.lineAmount(3, 1500) === 4500 && RB.lineAmount('10', '1500.005') === 15000.05);
+assert('a blank qty is zero, not one — an unfilled row contributes nothing',
+  RB.lineAmount('', 1500) === 0 && RB.lineAmount(null, 1500) === 0);
+
+const rbItems = [
+  { section: 'producers', amount: RB.lineAmount(10, 1500) },
+  { section: 'studio', amount: RB.lineAmount(6, 850) },
+  { section: 'mixing_mastering', amount: RB.lineAmount(10, 300) },
+];
+const rbT = RB.budgetTotals(rbItems, 7.5);
+assert('sections subtotal is the sum of already-rounded lines',
+  rbT.sections_subtotal === 23100);
+assert('contingency sits ON TOP of the subtotal, never inside it',
+  rbT.contingency_amount === 1732.5 && rbT.total_budget === 24832.5);
+assert('the six section totals sum to the subtotal — both slicings tie',
+  RB.round2(Object.values(rbT.section_totals).reduce((a, b) => a + b, 0)) === rbT.sections_subtotal);
+assert('every section is present even when empty — the sheet has six rows either way',
+  RB.SECTIONS.every(k => rbT.section_totals[k] !== undefined) && rbT.section_totals.travel === 0);
+assert('a zero contingency adds nothing (a legacy blank budget does not inflate)',
+  RB.budgetTotals(rbItems, 0).total_budget === 23100 && RB.budgetTotals(rbItems, null).total_budget === 23100);
+assert('an unknown section is summed into the subtotal but claims no section total',
+  RB.budgetTotals([{ section: 'lasers', amount: 100 }], 0).sections_subtotal === 100);
+
+const rbFund = RB.fundPanel({ fund_amount: 100000, advance_amount: 25000, total_budget: 24832.5, contingency_amount: 1732.5 });
+assert('the advance comes out of the fund FIRST — available is fund minus advance',
+  rbFund.recording_fund_available === 75000);
+assert('balance due on delivery is what is left after the advance AND the plan',
+  rbFund.balance_due_on_delivery === 50167.5);
+assert('an overrunning plan reports a NEGATIVE balance rather than clamping to zero',
+  RB.fundPanel({ fund_amount: 10000, advance_amount: 5000, total_budget: 9000 }).balance_due_on_delivery === -4000);
+
+assert('a fund costs summary is fund − advance − spent, and never uses planned',
+  (() => { const s = RB.costsSummary('fund', { fund_amount: 100000, advance_amount: 25000, planned: 24832.5, spent: 31000 });
+    return s.remainder_after_advance === 75000 && s.balance_of_fund === 44000 && s.budget_planned === undefined; })());
+assert('a budget costs summary is planned − spent, and never mentions the fund',
+  (() => { const s = RB.costsSummary('budget', { fund_amount: 100000, advance_amount: 25000, planned: 24832.5, spent: 31000 });
+    return s.remaining === -6167.5 && s.fund === undefined; })());
+assert('every section maps to a default ledger category so a planned line always books somewhere',
+  RB.SECTIONS.every(k => !!RB.SECTION_TO_DEFAULT_CATEGORY[k]));
+
+
+// ── W9 name matching: lenient on form, strict on identity ────────────────────
+// A badge everyone ignores is worse than no badge, so entity suffixes, name
+// order, middle names and punctuation must NOT raise a mismatch — only a
+// genuinely different party may.
+const W9 = require('../lib/w9NameMatch');
+assert('entity suffix + punctuation is the same company', W9.namesMatch('Smith LLC', 'Smith, L.L.C.'));
+assert('name order does not change identity', W9.namesMatch('Jane Doe', 'Doe, Jane'));
+assert('a middle initial on one side only is the same person', W9.namesMatch('Jane Doe', 'Jane Q. Doe'));
+assert('& and "and" are the same word', W9.namesMatch('Bob & Sons Co', 'Bob and Sons'));
+assert('accents fold', W9.namesMatch('Jose Diaz', 'Jos\u00e9 D\u00edaz'));
+assert('a DIFFERENT surname is a real mismatch', !W9.namesMatch('Jane Doe', 'John Doe'));
+assert('a different company is a real mismatch', !W9.namesMatch('Acme Records', 'Globex Media'));
+assert('a blank name makes NO claim — not-yet-read is not a mismatch',
+  W9.namesMatch('', 'Anything') && W9.namesMatch('Anything', null));
+assert('mismatchOf reports both names so the operator can see which is wrong',
+  (() => { const m = W9.mismatchOf('Acme Records', 'Globex Media'); return m.payee === 'Acme Records' && m.w9_name === 'Globex Media'; })());
+assert('mismatchOf is null when they agree', W9.mismatchOf('Smith LLC', 'Smith Inc') === null);
+
+
 console.log(process.exitCode ? '\nFIXTURES FAILED' : '\nAll fixtures pass.');

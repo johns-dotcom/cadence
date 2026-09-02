@@ -293,13 +293,16 @@ export default function Approvals() {
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <div className="relative flex-1 min-w-[220px]">
+        {/* Full-width search on a phone, then the three filters share the row
+            two-up. `min-w-[220px]` alone made the search a 220px stub with a
+            select crammed beside it at 375px. */}
+        <div className="relative w-full sm:flex-1 sm:w-auto sm:min-w-[220px]">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint" />
           <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search vendor, artist, invoice #, description…" className="input !pl-9" />
         </div>
-        <select className="input !w-auto" value={repFilter} onChange={e => setRepFilter(e.target.value)}><option value="">All reps</option>{reps.map(r => <option key={r.name}>{r.name}</option>)}</select>
-        <select className="input !w-auto" value={catFilter} onChange={e => setCatFilter(e.target.value)}><option value="">All categories</option><CategoryOptions /></select>
-        <select className="input !w-auto" value={sort} onChange={e => setSort(e.target.value)}>
+        <select className="input !w-[calc(50%-0.25rem)] sm:!w-auto" value={repFilter} onChange={e => setRepFilter(e.target.value)}><option value="">All reps</option>{reps.map(r => <option key={r.name}>{r.name}</option>)}</select>
+        <select className="input !w-[calc(50%-0.25rem)] sm:!w-auto" value={catFilter} onChange={e => setCatFilter(e.target.value)}><option value="">All categories</option><CategoryOptions /></select>
+        <select className="input !w-[calc(50%-0.25rem)] sm:!w-auto" value={sort} onChange={e => setSort(e.target.value)}>
           <option value="new">Newest first</option><option value="old">Oldest first</option>
           <option value="amount">Amount: high</option><option value="amount-low">Amount: low</option>
         </select>

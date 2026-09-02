@@ -265,6 +265,12 @@ router.post('/', requireAdmin, async (req, res) => {
     // Resolve workspace name for the email body, then send (best-effort).
     const link = inviteLink(req, token);
     const label = await pool.query('SELECT name FROM labels WHERE id = $1', [req.labelId]);
+    // `notify: false` means the CLIENT is going to send this through the
+    // review-before-send modal (kind `welcome`), the same path vendor
+    // decisions and payment confirmations take. The row and the token are
+    // created either way — the invite exists, only the email is deferred —
+    // and the response still carries invite_link so the modal can render it.
+    const notify = req.body.notify !== false;
     const msg = inviteEmail({
       inviteeName: name.trim(),
       workspaceName: label.rows[0]?.name || 'your workspace',
@@ -272,10 +278,12 @@ router.post('/', requireAdmin, async (req, res) => {
       link,
       expiresDays: INVITE_DAYS,
     });
-    const mail = await sendEmail({ to: rows[0].email, subject: msg.subject, html: msg.html, text: msg.text });
+    const mail = notify
+      ? await sendEmail({ to: rows[0].email, subject: msg.subject, html: msg.html, text: msg.text })
+      : { sent: false, reason: 'deferred' };
 
     await logActivity(req, 'Invited team member', `${name} (${role || 'User'})`);
-    res.status(201).json({ success: true, data: { ...rows[0], invite_link: link, email_sent: mail.sent, email_error: mail.sent ? null : mail.reason } });
+    res.status(201).json({ success: true, data: { ...rows[0], invite_link: link, workspace_name: label.rows[0]?.name || 'your workspace', inviter_name: req.user.name, expires_days: INVITE_DAYS, deferred: !notify, email_sent: mail.sent, email_error: mail.sent ? null : mail.reason } });
   } catch (error) {
     if (error.code === '23505') {
       return res.status(400).json({ success: false, error: 'That email already exists in this workspace' });
@@ -299,9 +307,17 @@ router.post('/:id/resend', requireAdmin, async (req, res) => {
     if (!rows.length) return res.status(404).json({ success: false, error: 'Pending invite not found (member may have already activated)' });
     const link = inviteLink(req, token);
     const label = await pool.query('SELECT name FROM labels WHERE id = $1', [req.labelId]);
+    const notify = req.body.notify !== false;
     const msg = inviteEmail({ inviteeName: rows[0].name, workspaceName: label.rows[0]?.name || 'your workspace', inviterName: req.user.name, link, expiresDays: INVITE_DAYS });
-    const mail = await sendEmail({ to: rows[0].email, subject: msg.subject, html: msg.html, text: msg.text });
-    res.json({ success: true, data: { invite_link: link, email_sent: mail.sent, email_error: mail.sent ? null : mail.reason } });
+    const mail = notify
+      ? await sendEmail({ to: rows[0].email, subject: msg.subject, html: msg.html, text: msg.text })
+      : { sent: false, reason: 'deferred' };
+    res.json({ success: true, data: {
+      invite_link: link, email: rows[0].email, name: rows[0].name,
+      workspace_name: label.rows[0]?.name || 'your workspace', inviter_name: req.user.name,
+      expires_days: INVITE_DAYS, deferred: !notify,
+      email_sent: mail.sent, email_error: mail.sent ? null : mail.reason,
+    } });
   } catch (error) {
     console.error('Resend invite error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });

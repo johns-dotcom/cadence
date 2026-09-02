@@ -23,7 +23,7 @@ export default function BottomSheet({ open, onClose, title, children, footer }) 
 
   return createPortal(
     <div className="fixed inset-0 z-[70]" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-overlay" onClick={onClose} />
+      <div className="absolute inset-0 bg-overlay backdrop-blur-sm" onClick={onClose} />
       <div ref={panelRef}
         className="absolute bottom-0 left-0 right-0 bg-card rounded-t-2xl shadow-modal max-h-[85dvh] flex flex-col animate-sheet-up"
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>

@@ -5,6 +5,7 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
+import { TOOLTIP, AXIS_TICK } from '../utils/chartTheme'
 
 // Operator console — CROSS-TENANT growth. Deliberately a different question
 // from a workspace's own /usage page: this is "is the platform growing and who
@@ -125,9 +126,9 @@ export default function PlatformAnalytics() {
                   margin={{ top: 4, right: 8, left: -18, bottom: 0 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(128,128,128,0.15)" />
-                  <XAxis dataKey="label" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
-                  <Tooltip formatter={(v, n) => [v, n === 'workspaces' ? 'Workspaces' : 'Members']} />
+                  <XAxis dataKey="label" tick={AXIS_TICK} />
+                  <YAxis tick={AXIS_TICK} allowDecimals={false} />
+                  <Tooltip {...TOOLTIP} formatter={(v, n) => [v, n === 'workspaces' ? 'Workspaces' : 'Members']} />
                   <Bar dataKey="workspaces" fill="rgb(var(--color-brand-500))" radius={[3, 3, 0, 0]} />
                   <Bar dataKey="members" fill="#6366f1" radius={[3, 3, 0, 0]} />
                 </BarChart>

@@ -1,10 +1,13 @@
 // Reports — P&L / Spend by Artist / Balance Sheet / Dismissed.
-// Cash basis, statement-verified. Every valued cell drills through to the
-// rows behind it; exclusions and period moves are DISCLOSED in banners
-// because they move reported totals.
+// LEDGER-mastered cash basis: approved+Paid ledger families, bucketed by the
+// root's payment date. Bank data is a per-month COVERAGE signal, not the
+// master — an unreconciled row still counts, and the month header says so.
+// Every valued cell drills through to the rows behind it; exclusions and
+// period moves are DISCLOSED in banners because they move reported totals.
 
 import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, Download, RefreshCw } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
@@ -46,6 +49,10 @@ export default function Reports() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [drill, setDrill] = useState(null) // { kind, key, keys, month, label, cellTotal, drillCategory }
+  // The Spend-by-Artist Top-N lives here because Export must follow the SCREEN.
+  // Exporting "Top 10" and getting every artist is the trap the reference app
+  // removed by making one value drive both.
+  const [topN, setTopN] = useState(0) // 0 = all
 
   useEffect(() => {
     try {
@@ -91,7 +98,7 @@ export default function Reports() {
   }
 
   const exportCurrent = () => {
-    if (tab === 'artists') return exportBlob('/reports/spend-by-artist/export', { from: range.from, to: range.to }, `cadence-spend-by-artist-${range.from}-to-${range.to}.xlsx`)
+    if (tab === 'artists') return exportBlob('/reports/spend-by-artist/export', { from: range.from, to: range.to, topN: topN || undefined }, `cadence-spend-by-artist-${range.from}-to-${range.to}.xlsx`)
     if (tab === 'bs') return exportBlob('/reports/balance-sheet/export', { as_of: asOf }, `cadence-balance-sheet-${asOf}.xlsx`)
     return exportBlob('/reports/pnl/export', { from: range.from, to: range.to, artist: artist || undefined }, `cadence-pnl-${range.from}-to-${range.to}.xlsx`)
   }
@@ -101,7 +108,12 @@ export default function Reports() {
       <div className="flex flex-wrap items-end justify-between gap-3 mb-4">
         <div>
           <h1 className="text-2xl font-bold text-ink tracking-tight flex items-center gap-3">Reports <ReconciledBadge /></h1>
-          <p className="text-sm text-gray-400">Cash basis, statement-verified{pnl?.reassigned?.count ? ` · ${pnl.reassigned.count} recorded period adjustment${pnl.reassigned.count === 1 ? '' : 's'}` : ''}</p>
+          <p className="text-sm text-ink-muted">
+            Cash basis — paid ledger rows, bank coverage disclosed per month{pnl?.reassigned?.count ? ` · ${pnl.reassigned.count} recorded period adjustment${pnl.reassigned.count === 1 ? '' : 's'}` : ''}
+          </p>
+          <p className="text-xs text-ink-faint mt-0.5">
+            Need unpaid commitments? <Link className="underline" to="/financials">See Financials →</Link>
+          </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
           {tab === 'bs' ? (
@@ -111,8 +123,10 @@ export default function Reports() {
             </div>
           ) : (
             <>
-              <div><label className="label">From</label><input type="date" className="input !py-1.5" value={range.from} onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))} /></div>
-              <div><label className="label">To</label><input type="date" className="input !py-1.5" value={range.to} onChange={(e) => setRange((r) => ({ ...r, to: e.target.value }))} /></div>
+              {/* max/min cross-clamps — the server rejects a backwards range,
+                  but the picker should not offer one in the first place. */}
+              <div><label className="label">From</label><input type="date" max={range.to} className="input !py-1.5" value={range.from} onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))} /></div>
+              <div><label className="label">To</label><input type="date" min={range.from} className="input !py-1.5" value={range.to} onChange={(e) => setRange((r) => ({ ...r, to: e.target.value }))} /></div>
               {tab === 'pnl' && (
                 <div>
                   <label className="label">Artist</label>
@@ -153,16 +167,16 @@ export default function Reports() {
       ) : (
         <>
           {tab === 'pnl' && pnl && (
-            <PnlTable pnl={pnl} onDrill={setDrill} refetch={() => fetchPnl()} toast={toast} />
+            <PnlTable pnl={pnl} onDrill={setDrill} refetch={() => fetchPnl()} toast={toast} onShowDismissed={() => setTab('dismissed')} />
           )}
           {tab === 'artists' && sba && (
-            <SpendByArtist data={sba} onDrill={setDrill} />
+            <SpendByArtist data={sba} onDrill={setDrill} topN={topN} onTopN={setTopN} />
           )}
           {tab === 'bs' && (
             <BalanceSheetCard bs={bs} error={bsError} refetch={() => fetchBs()} toast={toast} />
           )}
           {tab === 'dismissed' && (
-            <DismissedTab toast={toast} onChanged={() => fetchPnl()} />
+            <DismissedTab toast={toast} pnl={pnl} onChanged={() => fetchPnl()} />
           )}
         </>
       )}
@@ -174,6 +188,7 @@ export default function Reports() {
           artist={tab === 'pnl' ? artist : ''}
           pnl={pnl}
           onClose={() => setDrill(null)}
+          onShowDismissed={() => { setDrill(null); setTab('dismissed') }}
           refetch={() => { fetchPnl(); fetchBs() }}
           toast={toast}
         />

@@ -50,6 +50,7 @@ import DataQuality from './pages/DataQuality'
 import Notifications from './pages/Notifications'
 import UserManual from './components/UserManual'
 import RecordingBudgets from './pages/RecordingBudgets'
+import RecordingBudgetDetail from './pages/RecordingBudgetDetail'
 import Campaigns from './pages/Campaigns'
 import ArtistCampaigns from './pages/ArtistCampaigns'
 import ArtistCampaignDetail from './pages/ArtistCampaignDetail'
@@ -73,6 +74,7 @@ import InternalRequests from './pages/InternalRequests'
 import Workspaces from './pages/Workspaces'
 import Privacy from './pages/Privacy'
 import EULA from './pages/EULA'
+import NotFound from './components/NotFound'
 
 function Spinner() {
   return (
@@ -149,7 +151,7 @@ function AppContent() {
           <Route path="/announcements" element={<PlatformAnnouncements />} />
           {user?.platform_role === 'owner' && <Route path="/operators" element={<PlatformOperators />} />}
           <Route path="/account"    element={<PlatformAccount />} />
-          <Route path="*"           element={<Navigate to="/" replace />} />
+          <Route path="*"           element={<NotFound />} />
         </Route>
       ) : (
       /* ── Label workspace shell ── */
@@ -203,6 +205,7 @@ function AppContent() {
         <Route path="/notifications" element={<Notifications />} />
         <Route path="/manual" element={<ManualPage />} />
         <Route path="/recording-budgets" element={<AdminRoute><RecordingBudgets /></AdminRoute>} />
+        <Route path="/recording-budgets/:id" element={<AdminRoute><RecordingBudgetDetail /></AdminRoute>} />
         <Route path="/marketing"    element={<Campaigns />} />
         <Route path="/artist-campaigns" element={<AdminRoute><ArtistCampaigns /></AdminRoute>} />
         <Route path="/artist-campaigns/:artist" element={<AdminRoute><ArtistCampaignDetail /></AdminRoute>} />
@@ -236,6 +239,9 @@ function AppContent() {
         <Route path="/usage"        element={<StrictAdminRoute><Usage /></StrictAdminRoute>} />
         <Route path="/requests"     element={<InternalRequests />} />
         <Route path="/settings"     element={<Settings />} />
+        {/* Inside the shell, so the sidebar and search stay available — being
+            lost is exactly when you need the navigation most. */}
+        <Route path="*"             element={<NotFound />} />
       </Route>
       )}
 
