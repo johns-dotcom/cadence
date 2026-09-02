@@ -10,6 +10,7 @@ const paymentCrypto = require('../lib/paymentCrypto');
 const aiScan = require('../lib/aiScan');
 const claude = require('../lib/claude');
 const activityBot = require('../lib/activityBot');
+const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -48,6 +49,18 @@ const wrapUpload = (mw) => (req, res, next) => mw(req, res, (err) => {
 const filesSafe = wrapUpload(fileFields);
 const singleInvoice = wrapUpload(upload.single('invoice_file'));
 const singleW9 = wrapUpload(upload.single('w9_file'));
+
+// ── Sandbox auth ─────────────────────────────────────────────────────────────
+// `?sandbox=1` turns the public submit endpoint into a write-nothing dry run
+// for the internal Vendor Form Lab. It runs auth ONLY for that query, and it is
+// mounted BEFORE multer on purpose: an anonymous sandbox request must be
+// refused without first buffering 10 MB of upload into memory, and this
+// endpoint spends real AI calls, so it must never become a public bill.
+// The branch inside the handler locks again — see the comment there.
+const sandboxAuth = (req, res, next) => {
+  if (String(req.query.sandbox || '') !== '1') return next();
+  return authMiddleware(req, res, next);
+};
 
 const submitLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
@@ -315,7 +328,7 @@ router.post('/:slug/check-invoice-number', submitLimiter, singleInvoice, async (
 });
 
 // POST /api/vendor/:slug/submit — create a pending ledger entry for the label.
-router.post('/:slug/submit', submitLimiter, filesSafe, async (req, res) => {
+router.post('/:slug/submit', sandboxAuth, submitLimiter, filesSafe, async (req, res) => {
   try {
     const label = await labelBySlug(req.params.slug);
     if (!label) return res.status(404).json({ success: false, error: 'Workspace not found' });
@@ -521,6 +534,84 @@ router.post('/:slug/submit', submitLimiter, filesSafe, async (req, res) => {
     const artist = splits[0].artist;
     const song = splits[0].song;
 
+    // Declared above the sandbox branch and the R2 writes because both read it.
+    const notes = [dupNote, (b.notes || '').trim()].filter(Boolean).join('\n') || null;
+
+    // ── SANDBOX: everything above ran for real, nothing below runs at all ────
+    // Deliberately placed HERE and not at the top of the handler: the point of
+    // the lab is that a dry run reports the SAME verdict the vendor would get,
+    // so it must fall through required-field checks, email format, the W9 gate,
+    // the duplicate lookup, the typed-vs-document invoice-number anti-spoof
+    // gate, the payment cross-check, the bank-details-changed detection and the
+    // roster test first. Everything from this line down writes — R2, the
+    // expenses INSERT, the payment vault, vendor_emails, the AI rescans, the
+    // activity log, the chat bot — and none of it executes on this path.
+    //
+    // Second lock, even though sandboxAuth already ran: a refactor of that
+    // conditional middleware must not silently open an AI-spending endpoint.
+    if (String(req.query.sandbox || '') === '1') {
+      if (!req.user) return res.status(401).json({ success: false, error: 'Sign in to use the vendor form sandbox.' });
+      if (Number(req.user.label_id) !== Number(labelId)) {
+        return res.status(403).json({ success: false, error: 'That form belongs to another workspace.' });
+      }
+      if (!['Superadmin', 'Admin', 'Approver'].includes(req.user.role)) {
+        return res.status(403).json({ success: false, error: 'The vendor form sandbox is for approvers and admins.' });
+      }
+      // The stored value IS already only the last four; the sandbox reports
+      // presence and nothing more, so the lab can never be used to read them back.
+      const mask = (v) => (v ? '••••' : null);
+      const advisories = [
+        dupNote || null,
+        offRosterArtist ? 'One or more artists are not on the roster — the entry would be flagged off-roster for the approver.' : null,
+        paymentCheck.verdict === 'mismatch' ? 'The payment details typed here differ from the ones on the document — flagged for a human on Approvals.' : null,
+        paymentCheck.changed_from ? 'This vendor\'s payment coordinates differ from the ones on file — flagged as a possible invoice-fraud shape.' : null,
+        reusedOnFile ? 'Payment details would be reused from the stored record for this email.' : null,
+        claude.isEnabled() ? null : 'AI is not configured on this server, so the invoice-number gate and the document payment cross-check fell open (as they do for real vendors).',
+      ].filter(Boolean);
+      return res.json({
+        success: true,
+        data: {
+          sandbox: true,
+          workspace: label.name,
+          would_create: {
+            table: 'expenses',
+            status: 'pending', payment_status: 'Unpaid',
+            payment_terms: 'Net 30',
+            scheduled_payment_date: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10),
+            payee: vendorName, vendor_name: vendorName, vendor_email: vendorEmail,
+            vendor_address: vendorAddress || null,
+            category, artist, song: song || null, invoice_number: invoiceNum,
+            amount, currency: (b.currency || 'USD').trim() || 'USD',
+            payment_method: paymentPref, is_reimbursement: isReimb, vendor_submitted: true,
+            rep: rep || null, description: (b.description || '').trim() || null, notes,
+            social_handles: socialHandles, off_roster_artist: offRosterArtist,
+            artist_breakdown: splits,
+            vendor_bank: payFields.normalized.bank_name || null,
+            // Coordinates are NEVER echoed, not even to an admin — the sandbox
+            // is a validation mirror, not a way to read the payment vault.
+            payment_last4: mask(paymentCheck.typed_last4),
+            payment_check: { ...paymentCheck, typed_last4: mask(paymentCheck.typed_last4), doc_last4: mask(paymentCheck.doc_last4) },
+            created_by: 'Vendor Submission',
+          },
+          files: ['invoice_file', 'w9_file', 'receipt_file']
+            .map((field) => ({ field, file: req.files?.[field]?.[0] }))
+            .filter((x) => x.file)
+            .map((x) => ({ field: x.field, name: x.file.originalname, bytes: x.file.size, mime: x.file.mimetype })),
+          advisories,
+          // Spelled out so a green sandbox result is never read as
+          // "this submission would have worked end to end".
+          not_exercised: [
+            'INSERT INTO expenses (no ledger entry is created)',
+            'R2 upload of the invoice / W9 / receipt',
+            'vendor_payment_details upsert (the payment vault)',
+            'vendors upsert + vendor_emails',
+            'AI invoice + W9 discrepancy scans',
+            'activity log entry and the #activity bot post',
+          ],
+        },
+      });
+    }
+
     // Store files in R2 (tenant-namespaced).
     const store = async (file, kind) => {
       if (!file) return [null, null];
@@ -533,7 +624,6 @@ router.post('/:slug/submit', submitLimiter, filesSafe, async (req, res) => {
     const [w9Name, w9Key] = await store(w9File, 'w9');
     const [rcName, rcKey] = await store(receiptFile, 'receipt');
 
-    const notes = [dupNote, (b.notes || '').trim()].filter(Boolean).join('\n') || null;
     const { rows } = await pool.query(
       `INSERT INTO expenses (
         label_id, invoice_date, payee, description, category, artist, song, invoice_number,

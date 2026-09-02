@@ -4,10 +4,21 @@
 // only way to make `bg-card/60` mean anything at all instead of emitting
 // nothing. Returns the bare var when no modifier was used so the common case
 // stays a plain `var()` reference.
+//
+// `opacityValue === undefined` is NOT how Tailwind signals "no modifier". For a
+// plain `bg-card` it passes the CSS variable `var(--tw-bg-opacity)` — a string —
+// which multiplied by 100 is NaN, so every unmodified token utility compiled to
+// `color-mix(in srgb, var(--color-bg-card) NaN%, transparent)`. That is a parse
+// error, so the browser DROPPED the declaration: bg-card, bg-elev, bg-page,
+// text-ink, border-rule and bg-selected all silently painted nothing (61 dead
+// rules in the built stylesheet). Found by grepping dist/assets/*.css, which is
+// the only place this is visible — the build is clean either way.
+// The modifier itself arrives as a STRING too ("0.95"), so the test is
+// specifically "is this a var() reference", not "is this a number".
 const tokenColor = (name) => ({ opacityValue }) =>
-  opacityValue === undefined
+  opacityValue === undefined || String(opacityValue).includes('var(')
     ? `var(${name})`
-    : `color-mix(in srgb, var(${name}) ${opacityValue * 100}%, transparent)`
+    : `color-mix(in srgb, var(${name}) ${Number(opacityValue) * 100}%, transparent)`
 
 export default {
   darkMode: 'class',

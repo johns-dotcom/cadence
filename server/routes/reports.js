@@ -26,6 +26,7 @@ const { usdOf, round2 } = require('../lib/usd');
 const { isValidDay } = require('../lib/calendarDay');
 const { artistBucketKey, artistLabel } = require('../lib/artistKey');
 const { fingerprintOfExpense, fingerprintOfIncome, ymd } = require('../lib/reportFingerprint');
+const { docSelect, docsOf } = require('../lib/drillDocs');
 const { loadLabelLevelRules, SCOPES: LL_SCOPES, norm: llNorm } = require('../lib/labelLevel');
 const { toCents, fromCents, apportion, drawMany } = require('../lib/adAllocate');
 const activityBot = require('../lib/activityBot');
@@ -135,7 +136,8 @@ async function expenseRows(labelId, from, to, extraMonths = []) {
             COALESCE(e.currency, r.currency, 'USD') AS currency,
             COALESCE(e.fx_rate_to_usd, r.fx_rate_to_usd) AS fx_rate_to_usd,
             e.category, e.artist, e.payee, e.song, e.invoice_number,
-            r.entry_source
+            r.entry_source,
+            ${docSelect('e', 'r')}
        FROM expenses e
        JOIN expenses r ON r.id = COALESCE(e.parent_id, e.id)
       WHERE e.label_id = $1 AND r.label_id = $1
@@ -581,6 +583,12 @@ router.get('/pnl/detail', async (req, res) => {
           income_id: r.id, date: ymd(r.income_date), payee: r.source, artist: r.artist_name,
           description: r.description, usd, amount: Number(r.amount), currency: r.currency,
           report_month: placed.report_month, moved_from: placed.moved_from,
+          // `category` is what the review deck reads to know whether the card's
+          // picker is a CHANGE or a keep; for income the category IS the type.
+          // `_raw` is what UNDO writes back — the display value has already been
+          // through catNameOf/artistLabel and would restore a different string.
+          category: type, category_raw: r.source || null,
+          docs: [],
         });
       }
     } else {
@@ -619,6 +627,12 @@ router.get('/pnl/detail', async (req, res) => {
           report_month: placed.report_month, moved_from: placed.moved_from,
           split_of: r.parent_id ? r.root_id : null,
           evidence: r.entry_source === 'bank_statement' ? 'invented' : 'invoice',
+          // What UNDO writes back. `cat`/artistLabel are DISPLAY values —
+          // catNameOf turns a NULL category into "Uncategorized" and
+          // artistLabel folds a placeholder to null, so restoring from either
+          // would write a value the row never had.
+          category_raw: r.category || null, artist_raw: r.artist || null,
+          docs: docsOf(r),
         });
       }
       // Recoveries netting into this expense cell — listed apart, netted in total.
@@ -1215,23 +1229,30 @@ router.post('/recategorize', async (req, res) => {
   try {
     const b = req.body || {};
     const category = String(b.category || '').trim();
-    if (!category) return res.status(400).json({ success: false, error: 'category required' });
+    // `clear` is the review deck's UNDO of a category it set on a row that had
+    // none. Without it the inverse of "Uncategorized → Marketing" would be
+    // writing the literal string "Uncategorized", which is a display label this
+    // label's vocabulary does not contain — an undo that leaves a different
+    // value behind is not an undo. Deliberately opt-in: no picker can reach it,
+    // so an empty select still 400s exactly as before.
+    const clearing = b.clear === true && !category;
+    if (!category && !clearing) return res.status(400).json({ success: false, error: 'category required' });
     if (b.expense_id) {
       const r = await pool.query(
         `UPDATE expenses SET category = $1 WHERE id = $2 AND label_id = $3 RETURNING id, payee, category`,
-        [category, Number(b.expense_id), req.labelId]
+        [clearing ? null : category, Number(b.expense_id), req.labelId]
       );
       if (!r.rows.length) return res.status(404).json({ success: false, error: 'No such expense' });
-      await logActivity(req, 'Recategorized from Reports', `expense #${b.expense_id} → ${category}`);
+      await logActivity(req, 'Recategorized from Reports', `expense #${b.expense_id} → ${clearing ? '(cleared)' : category}`);
       return res.json({ success: true, data: r.rows[0] });
     }
     if (b.income_id) {
       const r = await pool.query(
         `UPDATE artist_income SET source = $1 WHERE id = $2 AND label_id = $3 RETURNING id, source`,
-        [category, Number(b.income_id), req.labelId]
+        [clearing ? null : category, Number(b.income_id), req.labelId]
       );
       if (!r.rows.length) return res.status(404).json({ success: false, error: 'No such income row' });
-      await logActivity(req, 'Retyped income from Reports', `income #${b.income_id} → ${category}`);
+      await logActivity(req, 'Retyped income from Reports', `income #${b.income_id} → ${clearing ? '(cleared)' : category}`);
       return res.json({ success: true, data: r.rows[0] });
     }
     res.status(400).json({ success: false, error: 'expense_id or income_id required' });

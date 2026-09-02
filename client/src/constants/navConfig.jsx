@@ -5,7 +5,7 @@ import {
   CalendarDays, PieChart, Wallet, Banknote, Megaphone, FileBarChart, GitMerge, Scale,
   FileClock, Shield, Lock, FileSignature, FileSpreadsheet, Layers, PiggyBank, FilePlus2,
   MessageSquarePlus, MessageSquare, Landmark, Coins, ShieldCheck, Users2, UploadCloud, FileSearch,
-  PackageCheck, BarChart3, Check,
+  PackageCheck, BarChart3, Check, FlaskConical,
 } from 'lucide-react'
 
 // THE nav definition — one module, three consumers.
@@ -30,6 +30,7 @@ export const PAGE_LABELS = {
   '/ad-allocation': 'Allocate Advertising',
   '/bank-statements': 'Bank Statements',
   '/bank-matching': 'Bank Matching',
+  '/ledger-matching': 'Bookkeeper Reconcile',
   '/bank-ledger': 'Bank Ledger',
   '/bulk-upload': 'Bulk Upload',
   '/approvals/archive': 'Approvals Archive',
@@ -64,6 +65,8 @@ export const PAGE_LABELS = {
   '/ledger/new-reimbursement': 'Add reimbursement',
   '/payments':   'Payments',
   '/vendors':    'Vendors',
+  '/vendors/added-expenses': 'Added-expense vendors',
+  '/vendor-lab': 'Vendor Form (sandbox)',
   '/invoices':   'Create Invoice',
   '/add-invoice': 'Add Invoice',
   '/invoices/new': 'Create invoice',
@@ -142,7 +145,9 @@ export function buildNavGroups({ isAdmin, isApprover, chatUnread = 0, pendingApp
       ...(isAdmin ? [{ path: '/bank-statements', label: 'Bank Statements', icon: Landmark, synonyms: 'statement csv reconcile bank upload' }] : []),
       ...(isAdmin ? [{ path: '/bank-matching', label: 'Bank Matching', icon: GitMerge, synonyms: 'reconcile match bank transactions' }] : []),
       ...(isAdmin ? [{ path: '/bank-ledger', label: 'Bank Ledger', icon: Coins, synonyms: 'bank booked spend no invoice' }] : []),
+      ...(isAdmin ? [{ path: '/ledger-matching', label: 'Bookkeeper Reconcile', icon: FileSpreadsheet, synonyms: 'bookkeeper reconcile diff spreadsheet xlsx outstanding invoices accountant handoff' }] : []),
       ...(isApprover ? [{ path: '/vendors', label: 'Vendors', icon: Building2, synonyms: 'suppliers payees w9 1099 vendor directory' }] : []),
+      ...(isApprover ? [{ path: '/vendor-lab', label: 'Vendor Form (sandbox)', icon: FlaskConical, synonyms: 'vendor form preview sandbox test dry run submit lab' }] : []),
       ...(isApprover ? [{ path: '/creators', label: 'Creator Payments', icon: Users, synonyms: 'influencers ugc paypal creator payments' }] : []),
       ...(isApprover ? [{ path: '/bulk-deals', label: 'Bulk Deals', icon: PackageCheck, synonyms: 'bulk units delivery quantity' }] : []),
       ...(isApprover ? [{ path: '/invoices', label: 'Create Invoice', icon: Receipt, synonyms: 'outbound invoice bill client create invoice' }] : []),

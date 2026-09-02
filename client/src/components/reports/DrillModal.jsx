@@ -3,12 +3,14 @@
 // drill that doesn't reconcile to its cell is worse than none.
 
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ExternalLink, Search, X } from 'lucide-react'
+import { AlertTriangle, ExternalLink, Layers, Search, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import api from '../../api'
 import { money, moneyOrig } from '../../utils/money'
 import Skeleton from '../Skeleton'
 import CategoryOptions from '../CategoryOptions'
+import { DocButton, DocPreview } from './DrillDocs'
+import DrillReviewDeck from './DrillReviewDeck'
 
 export default function DrillModal({ drill, range, artist, pnl, onClose, refetch, toast, onShowDismissed }) {
   const [data, setData] = useState(null)
@@ -23,6 +25,9 @@ export default function DrillModal({ drill, range, artist, pnl, onClose, refetch
   // Sort is applied SERVER-side over the full result set, so "biggest first"
   // shows the biggest rows and not the biggest of an arbitrary first 500.
   const [sort, setSort] = useState({ by: 'date', dir: 'desc' })
+  // The document overlay, and the card-at-a-time deck over these same rows.
+  const [docView, setDocView] = useState(null) // { row, doc }
+  const [deckOpen, setDeckOpen] = useState(false)
 
   const load = async () => {
     setLoading(true); setError(null)
@@ -165,6 +170,13 @@ export default function DrillModal({ drill, range, artist, pnl, onClose, refetch
             <button className="text-[11px] font-semibold text-brand-ink hover:underline"
               onClick={() => setSel(new Set(rows.map(keyOf)))}>Select all {rows.length}</button>
           )}
+          {rows.length > 0 && (
+            // Opens over exactly what is on screen — the deck's own denominator
+            // is this filtered, sorted array, never the cell total.
+            <button className="btn-secondary !py-1 text-xs inline-flex items-center gap-1.5" onClick={() => setDeckOpen(true)}>
+              <Layers size={13} /> Review {rows.length}
+            </button>
+          )}
         </div>
 
         {sel.size > 0 && (
@@ -219,6 +231,7 @@ export default function DrillModal({ drill, range, artist, pnl, onClose, refetch
                   {r.expense_id && <button className="text-gray-400 hover:text-ink" title="Set artist" onClick={() => { setAction({ type: 'artist', row: r }); setActionValue(r.artist || '') }}>artist</button>}
                   <button className="text-gray-400 hover:text-ink" title="Report this row in a different month (report-only)" onClick={() => { setAction({ type: 'month', row: r }); setActionValue(r.report_month || '') }}>mo</button>
                   <button className="text-gray-400 hover:text-rose-600" title="Dismiss from Reports" onClick={() => { setAction({ type: 'dismiss', row: r }); setActionValue('') }}>✕</button>
+                  <DocButton row={r} onOpen={(doc) => setDocView({ row: r, doc })} />
                   {r.expense_id && <Link to={`/ledger?focus=${r.split_of || r.expense_id}`} className="text-gray-400 hover:text-ink" title="Open on the Ledger"><ExternalLink size={12} /></Link>}
                 </div>
               </div>
@@ -280,6 +293,22 @@ export default function DrillModal({ drill, range, artist, pnl, onClose, refetch
             </div>
           </div>
         )}
+
+        {/* Portalled, so their own backdrops do not close this modal too. */}
+        {docView && <DocPreview row={docView.row} doc={docView.doc} onClose={() => setDocView(null)} />}
+        <DrillReviewDeck
+          open={deckOpen}
+          rows={rows}
+          drill={drill}
+          pnl={pnl}
+          poolSize={data?.truncated || data?.rows?.length || 0}
+          capped={!!data?.truncated}
+          toast={toast}
+          onClose={async (dirty) => {
+            setDeckOpen(false)
+            if (dirty) { await load(); refetch() }
+          }}
+        />
       </div>
     </div>
   )

@@ -972,6 +972,25 @@ router.patch('/:id/balance', async (req, res) => {
 router.delete('/:id(\\d+)', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
+    // Refuse to pull a statement out from under its own parser. The parse runs
+    // after the upload responds and writes transactions against this row, so a
+    // delete mid-parse leaves a half-import (and the client offers a Delete on
+    // the detail page, which is reachable by URL while parsing).
+    //
+    // Time-bounded on purpose: a parse that crashed leaves `status` at
+    // 'parsing' forever, and an unconditional guard would make that row
+    // permanently undeletable. After the window it is plainly wedged, not
+    // working, so it becomes deletable again.
+    const PARSE_GRACE_MIN = 15;
+    const { rows: [live] } = await pool.query(
+      `SELECT status, created_at > NOW() - INTERVAL '${PARSE_GRACE_MIN} minutes' AS fresh
+         FROM bank_statements WHERE id = $1 AND label_id = $2`, [id, req.labelId]);
+    if (live && live.status === 'parsing' && live.fresh) {
+      return res.status(409).json({
+        success: false,
+        error: 'This statement is still importing. Wait for it to finish (or fail) before deleting it.',
+      });
+    }
     // The txns cascade away with the statement — soft-delete the ledger
     // entries that were CREATED from them first, or re-uploading the
     // statement and re-booking would record every one of them twice.

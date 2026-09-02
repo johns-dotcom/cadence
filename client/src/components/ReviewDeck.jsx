@@ -11,7 +11,7 @@ import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import useEscapeStack from '../hooks/useEscapeStack'
 
-export default function ReviewDeck({ open, title, items, index, stats, onClose, children }) {
+export default function ReviewDeck({ open, title, sub, items, index, stats, doneNote, onClose, children }) {
   useEscapeStack(open, onClose)
   if (!open) return null
   const done = index >= items.length
@@ -23,6 +23,10 @@ export default function ReviewDeck({ open, title, items, index, stats, onClose, 
         <div className="flex items-center justify-between mb-2">
           <p className="text-sm font-bold text-ink">{title}</p>
           <div className="flex items-center gap-3">
+            {/* Optional second reading of progress. A deck over money is not
+                finished when the CARDS run out but when the MONEY does, and
+                "$12k of $188k" is the reading that says which. */}
+            {sub && <span className="text-xs text-ink-muted tabular-nums">{sub}</span>}
             <span className="text-xs text-gray-400 tabular-nums">{Math.min(index + 1, items.length)} of {items.length}</span>
             <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
           </div>
@@ -38,6 +42,7 @@ export default function ReviewDeck({ open, title, items, index, stats, onClose, 
                 {Object.entries(stats).filter(([, v]) => v > 0).map(([k, v]) => `${v} ${k}`).join(' · ') || 'Nothing to do.'}
               </p>
             )}
+            {doneNote && <p className="text-xs text-ink-muted mt-2 max-w-sm mx-auto">{doneNote}</p>}
             <button className="btn-primary mt-5" onClick={onClose}>Close</button>
           </div>
         ) : (

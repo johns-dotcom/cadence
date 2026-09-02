@@ -63,8 +63,29 @@ const DEAL_STAGES = ['Scouting', 'Meeting', 'Offer', 'Negotiation', 'Signed', 'P
 // never answer the question anyone asks of it.
 const DEAL_TYPES = ['360 Deal', 'Master License', 'Single License', 'Distribution', 'Publishing', 'Other'];
 
+// The only three values `expenses.payment_status` may ever hold. Every Paid /
+// Unpaid decision in the app — the Payments queue, the ledger filters, the P&L
+// cash basis, the recoupment sheets — is an exact string comparison against
+// these, so a row holding 'paid' is invisible to all of them at once: it never
+// reads as paid, and it never leaves the due queue.
+const PAYMENT_STATUSES = ['Unpaid', 'Partial', 'Paid'];
+
+// Accept any casing; reject anything else LOUDLY.
+//   → 'Paid' | 'Partial' | 'Unpaid'   canonical value
+//   → null                            not supplied at all
+//   → false                           supplied and unusable — the caller 400s
+// The create path used to test `['Paid','Partial'].includes(v)`, so a lowercase
+// 'paid' failed the membership test and fell through to 'Unpaid'. The caller
+// said paid, the row recorded the exact opposite, and nothing errored.
+function canonicalPaymentStatus(v) {
+  const s = String(v ?? '').trim();
+  if (!s) return null;
+  return PAYMENT_STATUSES.find((x) => x.toLowerCase() === s.toLowerCase()) || false;
+}
+
 module.exports = {
   ROLES, CURRENCIES, RELEASE_TYPES, RELEASE_STATUSES, DSP_PLATFORMS, DSP_STATUSES,
   DEV_LOG_TYPES, TASK_STATUSES, PRIORITIES, TASK_PRIORITIES, DEPARTMENTS,
   DEAL_STAGES, DEAL_TYPES, RELEASE_CHECKLIST_COLUMNS,
+  PAYMENT_STATUSES, canonicalPaymentStatus,
 };

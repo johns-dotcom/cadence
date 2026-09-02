@@ -4,10 +4,15 @@ import { Link } from 'react-router-dom'
 import {
   Building2, ShieldCheck, ShieldAlert, X, Upload, ExternalLink, Pencil, GitMerge, Tag,
   Plus, Sparkles, AlertTriangle, CreditCard, Search, Download, Undo2, History, Loader,
+  LayoutGrid, List, MoveRight, Copy,
 } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
+import Modal from '../components/ui/Modal'
+import VendorTypeahead from '../components/vendors/VendorTypeahead'
+import VendorDuplicates from '../components/vendors/VendorDuplicates'
+import VendorUnified from '../components/vendors/VendorUnified'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import { dropTarget } from '../utils/drop'
@@ -16,6 +21,11 @@ import { money, moneyOrig } from '../utils/money'
 
 const SEV = { high: 'bg-red-100 text-red-700', medium: 'bg-amber-100 text-amber-700', low: 'bg-gray-100 text-gray-600' }
 const W9_FILTERS = [['', 'All W9s'], ['on', 'W9 on file'], ['off', 'W9 missing'], ['mismatch', 'Name mismatch']]
+const TABS = [
+  ['directory', 'Directory'],
+  ['bank', 'Ledger + bank'],
+  ['duplicates', 'Duplicates'],
+]
 const SORTS = [
   ['spend', 'Spend (high→low)'],
   ['name', 'Name (A→Z)'],
@@ -34,9 +44,11 @@ function VendorDrawer({ name, onClose, onChanged, onRenamed }) {
   const [aliases, setAliases] = useState([])
   const [newAlias, setNewAlias] = useState('')
   const [renameTo, setRenameTo] = useState('')
-  const [mergeQ, setMergeQ] = useState('')
-  const [mergeHits, setMergeHits] = useState([])
   const [mergeInto, setMergeInto] = useState('')
+  // Move ONE invoice — explicitly not a merge. A single row was filed under
+  // the wrong payee; merging would drag every other invoice with it.
+  const [moving, setMoving] = useState(null)
+  const [moveTo, setMoveTo] = useState('')
   const [merges, setMerges] = useState({ merges: [], logged_since: null })
   const [zipping, setZipping] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -64,18 +76,6 @@ function VendorDrawer({ name, onClose, onChanged, onRenamed }) {
     loadAliases(); loadEmails(); loadMerges()
   }
   useEffect(() => { load() }, [name])
-
-  // Debounced server typeahead. A bare <select> over every vendor name is
-  // unusable at 400 vendors, which is exactly the scale this page is for.
-  useEffect(() => {
-    if (!mergeQ.trim()) { setMergeHits([]); return }
-    const t = setTimeout(() => {
-      api.get('/ledger/vendor-suggest', { params: { q: mergeQ.trim() } })
-        .then(r => setMergeHits((r.data.data?.vendors || []).filter(v => v.name.toLowerCase() !== name.toLowerCase())))
-        .catch(() => setMergeHits([]))
-    }, 250)
-    return () => clearTimeout(t)
-  }, [mergeQ, name])
 
   const addEmail = async () => {
     if (!newEmail.trim()) return
@@ -136,6 +136,15 @@ function VendorDrawer({ name, onClose, onChanged, onRenamed }) {
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
   const delAlias = async (id) => { try { await api.delete(`/ledger/vendors/aliases/${id}`); loadAliases() } catch { toast('Failed', 'error') } }
+  const doMove = async (entry) => {
+    if (!moveTo) return
+    try {
+      const r = await api.post('/ledger/vendors/move-invoice', { entry_id: entry.id, to: moveTo })
+      const d = r.data.data || {}
+      toast(`Invoice moved to “${d.to}” — ${d.moved} row${d.moved === 1 ? '' : 's'}, ${money(d.moved_usd)}`)
+      setMoving(null); setMoveTo(''); load(); onChanged?.()
+    } catch (err) { toast(err.response?.data?.error || 'Move failed', 'error') }
+  }
   const uploadW9 = async (file) => {
     if (!file) return
     setUploading(true); setDragOver(false)
@@ -377,23 +386,12 @@ function VendorDrawer({ name, onClose, onChanged, onRenamed }) {
                   </div>
                   <p className="text-[11px] text-ink-faint mt-1">Updates every invoice and vendor-form submission; the old name becomes an alias.</p>
                 </div>
-                <div className="relative">
+                <div>
                   <label className="label inline-flex items-center gap-1.5"><GitMerge size={12} /> Merge into</label>
                   <div className="flex gap-2">
-                    <input className="input !py-1.5 text-sm" placeholder="Search a vendor…" value={mergeInto || mergeQ}
-                      onChange={e => { setMergeQ(e.target.value); setMergeInto('') }} />
+                    <VendorTypeahead value={mergeInto} onPick={setMergeInto} exclude={[name]} className="flex-1" />
                     <button onClick={doMerge} disabled={!mergeInto} className="btn-secondary flex-shrink-0 !py-1.5">Merge</button>
                   </div>
-                  {!mergeInto && mergeHits.length > 0 && (
-                    <div className="absolute z-20 mt-1 w-full rounded-lg border border-rule bg-card shadow-elevated max-h-52 overflow-y-auto">
-                      {mergeHits.map(v => (
-                        <button key={v.name} onClick={() => { setMergeInto(v.name); setMergeQ(''); setMergeHits([]) }}
-                          className="w-full text-left px-3 py-1.5 text-sm text-ink-muted hover:bg-elev">
-                          {v.name} <span className="text-[11px] text-ink-faint">· {v.invoices} invoice{v.invoices === 1 ? '' : 's'}{v.w9_on_file ? ' · W9' : ''}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
                 </div>
               </div>
             )}
@@ -402,14 +400,31 @@ function VendorDrawer({ name, onClose, onChanged, onRenamed }) {
             <h3 className="text-xs font-bold text-ink-muted uppercase tracking-wide mb-2">Invoices ({data.entries.length})</h3>
             <div className="space-y-1.5">
               {data.entries.map(e => (
-                <div key={e.id} className="border-b border-divider py-1.5">
-                  <Link to={`/ledger?focus=${e.id}`} className="flex items-center justify-between text-sm hover:bg-elev rounded px-1 -mx-1">
-                    <span className="text-ink-muted truncate">
-                      {formatDate(e.invoice_date)} · {e.invoice_number || 'no #'}
-                      {e.voided && <span className="ml-1 text-[10px] uppercase text-danger">voided</span>}
-                    </span>
-                    <span className="text-ink font-medium tabular-nums whitespace-nowrap">{moneyOrig(e.family_amount, e.currency)}</span>
-                  </Link>
+                <div key={e.id} className="border-b border-divider py-1.5 group">
+                  <div className="flex items-center gap-1">
+                    <Link to={`/ledger?focus=${e.id}`} className="flex-1 min-w-0 flex items-center justify-between text-sm hover:bg-elev rounded px-1 -mx-1">
+                      <span className="text-ink-muted truncate">
+                        {formatDate(e.invoice_date)} · {e.invoice_number || 'no #'}
+                        {e.voided && <span className="ml-1 text-[10px] uppercase text-danger">voided</span>}
+                      </span>
+                      <span className="text-ink font-medium tabular-nums whitespace-nowrap">{moneyOrig(e.family_amount, e.currency)}</span>
+                    </Link>
+                    {isAdmin && (
+                      <button
+                        onClick={() => { setMoving(moving === e.id ? null : e.id); setMoveTo('') }}
+                        title="File this one invoice under a different vendor — not a merge"
+                        className="flex-shrink-0 text-ink-faint hover:text-ink opacity-0 group-hover:opacity-100 focus:opacity-100"
+                      ><MoveRight size={13} /></button>
+                    )}
+                  </div>
+                  {moving === e.id && (
+                    <div className="flex items-center gap-2 mt-1 pl-1">
+                      <VendorTypeahead value={moveTo} onPick={setMoveTo} exclude={[name]} allowNew className="flex-1"
+                        placeholder="Move this invoice to…" autoFocus />
+                      <button disabled={!moveTo} onClick={() => doMove(e)} className="btn-secondary !py-1 text-xs">Move</button>
+                      <button onClick={() => { setMoving(null); setMoveTo('') }} className="text-xs text-ink-faint hover:text-ink">Cancel</button>
+                    </div>
+                  )}
                   {e.children?.length > 0 && (
                     <div className="pl-4 mt-0.5 space-y-0.5">
                       {e.children.map(c => (
@@ -454,6 +469,18 @@ export default function Vendors() {
   const [q, setQ] = useState('')
   const [w9Filter, setW9Filter] = useState('')
   const [sort, setSort] = useState('spend')
+  // ?tab= keeps the view in the URL, so a link to the duplicates queue is a
+  // link to the duplicates queue.
+  const tab = TABS.some(([k]) => k === params.get('tab')) ? params.get('tab') : 'directory'
+  const setTab = (t) => setParams((p) => { const n = new URLSearchParams(p); t === 'directory' ? n.delete('tab') : n.set('tab', t); return n }, { replace: true })
+  const [cards, setCards] = useState(() => localStorage.getItem('vendors.cards') === '1')
+  const setCardsPersist = (v) => { setCards(v); try { localStorage.setItem('vendors.cards', v ? '1' : '0') } catch { /* private mode */ } }
+  // Bulk merge: pick several spellings, then pick the survivor. The merges run
+  // one at a time (each is its own reversible log row) and failures are
+  // collected rather than aborting the rest.
+  const [picked, setPicked] = useState(() => new Set())
+  const [survivor, setSurvivor] = useState(null)
+  const [merging, setMerging] = useState(false)
 
   const load = () => {
     setLoading(true)
@@ -498,128 +525,283 @@ export default function Vendors() {
   }, [vendors, q, w9Filter, sort])
 
   const filtering = q.trim() || w9Filter
+  const toggleRow = (name) => setPicked((prev) => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n })
+  const pickedRows = rows.filter((v) => picked.has(v.name))
+  const runBulkMerge = async () => {
+    const into = survivor
+    setMerging(true)
+    let ok = 0; const failed = []
+    for (const v of pickedRows) {
+      if (v.name === into) continue
+      try { await api.post('/ledger/vendors/merge', { from: v.name, into }); ok += 1 }
+      catch (err) { failed.push(`${v.name}: ${err.response?.data?.error || 'failed'}`) }
+    }
+    setMerging(false); setSurvivor(null)
+    // A failure keeps the selection: the whole point is to retry the ones that
+    // did not go, and clearing it makes the user rebuild the list from memory.
+    if (!failed.length) setPicked(new Set())
+    toast(failed.length ? `${ok} merged, ${failed.length} failed — ${failed[0]}` : `${ok} vendor${ok === 1 ? '' : 's'} merged into “${into}”`, failed.length ? 'error' : 'success')
+    load()
+  }
 
   return (
     <div>
       <PageHeader
         title="Vendors"
         subtitle="Everyone you've paid, grouped by payee"
-        action={isAdmin && vendors.some(v => v.w9_on_file) ? (
-          <button onClick={scanW9s} disabled={scanning} className="btn-secondary"><Sparkles size={15} /> {scanning ? 'Scanning W9s…' : 'Scan W9s'}</button>
-        ) : null}
+        action={(
+          <div className="flex items-center gap-2">
+            <Link to="/vendors/added-expenses" className="btn-secondary" title="Payees created by adding an expense on Recoupments or Artist Campaigns — the rows with no invoice number">
+              <Copy size={15} /> Added expenses
+            </Link>
+            {isAdmin && vendors.some(v => v.w9_on_file) && (
+              <button onClick={scanW9s} disabled={scanning} className="btn-secondary"><Sparkles size={15} /> {scanning ? 'Scanning W9s…' : 'Scan W9s'}</button>
+            )}
+          </div>
+        )}
       />
 
-      {mismatchCount > 0 && (
-        <button onClick={() => setW9Filter('mismatch')}
-          className="card w-full text-left px-4 py-2.5 mb-4 bg-amber-500/10 text-sm text-ink flex items-center gap-2 hover:opacity-90">
-          <AlertTriangle size={15} className="text-warning flex-shrink-0" />
-          {mismatchCount} vendor{mismatchCount === 1 ? '' : 's'} {mismatchCount === 1 ? 'has' : 'have'} a W9 in a different name than the one you pay — the 1099 would go to the wrong entity. Review →
-        </button>
-      )}
-
-      {scanResults && (
-        <div className="card p-4 mb-4">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-sm font-bold text-ink">
-              W9 scan results ({scanResults.length})
-              {scanMeta?.remaining ? <span className="ml-2 text-xs font-normal text-ink-muted">{scanMeta.remaining} still unscanned — run it again</span> : null}
-            </h2>
-            <button onClick={() => setScanResults(null)} className="text-ink-faint hover:text-ink"><X size={16} /></button>
-          </div>
-          <div className="space-y-2 max-h-80 overflow-y-auto">
-            {scanResults.map((r, i) => (
-              <div key={i} className="text-sm border-b border-divider pb-2">
-                <p className="font-medium text-ink flex items-center gap-2">
-                  {r.flags?.length || r.name_mismatch ? <AlertTriangle size={14} className="text-warning" /> : <ShieldCheck size={14} className="text-emerald-500" />}
-                  {r.vendor}
-                </p>
-                {!r.ok ? <p className="text-xs text-ink-faint">{r.reason}</p> : (
-                  <>
-                    {r.name_mismatch && <p className="text-xs text-warning">W9 is in the name “{r.w9_name}”</p>}
-                    {r.summary && <p className="text-xs text-ink-muted">{r.summary}</p>}
-                    {r.flags?.map((f, j) => (
-                      <span key={j} className={`inline-flex mt-1 mr-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${SEV[f.severity] || SEV.low}`}>{f.field}</span>
-                    ))}
-                  </>
-                )}
-              </div>
-            ))}
-            {!scanResults.length && <p className="text-sm text-ink-muted">Every W9 on file has already been scanned.</p>}
-          </div>
-        </div>
-      )}
-
-      <div className="card px-4 py-3 flex flex-wrap items-center gap-2 mb-4">
-        <div className="relative flex-1 min-w-[220px]">
-          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint" />
-          <input className="input !py-1.5 !pl-7 text-sm" placeholder="Search vendors, emails, alternate spellings…" value={q} onChange={e => setQ(e.target.value)} />
-        </div>
-        <select className="input !py-1.5 text-sm !w-auto" value={w9Filter} onChange={e => setW9Filter(e.target.value)}>
-          {W9_FILTERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-        </select>
-        <select className="input !py-1.5 text-sm !w-auto" value={sort} onChange={e => setSort(e.target.value)}>
-          {SORTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-        </select>
-        <span className="text-xs text-ink-muted">{rows.length} of {vendors.length}</span>
-        {filtering && <button className="text-xs underline text-ink-muted" onClick={() => { setQ(''); setW9Filter('') }}>Clear</button>}
+      <div className="flex items-center gap-1 border-b border-divider mb-4">
+        {TABS.map(([k, label]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={`px-3 py-2 text-sm font-semibold border-b-2 -mb-px ${tab === k ? 'border-brand-600 text-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}>
+            {label}
+          </button>
+        ))}
       </div>
 
-      {loading ? (
-        <div className="card p-2"><Skeleton.Table rows={8} cols={6} /></div>
-      ) : error ? (
-        <div className="card p-10 text-center">
-          <p className="text-sm text-danger mb-3">{error}</p>
-          <button onClick={load} className="btn-secondary mx-auto">Retry</button>
-        </div>
-      ) : vendors.length === 0 ? (
-        <div className="card p-10 text-center"><Building2 size={28} className="text-ink-faint mx-auto mb-3" /><p className="text-sm text-ink-muted">No vendors yet. They appear once you have approved ledger entries.</p></div>
-      ) : rows.length === 0 ? (
-        <div className="card p-10 text-center"><p className="text-sm text-ink-muted">No vendors match your filters.</p></div>
-      ) : (
-        <div className="card overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-divider text-left">
-                {['Vendor', 'Invoices', 'Total spent', 'Paid', 'Last invoice', 'W9', '1099'].map(h => <th key={h} className="px-4 py-3 text-xs font-semibold text-ink-muted uppercase tracking-wide">{h}</th>)}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-divider">
-              {rows.map(v => (
-                <tr key={v.name} onClick={() => setSelected(v.name)} className="hover:bg-elev cursor-pointer">
-                  <td className="px-4 py-3">
-                    <p className="font-medium text-ink flex items-center gap-1.5">
-                      {v.name}
-                      {v.w9_mismatch && <AlertTriangle size={13} className="text-warning" title={`W9 is in the name "${v.w9_name}"`} />}
-                    </p>
-                    {v.email && <p className="text-xs text-ink-faint">{v.email}</p>}
-                    {v.alias_count > 0 && <p className="text-[11px] text-ink-faint">aka {v.alias_count} other spelling{v.alias_count === 1 ? '' : 's'}</p>}
-                  </td>
-                  <td className="px-4 py-3 text-ink-muted tabular-nums">{v.invoice_count}</td>
-                  <td className="px-4 py-3 text-ink font-medium tabular-nums">
-                    {money(v.total_spent_usd)}
-                    {/* Mixed currencies netted into one "$" is a lie about the
-                        figure; say the number is a USD equivalent and how many
-                        currencies went into it. */}
-                    {v.currency_count > 1 && <span className="block text-[10px] text-ink-faint">≈USD · {v.currency_count} currencies</span>}
-                  </td>
-                  <td className="px-4 py-3 text-ink-muted tabular-nums">{moneyOrig(v.paid_amount, 'USD')}</td>
-                  <td className="px-4 py-3 text-ink-muted">{formatDate(v.last_invoice)}</td>
-                  <td className="px-4 py-3">
-                    {v.w9_on_file
-                      ? <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600"><ShieldCheck size={13} /> On file</span>
-                      : <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600"><ShieldAlert size={13} /> Missing</span>}
-                  </td>
-                  <td className="px-4 py-3">
-                    {v.qualifies_1099
-                      ? <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="Spend this calendar year is at or above the 1099 reporting threshold">Qualifies</span>
-                      : <span className="text-xs text-ink-faint">—</span>}
-                  </td>
-                </tr>
+      {tab === 'directory' && (
+        <>
+        {mismatchCount > 0 && (
+          <button onClick={() => setW9Filter('mismatch')}
+            className="card w-full text-left px-4 py-2.5 mb-4 bg-amber-500/10 text-sm text-ink flex items-center gap-2 hover:opacity-90">
+            <AlertTriangle size={15} className="text-warning flex-shrink-0" />
+            {mismatchCount} vendor{mismatchCount === 1 ? '' : 's'} {mismatchCount === 1 ? 'has' : 'have'} a W9 in a different name than the one you pay — the 1099 would go to the wrong entity. Review →
+          </button>
+        )}
+
+        {scanResults && (
+          <div className="card p-4 mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-sm font-bold text-ink">
+                W9 scan results ({scanResults.length})
+                {scanMeta?.remaining ? <span className="ml-2 text-xs font-normal text-ink-muted">{scanMeta.remaining} still unscanned — run it again</span> : null}
+              </h2>
+              <button onClick={() => setScanResults(null)} className="text-ink-faint hover:text-ink"><X size={16} /></button>
+            </div>
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {scanResults.map((r, i) => (
+                <div key={i} className="text-sm border-b border-divider pb-2">
+                  <p className="font-medium text-ink flex items-center gap-2">
+                    {r.flags?.length || r.name_mismatch ? <AlertTriangle size={14} className="text-warning" /> : <ShieldCheck size={14} className="text-emerald-500" />}
+                    {r.vendor}
+                  </p>
+                  {!r.ok ? <p className="text-xs text-ink-faint">{r.reason}</p> : (
+                    <>
+                      {r.name_mismatch && <p className="text-xs text-warning">W9 is in the name “{r.w9_name}”</p>}
+                      {r.summary && <p className="text-xs text-ink-muted">{r.summary}</p>}
+                      {r.flags?.map((f, j) => (
+                        <span key={j} className={`inline-flex mt-1 mr-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${SEV[f.severity] || SEV.low}`}>{f.field}</span>
+                      ))}
+                    </>
+                  )}
+                </div>
               ))}
-            </tbody>
-          </table>
+              {!scanResults.length && <p className="text-sm text-ink-muted">Every W9 on file has already been scanned.</p>}
+            </div>
+          </div>
+        )}
+
+        <div className="card px-4 py-3 flex flex-wrap items-center gap-2 mb-4">
+          <div className="relative flex-1 min-w-[220px]">
+            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint" />
+            <input className="input !py-1.5 !pl-7 text-sm" placeholder="Search vendors, emails, alternate spellings…" value={q} onChange={e => setQ(e.target.value)} />
+          </div>
+          <select className="input !py-1.5 text-sm !w-auto" value={w9Filter} onChange={e => setW9Filter(e.target.value)}>
+            {W9_FILTERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <select className="input !py-1.5 text-sm !w-auto" value={sort} onChange={e => setSort(e.target.value)}>
+            {SORTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <span className="text-xs text-ink-muted">{rows.length} of {vendors.length}</span>
+          {filtering && <button className="text-xs underline text-ink-muted" onClick={() => { setQ(''); setW9Filter('') }}>Clear</button>}
+          <div className="ml-auto flex items-center rounded-lg border border-rule overflow-hidden">
+            {[[false, List, 'Table'], [true, LayoutGrid, 'Cards']].map(([v, Icon, label]) => (
+              <button key={label} onClick={() => setCardsPersist(v)} title={label}
+                className={`px-2 py-1.5 ${cards === v ? 'bg-brand-500/15 text-brand-ink' : 'text-ink-faint hover:text-ink'}`}>
+                <Icon size={14} />
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="card p-2"><Skeleton.Table rows={8} cols={6} /></div>
+        ) : error ? (
+          <div className="card p-10 text-center">
+            <p className="text-sm text-danger mb-3">{error}</p>
+            <button onClick={load} className="btn-secondary mx-auto">Retry</button>
+          </div>
+        ) : vendors.length === 0 ? (
+          <div className="card p-10 text-center"><Building2 size={28} className="text-ink-faint mx-auto mb-3" /><p className="text-sm text-ink-muted">No vendors yet. They appear once you have approved ledger entries.</p></div>
+        ) : rows.length === 0 ? (
+          <div className="card p-10 text-center"><p className="text-sm text-ink-muted">No vendors match your filters.</p></div>
+        ) : cards ? (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {rows.map(v => (
+              <div key={v.name} onClick={() => setSelected(v.name)}
+                className={`card p-4 cursor-pointer ${picked.has(v.name) ? 'bg-selected' : 'hover:border-rule'}`}>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-semibold text-ink flex items-center gap-1.5 min-w-0">
+                    <span className="truncate">{v.name}</span>
+                    {v.w9_mismatch && <AlertTriangle size={13} className="text-warning flex-shrink-0" title={`W9 is in the name "${v.w9_name}"`} />}
+                  </p>
+                  {isAdmin && (
+                    <input type="checkbox" className="mt-1 flex-shrink-0" checked={picked.has(v.name)}
+                      onClick={(e) => e.stopPropagation()} onChange={() => toggleRow(v.name)}
+                      aria-label={`Select ${v.name} for merging`} />
+                  )}
+                </div>
+                {v.email && <p className="text-xs text-ink-faint truncate">{v.email}</p>}
+                <p className="text-xl font-bold text-ink tabular-nums mt-2">{money(v.total_spent_usd)}</p>
+                <p className="text-[11px] text-ink-faint">
+                  {v.invoice_count} invoice{v.invoice_count === 1 ? '' : 's'} · last {formatDate(v.last_invoice)}
+                  {v.currency_count > 1 && <> · ≈USD from {v.currency_count} currencies</>}
+                </p>
+                <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                  {v.w9_on_file
+                    ? <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600"><ShieldCheck size={12} /> W9 on file</span>
+                    : <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-600"><ShieldAlert size={12} /> W9 missing</span>}
+                  {v.qualifies_1099 && (
+                    <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="Spend this calendar year is at or above the 1099 reporting threshold">Qualifies for 1099</span>
+                  )}
+                  {v.alias_count > 0 && <span className="text-[11px] text-ink-faint">aka {v.alias_count} more</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="card overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-divider text-left">
+                  {isAdmin && <th className="pl-4 py-3 w-8" />}
+                  {['Vendor', 'Invoices', 'Total spent', 'Paid', 'Last invoice', 'W9', '1099'].map(h => <th key={h} className="px-4 py-3 text-xs font-semibold text-ink-muted uppercase tracking-wide">{h}</th>)}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-divider">
+                {rows.map(v => (
+                  <tr key={v.name} onClick={() => setSelected(v.name)} className={`cursor-pointer ${picked.has(v.name) ? 'bg-selected' : 'hover:bg-elev'}`}>
+                    {isAdmin && (
+                      <td className="pl-4 py-3" onClick={(e) => e.stopPropagation()}>
+                        <input type="checkbox" checked={picked.has(v.name)} onChange={() => toggleRow(v.name)}
+                          aria-label={`Select ${v.name} for merging`} />
+                      </td>
+                    )}
+                    <td className="px-4 py-3">
+                      <p className="font-medium text-ink flex items-center gap-1.5">
+                        {v.name}
+                        {v.w9_mismatch && <AlertTriangle size={13} className="text-warning" title={`W9 is in the name "${v.w9_name}"`} />}
+                      </p>
+                      {v.email && <p className="text-xs text-ink-faint">{v.email}</p>}
+                      {v.alias_count > 0 && <p className="text-[11px] text-ink-faint">aka {v.alias_count} other spelling{v.alias_count === 1 ? '' : 's'}</p>}
+                    </td>
+                    <td className="px-4 py-3 text-ink-muted tabular-nums">{v.invoice_count}</td>
+                    <td className="px-4 py-3 text-ink font-medium tabular-nums">
+                      {money(v.total_spent_usd)}
+                      {/* Mixed currencies netted into one "$" is a lie about the
+                          figure; say the number is a USD equivalent and how many
+                          currencies went into it. */}
+                      {v.currency_count > 1 && <span className="block text-[10px] text-ink-faint">≈USD · {v.currency_count} currencies</span>}
+                    </td>
+                    {/* Paid is the USD-equivalent too — the native sum across
+                        currencies rendered with a "$" was a number that existed
+                        in no currency at all. */}
+                    <td className="px-4 py-3 text-ink-muted tabular-nums">{money(v.paid_amount_usd ?? v.paid_amount)}</td>
+                    <td className="px-4 py-3 text-ink-muted">{formatDate(v.last_invoice)}</td>
+                    <td className="px-4 py-3">
+                      {v.w9_on_file
+                        ? <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600"><ShieldCheck size={13} /> On file</span>
+                        : <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600"><ShieldAlert size={13} /> Missing</span>}
+                    </td>
+                    <td className="px-4 py-3">
+                      {v.qualifies_1099
+                        ? <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="Spend this calendar year is at or above the 1099 reporting threshold">Qualifies</span>
+                        : <span className="text-xs text-ink-faint">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        </>
+      )}
+
+      {tab === 'bank' && (
+        <VendorUnified isAdmin={isAdmin} toast={toast} onOpenVendor={(n) => setSelected(n)} />
+      )}
+
+      {tab === 'duplicates' && (
+        <VendorDuplicates isAdmin={isAdmin} toast={toast} onChanged={load} />
+      )}
+
+
+      {/* Floating selection bar. Below the mobile nav's z-30 would hide the
+          navigation; this sits above the content and under the drawer. */}
+      {isAdmin && tab === 'directory' && pickedRows.length > 0 && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 card px-4 py-2.5 flex items-center gap-3 shadow-elevated">
+          {/* Counts the VISIBLE selection: a filter change that hides a picked
+              row also takes it out of the merge, and the bar has to say the
+              number that will actually be merged. */}
+          <span className="text-sm text-ink font-semibold">{pickedRows.length} selected</span>
+          <button
+            disabled={pickedRows.length < 2}
+            title={pickedRows.length < 2 ? 'Pick at least two spellings to merge' : 'Choose which spelling survives'}
+            onClick={() => setSurvivor(pickedRows.slice().sort((a, b) => (b.w9_on_file ? 1 : 0) - (a.w9_on_file ? 1 : 0) || b.total_spent_usd - a.total_spent_usd)[0]?.name || '')}
+            className="btn-primary !py-1.5 text-xs"
+          ><GitMerge size={13} /> Merge…</button>
+          <button onClick={() => setPicked(new Set())} className="text-xs text-ink-faint hover:text-ink">Clear</button>
         </div>
       )}
+
+      <Modal
+        open={survivor !== null}
+        onClose={() => !merging && setSurvivor(null)}
+        title="Which spelling survives?"
+        size="lg"
+        footer={
+          <>
+            <button className="btn-secondary" disabled={merging} onClick={() => setSurvivor(null)}>Cancel</button>
+            <button className="btn-primary" disabled={merging || !survivor} onClick={runBulkMerge}>
+              {merging ? 'Merging…' : `Merge ${Math.max(0, pickedRows.length - 1)} into “${survivor}”`}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-ink-muted mb-3">
+          Every other selected name is renamed to the survivor and becomes an alias. Each merge is logged separately, so any one of them can be undone from the survivor’s merge history.
+        </p>
+        <div className="space-y-1.5 max-h-72 overflow-y-auto">
+          {/* W9 first: the spelling the tax document is in is almost always the
+              legal name, and the one a 1099 has to go out under. */}
+          {pickedRows.slice().sort((a, b) => (b.w9_on_file ? 1 : 0) - (a.w9_on_file ? 1 : 0) || b.total_spent_usd - a.total_spent_usd).map(v => (
+            <label key={v.name} className={`flex items-center gap-2 rounded-lg border p-2.5 cursor-pointer ${survivor === v.name ? 'border-rule bg-brand-500/10' : 'border-divider'}`}>
+              <input type="radio" name="survivor" checked={survivor === v.name} onChange={() => setSurvivor(v.name)} />
+              <span className="flex-1 min-w-0">
+                <span className="block text-sm font-medium text-ink truncate">{v.name}</span>
+                <span className="block text-[11px] text-ink-faint">
+                  {v.invoice_count} invoice{v.invoice_count === 1 ? '' : 's'} · {money(v.total_spent_usd)}
+                  {v.email ? ` · ${v.email}` : ''}
+                </span>
+              </span>
+              {v.w9_on_file
+                ? <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600"><ShieldCheck size={12} /> W9</span>
+                : <span className="text-[11px] text-ink-faint">no W9</span>}
+            </label>
+          ))}
+        </div>
+      </Modal>
 
       {selected && <VendorDrawer name={selected} onClose={() => setSelected(null)} onChanged={load} onRenamed={(to) => setSelected(to)} />}
     </div>

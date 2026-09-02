@@ -2,7 +2,8 @@ const express = require('express');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
-const { toUSD } = require('../lib/fx');
+const { toUSD, warmRates } = require('../lib/fx');
+
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -346,14 +347,14 @@ router.get('/widgets', async (req, res) => {
       ),
       bk ? pool.query(`SELECT COUNT(*)::int AS n FROM expenses WHERE label_id = $1 AND status = 'pending' AND (deleted=false OR deleted IS NULL)`, [req.labelId]) : Promise.resolve({ rows: [{ n: 0 }] }),
       bk ? pool.query(
-        `SELECT amount, currency, payment_status, COALESCE(payment_date, invoice_date, created_at::date) AS d
+        `SELECT amount, currency, fx_rate_to_usd, payment_status, COALESCE(payment_date, invoice_date, created_at::date) AS d
            FROM expenses WHERE label_id = $1 AND status = 'approved' AND (deleted=false OR deleted IS NULL)
              AND parent_id IS NULL AND (voided=false OR voided IS NULL)
              AND COALESCE(payment_date, invoice_date, created_at::date) >= date_trunc('month', CURRENT_DATE)`,
         [req.labelId]
       ) : Promise.resolve({ rows: [] }),
       bk ? pool.query(
-        `SELECT payee, category, amount, currency, COALESCE(invoice_date, created_at::date) AS d
+        `SELECT payee, category, amount, currency, fx_rate_to_usd, COALESCE(invoice_date, created_at::date) AS d
            FROM expenses WHERE label_id = $1 AND (deleted=false OR deleted IS NULL)
              AND parent_id IS NULL AND (voided=false OR voided IS NULL)
           ORDER BY created_at DESC LIMIT 3`,
@@ -362,11 +363,32 @@ router.get('/widgets', async (req, res) => {
     ]);
 
     const round = (n) => Math.round((n || 0) * 100) / 100;
+    // One USD rule for both lists (lib/usd.js): a stamped fx_rate_to_usd is the
+    // historically-correct rate and ALWAYS wins; otherwise convert at the rate
+    // as of the row's own date. Rounded AT THE ROW so the stat card equals the
+    // rows a reader can add up.
+    const rowUsd = async (r) => {
+      const amt = Number(r.amount) || 0;
+      const locked = Number(r.fx_rate_to_usd) || 0;
+      if (locked > 0) return round(amt / locked);
+      return round(await toUSD(amt, r.currency, r.d));
+    };
+    // Resolve every FX rate this response needs in ONE parallel burst before
+    // touching a row. Left per-row, the awaits serialise: a month of foreign
+    // invoices is one HTTP round-trip per distinct date, inside the request.
+    // Only unlocked, non-USD rows need a rate at all.
+    const all = [...mtd.rows, ...recentInv.rows];
+    await warmRates(all
+      .filter((r) => !(Number(r.fx_rate_to_usd) > 0)
+        && (Number(r.amount) || 0) !== 0
+        && String(r.currency || 'USD').toUpperCase() !== 'USD')
+      .map((r) => r.d));
+
     let loggedMtd = 0, paidMtd = 0;
-    for (const r of mtd.rows) { const usd = await toUSD(r.amount, r.currency, r.d); loggedMtd += usd; if (r.payment_status === 'Paid') paidMtd += usd; }
+    for (const r of mtd.rows) { const usd = await rowUsd(r); loggedMtd += usd; if (r.payment_status === 'Paid') paidMtd += usd; }
     const recent = [];
     for (const r of recentInv.rows) {
-      recent.push({ payee: r.payee, category: r.category, date: r.d, amount: round(await toUSD(r.amount, r.currency, r.d)) });
+      recent.push({ payee: r.payee, category: r.category, date: r.d, amount: await rowUsd(r) });
     }
 
     res.json({ success: true, data: {

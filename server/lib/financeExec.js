@@ -440,7 +440,204 @@ async function execWorkbook(data) {
   return wb;
 }
 
+// ── One month, at a glance ───────────────────────────────────────────────────
+// The month page is anchored on the SAME basis as the monthly rollup rows it
+// is opened from — the intake cohort (`received_on` = the day the row entered
+// the books). Anything else and the page total would contradict the number
+// that was clicked, which is the whole reason the rollup drill exists.
+//
+// Boom's fourth stat card ("Received") is a separate anchor there; under the
+// cohort recipe paid + unpaid = received by construction, so that card would
+// restate the first one. It is replaced by CASH OUT — money whose payment_date
+// falls in this calendar month, a genuinely different set (it includes older
+// invoices paid now and excludes this month's invoices paid later). The page
+// says so out loud; the two must never be summed.
+const isMonth = (s) => /^\d{4}-(0[1-9]|1[0-2])$/.test(String(s || ''));
+const shiftMonth = (ym, delta) => {
+  const [y, m] = String(ym).split('-').map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + delta, 1));
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`;
+};
+
+const ARTIST_CAP = 250;   // table is client-searchable; a cap keeps the payload sane
+const VENDOR_CAP = 15;
+const INVOICE_CAP = 25;
+
+// The aggregation, split out from the pull so the money rules are exercised by
+// server/scripts/finance-fixtures.cjs without a database. Slices are the shape
+// fetchSlices returns: { root_id, usd (already rounded at the row), paid,
+// paid_on, received_on, artist, category, payee, invoice_number, payment_status }.
+function foldMonth(slices, month) {
+  assertMonth(month);
+  const [y, m] = month.split('-').map(Number);
+  const prevMonth = shiftMonth(month, -1);
+  const nextMonth = shiftMonth(month, 1);
+
+  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const dayMap = new Map();
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = `${month}-${pad(d)}`;
+    dayMap.set(key, { day: key, paid_usd: 0, unpaid_usd: 0, received_usd: 0, _roots: new Set() });
+  }
+
+  const cur = { received_usd: 0, paid_usd: 0, unpaid_usd: 0, cash_out_usd: 0, _roots: new Set(), _cashRoots: new Set(), _artists: new Set(), _vendors: new Set() };
+  const prior = { received_usd: 0, paid_usd: 0, unpaid_usd: 0, cash_out_usd: 0, _roots: new Set() };
+
+  const artists = new Map();   // artistBucketKey -> { label, paid, unpaid, roots, cats }
+  const cats = new Map();
+  const vendors = new Map();
+  const families = new Map();  // root_id -> invoice-level aggregate
+
+  for (const s of slices) {
+    // Cash out — payment-date basis, computed before the cohort filter below
+    // because a row paid this month may have landed in any earlier month.
+    if (s.paid && s.paid_on) {
+      const pm = monthKeyOf(s.paid_on);
+      if (pm === month) { cur.cash_out_usd += s.usd; cur._cashRoots.add(s.root_id); }
+      else if (pm === prevMonth) prior.cash_out_usd += s.usd;
+    }
+
+    const mk = monthKeyOf(s.received_on);
+    if (mk === prevMonth) {
+      prior.received_usd += s.usd;
+      if (s.paid) prior.paid_usd += s.usd; else prior.unpaid_usd += s.usd;
+      prior._roots.add(s.root_id);
+      continue;
+    }
+    if (mk !== month) continue;
+
+    cur.received_usd += s.usd;
+    if (s.paid) cur.paid_usd += s.usd; else cur.unpaid_usd += s.usd;
+    cur._roots.add(s.root_id);
+
+    const day = dayMap.get(s.received_on);
+    if (day) {
+      day.received_usd += s.usd;
+      if (s.paid) day.paid_usd += s.usd; else day.unpaid_usd += s.usd;
+      day._roots.add(s.root_id);
+    }
+
+    const catName = String(s.category || '').trim() || 'Uncategorized';
+
+    // Per artist, with the category mix nested — one pull, no lazy second
+    // endpoint, so the mix can never disagree with the row it expands from.
+    const aKey = artistBucketKey(s.artist);
+    if (aKey) cur._artists.add(aKey);
+    const aId = aKey || '';
+    if (!artists.has(aId)) {
+      artists.set(aId, { key: aKey || null, label: aKey ? String(s.artist).trim() : 'Unassigned', paid_usd: 0, unpaid_usd: 0, _roots: new Set(), cats: new Map() });
+    }
+    const A = artists.get(aId);
+    if (s.paid) A.paid_usd += s.usd; else A.unpaid_usd += s.usd;
+    A._roots.add(s.root_id);
+    if (!A.cats.has(catName)) A.cats.set(catName, { category: catName, paid_usd: 0, unpaid_usd: 0, _roots: new Set() });
+    const AC = A.cats.get(catName);
+    if (s.paid) AC.paid_usd += s.usd; else AC.unpaid_usd += s.usd;
+    AC._roots.add(s.root_id);
+
+    if (!cats.has(catName)) cats.set(catName, { label: catName, paid_usd: 0, unpaid_usd: 0, _roots: new Set() });
+    const C = cats.get(catName);
+    if (s.paid) C.paid_usd += s.usd; else C.unpaid_usd += s.usd;
+    C._roots.add(s.root_id);
+
+    const vName = String(s.payee || '').trim();
+    const vKey = vName.toLowerCase();
+    if (vName) cur._vendors.add(vKey);
+    if (!vendors.has(vKey)) vendors.set(vKey, { label: vName || 'No vendor', paid_usd: 0, unpaid_usd: 0, _roots: new Set() });
+    const V = vendors.get(vKey);
+    if (s.paid) V.paid_usd += s.usd; else V.unpaid_usd += s.usd;
+    V._roots.add(s.root_id);
+
+    // Invoice level — slices of one family summed back to the billed invoice.
+    if (!families.has(s.root_id)) {
+      families.set(s.root_id, {
+        root_id: s.root_id, payee: s.payee || null, invoice_number: s.invoice_number || null,
+        date: s.received_on, payment_status: s.payment_status || 'Unpaid',
+        usd: 0, _artists: new Set(), _cats: new Set(),
+      });
+    }
+    const F = families.get(s.root_id);
+    F.usd += s.usd;
+    if (String(s.artist || '').trim()) F._artists.add(String(s.artist).trim());
+    F._cats.add(catName);
+  }
+
+  const finish = (map, limit) => Array.from(map.values())
+    .map((b) => ({ label: b.label, paid_usd: round2(b.paid_usd), unpaid_usd: round2(b.unpaid_usd), total_usd: round2(b.paid_usd + b.unpaid_usd), row_count: b._roots.size }))
+    .sort((a, b) => b.total_usd - a.total_usd)
+    .slice(0, limit == null ? undefined : limit);
+
+  const artistRows = Array.from(artists.values())
+    .map((a) => ({
+      key: a.key, label: a.label,
+      paid_usd: round2(a.paid_usd), unpaid_usd: round2(a.unpaid_usd),
+      total_usd: round2(a.paid_usd + a.unpaid_usd), row_count: a._roots.size,
+      categories: Array.from(a.cats.values())
+        .map((c) => ({ category: c.category, paid_usd: round2(c.paid_usd), unpaid_usd: round2(c.unpaid_usd), total_usd: round2(c.paid_usd + c.unpaid_usd), row_count: c._roots.size }))
+        .sort((x, z) => z.total_usd - x.total_usd),
+    }))
+    .sort((a, b) => b.total_usd - a.total_usd);
+
+  const topInvoices = Array.from(families.values())
+    .map((f) => ({
+      root_id: f.root_id, payee: f.payee, invoice_number: f.invoice_number, date: f.date,
+      payment_status: f.payment_status, usd: round2(f.usd),
+      artist: f._artists.size === 1 ? Array.from(f._artists)[0] : (f._artists.size ? `${f._artists.size} artists` : null),
+      category: f._cats.size === 1 ? Array.from(f._cats)[0] : (f._cats.size ? `${f._cats.size} categories` : null),
+    }))
+    .sort((a, b) => b.usd - a.usd)
+    .slice(0, INVOICE_CAP);
+
+  const invoiceCount = cur._roots.size;
+  return {
+    month, prev_month: prevMonth, next_month: nextMonth, today: todayStr(),
+    summary: {
+      received_usd: round2(cur.received_usd),
+      paid_usd: round2(cur.paid_usd),
+      unpaid_usd: round2(cur.unpaid_usd),
+      cash_out_usd: round2(cur.cash_out_usd),
+      invoice_count: invoiceCount,
+      cash_out_count: cur._cashRoots.size,
+      artist_count: cur._artists.size,
+      vendor_count: cur._vendors.size,
+      avg_invoice_usd: invoiceCount ? round2(cur.received_usd / invoiceCount) : 0,
+    },
+    prior: {
+      month: prevMonth,
+      received_usd: round2(prior.received_usd),
+      paid_usd: round2(prior.paid_usd),
+      unpaid_usd: round2(prior.unpaid_usd),
+      cash_out_usd: round2(prior.cash_out_usd),
+      invoice_count: prior._roots.size,
+    },
+    days: Array.from(dayMap.values()).map((d) => ({ day: d.day, paid_usd: round2(d.paid_usd), unpaid_usd: round2(d.unpaid_usd), received_usd: round2(d.received_usd), received_count: d._roots.size })),
+    artists: artistRows.slice(0, ARTIST_CAP),
+    artists_truncated: artistRows.length > ARTIST_CAP ? artistRows.length : null,
+    categories: finish(cats, null),
+    vendors: finish(vendors, VENDOR_CAP),
+    vendor_total: vendors.size,
+    top_invoices: topInvoices,
+    top_invoices_of: families.size,
+  };
+}
+
+function assertMonth(month) {
+  if (!isMonth(month)) throw Object.assign(new Error('month must be YYYY-MM'), { status: 400 });
+  const y = Number(String(month).slice(0, 4));
+  if (y < 2000 || y > 2100) throw Object.assign(new Error('month out of range'), { status: 400 });
+}
+
+async function computeMonth(labelId, month, { filters = {} } = {}) {
+  assertMonth(month);
+  // The prior month's first day is the oldest date any card on the page needs.
+  const slices = await fetchSlices(labelId, normFilters(filters), `${shiftMonth(month, -1)}-01`);
+  return {
+    ...foldMonth(slices, month),
+    filters: { applied: !!(filters.artist || filters.category || filters.rep), ...normFilters(filters) },
+  };
+}
+
 module.exports = {
-  computeExec, rowsForBucket, execWorkbook, fetchSlices,
-  normFilters, isKnownBucket, isDay, todayStr, monthsBetween, monthKeyOf,
+  computeExec, computeMonth, foldMonth, rowsForBucket, execWorkbook, fetchSlices,
+  normFilters, isKnownBucket, isDay, isMonth, shiftMonth, todayStr, monthsBetween, monthKeyOf,
 };

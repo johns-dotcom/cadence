@@ -769,6 +769,49 @@ const REASON_LABEL = {
   'refused-weak-evidence': 'refused on weak evidence',
 }
 
+// What a statement that is not `ready` looks like. Two states with genuinely
+// different affordances:
+//   parsing — nothing to show yet, and Delete is withheld: the parser is still
+//             writing transactions against this row, and pulling it out from
+//             under itself is how you get half an import. (The server enforces
+//             the same window; after it, a wedged row becomes deletable so a
+//             stuck parse can never strand an undeletable statement.)
+//   error   — Delete is the whole point, so it is the primary action.
+function StatementNotReady({ s, id, navigate, toast, onRefresh }) {
+  const failed = s.status === 'error'
+  const del = async () => {
+    if (!window.confirm('Delete this statement?\n\nIt never finished importing, so nothing on the ledger references it.')) return
+    try { await api.delete(`/bank-statements/${id}`); navigate('/bank-statements') }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+  }
+  return (
+    <div>
+      <button onClick={() => navigate('/bank-statements')} className="inline-flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink mb-3"><ArrowLeft size={15} /> All statements</button>
+      <h1 className="text-2xl font-bold text-ink tracking-tight flex items-center gap-2 mb-4"><Landmark size={20} /> {s.account}</h1>
+      <div className="card p-6 max-w-2xl">
+        <p className="flex items-center gap-2 font-semibold text-ink">
+          {failed
+            ? <><AlertCircle size={17} className="text-danger" /> This statement failed to import</>
+            : <><Loader size={17} className="animate-spin text-brand-600" /> Still importing this statement</>}
+        </p>
+        <p className="text-sm text-ink-muted mt-2">{s.filename}</p>
+        {failed
+          ? <p className="text-sm text-danger mt-2">{s.error || 'The file could not be parsed.'}</p>
+          : <p className="text-sm text-ink-muted mt-2">Its transactions are still being read, so there is nothing to reconcile yet. This page refreshes when you ask it to.</p>}
+        <div className="flex items-center gap-2 mt-5">
+          {!failed && <button onClick={onRefresh} className="btn-secondary"><RefreshCw size={14} /> Check again</button>}
+          {s.r2_key && <button onClick={() => viewStmtFile(id, toast)} className="btn-secondary"><FileText size={14} /> Open the file</button>}
+          <button onClick={del} disabled={!failed}
+            title={failed ? 'Delete this statement' : 'Available once the import finishes — the parser is still writing to this statement'}
+            className={failed ? 'btn-primary' : 'btn-secondary opacity-50 cursor-not-allowed'}>
+            <Trash2 size={14} /> Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function StatementDetail({ id }) {
   const { toast } = useToast()
   const navigate = useNavigate()
@@ -834,6 +877,12 @@ function StatementDetail({ id }) {
   if (loading) return <div className="card p-6"><Skeleton.Block /></div>
   if (!data) return null
   const s = data.statement
+  // The list only lets you open a READY statement; arriving here by URL, back
+  // button or a stale link for one that is still parsing (or that failed) used
+  // to render the full mini-ledger over rows that do not exist yet — "0
+  // transactions · 0% coverage · no balance captured", which reads exactly like
+  // a real, empty, reconciled month. Say what the statement is actually doing.
+  if (s.status !== 'ready') return <StatementNotReady s={s} id={id} navigate={navigate} toast={toast} onRefresh={load} />
   const cov = data.coverage || { matched: 0, live: 0 }
   const covPct = cov.live > 0 ? Math.round((cov.matched / cov.live) * 100) : 0
   const catStrip = Object.entries(data.catTotals || {}).sort((a, b) => b[1] - a[1])

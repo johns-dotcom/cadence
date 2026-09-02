@@ -2388,8 +2388,17 @@ diverge from every other table.
 - **Deploy**: Railway, push-to-`main`. Push via
   `GIT_SSH_COMMAND="ssh -i ~/.ssh/cadence_deploy -o IdentitiesOnly=yes" git push origin main`.
   Commit trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
-- **Verify before push**: `cd client && npm run build`; `npm run check:tdz` (see below);
-  `node --check` changed server files; `node server/scripts/finance-fixtures.cjs` (140 assertions).
+- **Verify before push** — all five, every time; `npm run build` proves none of them:
+  1. `cd client && npm run build`
+  2. `npm run check:tdz` (see below)
+  3. `npm run check:render` — module-loads AND server-renders every route in `App.jsx`
+  4. `npm run check:vendor-lab` — `VendorSubmitLab.jsx` is GENERATED from
+     `VendorSubmit.jsx` by `client/scripts/sync-vendor-lab.mjs`. Touch the public
+     vendor form (or `routes/vendor.js`) and the lab silently drifts out of sync
+     with the page it exists to preview; `--check` fails instead, and
+     `npm run sync:vendor-lab` regenerates it.
+  5. `node server/scripts/finance-fixtures.cjs` (253 assertions) + `node --check`
+     every changed server file
   `client/scripts/check-tdz.cjs` is a Babel scope analyzer that fails the build on a
   `const`/`let` READ before its own declaration in the same function scope — a
   ReferenceError at runtime that `vite build` accepts happily. It exists because a
@@ -2422,7 +2431,8 @@ workspace. Three harnesses exist and should be re-run rather than reasoned about
 |---|---|---|
 | `client/scripts/check-render.mjs` | every route in `App.jsx` module-loads AND server-renders | `node scripts/check-render.mjs <routes.json>` |
 | `client/scripts/check-tdz.cjs` | no const/let read before its declaration in the same scope | `npm run check:tdz` |
-| `server/scripts/finance-fixtures.cjs` | 164 pure-function money/date assertions | `node server/scripts/finance-fixtures.cjs` |
+| `client/scripts/sync-vendor-lab.mjs` | the generated `VendorSubmitLab.jsx` still matches `VendorSubmit.jsx` | `npm run check:vendor-lab` |
+| `server/scripts/finance-fixtures.cjs` | 253 pure-function money/date assertions | `node server/scripts/finance-fixtures.cjs` |
 
 `npm run build` proves **none** of these. It is a bundler, not an interpreter: it
 happily ships a `useMemo` dep referencing a `const` 300 lines below (the `/ledger`
@@ -4217,3 +4227,611 @@ fix. Privacy/EULA legal text was not authored. The Legal page's Approver access
 was not tightened — that is a policy call with live users behind it, and silently
 removing access is not a QA change. The manual's workflow/keyboard/TOC sections
 were not ported (content, not defect). All logged in `_audit/97-remaining.md`.
+
+---
+
+## Vendors — added-expenses port + sub-surfaces (2026-09-02)
+
+Closes the last outstanding P1 port (`missing--vendors-added-expenses`) and the
+five Vendors sub-surfaces `_audit/vendors.md` §7 left open (#8 dupe deck, #9
+unified ledger+bank view, #10 bulk merge, #15 cards view + added-expenses
+subpage, #18 move-one-invoice). **Zero new deps.** Phase 2's payment vault and
+Phase 9.5's merge log / saved-email carry / canonical-W9 matching were verified
+already-closed and left alone.
+
+### New surfaces
+
+- **`/vendors/added-expenses`** (`pages/VendorsAdded.jsx`, `GET
+  /ledger/vendors/added-expenses`) — payees that exist only because somebody
+  added an expense on Recoupments or Artist Campaigns. Those rows carry **no
+  invoice number**, so `check-dup` cannot see them and the same payment can be
+  entered twice. `entry_source` filter is cadence's **SINGULAR `'recoupment'`**
+  (`lib/ledgerSource.js` is the vocabulary; the reference app's plural returns
+  nothing — the plural is accepted alongside it, not instead of it). Bucketing
+  uses the canonical strip-all key from `lib/artistKey.js` — the reference app's
+  normKey, so no second normalizer exists. Summary strip · duplicate-entry pairs
+  (same payee, same amount, same currency, ≤7 days, `?focus=` links to both
+  sides) · name-variant groups · table with fixed USD spend bands (Watch $1k,
+  High $5k — a band, not a percentile).
+- **`/vendors?tab=`** — the page is now three views. **Directory** (existing,
+  plus a cards/table toggle and multi-select merge), **Ledger + bank**
+  (`components/vendors/VendorUnified.jsx`, `GET /ledger/vendors/unified`), and
+  **Duplicates** (`components/vendors/VendorDuplicates.jsx`, `GET
+  /ledger/vendors/duplicates`).
+
+### The three new work surfaces
+
+- **Unified ledger + bank** — one row per COMPANY: Invoiced / Bank out /
+  Bank−invoiced (ticks inside the wire-fee tolerance, `max($35, 1%)`; renders a
+  dash and **no tick** when the bank has said nothing, because silence is not
+  agreement) / Open / three worklists / learned booking category / last
+  activity. Worklist chips are `needs_matching` (paid, a ready statement covers
+  the date, no line matches — the ONE bank state that is a discrepancy, the same
+  definition as `utils/recoupState.js`), `needs_artist` (`namesAnArtist`, so a
+  placeholder is not an answer) and `to_attach`. Counts and totals come from one
+  server aggregation over the same rows, so a chip cannot claim a number the
+  table can't show. Split slices add money but are **not** counted as invoices.
+  Unlinked bank payees get a collapsible queue with a typeahead that writes both
+  facts (`vendor_override` + `statement_payee_map`) through the now-shared
+  `lib/bankVendors.applyVendorOverride`.
+- **Duplicate review** — scored PAIRS (`lib/vendorDupes.js`), not clusters,
+  because a three-name cluster has no group-level verdict. Five outcomes: merge,
+  swap direction, **custom-name merge** (both spellings wrong → a third name;
+  server-side `rename_into_to` so both halves land in `vendor_merge_log` and are
+  separately reversible), **alias only** (relationship without rewriting rows),
+  and a persisted **"not duplicates"** ack (`data_quality_dismissals`,
+  `vdup:<a>|<b>`) that is un-ackable. Pairs already linked by an alias or acked
+  never come back — that is what makes the queue finishable. Card list + a
+  `ReviewDeck` (→ merge · ← skip · S swap · A alias · D not duplicates) +
+  Merge-all-at-90% behind a preview `ConfirmDialog`.
+- **Bulk merge + move-one-invoice** — row/card checkboxes → floating bar →
+  survivor picker **sorted W9-first** (the tax document is in the legal name).
+  Merges run one at a time, failures are collected, and a failure KEEPS the
+  selection. Move-one-invoice is a hover action on each drawer invoice row
+  (`POST /ledger/vendors/move-invoice`): it moves the whole **split family**,
+  because the vendor billed one invoice and leaving the slices behind puts half
+  the money under a vendor that never sent anything.
+
+### `lib/vendorCascade.js` — the finding this build was told to check
+
+The artist-cascade question ("does a vendor merge rewrite a string FK the way
+`lib/artistCascade.js` does for artists?") had an answer: **no, and three
+references were being stranded.** Merge/rename rewrote `expenses.payee`,
+`expenses.vendor_name`, the `vendors` record and `vendor_emails`, but left
+`vendor_aliases.canonical` (an alias resolving to a dead name), and — worse —
+`statement_payee_map.ledger_payee` and `bank_transactions.vendor_override`. The
+learned bank lesson kept teaching the old name, so **the next statement upload
+re-created the vendor that had just been merged away**. (`flags.js`
+merge-vendors already repointed the alias, so the two merge paths disagreed.)
+Unlike the artist cascade this one RECORDS what it touched (new
+`vendor_merge_log.cascade_ids` JSONB) — vendor merges are reversible by id, and
+an unmerge that restores the ledger but not the bank lesson re-merges the vendor
+on the next upload. The "into is an alias of from" row is deleted rather than
+made an alias of itself, and re-created on unmerge.
+
+### Money defects found and fixed (not in the audit)
+
+- **`GET /ledger/vendors` silently treated an unstamped foreign invoice as
+  1:1** (`SUM(amount / COALESCE(fx_rate_to_usd, 1))`) — the one thing
+  `lib/usd.js` exists to prevent. It read ¥28,885 as "$28,885" while every other
+  USD figure in the app said $5,258 for the same vendor, and the new bank view
+  would have sat next to it disagreeing. Now grouped by (currency, **locked
+  rate**) in SQL and converted through `usdOf` per bucket. New
+  `paid_amount_usd`; the Paid column was rendering a native cross-currency sum
+  with a "$" in front of it.
+- **`tailwind.config.js` `tokenColor` emitted `NaN%` for every unmodified token
+  utility.** `opacityValue === undefined` is not how Tailwind signals "no
+  modifier" — it passes the string `var(--tw-bg-opacity)`, and `* 100` is NaN,
+  so `bg-card`, `bg-elev`, `bg-page`, `text-ink`, `border-rule` and
+  `bg-selected` compiled to an invalid `color-mix()` the browser **dropped**:
+  53 dead rules in the shipped stylesheet. The discriminator is "is this a
+  `var()` reference", not "is this undefined" (the `/95` modifier arrives as the
+  string `"0.95"`, so a `typeof === 'number'` test breaks the other direction —
+  both were verified against `dist/assets/*.css`). Rebuild diff: 53 rules
+  changed, **all** of them NaN ones, none added or removed.
+- `lib/bankVendors.js` sliced a pg `Date` object as a string, so `last_seen`
+  read `"Tue Sep 01"` and sorted by weekday name. Cast in SQL.
+
+### Other server changes
+
+`vendor_merge_log.cascade_ids` (IF NOT EXISTS after the CREATE). No new tables;
+`TENANT_TABLES` already covered every table touched. `full-export` gained
+`vendor_aliases.csv`, `vendor_emails.csv` and `vendor_merges.csv` — without the
+log an export shows one vendor where the workspace once had three, with nothing
+saying so. `lib/nameMatch.js` is a new shared home for `foldKey`/`levDist`/
+`fuzzyThreshold` (a second copy would let the dupe deck and the Data-Quality tab
+disagree about the same pair). `applyVendorOverride` moved out of
+`routes/bank-matching.js` into `lib/bankVendors.js`.
+
+### Verification
+
+`node server/scripts/finance-fixtures.cjs` → **193/193 PASS** (was 164; +29 for
+the added-expense rollup, pair scoring, the unified rollup and the locked-rate
+rule). `node client/scripts/check-tdz.cjs` → 194 files clean.
+`npm run check:render` → shell clean for all roles, **85/85 routes** (the new
+subpage renders). `cd client && npm run build` clean, and every new tint
+confirmed present and non-`NaN` in `dist/assets/*.css`. `node --check` on all 9
+changed server files.
+
+Proved live against the dev workspace, not just asserted: move-one-invoice moves
+the family and the grand total is unchanged to the cent (source −58.57, target
++58.57); moving it back restores both vendors exactly; merge sums both vendors'
+counts and USD exactly; unmerge restores both to their pre-merge numbers and a
+second unmerge is refused; the cascade repointed 3 references and the unmerge put
+all 3 back (including re-creating the deleted self-alias); the ack round-trips;
+the custom-name merge writes two separately-reversible log rows. The directory's
+USD total and the unified view's now agree to the cent ($28,615.56 both) — before
+the fx fix they differed by $23,626.
+
+### Known, not changed
+
+`routes/ledger.js` excludes `'recoupments'` **plural** from the Payments queue,
+the payments stat cards and `/payments-export` (3 sites) — the data says
+`'recoupment'`, so recoupment-born rows are appearing in a queue the code says
+they should not. Left alone deliberately: fixing the spelling silently removes
+live invoices from Payments, which is a product call, not a port. Also not done:
+`?tab=` deep links have no per-view teaching subtitle beyond the worklist blurbs,
+and the duplicate deck has no in-deck undo (the merge history on the survivor is
+the undo, one click further away).
+
+---
+
+## Reports — review deck over drill rows + drill-row documents (2026-09-02)
+
+The last two open Reports items from `_audit/pages/reports.md` §7 (both listed in
+`_audit/97-remaining.md`). **Zero new deps. `/pnl` is byte-identical before and
+after** — proved by requiring `git show HEAD:server/routes/reports.js` alongside
+the new one and comparing `JSON.stringify(buildPnl(...))`: **identical**, so
+`ties_to_pnl` (true before, true after), `collectCountedIds` and
+`collectLabelLevel` cannot have moved. Only `/pnl/detail` rows gained fields.
+
+### (A) `components/reports/DrillReviewDeck.jsx` — the deck (P1)
+
+Opens from a **Review N** button in the drill toolbar over `rows` — whatever the
+drill is SHOWING, frozen at open. Four actions per card (recategorize · set
+artist · reassign reported month · dismiss) with `→` accept · `←` skip · `⌫`
+undo · `D` dismiss · `P` document · `1-9` usage-ranked category · `Esc` close.
+
+- **The snapshot rule.** Every figure the deck states — the `$done of $total`
+  header, each card's %-of-deck weight, the done panel — reduces over the deck's
+  OWN array. Taking the denominator from the cell would put "$12k of $188k" over
+  a deck holding $61k and the bar would never fill.
+- **Cap semantics are disclosed, not silently honoured.** `poolSize` (the
+  server's pre-cap count when it capped, else what it returned) minus the deck's
+  size is stated on the card and again in the done panel, naming *which* reason
+  — past the 500-row `DRILL_CAP`, or hidden by the drill filter. The drill's
+  `all_expense_ids` bulk path is untouched.
+- **Every edit lands on Accept**, deliberately. The reference app applied the
+  month immediately, so `⌫` stepped the card back and left the month moved. One
+  write point, one inverse: undo replays the opposite of what THIS card did, in
+  reverse order. Inverses: category → `recategorize` to `category_raw`; artist →
+  `set-artist` to `artist_raw` (null clears); month → `reassign-month` to the
+  previous target (equal to the real month, the endpoint deletes the override);
+  dismiss → `dismiss/restore`.
+- **`_raw`, never the display value.** The server has already run the category
+  through `catNameOf` (a NULL renders "Uncategorized") and the artist through
+  `artistLabel` (a placeholder folds to null). Restoring from either writes a
+  string the row never held — so `/pnl/detail` now also returns `category_raw`
+  and `artist_raw`. For the NULL case `/reports/recategorize` gained an opt-in
+  `clear: true` (empty category still 400s without it); it is the only way the
+  inverse of "Uncategorized → Marketing" is not the literal string
+  "Uncategorized", which is a display label the vocabulary does not contain.
+- **Partial success is recorded on both sides.** One accept is up to three
+  writes; a catch that recorded nothing would strand a landed category change
+  with no undo. What landed goes into history either way, and on a partial
+  failure the card stays put. Undo removes each op from the entry as it reverses
+  it, so a retry cannot re-reverse the first half (`dismiss/restore` 404s the
+  second time).
+- **`kept` and `skipped` are separate stats** — keeping is a verdict, skipping is
+  the absence of one.
+- `ReviewDeck` (the shared shell, 4 other decks) gained two OPTIONAL props only:
+  `sub` (the money reading beside "3 of 12") and `doneNote`.
+
+**Found and fixed during the build**, by SSR-rendering the deck: staging synced
+by a `useEffect` meant the first paint of every card carried the PREVIOUS card's
+picker values and a `Will apply: …` line describing edits nobody had made.
+Staging is now DERIVED at render, keyed to the card — no effect, no flash.
+
+### (B) `components/reports/DrillDocs.jsx` + `server/lib/drillDocs.js` (P2)
+
+`DocButton` on every drill row, `DocPreview` (portalled, z-[85], escape-stacked,
+tabbed when a row has several) and `InlineDoc` (a panel inside the deck card —
+an overlay would cover the card the reviewer is comparing against).
+
+- **The file hangs off the FAMILY, not the slice.** A split payment's invoice is
+  on the root; the P&L drills into slices. `docSelect()` resolves each type to
+  the entry that actually HOLDS it — the slice when it carries its own copy (a
+  per-slice proof of payment is real), else the root. Asking for the slice 404s
+  and the row would claim "no document" for a payment that plainly has one.
+  Proved live: children 86/87 of family 45 both report `invoice → entry 45`,
+  while 87's own proof reports `proof → entry 87`.
+- **Signed URLs only.** Fetch `GET /ledger/entries/:id/file/:type` → short-lived
+  R2 URL → iframe. The `?token=` query-param mode is gone and does not come
+  back. R2 is unconfigured on this box: the endpoint 503s with a sentence and
+  the panel renders that sentence — verified, never a 500, never a blank frame.
+- Preference order invoice → proof → receipt → W-9; the button names what it
+  will open. A row with nothing renders no button at all.
+
+### Files
+
+Server: `routes/reports.js` (docSelect in `expenseRows`; `docs`/`category_raw`/
+`artist_raw` on detail rows; `clear` on recategorize), **new** `lib/drillDocs.js`,
+`scripts/finance-fixtures.cjs` (+6). Client: **new**
+`components/reports/DrillReviewDeck.jsx`, **new** `components/reports/DrillDocs.jsx`,
+`components/reports/DrillModal.jsx` (Review button, DocButton per row, both
+overlays), `components/ReviewDeck.jsx` (2 optional props).
+
+### Verification
+
+`node server/scripts/finance-fixtures.cjs` → **199/199 PASS** (was 193; +6 for
+the family-not-slice document resolution, preference order, the no-document case
+and a "no half-wired document type" completeness check).
+`node client/scripts/check-tdz.cjs` → 196 files clean. `npm run check:render` →
+shell clean for all roles, 85/85 routes. `npm run build` clean; every new
+utility confirmed present and non-`NaN` in `dist/assets/*.css` (`z-[85]`, `h-56`,
+`bg-brand-500/15`, `text-brand-ink`, `hover:bg-elev`, `hover:bg-card`) — 0 `NaN`
+in the built sheet. `node --check` on all 3 changed server files.
+
+**Proved live against workspace 2, not asserted.** Marketing cell = $6,034.00
+before. Each deck action run as the exact HTTP sequence the deck issues, then
+its inverse: recategorize (→$5,914, Travel $290→$410, back to $6,034); set-artist
+on a null-artist row and back to null; month move 2026-08→2026-07 (the 08 cell
+drops to $187, the 07 cell gains $77) and back, which deletes the override;
+dismiss (→$5,946 with `dismissed {count:1,total:88}`) and restore. Then one
+three-op card — category+artist+month together — Marketing $6,034→$5,584 and
+Recording $300→$750, undone in reverse order back to $6,034/$300.
+`ties_to_pnl` **true at every step**, `net` unchanged at −$9,041.50 throughout
+(money moved between lines, none created). Verified with `check-render`-style
+SSR that the deck, both document surfaces and DrillModal render without throwing
+— check-render itself cannot reach them, since they are overlays behind state.
+The seeded workspace was restored to its exact pre-test state (the three
+temporary file-key fixtures removed; `report_dismissals` and
+`report_month_overrides` back to 0 rows).
+
+### Not done
+
+Bank-txn `flag` (`F`) from the reference deck: cadence's drill rows are LEDGER
+rows, not bank transactions, so there is no flag to toggle — a fake one would be
+worse than its absence. No swipe/pointer-drag (the statements deck has it
+because it is a mobile triage surface; a P&L drill is a desk task). The row-level
+"no invoice · attach" deep link into the vendor attach picker is still absent —
+`Vendors` has the picker, but wiring it needs a per-payment attach deep link that
+does not exist yet.
+
+---
+
+## The last three ports, 2026-09-02 — month drill · vendor lab · Bookkeeper Reconcile
+
+The final three `missing--*` entries in `_audit/97-remaining.md`. Two built as
+specified, one built in a reduced cadence-native form with the boom-specific
+endpoint declined in writing. **No schema, no new deps.** Fixtures 199 → 244.
+
+### `/financials/month/:month` — one month at a glance
+
+`server/lib/financeExec.js` gains `foldMonth` (pure) + `computeMonth` (pull +
+fold), reusing the existing `fetchSlices` so the page cannot drift from the
+Financials cards. `GET /api/financials/month/:month` (Approver+, accepts the
+page's `artist`/`category`/`rep` scope). Client `pages/FinancialsMonth.jsx`.
+
+**The anchor is the load-bearing decision.** The page is opened from a
+`MonthlyRollup` row, so it uses that row's basis — the **intake cohort**
+(`received_on`). Any other anchor and the page header would contradict the number
+that was clicked. Verified live: header total, per-artist sum, per-category sum
+and daily sum all equal `exec.monthly[].received_usd` exactly.
+
+Because paid + open = received by construction under that recipe, boom's fourth
+card ("Received") would restate the first. It is replaced by **Cash out** —
+`payment_date` in the calendar month, a genuinely different set (older invoices
+paid now, minus this month's paid later). The page states the two bases and says
+not to sum them. Same reasoning `MonthlyRollup` used to drop boom's degenerate
+"Difference" columns.
+
+Also: per-artist category mixes ship **nested in the same payload** rather than
+boom's lazy per-artist `subbreakdown` fetch — one pull, so a mix cannot disagree
+with the row it expands from. Entry point is a "Month at a glance" link in
+`KpiDrillModal` for `month_*` buckets, carrying the scope. **No link from
+Reports' month headers** — Reports is cash basis, this is the intake cohort, and
+a link between them invites the basis confusion the app works to prevent.
+
+### `/vendor-lab` — the write-nothing vendor form sandbox
+
+Server: `?sandbox=1` branch inside the real `POST /api/vendor/:token/submit`.
+`sandboxAuth` runs auth ONLY for that query and is mounted **before multer**, so
+an anonymous sandbox request is refused without buffering 10 MB (proved: a 12 MB
+upload with no token 401s; the same file on the public path 400s on size).
+The branch sits **late**, after required fields, email format, the W9 gate, the
+duplicate lookup, the typed-vs-document invoice-number gate, the payment
+cross-check, the bank-details-changed detection and the roster test — the point
+is that a refusal in the lab is the refusal a vendor gets. It locks a second time
+inside the branch (`!req.user` → 401, wrong workspace → 403, non-Approver → 403)
+because a refactor of conditional middleware must not silently open an
+AI-spending endpoint. Returns `would_create` / `files` / `advisories` /
+`not_exercised`; payment coordinates are replaced with `••••`, never echoed.
+**Proved it writes nothing**: row counts for `expenses`, `vendors`,
+`vendor_emails`, `vendor_payment_details`, `activity_log` and `chat_messages`
+identical before and after a full valid submission.
+
+Client is a **generated copy**, per the spec's [INT] note.
+`client/scripts/sync-vendor-lab.mjs` applies 6 named anchored deltas to
+`VendorSubmit.jsx` → `pages/VendorSubmitLab.jsx`; each anchor must match exactly
+once or it exits non-zero having written nothing, and a **post-condition on the
+output** fails unless there is exactly one submit call and it carries
+`sandbox=1`. `npm run check:vendor-lab` (`--check`) is the drift guard — **add it
+to the verify-before-push step** next to `npm run build`. Lab-only chrome lives
+in the hand-written `components/vendor/SandboxReport.jsx` so the generated file
+stays close to the original and the anchor set stays small. The lab's draft uses
+its own localStorage key so experimenting cannot clobber a real draft.
+Boom's deleted `/admin/vendor-preview` was NOT resurrected.
+
+### `/ledger-matching` — Bookkeeper Reconcile
+
+Judgment call, not a blind port. Built because it needs no invented data source
+(the third dataset is a file a human uploads) and no change to `bankReconcile`.
+
+`server/lib/vendorMatch.js` (NEW, isolated) — tiered vendor-NAME matcher, each
+tier a named reason the report prints. It is separate from `bankReconcile` on
+purpose: that one is calibrated for bank DESCRIPTORS, held by fixtures, and feeds
+`amount·0.55 + name·0.30 + date·0.15`; retuning it to satisfy a report would
+retune a matcher live on money. Unicode folding is still shared (`nameMatch.js`
+`foldKey`) so that has one definition.
+`server/lib/ledgerDiff.js` — the 8-category diff, **pure** so the fixtures hold
+it. `server/lib/ledgerDiffXlsx.js` — exceljs read + report writer.
+`server/routes/ledger-matching.js` — `/diff` (multipart), `/report`, `/export`
+(one category, from the rows the page is showing), `/handoff` (ZIP). Admin-gated
+both ends (`requireAdmin` + `StrictAdminRoute`). Client `pages/LedgerMatching.jsx`.
+
+Rules worth knowing: invoice numbers keyed through `normalizeInvoiceNum`; a
+same-number **different-vendor** hit is a collision, routed to "missing on
+Cadence" with the ledger row left **unclaimed** so the gap shows on both sides;
+split invoices compare at the **family** amount (root + live children); amounts
+are compared **native to native and never converted** (both sides record one
+document — converting would invent a disagreement the paper does not have), with
+the currency named in the message; the reverse direction is capped twice (sheet
+years + WEEK ENDING), both suppression counts disclosed on screen and in the
+workbook. **Nothing is persisted** — a saved diff of a file we do not control is
+stale the moment either side edits a row.
+
+**`bk-style-export` declined.** It re-opens the uploaded workbook as a styling
+template and rewrites `<year>` / `PAID <year>` / `SUM` tabs by name. That is one
+accounting firm's file layout compiled into a multi-tenant product; for every
+tenant but boom's it writes into the wrong tabs or no-ops. The handoff bundle
+(report + README + every invoice/W9/proof behind the diff's ledger rows, vendor-
+first, plus a missing-W9 chase list) is the deliverable it existed to support.
+
+### Three defects found by building, worth remembering
+
+- **`ws.actualRowCount` is a COUNT, not a maximum row number.** ExcelJS: use
+  `ws.rowCount`. As a loop bound the count drops exactly as many trailing data
+  rows as there are blank rows above them, silently — and real bookkeeper
+  workbooks always have a blank row in the title block. Caught on the first live
+  run (15 rows parsed where 16 existed). Now fixture-held.
+- **A one-cent tolerance is not one cent in binary floating point.**
+  `Math.abs(100.01 - 100) > 0.01` is TRUE. Every genuine one-cent rounding
+  difference was being reported as a disagreement. The gap is now rounded to
+  cents before the comparison.
+- **`notes` was declared BELOW the R2 writes in `vendor.js`.** The sandbox branch
+  reads it; inserting the branch above its `const` would have been a TDZ
+  `ReferenceError` on every sandbox run. `check-tdz.cjs` guards this class on the
+  client only — server files need the same read-before-inserting discipline.
+
+### Verification
+
+`node server/scripts/finance-fixtures.cjs` **244/244** (was 199; +45 covering the
+month anchor, the two bases, split roll-up, the vendor tiers, all 8 diff
+categories, both reverse-direction caps, native-currency comparison, at-stake
+semantics, and workbook parsing incl. the blank-row case).
+`npm run check:render` **88 routes, shell clean for all roles** (was 85).
+`node client/scripts/check-tdz.cjs` **200 files clean**.
+`npm run check:vendor-lab` clean · `npm run build` clean ·
+`node --check` on all 8 touched server files.
+Built CSS re-checked in `client/dist/assets/*.css`: 0 `NaN`, every new tint
+(`border-brand-600/40`, `border-warning/40`, `bg-elev/60`, `divide-divider`)
+compiles to a real rule; no raw grays, no `dark:`, no `bg-brand-50`.
+Seeded data restored — all table counts identical to the pre-test snapshot.
+
+---
+
+## Small-defects batch + two deployment fixes — 2026-09-02
+
+Nine items: the two deployment fixes John asked for by name, plus the seven
+remaining rows in `_audit/97-remaining.md`'s "genuinely still open" table. Two of
+those seven turned out to be **already closed in HEAD** and are struck from the
+register rather than reworked. Zero new dependencies.
+
+### 1. Stale-tab detector (NEW)
+
+An SPA with no service worker never re-fetches `index.html` on client-side
+navigation, so a tab open across a deploy runs the old bundle forever — until it
+asks for a chunk that deploy deleted and dies somewhere unrelated to the cause.
+That is what the phantom `/ledger` crash was.
+
+- **Server** `GET /api/version` → `{ bundle }`, unauthenticated, `no-store`. The
+  identity is the **main bundle filename** parsed out of the built
+  `client/dist/index.html`. Vite content-hashes it, so it moves when the client
+  moves and not otherwise: **no build-time constant to maintain, and a server
+  restart with no new build cannot false-positive.** Cached against
+  `index.html`'s mtime, so the common case is a `statSync` and a redeploy inside
+  one process is still picked up. Unauthenticated on purpose — it leaks a
+  filename that is already in every page's `<script src>`, and a
+  session-expired tab is exactly the tab that most needs to be told to reload.
+- **Client** `components/UpdateBanner.jsx`, mounted once in `AppContent`. Polls
+  every 5 min **and on window focus**, floored at one check per 60s so a
+  tab-flipper cannot spend the shared `/api` rate-limit budget on version
+  checks. The FIRST value the tab sees is its in-memory baseline; a later
+  different value shows a dismissible banner. Dismissal is recorded **per
+  bundle**, so a second deploy after a dismissal speaks up again. Every failure
+  path is silent — offline, rate-limited, or an older server with no route.
+
+### 2. `/assets/*` 404s instead of falling through to the SPA (NEW)
+
+`app.get('*')` returned `index.html` for everything, so a request for a deleted
+hashed bundle got **HTML under a JavaScript content-type** — an opaque MIME
+error instead of a clean 404. `STATIC_ONLY = /^\/(assets|uploads)\//` now 404s
+(+`nosniff`) before the fallback. `express.static` has already served anything
+that exists there, so reaching the fallback under those prefixes means the file
+is genuinely gone. Verified live: `/assets/<old-hash>.js` → 404 `text/plain`,
+`/assets/<real>.js` → 200 `application/javascript`, `/ledger` → 200 `text/html`.
+
+### 3. The nine hand-rolled Ledger overlays → `ui/Modal`
+
+`SplitModal.jsx` + eight sites in `Ledger.jsx`. All nine now get Escape (via the
+`useEscapeStack` LIFO), a real focus trap, focus restoration, a portal, a scroll
+lock and `role="dialog"`/`aria-modal`. **`fixed inset-0` count in these two files
+is now zero.**
+
+**Each kept its own dismissal semantics** — the point of the migration was not to
+make them uniform. New shared hook `hooks/useDiscardGuard.js` states the rule
+once: clean dialogs close instantly, dirty ones confirm, and a dialog with a
+save in flight refuses to close at all rather than orphan the request.
+
+| Overlay | Dismissal, and why |
+|---|---|
+| file preview | closes outright — read-only viewer, nothing to lose |
+| 1099 report | closes outright — read-only report |
+| Receipts | closes outright — **every action writes to the server the moment it is taken**, so it never holds unsaved state |
+| Flag for review | confirms only if the note was EDITED (compared against `flag_reason`, not against empty) — open-to-read-who-flagged-it still shuts instantly |
+| Socials | confirms if the handle rows changed; they carry amounts that become split lines |
+| Carve reimbursement | confirms on a typed fee or a picked receipt (re-picking means another trip through the OS file dialog); no close while the multipart POST is in flight |
+| Quick expense | confirms against the form as it OPENED, so pre-filled defaults (today, Recoupable) are not mistaken for input; no close mid-create |
+| Edit entry | confirms against the entry as loaded — most expensive form to retype and the one where a silent discard is least visible (the row just still says what it said) |
+| Split | confirms against the rows the dialog opened with, so re-opening an existing split and closing it untouched is instant; no close mid-split |
+
+**Two things worth knowing for the next migration:**
+
+- **`autoFocus` is a no-op inside `ui/Modal`.** React applies it during commit;
+  `useFocusTrap` focuses the PANEL from a `useEffect`, which runs after. The two
+  dialogs that had it (flag note, carve fee) now focus explicitly from a ref in
+  a **parent** effect — parent effects run after the child Modal's, so that one
+  wins. Any future `autoFocus` inside a Modal needs the same treatment or it is
+  decoration.
+- **`ui/Modal`'s `WIDTHS` ladder has no `max-w-xl` rung** (it jumps `lg` →
+  `max-w-2xl`). SplitModal is `max-w-xl`, so it passes `className="!max-w-xl"`.
+  Only ONE of the two utilities is `!important`, so there is no specificity tie —
+  verified in the built CSS (`.\!max-w-xl{max-width:36rem!important}`), not
+  assumed. The 1099 report reclaims its edge-to-edge table with `-mx-5 -mb-5`;
+  the file preview overrides the card shape with `!p-0 !overflow-hidden h-[88vh]
+  flex flex-col`. All four compile.
+
+### 4. Stale data after switching workspace
+
+`enterWorkspace` was `setState`-only: React reconciled the mounted pages and kept
+them alive, so the new tenant's Dashboard was the previous tenant's numbers.
+`AuthContext` gains **`sessionEpoch`**, bumped by `enterWorkspace`,
+`impersonate` and `exitImpersonation`; `App.jsx` does `<Routes key={sessionEpoch}>`.
+
+- **A counter, not `${user?.id}:${label?.id}`** — a derived key also flips on
+  first load (null → resolved) and would remount the whole app on every cold
+  start, double-fetching every page. The counter changes on exactly the events
+  that mean "you are looking at different data".
+- **A remount is not enough on its own.** Two module-level caches live outside
+  React and survive it: `hooks/useCategories` and `hooks/useReconciledThrough`.
+  Both already exported a reset that **nothing had ever called**. They are now
+  cleared on workspace switch, on `logout`, and in `applySession` (a second
+  login in the same tab reuses the module instance). Those were the only two
+  module caches in `hooks/`, `context/` and `utils/`.
+
+### 5. `/api/dashboard/widgets` — the slowness was a MONEY BUG
+
+Profiling the per-row `await toUSD` found the real cause, which is worse than
+latency. **node-pg returns a DATE column as a JS `Date`**, and `fx.js` did
+`String(date).slice(0, 10)` → **`"Tue Sep 01"`**. That key never hits the cache,
+404s at frankfurter, and falls through to the hardcoded `FALLBACK` table — and a
+failed fetch is never cached, so it re-fetched **for every row of every
+request**. Measured at ~270ms per foreign row. Every unstamped foreign row in the
+app was converting at last year's fallback rate while looking perfectly fine.
+
+- `lib/fx.js` gains **`dateKey()`** — the one coercion, used by `getRates` and
+  `toUSD`. **Local components, never `toISOString()`**: pg parses DATE at LOCAL
+  midnight, so `getFullYear/getMonth/getDate` give back the day pg meant while
+  `toISOString()` shifts it a day west of Greenwich. Anything that is not a real
+  date key returns `null` = "use latest", instead of a guaranteed-failing HTTP
+  round-trip. `lib/usd.js rowUsd` stopped pre-flattening its date for the same
+  reason. **This fixes every caller at once** — `financials.js` (×4),
+  `ledger.js` (×3), `creators`, `artist-budgets`, `reports`, not just the
+  dashboard.
+- `lib/fx.js` gains **`warmRates(dates)`** — resolves the distinct as-of dates in
+  ONE parallel burst so a per-row loop then resolves from memory.
+- The widgets handler now selects `fx_rate_to_usd` and honours it (**locked rate
+  always wins** — it was not read here at all), warms only the dates that
+  unlocked non-USD rows actually need, and **rounds AT THE ROW** for both the MTD
+  totals and the recent list, so the stat card equals the rows beneath it.
+- **Measured, same seeded workspace (86 expenses, 11 MTD, 2 unlocked EUR):**
+  before **0.65–0.75s** steady (1.59s cold, one 2.18s outlier); after
+  **0.15–0.20s** steady (1.07s cold, and the cold path is now one parallel FX
+  call instead of one per row). ~4×.
+
+### 6. Bank statement detail gated on `status`
+
+The status gate lived only on the list's click handler, so a URL, a back button
+or a stale link rendered the full mini-ledger over a statement with no rows yet —
+"0 transactions · 0% coverage · no balance captured", which reads exactly like a
+real, empty, reconciled month. `StatementNotReady` now renders instead, with two
+genuinely different affordances: **parsing** offers Check-again and Open-the-file
+and withholds Delete; **error** shows the parse error and makes Delete the
+primary action, because that is the whole point.
+
+Delete is gated on the **server** too (`DELETE /bank-statements/:id` → 409 while
+`status='parsing'`), so it is not a cosmetic client check — the parser is still
+writing transactions against that row. **Time-bounded at 15 minutes on purpose:**
+a parse that crashed leaves `status` at `'parsing'` forever, and an unconditional
+guard would make that row permanently undeletable.
+
+### 7 + 8. Two register rows were ALREADY CLOSED — verified, not reworked
+
+- **"Duplicate-merge drops the twin's UFR mark"** — false as of HEAD.
+  `bank-matching.js:870-886` carries `ufr` + `ufr_marked_at` inside the merge
+  transaction and names it in the activity log, and deliberately does NOT carry
+  `recoupable` (it defaults TRUE, so forcing it would overwrite a deliberate
+  "no" with a default).
+- **"Creators directory W9 test ignores `w9_filename`"** — false as of HEAD.
+  `creators.js:113` is `(e.w9_r2_key IS NOT NULL OR e.w9_filename IS NOT NULL)`.
+  The row the audit cited (#61 Yuki Studio, `w9_filename` with no `w9_r2_key`) is
+  **not a creator row at all** — it fails `isCreatorRow`, so it never reaches
+  that surface. Confirmed live against `/api/creators/directory`.
+  **Left deliberately unchanged:** four OTHER W9 tests are still `w9_r2_key IS
+  NOT NULL` only — the ledger 1099 report (`ledger.js:444`), the vendors W9
+  column (`:2216`), `flags.js:230` and the dup-pair scorer. Widening those would
+  flip a vendor from MISSING to ✓ **on a tax report**, which is a product call,
+  not a defect fix. Yuki Studio is exactly such a row today.
+
+### 9. `payment_status` casing no longer inverts meaning
+
+`['Paid','Partial'].includes(b.payment_status)` meant a lowercase `'paid'` failed
+the membership test and fell through to **`'Unpaid'`** — the caller said paid and
+the row recorded the exact opposite, with no error. The PATCH path was **worse**:
+it had no validation at all, so `'paid'` went into the UPDATE raw and was then
+cascaded across the whole split family, into a state no query in the app can see
+(every Paid/Unpaid decision is an exact string comparison).
+
+`PAYMENT_STATUSES` + `canonicalPaymentStatus()` now live in `lib/constants.js`
+(so the fixtures can hold the rule): any casing canonicalizes, absent is `null`,
+**anything else is `false` and the route 400s**. Both create and PATCH use it.
+Verified live: `'paid'` → `Paid`, `'partial'` → `Partial`, `'settled'` → 400 with
+the row unchanged. Test row created and removed.
+
+### Files touched
+
+Server: `index.js`, `lib/fx.js`, `lib/usd.js`, `lib/constants.js`,
+`routes/dashboard.js`, `routes/ledger.js`, `routes/bank-statements.js`,
+`scripts/finance-fixtures.cjs`.
+Client: **new** `components/UpdateBanner.jsx`, **new** `hooks/useDiscardGuard.js`;
+`App.jsx`, `context/AuthContext.jsx`, `pages/Ledger.jsx`,
+`pages/BankStatements.jsx`, `components/SplitModal.jsx`.
+Docs: `CLAUDE.md`, `_audit/97-remaining.md`.
+
+### Verification
+
+`node server/scripts/finance-fixtures.cjs` → **253/253** (was 244; +9 for
+`dateKey`'s Date/local-midnight/garbage cases and the `payment_status`
+vocabulary). `node client/scripts/check-tdz.cjs` → **202 files clean** (was 200).
+`npm run check:render` → **shell clean for all roles, 88 routes**.
+`npm run check:vendor-lab` clean · `npm run build` clean · `node --check` on all
+7 changed server files.
+Built CSS re-checked in `client/dist/assets/*.css`: **0 `NaN`**, and all nine new
+utilities compile to real rules (`!max-w-xl`, `!p-0`, `!overflow-hidden`,
+`-mx-5`, `-mb-5`, `text-brand-ink`, `bottom-20`, `z-[80]`, `sm:w-96`) — the
+`!important` ones checked for a specificity tie, not assumed. No raw grays, no
+`dark:`, no `bg-brand-50`.
+Endpoints exercised live on the seeded workspace: `/api/version`, `/assets/*`
+404, `/ledger` SPA fallback, `/api/dashboard/widgets` (before + after),
+`/api/creators/directory`, ledger create + PATCH `payment_status`.

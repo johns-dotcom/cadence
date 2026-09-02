@@ -17,7 +17,7 @@ const {
   isProvableUnclaimed, bestSpelling, normalizePriority,
 } = require('../lib/recoupments');
 const {
-  computeExec, rowsForBucket, execWorkbook, fetchSlices,
+  computeExec, computeMonth, rowsForBucket, execWorkbook, fetchSlices,
   normFilters, isKnownBucket, isDay, todayStr, monthsBetween,
 } = require('../lib/financeExec');
 const { excludeBankRows } = require('../lib/ledgerSource');
@@ -272,6 +272,22 @@ router.get('/exec/rows', async (req, res) => {
     res.json({ success: true, data });
   } catch (error) {
     console.error('Financials exec rows error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/financials/month/:month — one month at a glance (YYYY-MM).
+// Same intake-cohort anchor as the monthly rollup rows this page is opened
+// from, so the page total ties to the number that was clicked. Accepts the
+// page's artist/category/rep scope so a filtered rollup drills to a filtered
+// month.
+router.get('/month/:month', async (req, res) => {
+  try {
+    const data = await computeMonth(req.labelId, String(req.params.month || ''), { filters: req.query });
+    res.json({ success: true, data });
+  } catch (error) {
+    if (error?.status === 400) return res.status(400).json({ success: false, error: error.message });
+    console.error('Financials month error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

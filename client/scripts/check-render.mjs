@@ -138,7 +138,8 @@ function parseRoutes() {
   for (const m of src.matchAll(/import\s+(\w+)\s+from\s+['"]([^'"]+)['"]/g)) imports[m[1]] = m[2];
   const GATES = ['AdminRoute', 'StrictAdminRoute', 'ProtectedRoute', 'Navigate'];
   const PARAM = { ':id': '3', ':slug': 'qa-token', ':artist': 'Artist%20B', ':song': 'Song%20A',
-    ':key': 'artistb', ':artistKey': 'artistb', ':template': 'mutual', ':channelId': '2' };
+    ':key': 'artistb', ':artistKey': 'artistb', ':template': 'mutual', ':channelId': '2',
+    ':month': '2026-06' };
   const out = [];
   for (const m of src.matchAll(/<Route\s+path=['"]([^'"]+)['"]\s+element=\{([\s\S]*?)\}\s*\/>/g)) {
     const routePath = m[1], el = m[2];

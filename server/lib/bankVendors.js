@@ -42,7 +42,9 @@ function sameSquashedName(a, b) {
  */
 async function aggregateBankVendors(labelId, { limit = 400 } = {}) {
   const { rows } = await pool.query(
-    `SELECT t.id, t.payee_guess, t.description, t.amount, t.currency, t.txn_date,
+    // txn_date::text — pg returns a JS Date for a DATE column, and every
+    // consumer here slices it as a string ("Tue Sep 01" sorts by weekday).
+    `SELECT t.id, t.payee_guess, t.description, t.amount, t.currency, t.txn_date::text AS txn_date,
             t.vendor_override, t.matched_expense_id, t.match_method,
             e.payee AS exp_payee, e.entry_source AS exp_source
        FROM bank_transactions t
@@ -104,4 +106,30 @@ function vendorHintFor(txn, maps, matchedNames) {
   return null;
 }
 
-module.exports = { aggregateBankVendors, vendorHintFor, descriptorMentions, sameSquashedName, vendorsMatch };
+/**
+ * A PERSON says these bank lines are this ledger vendor. Writes the decision
+ * (`vendor_override`) and, unless told not to, the lesson (`statement_payee_map`)
+ * so the next statement matches without being asked again — two separate facts,
+ * both wanted here (see the header). Shared by Bank Matching's per-line and
+ * bulk vendor actions and by the Vendors page's unlinked-payee queue: a second
+ * copy would let one surface write the decision and skip the lesson.
+ */
+async function applyVendorOverride(labelId, ids, vendor, actor, { learn = true } = {}) {
+  const { learnPayee } = require('./bankReconcile');
+  const r = await pool.query(
+    `UPDATE bank_transactions SET vendor_override = $3 WHERE id = ANY($1::int[]) AND label_id = $2 RETURNING id, payee_guess, description`,
+    [ids, labelId, vendor]
+  );
+  if (learn) {
+    const seen = new Set();
+    for (const row of r.rows) {
+      const desc = row.payee_guess || row.description;
+      if (!desc || seen.has(desc)) continue;
+      seen.add(desc);
+      await learnPayee(pool, labelId, desc, vendor, actor).catch(() => {});
+    }
+  }
+  return r.rows.length;
+}
+
+module.exports = { aggregateBankVendors, vendorHintFor, descriptorMentions, sameSquashedName, vendorsMatch, applyVendorOverride };

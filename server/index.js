@@ -53,6 +53,7 @@ const chatRoutes = require('./routes/chat');
 const categoriesRoutes = require('./routes/categories');
 const reportsRoutes = require('./routes/reports');
 const bankMatchingRoutes = require('./routes/bank-matching');
+const ledgerMatchingRoutes = require('./routes/ledger-matching');
 const creatorsRoutes = require('./routes/creators');
 const artistBudgetsRoutes = require('./routes/artist-budgets');
 
@@ -174,6 +175,44 @@ app.get('/uploads/:filename', async (req, res) => {
 // ── Health check ────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({ ok: true }));
 
+// ── Build version (stale-tab detector) ──────────────────────────────────
+// Cadence is an SPA with no service worker, so a tab left open across a deploy
+// never re-fetches index.html: it keeps running the old bundle until it asks
+// for a lazy chunk that no longer exists and dies with a MIME or "is not a
+// function" error somewhere unrelated. A user hit exactly that on /ledger.
+//
+// The identity published here is the MAIN BUNDLE FILENAME out of the built
+// index.html. Vite content-hashes it, so it changes when — and only when — the
+// client actually changed: nothing to maintain at build time, and a server
+// restart with no new build cannot false-positive. The client records the first
+// value it sees and offers a reload when a later value differs.
+//
+// Unauthenticated on purpose: it leaks a filename that is already public in
+// every page's <script src>, and a login-expired tab is exactly the tab that
+// most needs to be told to reload.
+const INDEX_HTML_PATH = path.join(__dirname, '..', 'client', 'dist', 'index.html');
+let bundleCache = { mtimeMs: -1, bundle: null };
+function currentBundle() {
+  try {
+    const fs = require('fs');
+    const { mtimeMs } = fs.statSync(INDEX_HTML_PATH);
+    // Re-read only when the file actually moved, so the common case is a stat.
+    if (mtimeMs === bundleCache.mtimeMs) return bundleCache.bundle;
+    const html = fs.readFileSync(INDEX_HTML_PATH, 'utf8');
+    const m = html.match(/<script[^>]*\ssrc="[^"]*\/assets\/([^"/]+\.js)"/i);
+    bundleCache = { mtimeMs, bundle: m ? m[1] : null };
+    return bundleCache.bundle;
+  } catch {
+    // No build present (dev runs the client from Vite). Null means "can't tell",
+    // and the client stays quiet rather than guessing.
+    return null;
+  }
+}
+app.get('/api/version', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, data: { bundle: currentBundle() } });
+});
+
 // ── API routes ──────────────────────────────────────────────────────────
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/forgot-password', authLimiter);
@@ -223,6 +262,7 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/categories', categoriesRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/bank-matching', bankMatchingRoutes);
+app.use('/api/ledger-matching', ledgerMatchingRoutes);
 app.use('/api/creators', creatorsRoutes);
 app.use('/api/artist-budgets', artistBudgetsRoutes);
 
@@ -268,8 +308,19 @@ if (process.env.NODE_ENV === 'production') {
       res.type('html').send(html);
     } catch { res.sendFile(path.join(clientDist, 'index.html')); }
   });
+  // Prefixes that are STATIC FILE SPACE, never client routes. express.static
+  // above already served anything that exists there, so reaching the fallback
+  // means the file is gone — a bundle from a previous deploy that an open tab
+  // is still asking for. Returning index.html for it hands the browser HTML
+  // under a JavaScript content-type, and the tab dies with an opaque MIME
+  // error instead of a clean 404 the loader can report honestly.
+  const STATIC_ONLY = /^\/(assets|uploads)\//;
   app.get('*', (req, res) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    if (STATIC_ONLY.test(req.path)) {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      return res.status(404).type('txt').send('Not found');
+    }
     res.sendFile(path.join(clientDist, 'index.html'));
   });
 }
@@ -712,6 +763,11 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_vendor_merge_log_label ON vendor_merge_log (label_id, merged_at DESC)`);
+  // What the vendor-name cascade touched (lib/vendorCascade.js): the alias,
+  // learned-bank-lesson and bank-override rows a rename/merge repointed, by id,
+  // so an unmerge restores them instead of leaving them under the surviving
+  // name. Shape: { ids: { table: [id...] }, deleted: { vendor_aliases: [row...] } }.
+  await pool.query(`ALTER TABLE vendor_merge_log ADD COLUMN IF NOT EXISTS cascade_ids JSONB NOT NULL DEFAULT '{}'::jsonb`);
   // Admin-built permission templates — named page-sets applied to users.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS permission_templates (

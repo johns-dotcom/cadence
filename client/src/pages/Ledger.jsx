@@ -5,7 +5,9 @@ import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
+import Modal from '../components/ui/Modal'
 import BottomSheet from '../components/ui/BottomSheet'
+import useDiscardGuard from '../hooks/useDiscardGuard'
 import SocialHandlesEditor from '../components/SocialHandlesEditor'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
@@ -1481,41 +1483,10 @@ export default function Ledger({ bank = false }) {
       />
 
       {/* Flag-for-review editor (LED-4) */}
-      {flagFor && (
-        <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={() => setFlagFor(null)}>
-          <div className="card w-full max-w-sm p-5" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-bold text-ink flex items-center gap-2"><Flag size={15} className="text-amber-500" /> Flag for review</h3>
-              <button onClick={() => setFlagFor(null)} className="text-gray-400 hover:text-ink"><X size={18} /></button>
-            </div>
-            <p className="text-xs text-gray-400 mb-2 truncate">{flagFor.en.payee} · {money(flagFor.en.amount, flagFor.en.currency)}</p>
-            <textarea autoFocus rows={3} maxLength={500} className="input w-full" placeholder="Why does this need review? (optional)"
-              value={flagFor.reason} onChange={e => setFlagFor(f => ({ ...f, reason: e.target.value }))} />
-            {flagFor.en.flagged && <p className="text-[11px] text-gray-400 mt-1">Flagged by {flagFor.en.flagged_by || '—'}{flagFor.en.flagged_at ? ` on ${formatDate(flagFor.en.flagged_at)}` : ''}</p>}
-            <div className="flex justify-end gap-2 mt-4">
-              {flagFor.en.flagged && <button onClick={() => saveFlag(flagFor.en, false, null)} className="btn-secondary">Remove flag</button>}
-              <button onClick={() => saveFlag(flagFor.en, true, flagFor.reason.trim() || null)} className="btn-primary">{flagFor.en.flagged ? 'Update flag' : 'Flag'}</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {flagFor && <FlagModal flagFor={flagFor} setFlagFor={setFlagFor} onSave={saveFlag} />}
 
       {/* Socials editor (LED-8): writes expenses.social_handles */}
-      {socialsFor && (
-        <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={() => setSocialsFor(null)}>
-          <div className="card w-full max-w-lg p-5" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-bold text-ink">Social handles · {socialsFor.en.payee}</h3>
-              <button onClick={() => setSocialsFor(null)} className="text-gray-400 hover:text-ink"><X size={18} /></button>
-            </div>
-            <SocialHandlesEditor value={socialsFor.rows} onChange={rows => setSocialsFor(s => ({ ...s, rows }))} currency={socialsFor.en.currency || 'USD'} />
-            <div className="flex justify-end gap-2 mt-4">
-              <button onClick={() => setSocialsFor(null)} className="btn-secondary">Cancel</button>
-              <button onClick={saveSocials} className="btn-primary">Save</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {socialsFor && <SocialsModal socialsFor={socialsFor} setSocialsFor={setSocialsFor} onSave={saveSocials} />}
 
       {receiptsFor && <ReceiptsModal entry={receiptsFor} toast={toast} onClose={() => setReceiptsFor(null)} onChanged={() => load(true)} />}
 
@@ -1543,29 +1514,31 @@ export default function Ledger({ bank = false }) {
         </div>
       </BottomSheet>
 
+      {/* File preview. Read-only, so Escape and the backdrop just close it —
+          there is nothing here to lose. The panel overrides Modal's padding and
+          scroll because this is a full-height viewer, not a card. */}
       {preview && (
-        <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={() => setPreview(null)}>
-          <div className="bg-card rounded-xl shadow-modal w-full max-w-4xl h-[88vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-rule flex-shrink-0">
-              <span className="text-sm font-semibold text-ink capitalize">{preview.label}</span>
-              <div className="flex items-center gap-3">
-                <a href={preview.url} target="_blank" rel="noreferrer" className="text-xs text-brand-600 hover:underline">Open in new tab</a>
-                <button onClick={() => setPreview(null)} className="text-gray-400 hover:text-ink"><X size={18} /></button>
-              </div>
+        <Modal open onClose={() => setPreview(null)} size="3xl" className="!p-0 !overflow-hidden h-[88vh] flex flex-col">
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-rule flex-shrink-0">
+            <span className="text-sm font-semibold text-ink capitalize">{preview.label}</span>
+            <div className="flex items-center gap-3">
+              <a href={preview.url} target="_blank" rel="noreferrer" className="text-xs text-brand-600 hover:underline">Open in new tab</a>
+              <button onClick={() => setPreview(null)} className="text-ink-muted hover:text-ink" aria-label="Close"><X size={18} /></button>
             </div>
-            <iframe src={preview.url} title="File preview" className="flex-1 w-full bg-gray-100" />
           </div>
-        </div>
+          <iframe src={preview.url} title="File preview" className="flex-1 w-full bg-gray-100" />
+        </Modal>
       )}
 
+      {/* 1099 report. Also read-only — Escape closes outright. */}
       {report1099 && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center px-4 py-8 bg-overlay overflow-y-auto" onClick={() => setReport1099(null)}>
-          <div className="w-full max-w-2xl bg-card rounded-2xl border border-rule shadow-modal my-auto" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 py-3 border-b border-divider">
-              <h2 className="text-base font-semibold text-ink">1099 report · {report1099.year} <span className="text-xs font-normal text-gray-400">(reporting threshold; split slices included)</span></h2>
-              <button onClick={() => setReport1099(null)} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
-            </div>
-            <div className="max-h-[60vh] overflow-y-auto">
+        <Modal
+          open
+          onClose={() => setReport1099(null)}
+          size="xl"
+          title={<>1099 report · {report1099.year} <span className="text-xs font-normal text-gray-400">(reporting threshold; split slices included)</span></>}
+        >
+          <div className="-mx-5 -mb-5 border-t border-divider max-h-[60vh] overflow-y-auto">
               {report1099.vendors.length === 0 ? (
                 <p className="px-5 py-8 text-center text-sm text-gray-400">No vendors crossed the reporting threshold this year.</p>
               ) : (
@@ -1584,11 +1557,68 @@ export default function Ledger({ bank = false }) {
                   </tbody>
                 </table>
               )}
-            </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
+  )
+}
+
+// Flag-for-review editor (LED-4).
+//
+// Dismissal: the note is unsaved text, so Escape / backdrop confirm before
+// throwing away an EDITED one. Opening a flagged row to read who flagged it and
+// closing again is untouched, so it shuts instantly — the guard compares
+// against the note the dialog opened with, not against empty.
+function FlagModal({ flagFor, setFlagFor, onSave }) {
+  const en = flagFor.en
+  const boxRef = useRef(null)
+  const requestClose = useDiscardGuard(
+    flagFor.reason !== (en.flag_reason || ''),
+    () => setFlagFor(null),
+    { message: 'Discard this flag note?' },
+  )
+  // useFocusTrap deliberately focuses the PANEL, and it runs after React
+  // applies `autoFocus`, so the attribute alone is a no-op inside a Modal. This
+  // dialog is one textarea and nothing else — a parent effect runs after the
+  // child's, so this is the one that wins.
+  useEffect(() => { boxRef.current?.focus() }, [])
+  return (
+    <Modal open onClose={requestClose} size="sm"
+      title={<span className="flex items-center gap-2"><Flag size={15} className="text-amber-500" /> Flag for review</span>}>
+      <p className="text-xs text-gray-400 -mt-2 mb-2 truncate">{en.payee} · {money(en.amount, en.currency)}</p>
+      <textarea ref={boxRef} rows={3} maxLength={500} className="input w-full" placeholder="Why does this need review? (optional)"
+        value={flagFor.reason} onChange={e => setFlagFor(f => ({ ...f, reason: e.target.value }))} />
+      {en.flagged && <p className="text-[11px] text-gray-400 mt-1">Flagged by {en.flagged_by || '—'}{en.flagged_at ? ` on ${formatDate(en.flagged_at)}` : ''}</p>}
+      <div className="flex justify-end gap-2 mt-4">
+        {en.flagged && <button onClick={() => onSave(en, false, null)} className="btn-secondary">Remove flag</button>}
+        <button onClick={() => onSave(en, true, flagFor.reason.trim() || null)} className="btn-primary">{en.flagged ? 'Update flag' : 'Flag'}</button>
+      </div>
+    </Modal>
+  )
+}
+
+// Socials editor (LED-8): writes expenses.social_handles.
+//
+// Dismissal: handle rows carry amounts that become split lines, so an edited
+// list confirms before it is discarded. Compared against the rows the row
+// already had, so open-and-close is instant.
+function SocialsModal({ socialsFor, setSocialsFor, onSave }) {
+  const en = socialsFor.en
+  const initial = useRef(JSON.stringify(socialsFor.rows))
+  const requestClose = useDiscardGuard(
+    JSON.stringify(socialsFor.rows) !== initial.current,
+    () => setSocialsFor(null),
+    { message: 'Discard these social handles?' },
+  )
+  return (
+    <Modal open onClose={requestClose} size="lg" title={`Social handles · ${en.payee}`}>
+      <SocialHandlesEditor value={socialsFor.rows} onChange={rows => setSocialsFor(s => ({ ...s, rows }))} currency={en.currency || 'USD'} />
+      <div className="flex justify-end gap-2 mt-4">
+        <button onClick={requestClose} className="btn-secondary">Cancel</button>
+        <button onClick={onSave} className="btn-primary">Save</button>
+      </div>
+    </Modal>
   )
 }
 
@@ -1712,29 +1742,25 @@ function ReceiptsModal({ entry, toast, onClose, onChanged }) {
     try { await api.delete(`/ledger/entries/${entry.id}/receipts/${fid}`); load(); onChanged() }
     catch { toast('Remove failed', 'error') }
   }
+  // Dismissal: every action here (add, remove) writes to the server the moment
+  // it is taken, so this dialog never holds unsaved state. Escape closes.
   return (
-    <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={onClose}>
-      <div className="card w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-bold text-ink truncate">Receipts · {entry.payee}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
+    <Modal open onClose={onClose} size="md" title={<span className="truncate">Receipts · {entry.payee}</span>}>
+      {files === null ? <p className="text-sm text-gray-400">Loading…</p> : (
+        <div className="space-y-1.5">
+          {entry.receipt_r2_key && <p className="text-xs text-gray-500">1 primary receipt on the entry (open it from the Receipt column).</p>}
+          {files.map(f => (
+            <div key={f.id} className="flex items-center justify-between text-sm py-1.5 border-b border-divider">
+              <a href={f.url} target="_blank" rel="noreferrer" className="text-brand-600 hover:underline truncate">{f.original_name || f.filename}</a>
+              <button onClick={() => del(f.id)} className="text-gray-300 hover:text-danger flex-shrink-0"><Trash2 size={13} /></button>
+            </div>
+          ))}
+          {!files.length && <p className="text-sm text-gray-400">No extra receipts.</p>}
         </div>
-        {files === null ? <p className="text-sm text-gray-400">Loading…</p> : (
-          <div className="space-y-1.5">
-            {entry.receipt_r2_key && <p className="text-xs text-gray-500">1 primary receipt on the entry (open it from the Receipt column).</p>}
-            {files.map(f => (
-              <div key={f.id} className="flex items-center justify-between text-sm py-1.5 border-b border-divider">
-                <a href={f.url} target="_blank" rel="noreferrer" className="text-brand-600 hover:underline truncate">{f.original_name || f.filename}</a>
-                <button onClick={() => del(f.id)} className="text-gray-300 hover:text-danger flex-shrink-0"><Trash2 size={13} /></button>
-              </div>
-            ))}
-            {!files.length && <p className="text-sm text-gray-400">No extra receipts.</p>}
-          </div>
-        )}
-        <button onClick={() => addRef.current?.click()} className="btn-secondary w-full mt-4"><Plus size={14} /> Add another receipt</button>
-        <input ref={addRef} type="file" accept="application/pdf,image/*" hidden onChange={e => { add(e.target.files?.[0]); e.target.value = '' }} />
-      </div>
-    </div>
+      )}
+      <button onClick={() => addRef.current?.click()} className="btn-secondary w-full mt-4"><Plus size={14} /> Add another receipt</button>
+      <input ref={addRef} type="file" accept="application/pdf,image/*" hidden onChange={e => { add(e.target.files?.[0]); e.target.value = '' }} />
+    </Modal>
   )
 }
 
@@ -1795,8 +1821,19 @@ function CarveReimbModal({ entry, toast, onClose, onDone }) {
   const [receipt, setReceipt] = useState(null)
   const [saving, setSaving] = useState(false)
   const fileRef = useRef(null)
+  const feeRef = useRef(null)
   const reimb = fee === '' ? '' : Math.round((total - Number(fee)) * 100) / 100
   const valid = fee !== '' && Number(fee) > 0 && reimb > 0 && receipt
+  // Dismissal: a typed fee or a chosen receipt file is unsaved work — the file
+  // especially, since re-picking it means going back through the OS dialog. And
+  // while the multipart POST is in flight nothing closes it: the carve either
+  // lands or fails, and both outcomes are reported here.
+  const requestClose = useDiscardGuard(fee !== '' || !!receipt, onClose, {
+    busy: saving, message: 'Discard this carve-off? The fee and receipt you picked will be lost.',
+  })
+  // `autoFocus` is applied before Modal's focus trap runs, so it does nothing
+  // inside a Modal — this parent effect is what actually lands the caret.
+  useEffect(() => { feeRef.current?.focus() }, [])
   const submit = async () => {
     if (!valid) return
     setSaving(true)
@@ -1811,15 +1848,12 @@ function CarveReimbModal({ entry, toast, onClose, onDone }) {
     } catch (err) { toast(err.response?.data?.error || 'Could not carve', 'error'); setSaving(false) }
   }
   return (
-    <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={onClose}>
-      <div className="card w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-1">
-          <h3 className="font-bold text-ink flex items-center gap-2"><Receipt size={15} /> Carve off reimbursement</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
-        </div>
-        <p className="text-xs text-gray-400 mb-4">{entry.payee} · {money(total, entry.currency)}: split into a fee and a receipt-backed reimbursement slice.</p>
+    <Modal open onClose={requestClose} size="md"
+      title={<span className="flex items-center gap-2"><Receipt size={15} /> Carve off reimbursement</span>}>
+      <div>
+        <p className="text-xs text-gray-400 -mt-2 mb-4">{entry.payee} · {money(total, entry.currency)}: split into a fee and a receipt-backed reimbursement slice.</p>
         <div className="grid grid-cols-2 gap-3">
-          <div><label className="label">Fee</label><input autoFocus type="number" step="0.01" className="input" value={fee} onChange={e => setFee(e.target.value)} /></div>
+          <div><label className="label">Fee</label><input ref={feeRef} type="number" step="0.01" className="input" value={fee} onChange={e => setFee(e.target.value)} /></div>
           <div><label className="label">Reimbursement</label><input type="number" className="input" value={reimb} readOnly disabled /></div>
           <div className="col-span-2">
             <label className="label">Receipt <span className="text-danger">*</span></label>
@@ -1832,11 +1866,11 @@ function CarveReimbModal({ entry, toast, onClose, onDone }) {
         </div>
         {fee !== '' && reimb <= 0 && <p className="text-xs text-danger mt-2">The fee must be less than the total.</p>}
         <div className="flex justify-end gap-2 mt-5">
-          <button onClick={onClose} className="btn-secondary">Cancel</button>
+          <button onClick={requestClose} className="btn-secondary">Cancel</button>
           <button onClick={submit} disabled={!valid || saving} className="btn-primary">{saving ? 'Carving…' : 'Carve off'}</button>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -1854,6 +1888,16 @@ function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
   const proofRef = useRef(null)
   const set = (k) => (e) => setF(s => ({ ...s, [k]: e.target.value }))
   const takeProof = (file) => { if (file) { setProof(file); setMarkPaid(true) } } // proof implies paid
+  // Dismissal: 12 fields plus an attached proof file. Dirty is measured against
+  // the form as it opened (today's date and Recoupable are pre-filled defaults,
+  // not input), so opening the dialog and pressing Escape is instant, while a
+  // half-typed expense is never lost to a stray keypress. No close while the
+  // create request is in flight — this dialog creates a LEDGER ROW.
+  const initial = useRef(JSON.stringify(f))
+  const dirty = JSON.stringify(f) !== initial.current || !!proof || markPaid
+  const requestClose = useDiscardGuard(dirty, onClose, {
+    busy: saving, message: 'Discard this expense? Nothing you entered has been saved.',
+  })
 
   const save = async () => {
     if (!f.payee.trim() || !f.amount) { toast('A description and amount are required', 'error'); return }
@@ -1870,13 +1914,9 @@ function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[60] bg-overlay flex items-center justify-center p-4" onClick={onClose}>
-      <div className="card w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-bold text-ink">Add expense</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
-        </div>
-        <p className="text-xs text-gray-400 mb-4">For a cost with no invoice; no invoice number or file needed.</p>
+    <Modal open onClose={requestClose} size="lg" title="Add expense">
+      <div>
+        <p className="text-xs text-gray-400 -mt-2 mb-4">For a cost with no invoice; no invoice number or file needed.</p>
         <div className="grid grid-cols-2 gap-3">
           <div><label className="label">Date</label><input type="date" className="input" value={f.invoice_date} onChange={set('invoice_date')} /></div>
           <div><label className="label">Amount *</label><input type="number" step="0.01" className="input" value={f.amount} onChange={set('amount')} /></div>
@@ -1909,11 +1949,11 @@ function QuickExpenseModal({ onClose, onCreated, artistNames, toast }) {
           </div>
         </div>
         <div className="flex justify-end gap-2 mt-5">
-          <button onClick={onClose} className="btn-secondary">Cancel</button>
+          <button onClick={requestClose} className="btn-secondary">Cancel</button>
           <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Adding…' : 'Add expense'}</button>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -1938,6 +1978,15 @@ function EditEntryModal({ entry, artistNames, toast, onClose, onSaved }) {
   const [saving, setSaving] = useState(false)
   const set = (k) => (e) => setF(s => ({ ...s, [k]: e.target.value }))
   const chk = (k) => (e) => setF(s => ({ ...s, [k]: e.target.checked }))
+  // Dismissal: this is the every-field editor for a live ledger row — the most
+  // expensive thing on the page to retype and the one where a silent discard is
+  // least likely to be noticed (the row simply still says what it said before).
+  // Compared against the entry as loaded, so a look-and-close is instant. No
+  // close mid-PATCH.
+  const initial = useRef(JSON.stringify(f))
+  const requestClose = useDiscardGuard(JSON.stringify(f) !== initial.current, onClose, {
+    busy: saving, message: 'Discard your edits to this entry?',
+  })
 
   const save = async () => {
     if (!f.payee.trim() || f.amount === '' || f.amount == null) { toast('Payee and amount are required', 'error'); return }
@@ -1953,12 +2002,8 @@ function EditEntryModal({ entry, artistNames, toast, onClose, onSaved }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[60] bg-overlay flex items-center justify-center p-4" onClick={onClose}>
-      <div className="card w-full max-w-2xl p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-bold text-ink truncate">Edit · {entry.payee || 'entry'}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
-        </div>
+    <Modal open onClose={requestClose} size="xl" title={<span className="truncate">Edit · {entry.payee || 'entry'}</span>}>
+      <div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <div><label className="label">Date</label><input type="date" className="input" value={f.invoice_date} onChange={set('invoice_date')} /></div>
           <div><label className="label">Amount *</label><input type="number" step="0.01" className="input" value={f.amount} onChange={set('amount')} /></div>
@@ -1992,10 +2037,10 @@ function EditEntryModal({ entry, artistNames, toast, onClose, onSaved }) {
           </div>
         </div>
         <div className="flex justify-end gap-2 mt-5">
-          <button onClick={onClose} className="btn-secondary">Cancel</button>
+          <button onClick={requestClose} className="btn-secondary">Cancel</button>
           <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Saving…' : 'Save changes'}</button>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }

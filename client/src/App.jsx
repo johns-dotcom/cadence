@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './context/AuthContext'
 import { SocketProvider } from './context/SocketContext'
 import Messages from './pages/Messages'
 import Layout from './components/Layout'
+import UpdateBanner from './components/UpdateBanner'
 import PlatformLayout from './components/PlatformLayout'
 import PlatformOverview from './pages/PlatformOverview'
 import PlatformActivity from './pages/PlatformActivity'
@@ -33,8 +34,10 @@ import MyWork from './pages/MyWork'
 import TeamWork from './pages/TeamWork'
 import Calendar from './pages/Calendar'
 import Financials from './pages/Financials'
+import FinancialsMonth from './pages/FinancialsMonth'
 import Reports from './pages/Reports'
 import BankMatching from './pages/BankMatching'
+import LedgerMatching from './pages/LedgerMatching'
 import LedgerArchive from './pages/LedgerArchive'
 import Creators from './pages/Creators'
 import BulkDeals from './pages/BulkDeals'
@@ -62,6 +65,8 @@ import AddLedgerEntry from './pages/AddLedgerEntry'
 import BulkUpload from './pages/BulkUpload'
 import Payments from './pages/Payments'
 import Vendors from './pages/Vendors'
+import VendorsAdded from './pages/VendorsAdded'
+import VendorSubmitLab from './pages/VendorSubmitLab'
 import CreateInvoice from './pages/CreateInvoice'
 import VendorSubmit from './pages/VendorSubmit'
 import AcceptInvite from './pages/AcceptInvite'
@@ -128,7 +133,7 @@ function StrictAdminRoute({ children }) {
 }
 
 function AppContent() {
-  const { token, loading, user, impersonating } = useAuth()
+  const { token, loading, user, impersonating, sessionEpoch } = useAuth()
 
   // Platform operators get their own neutral shell + platform pages — UNLESS
   // they've entered a specific workspace (impersonating), in which case they
@@ -137,7 +142,16 @@ function AppContent() {
   const platformMode = !!user?.is_platform_admin && !impersonating
 
   return (
-    <Routes>
+    <>
+    <UpdateBanner />
+    {/* `key` = the acting identity. Entering or leaving a workspace only ever
+        swapped the token in state, so React reconciled the mounted pages and
+        kept them alive: the new tenant's Dashboard was the previous tenant's
+        numbers until something happened to trigger a refetch. Re-keying the
+        tree forces a real unmount, which is what every page's load-on-mount
+        effect is already written against. AuthContext bumps it ONLY on an
+        identity change, never on first load. */}
+    <Routes key={sessionEpoch}>
       {/* Public */}
       <Route path="/login"        element={token ? <Navigate to="/" replace /> : <Login />} />
       <Route path="/submit/:slug" element={<VendorSubmit />} />
@@ -189,6 +203,7 @@ function AppContent() {
         <Route path="/clearances"   element={<AdminRoute><ArtistClearance /></AdminRoute>} />
         <Route path="/admin-docs"   element={<StrictAdminRoute><AdminDocs /></StrictAdminRoute>} />
         <Route path="/financials"   element={<AdminRoute><Financials /></AdminRoute>} />
+        <Route path="/financials/month/:month" element={<AdminRoute><FinancialsMonth /></AdminRoute>} />
         <Route path="/reports"      element={<AdminRoute><Reports /></AdminRoute>} />
         <Route path="/recoupments"  element={<AdminRoute><Recoupments /></AdminRoute>} />
         <Route path="/recoupments/planning" element={<AdminRoute><RecoupmentPlanning /></AdminRoute>} />
@@ -197,6 +212,7 @@ function AppContent() {
         <Route path="/salary"       element={<AdminRoute><Salary /></AdminRoute>} />
         <Route path="/bank-statements" element={<AdminRoute><BankStatements /></AdminRoute>} />
         <Route path="/bank-matching" element={<AdminRoute><BankMatching /></AdminRoute>} />
+        <Route path="/ledger-matching" element={<StrictAdminRoute><LedgerMatching /></StrictAdminRoute>} />
         {/* Same component as /ledger, `bank` prop — the reference app's
             one-component-two-routes. Statement-born rows are not a different
             table, so they take the same inline edits, bulk edits, splits and
@@ -228,6 +244,8 @@ function AppContent() {
         <Route path="/ledger/new-reimbursement" element={<AdminRoute><AddLedgerEntry mode="reimbursement" /></AdminRoute>} />
         <Route path="/payments"     element={<AdminRoute><Payments /></AdminRoute>} />
         <Route path="/vendors"      element={<AdminRoute><Vendors /></AdminRoute>} />
+        <Route path="/vendors/added-expenses" element={<AdminRoute><VendorsAdded /></AdminRoute>} />
+        <Route path="/vendor-lab" element={<AdminRoute><VendorSubmitLab /></AdminRoute>} />
         <Route path="/invoices"     element={<AdminRoute><CreateInvoice /></AdminRoute>} />
         <Route path="/invoices/new" element={<AdminRoute><CreateInvoice /></AdminRoute>} />
         {/* Open to every member: the roster is the workspace's only people
@@ -254,6 +272,7 @@ function AppContent() {
 
       <Route path="*" element={<Navigate to={token ? '/' : '/login'} replace />} />
     </Routes>
+    </>
   )
 }
 

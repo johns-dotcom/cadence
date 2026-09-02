@@ -5,7 +5,7 @@
 // keeps only its own slice); each links to its family root on the Ledger.
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ExternalLink, X } from 'lucide-react'
+import { ArrowRight, ExternalLink, X } from 'lucide-react'
 import api from '../../api'
 import { money, moneyOrig } from '../../utils/money'
 import Skeleton from '../Skeleton'
@@ -58,6 +58,15 @@ export default function KpiDrillModal({ bucket, filters, onClose }) {
   }, [bucket]) // eslint-disable-line
 
   const meta = metaFor(bucket)
+  // Month cohorts have a full page behind them; the page is anchored on the
+  // SAME cohort, so its header total is the number in this modal's footer.
+  const monthKey = bucket?.startsWith('month_') ? bucket.slice(6) : null
+  const scopeQuery = (() => {
+    const p = new URLSearchParams()
+    for (const k of ['artist', 'category', 'rep']) if (filters?.[k]) p.set(k, filters[k])
+    const q = p.toString()
+    return q ? `?${q}` : ''
+  })()
   const rows = payload?.rows || []
   const isOverdueish = bucket === 'unpaid' || bucket.startsWith('aging_')
   const isUpcoming = bucket.startsWith('upcoming_')
@@ -66,12 +75,21 @@ export default function KpiDrillModal({ bucket, filters, onClose }) {
   return (
     <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={onClose}>
       <div className="card w-full max-w-4xl p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <div className="flex items-start justify-between mb-2">
+        <div className="flex items-start justify-between mb-2 gap-3">
           <div>
             <h3 className="font-bold text-ink">{meta.title}</h3>
             <p className="text-xs text-ink-faint mt-0.5">{meta.blurb}{rangeText ? ` · ${rangeText}` : ''}</p>
           </div>
-          <button onClick={onClose} className="text-ink-faint hover:text-ink" aria-label="Close"><X size={18} /></button>
+          <div className="flex items-center gap-3 shrink-0">
+            {monthKey && (
+              <Link to={`/financials/month/${monthKey}${scopeQuery}`} onClick={onClose}
+                className="text-xs font-semibold text-brand-ink hover:underline inline-flex items-center gap-1 whitespace-nowrap"
+                title="Open the full month view — daily shape, artists, categories, vendors">
+                Month at a glance <ArrowRight size={13} />
+              </Link>
+            )}
+            <button onClick={onClose} className="text-ink-faint hover:text-ink" aria-label="Close"><X size={18} /></button>
+          </div>
         </div>
 
         {loading ? <Skeleton.Table rows={6} cols={5} /> : error ? (

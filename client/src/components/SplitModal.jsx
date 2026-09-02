@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Scissors, X, Plus, Divide } from 'lucide-react'
 import api from '../api'
+import Modal from './ui/Modal'
+import useDiscardGuard from '../hooks/useDiscardGuard'
 
 const money = (n, c) => `${c || 'USD'} ${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
 
@@ -25,6 +27,13 @@ export default function SplitModal({ entry, artistNames = [], toast, onClose, on
         { artist: '', song: '', amount: '' },
       ])
   const [saving, setSaving] = useState(false)
+  // Dismissal semantics: a split is a whole table of typed amounts, and losing
+  // it to a stray Escape is the worst outcome on this page. Compared against
+  // the rows the dialog OPENED with, so re-opening an existing split and
+  // closing it untouched still shuts instantly.
+  const initialRows = useRef(JSON.stringify(rows))
+  const dirty = JSON.stringify(rows) !== initialRows.current
+  const requestClose = useDiscardGuard(dirty, onClose, { busy: saving, message: 'Discard this split? The slices you entered will be lost.' })
   const setRow = (i, k) => (e) => setRows(rs => rs.map((r, idx) => idx === i ? { ...r, [k]: e.target.value } : r))
   const sum = rows.reduce((a, r) => a + (parseFloat(r.amount) || 0), 0)
   const remaining = Math.round((total - sum) * 100) / 100
@@ -50,13 +59,15 @@ export default function SplitModal({ entry, artistNames = [], toast, onClose, on
   }
 
   return (
-    <div className="fixed inset-0 z-[70] bg-overlay flex items-center justify-center p-4" onClick={onClose}>
-      <div className="card w-full max-w-xl p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-1">
-          <h3 className="font-bold text-ink truncate flex items-center gap-2"><Scissors size={16} /> {isResplit ? 'Edit split' : 'Split'} · {entry.payee || 'entry'}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
-        </div>
-        <p className="text-xs text-gray-400 mb-4">Divide {money(total, entry.currency)} across artists/songs. The parent keeps the first slice; the rest become split children.{isResplit ? ' Saving replaces the existing slices.' : ''}</p>
+    <Modal
+      open
+      onClose={requestClose}
+      size="lg"
+      className="!max-w-xl"
+      title={<span className="flex items-center gap-2 truncate"><Scissors size={16} /> {isResplit ? 'Edit split' : 'Split'} · {entry.payee || 'entry'}</span>}
+    >
+      <div>
+        <p className="text-xs text-gray-400 -mt-2 mb-4">Divide {money(total, entry.currency)} across artists/songs. The parent keeps the first slice; the rest become split children.{isResplit ? ' Saving replaces the existing slices.' : ''}</p>
         <datalist id="split-artists">{artistNames.map(a => <option key={a} value={a} />)}</datalist>
         <div className="space-y-2">
           {rows.map((r, i) => (
@@ -77,10 +88,10 @@ export default function SplitModal({ entry, artistNames = [], toast, onClose, on
           <span>{money(Math.abs(remaining), entry.currency)}</span>
         </div>
         <div className="flex justify-end gap-2 mt-5">
-          <button onClick={onClose} className="btn-secondary">Cancel</button>
+          <button onClick={requestClose} className="btn-secondary">Cancel</button>
           <button onClick={submit} disabled={saving || !balanced} className="btn-primary">{saving ? 'Splitting…' : isResplit ? 'Replace split' : 'Split entry'}</button>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }

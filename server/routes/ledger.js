@@ -19,6 +19,12 @@ const aiScan = require('../lib/aiScan');
 const bankEvidence = require('../lib/bankEvidence');
 const { excludeBankRows, excludeCreatorRows, BANK_SOURCE, reportingThresholdFor } = require('../lib/ledgerSource');
 const w9NameMatch = require('../lib/w9NameMatch');
+const { usdOf, rowUsd2, round2 } = require('../lib/usd');
+const { namesAnArtist } = require('../lib/artistKey');
+const { ADDED_SOURCES, addedExpenseRollup, unifiedRows } = require('../lib/vendorSurfaces');
+const { pairKey, ackKey, vendorDupePairs } = require('../lib/vendorDupes');
+const { cascadeVendorName, revertVendorCascade } = require('../lib/vendorCascade');
+const { aggregateBankVendors, applyVendorOverride } = require('../lib/bankVendors');
 const { validateApprovalChecklist, stampChecklist, writeApprovalChecklist } = require('../lib/approvalChecklist');
 const activityBot = require('../lib/activityBot');
 const { BULK_DEALS_SQL, deriveDeal } = require('../lib/bulkDeals');
@@ -115,6 +121,10 @@ async function storeFile(labelId, file, kind) {
   await uploadFile(key, file.buffer, file.mimetype);
   return { filename: file.originalname, key };
 }
+
+// payment_status vocabulary + its case-insensitive canonicalizer live in
+// lib/constants.js so the rule has one home and the fixtures can hold it.
+const { PAYMENT_STATUSES, canonicalPaymentStatus } = require('../lib/constants');
 
 const EDITABLE = [
   'invoice_date', 'payee', 'description', 'category', 'artist', 'song',
@@ -729,9 +739,13 @@ async function createEntry(req, res) {
     // the "mark as paid" form toggle (payment_status). Non-approvers always
     // create Unpaid, no matter what the body claims.
     const proofPaid = !!proofF && canApprove;
-    const togglePaid = canApprove && ['Paid', 'Partial'].includes(b.payment_status);
+    const wantStatus = canonicalPaymentStatus(b.payment_status);
+    if (wantStatus === false) {
+      return res.status(400).json({ success: false, error: `payment_status must be one of ${PAYMENT_STATUSES.join(', ')}` });
+    }
+    const togglePaid = canApprove && (wantStatus === 'Paid' || wantStatus === 'Partial');
     const paid = proofPaid || togglePaid;
-    const paymentStatus = proofPaid ? 'Paid' : (togglePaid ? b.payment_status : 'Unpaid');
+    const paymentStatus = proofPaid ? 'Paid' : (togglePaid ? wantStatus : 'Unpaid');
     const paymentDate = paid ? (b.payment_date || new Date().toISOString().slice(0, 10)) : null;
 
     // Urgency at create (boom parity): rush = "expedite this", hold = "pause
@@ -905,6 +919,15 @@ router.patch('/entries/:id', async (req, res) => {
     // A cleared amount field must not PATCH '' (which would coerce to 0).
     if (keys.includes('amount') && !(parseFloat(req.body.amount) > 0)) {
       return res.status(400).json({ success: false, error: 'Amount must be greater than zero' });
+    }
+    // Same rule as create, and it matters MORE here: an unvalidated
+    // payment_status went straight into the UPDATE and was then cascaded to the
+    // whole split family by the block below, so one lowercase 'paid' could put
+    // a family into a state no query in the app can see.
+    if (keys.includes('payment_status')) {
+      const st = canonicalPaymentStatus(req.body.payment_status);
+      if (!st) return res.status(400).json({ success: false, error: `payment_status must be one of ${PAYMENT_STATUSES.join(', ')}` });
+      req.body.payment_status = st;
     }
     // social_handles is JSONB — node-postgres would send a JS array as a
     // Postgres ARRAY literal, so serialize it here.
@@ -2153,7 +2176,7 @@ router.get('/vendors', async (req, res) => {
          agg.spellings,
          agg.invoice_count,
          agg.total_spent,
-         agg.total_spent_usd,
+         agg.money,
          agg.currency_count,
          agg.paid_amount,
          agg.last_invoice,
@@ -2168,7 +2191,7 @@ router.get('/vendors', async (req, res) => {
            ARRAY_AGG(DISTINCT payee) AS spellings,
            SUM(invoice_count)::int AS invoice_count,
            SUM(total_spent) AS total_spent,
-           SUM(total_spent_usd) AS total_spent_usd,
+           JSONB_AGG(JSONB_BUILD_OBJECT('cur', cur, 'rate', rate, 'amt', total_spent, 'paid', paid_amount)) AS money,
            COUNT(DISTINCT cur) FILTER (WHERE cur IS NOT NULL)::int AS currency_count,
            SUM(paid_amount) AS paid_amount,
            MAX(last_invoice) AS last_invoice,
@@ -2186,8 +2209,8 @@ router.get('/vendors', async (req, res) => {
              -- sent, however many artists it was carved across.
              COUNT(*) FILTER (WHERE parent_id IS NULL)::int AS invoice_count,
              COALESCE(SUM(amount), 0) AS total_spent,
-             COALESCE(SUM(amount / COALESCE(NULLIF(fx_rate_to_usd, 0), 1)), 0) AS total_spent_usd,
-             MAX(COALESCE(currency, 'USD')) AS cur,
+             COALESCE(currency, 'USD') AS cur,
+             fx_rate_to_usd AS rate,
              COALESCE(SUM(amount) FILTER (WHERE payment_status = 'Paid'), 0) AS paid_amount,
              MAX(invoice_date) AS last_invoice,
              BOOL_OR(w9_r2_key IS NOT NULL) AS entry_has_w9,
@@ -2198,12 +2221,18 @@ router.get('/vendors', async (req, res) => {
              AND (voided = false OR voided IS NULL)
              AND payee IS NOT NULL AND payee != '' AND status = 'approved'
              AND entry_source IS DISTINCT FROM 'creator_payment'
-           GROUP BY payee, COALESCE(currency, 'USD')
+           -- Grouped by the LOCKED RATE as well as the currency, so each bucket
+           -- converts with one rate and lib/usd.js can be trusted with it. The
+           -- old amount / COALESCE(fx_rate_to_usd, 1) silently treated an
+           -- unstamped foreign invoice as 1:1 — the one thing lib/usd.js exists
+           -- to prevent — and made this page disagree with every other USD
+           -- figure in the app about the same vendor.
+           GROUP BY payee, COALESCE(currency, 'USD'), fx_rate_to_usd
          ) per_spelling
          GROUP BY pkey
        ) agg
        LEFT JOIN vendors v ON v.label_id = $1 AND LOWER(v.name) = LOWER(agg.name)
-       ORDER BY agg.total_spent_usd DESC`,
+       ORDER BY agg.total_spent DESC`,
       [req.labelId]
     );
     // Name-mismatch flag from the PERSISTED W9 scan (expenses.w9_scan) — the
@@ -2215,23 +2244,300 @@ router.get('/vendors', async (req, res) => {
       // outliving its file (replaced, deleted) would otherwise badge a vendor
       // who has no W9 at all — two different problems, one of which is louder.
       const mismatch = w9Name && r.w9_on_file ? w9NameMatch.mismatchOf(r.name, w9Name) : null;
+      // USD through lib/usd.js, per (currency, locked rate) bucket: the locked
+      // rate always wins, and a currency with no locked rate converts at the
+      // cached live rate rather than passing through at face value.
+      const buckets = Array.isArray(r.money) ? r.money : [];
+      const totalUsd = round2(buckets.reduce((sum, m) => sum + usdOf(m.amt, m.cur, m.rate), 0));
+      const paidUsd = round2(buckets.reduce((sum, m) => sum + usdOf(m.paid, m.cur, m.rate), 0));
       return {
         ...r,
+        money: undefined,
         w9_names: undefined,
         w9_name: r.w9_on_file ? w9Name : null,
         w9_mismatch: !!mismatch,
         total_spent: Number(r.total_spent),
-        total_spent_usd: Number(r.total_spent_usd),
+        total_spent_usd: totalUsd,
         paid_amount: Number(r.paid_amount),
+        paid_amount_usd: paidUsd,
         // OBBBA: the 1099 reporting floor is $600 through 2025 and $2,000 from
         // 2026. Same rule the ledger's 1099 report already adopted.
-        qualifies_1099: Number(r.total_spent_usd) >= reportingThresholdFor(new Date().getFullYear()),
+        qualifies_1099: totalUsd >= reportingThresholdFor(new Date().getFullYear()),
       };
     });
+    data.sort((a, b) => b.total_spent_usd - a.total_spent_usd);
     res.json({ success: true, data });
   } catch (error) {
     console.error('Vendors error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Added-expense vendors ───────────────────────────────────────────────────
+// The invoice-less side of the vendor world: payees that exist only because
+// somebody added an expense on Recoupments or Artist Campaigns. Those rows
+// carry no invoice number, so the ledger's duplicate-invoice gate — the thing
+// that stops the same bill being paid twice — has nothing to key on. This is
+// the surface that answers "did we pay this creator twice", by amount and
+// date instead of by document.
+//
+// MUST be declared before `/vendors/:name`, or Express matches the literal
+// path as a vendor called "added-expenses".
+router.get('/vendors/added-expenses', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT e.id, e.payee, e.amount, e.currency, e.fx_rate_to_usd, e.artist, e.song,
+              e.payment_date, e.invoice_date, e.created_at,
+              -- ::text, not a Date object: pg hands back a JS Date for DATE
+              -- columns and every string slice of one reads "Tue Sep 01".
+              COALESCE(e.invoice_date, e.created_at::date)::text AS spent_date
+         FROM expenses e
+        WHERE e.label_id = $1
+          AND e.entry_source = ANY($2)
+          AND (e.deleted = false OR e.deleted IS NULL)
+          AND (e.voided = false OR e.voided IS NULL)
+          AND e.payee IS NOT NULL AND TRIM(e.payee) <> ''
+        ORDER BY COALESCE(e.invoice_date, e.created_at::date) DESC
+        LIMIT 5000`,
+      [req.labelId, ADDED_SOURCES]
+    );
+    // USD through the shared rule (locked fx_rate_to_usd always wins), rounded
+    // AT THE ROW so the per-vendor totals and the page total tie.
+    for (const r of rows) r.usd = await rowUsd2(r);
+    const data = addedExpenseRollup(rows);
+    res.json({ success: true, data: { ...data, sources: ADDED_SOURCES, row_count: rows.length } });
+  } catch (error) {
+    console.error('Added-expense vendors error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Vendor duplicates: the review deck's data ──────────────────────────────
+// Scored PAIRS, not clusters. Pairs already linked through vendor_aliases and
+// pairs somebody marked "not duplicates" never come back — a deck that
+// re-offers a decision is a deck people stop trusting.
+router.get('/vendors/duplicates', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT TRIM(e.payee) AS payee,
+              COUNT(*) FILTER (WHERE e.parent_id IS NULL)::int AS invoice_count,
+              MIN(e.invoice_date)::text AS first_invoice,
+              MAX(e.invoice_date)::text AS last_invoice,
+              BOOL_OR(e.w9_r2_key IS NOT NULL) AS has_w9,
+              SUM(COALESCE(e.amount, 0))::numeric AS total_amount,
+              MAX(e.currency) AS currency,
+              MAX(e.vendor_email) AS email
+         FROM expenses e
+        WHERE e.label_id = $1
+          AND (e.deleted = false OR e.deleted IS NULL)
+          AND (e.voided = false OR e.voided IS NULL)
+          AND ${excludeCreatorRows('e')}
+          AND e.payee IS NOT NULL AND TRIM(e.payee) <> ''
+        GROUP BY TRIM(e.payee)`,
+      [req.labelId]
+    );
+    const vendors = rows.map((r) => ({
+      payee: r.payee,
+      invoice_count: r.invoice_count || 0,
+      first_invoice: r.first_invoice,
+      last_invoice: r.last_invoice,
+      has_w9: !!r.has_w9,
+      email: r.email || null,
+      total_usd: round2(usdOf(r.total_amount, r.currency, null)),
+    }));
+    const { rows: aliasRows } = await pool.query(
+      'SELECT canonical, alias FROM vendor_aliases WHERE label_id = $1', [req.labelId]);
+    const aliased = new Set(aliasRows.map((r) => pairKey(r.canonical, r.alias)));
+    const { rows: ackRows } = await pool.query(
+      `SELECT flag_key, note, dismissed_by, dismissed_at FROM data_quality_dismissals
+        WHERE label_id = $1 AND flag_key LIKE 'vdup:%' ORDER BY dismissed_at DESC`, [req.labelId]);
+    const acked = new Set(ackRows.map((r) => String(r.flag_key).slice(5)));
+    const pairs = vendorDupePairs(vendors, { aliased, acked });
+    res.json({
+      success: true,
+      data: {
+        pairs,
+        vendor_count: vendors.length,
+        acked: ackRows.map((r) => ({
+          pair_key: String(r.flag_key).slice(5),
+          names: String(r.flag_key).slice(5).split('|'),
+          note: r.note, by: r.dismissed_by, at: r.dismissed_at,
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('Vendor duplicates error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// "These two are NOT the same vendor" — persisted so the pair stops coming
+// back, and reversible, because the only thing worse than re-offering a
+// decision is burying a wrong one. Stored in the same dismissals table every
+// other data-quality "no" lives in.
+router.post('/vendors/duplicates/ack', requireAdmin, async (req, res) => {
+  try {
+    const a = String(req.body.a || '').trim();
+    const b = String(req.body.b || '').trim();
+    if (!a || !b) return res.status(400).json({ success: false, error: 'Name both vendors' });
+    const key = ackKey(a, b);
+    await pool.query(
+      `INSERT INTO data_quality_dismissals (label_id, flag_key, kind, note, summary, dismissed_by)
+       VALUES ($1,$2,'vendor_dupe',$3,$4,$5)
+       ON CONFLICT (label_id, flag_key) DO UPDATE SET note = EXCLUDED.note, dismissed_by = EXCLUDED.dismissed_by, dismissed_at = NOW()`,
+      [req.labelId, key, String(req.body.note || '').trim() || null, `"${a}" and "${b}" are different vendors`, req.user.name]
+    );
+    await logActivity(req, 'Marked vendors as not duplicates', `${a} ≠ ${b}`);
+    res.json({ success: true, data: { pair_key: pairKey(a, b) } });
+  } catch (error) {
+    console.error('Vendor dupe ack error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+router.delete('/vendors/duplicates/ack', requireAdmin, async (req, res) => {
+  try {
+    const a = String(req.query.a || '').trim();
+    const b = String(req.query.b || '').trim();
+    if (!a || !b) return res.status(400).json({ success: false, error: 'Name both vendors' });
+    const r = await pool.query('DELETE FROM data_quality_dismissals WHERE label_id = $1 AND flag_key = $2',
+      [req.labelId, ackKey(a, b)]);
+    res.json({ success: true, data: { removed: r.rowCount } });
+  } catch (error) {
+    console.error('Vendor dupe unack error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Unified view: one row per COMPANY, ledger joined to the bank ───────────
+// The Vendors table is ledger-only, which means the question a bookkeeper
+// actually asks — "we invoiced 12k, what left the bank?" — cannot be asked on
+// the vendor page even though the statements are loaded. Three worklists ride
+// along, counted per vendor from the SAME rows the totals come from, so a
+// chip count can never disagree with the row it filters to.
+router.get('/vendors/unified', async (req, res) => {
+  try {
+    const accounts = await bankEvidence.loadAccounts(pool, req.labelId);
+    const { rows } = await pool.query(
+      `SELECT e.payee, (e.parent_id IS NULL) AS is_root, e.amount, e.currency, e.fx_rate_to_usd,
+              e.artist, e.category, e.payment_status, e.entry_source,
+              (e.invoice_r2_key IS NOT NULL OR e.vendor_submitted = TRUE) AS has_invoice,
+              (e.w9_r2_key IS NOT NULL) AS w9_on_file,
+              COALESCE(e.payment_date, e.invoice_date, e.created_at::date)::text AS last_activity,
+              ${bankEvidence.bankEvidenceCols('e', accounts)}
+         FROM expenses e
+        WHERE e.label_id = $1 AND e.status = 'approved'
+          AND (e.deleted = false OR e.deleted IS NULL)
+          AND (e.voided = false OR e.voided IS NULL)
+          AND ${excludeCreatorRows('e')}
+          AND e.payee IS NOT NULL AND TRIM(e.payee) <> ''
+        LIMIT 20000`,
+      [req.labelId]
+    );
+    for (const r of rows) r.usd = round2(usdOf(r.amount, r.currency, r.fx_rate_to_usd));
+
+    // What the bank says, grouped by descriptor (lib/bankVendors.js is the one
+    // definition). A descriptor names a vendor through a person's override, a
+    // learned lesson, or its own past matches — in that confidence order.
+    const groups = await aggregateBankVendors(req.labelId).catch(() => []);
+    const shaped = groups.map((g) => ({
+      ...g,
+      resolved_vendor: g.override_vendor || g.linked_vendor
+        || (g.ledger_vendors && g.ledger_vendors.length === 1 ? g.ledger_vendors[0] : null),
+      resolved_by: g.override_vendor ? 'override' : g.linked_vendor ? 'learned' : (g.ledger_vendors || []).length === 1 ? 'history' : null,
+    }));
+    const { rows: aliasRows } = await pool.query(
+      'SELECT canonical, alias FROM vendor_aliases WHERE label_id = $1', [req.labelId]);
+    const data = unifiedRows(rows, shaped);
+    res.json({
+      success: true,
+      data: {
+        ...data,
+        aliases: aliasRows,
+        bank_groups: shaped.length,
+        // A workspace with no ready statements has no bank column to show;
+        // saying so beats rendering a table of zeroes that reads as "nothing
+        // ever left the bank".
+        has_bank_data: shaped.length > 0,
+      },
+    });
+  } catch (error) {
+    console.error('Vendors unified error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// Link an unlinked bank descriptor to a ledger vendor. Writes the decision
+// (vendor_override on those lines) AND the lesson (statement_payee_map) —
+// lib/bankVendors.applyVendorOverride, the same call Bank Matching makes.
+router.post('/vendors/link-bank-payee', requireAdmin, async (req, res) => {
+  try {
+    const vendor = String(req.body.vendor || '').trim().slice(0, 200);
+    const ids = (req.body.txn_ids || []).map(Number).filter(Number.isFinite).slice(0, 500);
+    if (!vendor || !ids.length) return res.status(400).json({ success: false, error: 'Name the vendor and pick some lines' });
+    // A typo here mints a vendor in the directory that no invoice supports.
+    const known = (await pool.query(
+      `SELECT 1 FROM expenses WHERE label_id = $1 AND LOWER(TRIM(payee)) = LOWER($2) AND (deleted IS NULL OR deleted = FALSE) LIMIT 1`,
+      [req.labelId, vendor]
+    )).rows.length > 0;
+    if (!known && req.body.confirm_new !== true) {
+      return res.status(409).json({
+        success: false, unknown_vendor: true,
+        error: `No ledger entry is filed under "${vendor}". Confirm to use it anyway — a misspelling here becomes a second vendor in the directory.`,
+      });
+    }
+    const n = await applyVendorOverride(req.labelId, ids, vendor, req.user.name);
+    await logActivity(req, 'Linked a bank payee to a vendor', `${n} bank line${n === 1 ? '' : 's'} → ${vendor}`);
+    res.json({ success: true, data: { updated: n, new_vendor: !known } });
+  } catch (error) {
+    console.error('Link bank payee error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Move ONE invoice to another vendor ─────────────────────────────────────
+// Explicitly not a merge: a single invoice was filed under the wrong payee,
+// and merging would drag every other invoice with it. The whole SPLIT FAMILY
+// moves — the vendor billed one invoice, and leaving the slices behind puts
+// half the money under a vendor that never sent anything.
+router.post('/vendors/move-invoice', requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const id = Number(req.body.entry_id);
+    const to = String(req.body.to || '').trim();
+    if (!Number.isFinite(id) || !to) return res.status(400).json({ success: false, error: 'entry_id and to are required' });
+    const { rows: er } = await client.query(
+      `SELECT id, parent_id, payee, vendor_name, amount, currency, fx_rate_to_usd
+         FROM expenses WHERE id = $1 AND label_id = $2 AND (deleted = false OR deleted IS NULL)`,
+      [id, req.labelId]);
+    if (!er.length) return res.status(404).json({ success: false, error: 'Entry not found' });
+    const rootId = er[0].parent_id || er[0].id;
+    const from = er[0].payee;
+    if (String(from || '').toLowerCase() === to.toLowerCase()) {
+      return res.status(400).json({ success: false, error: 'That invoice is already filed under that vendor' });
+    }
+    await client.query('BEGIN');
+    const upd = await client.query(
+      `UPDATE expenses SET payee = $1 WHERE label_id = $2 AND (id = $3 OR parent_id = $3) RETURNING id, amount, currency, fx_rate_to_usd`,
+      [to, req.labelId, rootId]);
+    // vendor_name is the public form's copy of who submitted. Move it only
+    // where it agreed with the payee — a submission under a different trading
+    // name is a fact about the document, not a mis-filing.
+    await client.query(
+      `UPDATE expenses SET vendor_name = $1
+        WHERE label_id = $2 AND (id = $3 OR parent_id = $3) AND LOWER(TRIM(COALESCE(vendor_name,''))) = LOWER(TRIM($4))`,
+      [to, req.labelId, rootId, from || '']);
+    await client.query('COMMIT');
+    await upsertVendor(pool, req.labelId, { name: to }).catch(() => {});
+    const moved_usd = round2(upd.rows.reduce((s, r) => s + usdOf(r.amount, r.currency, r.fx_rate_to_usd), 0));
+    await logActivity(req, 'Moved an invoice to another vendor', `#${rootId}: ${from} → ${to}`);
+    bkAudit(req, rootId, 'payee', `moved from "${from}" to "${to}" (${upd.rowCount} row${upd.rowCount === 1 ? '' : 's'})`);
+    res.json({ success: true, data: { moved: upd.rowCount, root_id: rootId, from, to, moved_usd } });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Move invoice error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -2551,49 +2857,78 @@ async function foldVendorRecord(labelId, from, into) {
   return { folded_record: true };
 }
 
-// PUT /api/ledger/vendors/rename { from, to } — rename a vendor everywhere
-// (expenses.payee + expenses.vendor_name + vendor record). The old name
-// becomes an alias, and the whole thing is logged so it can be reversed.
+// How many name-keyed references the cascade moved — reported so the toast can
+// say what actually happened rather than "done".
+const cascadeCount = (c) => Object.values((c && c.ids) || {}).reduce((n, list) => n + list.length, 0);
+
+// Rename a vendor everywhere (expenses.payee + expenses.vendor_name + the
+// vendor record + every name-keyed reference). The old name becomes an alias,
+// and the whole thing is logged so it can be reversed. A function, not just a
+// route, because the custom-name merge below is a rename followed by a merge
+// and re-implementing half of it there is how the two drift.
+async function renameVendor(req, from, to) {
+  const upd = await pool.query(
+    `UPDATE expenses SET payee = $1 WHERE label_id = $2 AND LOWER(payee) = LOWER($3) RETURNING id`,
+    [to, req.labelId, from]);
+  // `vendor_name` is what the public vendor form captured. Leaving it behind
+  // makes the submission record disagree with the ledger row it created.
+  const vn = await pool.query(
+    `UPDATE expenses SET vendor_name = $1 WHERE label_id = $2 AND LOWER(vendor_name) = LOWER($3) RETURNING id`,
+    [to, req.labelId, from]);
+  const rec = await foldVendorRecord(req.labelId, from, to);
+  // Aliases, learned bank lessons and bank-line overrides are name-keyed too
+  // (lib/vendorCascade.js) — leaving them behind points the next statement
+  // and the next submission at a vendor that no longer exists.
+  const cascade = await cascadeVendorName(pool, req.labelId, from, to);
+  const alias = await pool.query(
+    `INSERT INTO vendor_aliases (label_id, canonical, alias, created_by) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical RETURNING id`,
+    [req.labelId, to, from, req.user.name]);
+  const emails = await carryVendorEmails(req.labelId, from, to);
+  await pool.query(
+    `INSERT INTO vendor_merge_log (label_id, kind, from_name, into_name, expense_ids, vendor_name_ids, email_ids, created_alias, merged_by, cascade_ids)
+     VALUES ($1,'rename',$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [req.labelId, from, to, JSON.stringify(upd.rows.map((r) => r.id)),
+      JSON.stringify(vn.rows.map((r) => r.id)), JSON.stringify(emails.moved), !!alias.rows.length, req.user.name,
+      JSON.stringify(cascade)]);
+  await logActivity(req, 'Renamed vendor', `${from} \u2192 ${to}`);
+  return { updated: upd.rowCount, vendor_names: vn.rowCount, emails_moved: emails.moved.length, emails_dropped: emails.dropped, cascaded: cascadeCount(cascade), ...(rec || {}) };
+}
+
 router.put('/vendors/rename', requireAdmin, async (req, res) => {
   try {
     const from = String(req.body.from || '').trim();
     const to = String(req.body.to || '').trim();
     if (!from || !to) return res.status(400).json({ success: false, error: 'from and to are required' });
     if (from.toLowerCase() === to.toLowerCase()) return res.status(400).json({ success: false, error: 'Names are the same' });
-    const upd = await pool.query(
-      `UPDATE expenses SET payee = $1 WHERE label_id = $2 AND LOWER(payee) = LOWER($3) RETURNING id`,
-      [to, req.labelId, from]);
-    // `vendor_name` is what the public vendor form captured. Leaving it behind
-    // makes the submission record disagree with the ledger row it created.
-    const vn = await pool.query(
-      `UPDATE expenses SET vendor_name = $1 WHERE label_id = $2 AND LOWER(vendor_name) = LOWER($3) RETURNING id`,
-      [to, req.labelId, from]);
-    const rec = await foldVendorRecord(req.labelId, from, to);
-    const alias = await pool.query(
-      `INSERT INTO vendor_aliases (label_id, canonical, alias, created_by) VALUES ($1,$2,$3,$4)
-       ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical RETURNING id`,
-      [req.labelId, to, from, req.user.name]);
-    const emails = await carryVendorEmails(req.labelId, from, to);
-    await pool.query(
-      `INSERT INTO vendor_merge_log (label_id, kind, from_name, into_name, expense_ids, vendor_name_ids, email_ids, created_alias, merged_by)
-       VALUES ($1,'rename',$2,$3,$4,$5,$6,$7,$8)`,
-      [req.labelId, from, to, JSON.stringify(upd.rows.map((r) => r.id)),
-        JSON.stringify(vn.rows.map((r) => r.id)), JSON.stringify(emails.moved), !!alias.rows.length, req.user.name]);
-    await logActivity(req, 'Renamed vendor', `${from} → ${to}`);
-    res.json({ success: true, data: { updated: upd.rowCount, vendor_names: vn.rowCount, emails_moved: emails.moved.length, emails_dropped: emails.dropped, ...(rec || {}) } });
+    res.json({ success: true, data: await renameVendor(req, from, to) });
   } catch (error) {
     console.error('Vendor rename error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
-// POST /api/ledger/vendors/merge { from, into } — fold one vendor into another.
+// POST /api/ledger/vendors/merge { from, into, rename_into_to? }
+// Fold one vendor into another. `rename_into_to` is the deck's custom-name
+// merge: both spellings are wrong and the survivor should be a third name.
+// Doing it here rather than asking the client to call rename-then-merge means
+// one request either does both or reports which half failed — and both halves
+// land in vendor_merge_log, so both are reversible.
 router.post('/vendors/merge', requireAdmin, async (req, res) => {
   try {
     const from = String(req.body.from || '').trim();
-    const into = String(req.body.into || '').trim();
+    let into = String(req.body.into || '').trim();
+    const customName = String(req.body.rename_into_to || '').trim();
     if (!from || !into) return res.status(400).json({ success: false, error: 'from and into are required' });
     if (from.toLowerCase() === into.toLowerCase()) return res.status(400).json({ success: false, error: 'Pick two different vendors' });
+    let renamed = null;
+    if (customName && customName.toLowerCase() !== into.toLowerCase()) {
+      if (customName.toLowerCase() === from.toLowerCase()) {
+        return res.status(400).json({ success: false, error: 'The custom name is the vendor being folded in — swap the direction instead' });
+      }
+      renamed = await renameVendor(req, into, customName);
+      into = customName;
+    }
     const upd = await pool.query(
       `UPDATE expenses SET payee = $1 WHERE label_id = $2 AND LOWER(payee) = LOWER($3) RETURNING id`,
       [into, req.labelId, from]);
@@ -2601,6 +2936,7 @@ router.post('/vendors/merge', requireAdmin, async (req, res) => {
       `UPDATE expenses SET vendor_name = $1 WHERE label_id = $2 AND LOWER(vendor_name) = LOWER($3) RETURNING id`,
       [into, req.labelId, from]);
     const rec = await foldVendorRecord(req.labelId, from, into);
+    const cascade = await cascadeVendorName(pool, req.labelId, from, into);
     const alias = await pool.query(
       `INSERT INTO vendor_aliases (label_id, canonical, alias, created_by) VALUES ($1,$2,$3,$4)
        ON CONFLICT (label_id, LOWER(alias)) DO UPDATE SET canonical = EXCLUDED.canonical RETURNING id`,
@@ -2610,12 +2946,13 @@ router.post('/vendors/merge', requireAdmin, async (req, res) => {
     // under the target back out with the ones that arrived — the failure that
     // made the reference app's first unmerge unusable.
     const { rows: logRow } = await pool.query(
-      `INSERT INTO vendor_merge_log (label_id, kind, from_name, into_name, expense_ids, vendor_name_ids, email_ids, created_alias, merged_by)
-       VALUES ($1,'merge',$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      `INSERT INTO vendor_merge_log (label_id, kind, from_name, into_name, expense_ids, vendor_name_ids, email_ids, created_alias, merged_by, cascade_ids)
+       VALUES ($1,'merge',$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
       [req.labelId, from, into, JSON.stringify(upd.rows.map((r) => r.id)),
-        JSON.stringify(vn.rows.map((r) => r.id)), JSON.stringify(emails.moved), !!alias.rows.length, req.user.name]);
+        JSON.stringify(vn.rows.map((r) => r.id)), JSON.stringify(emails.moved), !!alias.rows.length, req.user.name,
+        JSON.stringify(cascade)]);
     await logActivity(req, 'Merged vendor', `${from} → ${into} (${upd.rowCount} entries)`);
-    res.json({ success: true, data: { moved: upd.rowCount, vendor_names: vn.rowCount, emails_moved: emails.moved.length, emails_dropped: emails.dropped, merge_id: logRow[0].id, ...(rec || {}) } });
+    res.json({ success: true, data: { moved: upd.rowCount, vendor_names: vn.rowCount, emails_moved: emails.moved.length, emails_dropped: emails.dropped, cascaded: cascadeCount(cascade), merge_id: logRow[0].id, into, renamed, ...(rec || {}) } });
   } catch (error) {
     console.error('Vendor merge error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -2665,6 +3002,11 @@ router.post('/vendors/unmerge/:id(\\d+)', requireAdmin, async (req, res) => {
       await pool.query('DELETE FROM vendor_aliases WHERE label_id = $1 AND LOWER(alias) = LOWER($2) AND LOWER(canonical) = LOWER($3)',
         [req.labelId, log.from_name, log.into_name]);
     }
+    // Everything the name cascade moved goes back too — by id, and only the
+    // rows this merge touched. An unmerge that restores the ledger but leaves
+    // the learned bank lesson pointing at the survivor re-merges the vendor on
+    // the next statement upload.
+    await revertVendorCascade(pool, req.labelId, log.from_name, log.cascade_ids || {});
     await pool.query('UPDATE vendor_merge_log SET undone_at = NOW(), undone_by = $1 WHERE id = $2', [req.user.name, id]);
     await logActivity(req, 'Unmerged vendor', `${log.into_name} → ${log.from_name} (${back.rowCount} entries)`);
     res.json({ success: true, data: { restored: back.rowCount } });

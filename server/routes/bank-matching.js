@@ -22,7 +22,7 @@ const { normalizeBankPayee } = require('../lib/normalizeBankPayee');
 const { settleTxnWithInvoices, detachTxn, restoreDisplacedBooking, feeTolerance } = require('../lib/statementLinks');
 const { proposeFundingPairs } = require('../lib/fundingPairs');
 const { proposeGroups } = require('../lib/groupProposal');
-const { aggregateBankVendors, vendorHintFor } = require('../lib/bankVendors');
+const { aggregateBankVendors, vendorHintFor, applyVendorOverride } = require('../lib/bankVendors');
 const bankEvidence = require('../lib/bankEvidence');
 const { stampFxRateAsync } = require('../lib/fxStamp');
 const { familyRoot } = require('../lib/paymentFamily');
@@ -1289,22 +1289,6 @@ router.post('/tx/:id(\\d+)/currency', async (req, res) => {
 // Vendor override — a PERSON says this descriptor is this ledger vendor.
 // Separate from the learned map on purpose (see lib/bankVendors.js). Unknown
 // vendors are gated behind confirm_new so a typo cannot mint a directory row.
-async function applyVendorOverride(labelId, ids, vendor, actor, { learn = true } = {}) {
-  const r = await pool.query(
-    `UPDATE bank_transactions SET vendor_override = $3 WHERE id = ANY($1::int[]) AND label_id = $2 RETURNING id, payee_guess, description`,
-    [ids, labelId, vendor]
-  );
-  if (learn) {
-    const seen = new Set();
-    for (const row of r.rows) {
-      const desc = row.payee_guess || row.description;
-      if (!desc || seen.has(desc)) continue;
-      seen.add(desc);
-      await R.learnPayee(pool, labelId, desc, vendor, actor).catch(() => {});
-    }
-  }
-  return r.rows.length;
-}
 router.post('/tx/:id(\\d+)/vendor', async (req, res) => {
   try {
     const vendor = String(req.body.vendor || '').trim().slice(0, 200);

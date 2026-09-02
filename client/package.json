@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "check:tdz": "node scripts/check-tdz.cjs",
-    "check:render": "node scripts/check-render.mjs"
+    "check:render": "node scripts/check-render.mjs",
+    "sync:vendor-lab": "node scripts/sync-vendor-lab.mjs",
+    "check:vendor-lab": "node scripts/sync-vendor-lab.mjs --check"
   },
   "dependencies": {
     "@react-oauth/google": "^0.13.4",

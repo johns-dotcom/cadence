@@ -70,6 +70,39 @@ assert('locked rate wins', usdOf(92, 'EUR', 0.92) === 100);
 assert('USD is 1:1', usdOf(55, 'USD', null) === 55);
 assert('round2 rounds at the row', round2(140.666) === 140.67);
 
+// ── FX date keys ─────────────────────────────────────────────────────────────
+// node-pg returns a DATE column as a JS Date. The old `String(d).slice(0,10)`
+// turned that into "Tue Sep 01": a cache key that never hits, a frankfurter URL
+// that always 404s, and therefore a SILENT fall-through to the hardcoded
+// fallback table for every unstamped foreign row in the app. Costed ~270ms per
+// row too, because a failed fetch is never cached.
+const { dateKey } = require('../lib/fx');
+assert('dateKey: a pg Date becomes its own calendar day, not "Tue Sep 01"',
+  dateKey(new Date(2026, 8, 1)) === '2026-09-01');
+assert('dateKey: LOCAL components, never toISOString — pg parses DATE at local midnight',
+  // 1 Jan local midnight is 31 Dec in UTC anywhere west of Greenwich;
+  // toISOString() would report the wrong year, not just the wrong day.
+  dateKey(new Date(2026, 0, 1)) === '2026-01-01');
+assert('dateKey: an ISO timestamp string keeps its day', dateKey('2026-03-04T22:00:00Z') === '2026-03-04');
+assert('dateKey: a plain day passes through', dateKey('2026-03-04') === '2026-03-04');
+assert('dateKey: garbage means "latest", never a doomed HTTP round-trip',
+  dateKey('Tue Sep 01') === null && dateKey(new Date('nope')) === null && dateKey('') === null && dateKey(null) === null);
+
+// ── payment_status vocabulary ────────────────────────────────────────────────
+// Three exact strings, compared exactly everywhere. Accepting a casing variant
+// is fine; INVERTING it is not — a lowercase 'paid' used to fail an
+// `includes()` test and be written as 'Unpaid'.
+const { canonicalPaymentStatus, PAYMENT_STATUSES } = require('../lib/constants');
+assert('payment_status: any casing canonicalizes',
+  canonicalPaymentStatus('paid') === 'Paid' && canonicalPaymentStatus('  PARTIAL ') === 'Partial'
+  && canonicalPaymentStatus('unpaid') === 'Unpaid');
+assert('payment_status: absent is null (not supplied), never a silent Unpaid',
+  canonicalPaymentStatus(undefined) === null && canonicalPaymentStatus('') === null);
+assert('payment_status: an unknown value is REJECTED, not coerced',
+  canonicalPaymentStatus('settled') === false && canonicalPaymentStatus('Pd') === false);
+assert('payment_status: the vocabulary is exactly the three the SQL compares against',
+  PAYMENT_STATUSES.join('|') === 'Unpaid|Partial|Paid');
+
 // ── Reversal pairs ───────────────────────────────────────────────────────────
 const revs = pairReversals([
   { id: 1, direction: 'debit', dismissed: false, account: 'bofa', amount: 500, txn_date: '2026-03-01', payee_guess: 'Acme Corp', description: 'WIRE OUT ACME CORP' },
@@ -555,5 +588,326 @@ assert('mismatchOf reports both names so the operator can see which is wrong',
   (() => { const m = W9.mismatchOf('Acme Records', 'Globex Media'); return m.payee === 'Acme Records' && m.w9_name === 'Globex Media'; })());
 assert('mismatchOf is null when they agree', W9.mismatchOf('Smith LLC', 'Smith Inc') === null);
 
+
+
+// ── Vendor surfaces: added expenses, duplicate pairs, the unified rollup ────
+// The added-expense population is the one with NO invoice number, so the
+// duplicate-invoice gate cannot see it — these rules are the only thing
+// standing between a creator and being paid twice.
+const VS = require('../lib/vendorSurfaces');
+const VD = require('../lib/vendorDupes');
+
+assert("added-expense sources use cadence's SINGULAR 'recoupment'",
+  VS.ADDED_SOURCES.includes('recoupment') && VS.ADDED_SOURCES.includes('artist_campaigns'));
+
+const added = VS.addedExpenseRollup([
+  { id: 1, payee: 'Jae Films', amount: 500, currency: 'USD', usd: 500, artist: 'Nova', spent_date: '2026-03-01' },
+  { id: 2, payee: 'jae  films!', amount: 500, currency: 'USD', usd: 500, artist: 'Nova', spent_date: '2026-03-05' },
+  { id: 3, payee: 'Jae Films', amount: 500, currency: 'EUR', usd: 540, artist: 'Nova', spent_date: '2026-03-02' },
+  { id: 4, payee: 'Jae Films', amount: 500, currency: 'USD', usd: 500, artist: 'n/a', spent_date: '2026-06-01' },
+  { id: 5, payee: 'Solo Vendor', amount: 9000, currency: 'USD', usd: 9000, artist: '', spent_date: null },
+]);
+assert('spelling variants bucket together on the canonical strip-all key',
+  added.vendors.find((v) => v.key === 'jaefilms').items === 4);
+assert('the display name is the most-common spelling, not the first seen',
+  added.vendors.find((v) => v.key === 'jaefilms').name === 'Jae Films');
+assert('per-currency totals stay separate; the USD column is the only merged one',
+  (() => { const v = added.vendors.find((x) => x.key === 'jaefilms');
+    return v.totals.USD === 1500 && v.totals.EUR === 500 && v.usd === 2040; })());
+assert('same amount within the window is a suspected double entry',
+  added.dupePairs.some((p) => p.a.id === 1 && p.b.id === 2 && p.days_apart === 4));
+assert('a duplicate card is headed with the most-common spelling, not the first seen',
+  added.dupePairs.every((p) => p.payee === 'Jae Films'));
+assert('the same amount in a DIFFERENT currency is not a duplicate',
+  !added.dupePairs.some((p) => [p.a.id, p.b.id].includes(3)));
+assert('the same amount six weeks apart is not a duplicate',
+  !added.dupePairs.some((p) => [p.a.id, p.b.id].includes(4)));
+assert('an undated row makes no duplicate claim rather than a false one',
+  !added.dupePairs.some((p) => [p.a.id, p.b.id].includes(5)));
+assert('a placeholder artist is not counted as an artist on the vendor',
+  added.vendors.find((v) => v.key === 'jaefilms').artists.join() === 'Nova');
+assert('spend bands are fixed USD thresholds (ok < 1000 <= watch < 5000 <= high)',
+  VS.bandFor(999) === 'ok' && VS.bandFor(1000) === 'watch' && VS.bandFor(5000) === 'high');
+assert('name variants only list buckets with more than one spelling',
+  added.nameVariants.length === 1 && added.nameVariants[0].spellings.length === 2);
+
+assert('identical once normalized is the exact tier', VD.scorePair('ACME Records', 'acme  records!').tier === 'exact');
+assert('one name plus extra words scores high', VD.scorePair('Venable', 'Venable LLP').tier === 'high');
+assert('a bare entity suffix never pairs by containment',
+  VD.scorePair('LLC', 'Sunset Sound LLC') === null);
+assert('two different companies do not pair', VD.scorePair('Acme Records', 'Globex Media') === null);
+assert('the pair key is order-independent', VD.pairKey('A Co', 'B Co') === VD.pairKey('b co', 'a co'));
+const dupVendors = [
+  { payee: 'Acme Records', invoice_count: 9, has_w9: true, first_invoice: '2024-01-01', total_usd: 9000 },
+  { payee: 'ACME  Records', invoice_count: 2, has_w9: false, first_invoice: '2025-01-01', total_usd: 500 },
+  { payee: 'Globex Media', invoice_count: 4, has_w9: false, first_invoice: '2025-01-01', total_usd: 400 },
+];
+assert('the busiest, W9-bearing spelling is the one that survives',
+  VD.vendorDupePairs(dupVendors)[0].keep.payee === 'Acme Records');
+assert('a pair already linked by an alias never comes back',
+  VD.vendorDupePairs(dupVendors, { aliased: new Set([VD.pairKey('Acme Records', 'ACME  Records')]) }).length === 0);
+assert('a pair marked "not duplicates" never comes back',
+  VD.vendorDupePairs(dupVendors, { acked: new Set([VD.pairKey('Acme Records', 'ACME  Records')]) }).length === 0);
+
+const uni = VS.unifiedRows([
+  { payee: 'Acme', is_root: true, usd: 600, artist: 'Nova', has_invoice: true, payment_status: 'Paid', bank_evidence: null, bank_expected: true, last_activity: '2026-03-01', category: 'Marketing' },
+  { payee: 'Acme', is_root: false, usd: 400, artist: 'Nova', has_invoice: true, payment_status: 'Paid', bank_evidence: null, bank_expected: true, last_activity: '2026-03-01', category: 'Marketing' },
+  { payee: 'Acme', is_root: true, usd: 100, artist: '', has_invoice: false, payment_status: 'Unpaid', bank_evidence: null, bank_expected: false, last_activity: '2026-04-01', category: 'PR' },
+], [
+  { key: 'acme', name: 'ACME CORP', n: 2, total: 1130, last_seen: '2026-04-02', resolved_vendor: 'Acme' },
+  { key: 'whoisthis', name: 'SQ *WHO', n: 1, total: 75, last_seen: '2026-04-03', resolved_vendor: null },
+]);
+const acme = uni.rows[0];
+assert('a split slice adds money but is NOT a second invoice',
+  acme.invoices === 2 && acme.invoiced_usd === 1100);
+assert('needs-matching counts only the discrepancy state (paid, expected, no line)',
+  acme.needs_matching === 1);
+assert('a blank artist is a worklist item; a named one is not', acme.needs_artist === 1);
+assert('to-attach counts invoices with no document', acme.to_attach === 1);
+assert('the bank delta is bank-out minus invoiced, and a wire fee is inside tolerance',
+  acme.delta === 30 && acme.in_tolerance === true);
+assert('a descriptor naming nobody is a queue item, never a vendor row',
+  uni.unlinked.length === 1 && uni.rows.length === 1);
+assert('no bank activity makes NO tolerance claim rather than a false tick',
+  VS.unifiedRows([{ payee: 'Solo', is_root: true, usd: 10, artist: 'X', has_invoice: true, payment_status: 'Unpaid' }], []).rows[0].in_tolerance === null);
+
+// The vendor directory converts per (currency, locked rate) bucket. The rule
+// that matters is the one the old SQL broke: an unstamped foreign invoice must
+// NOT pass through at face value.
+assert('a locked rate always wins over the live rate', usdOf(1000, 'EUR', 0.5) === 2000);
+assert('an unstamped foreign amount is not silently 1:1',
+  (() => { const { getCachedRates } = require('../lib/fx');
+    const rates = getCachedRates(); rates.JPY = 100;
+    return usdOf(10000, 'JPY', null) === 100; })());
+
+// ── Drill-row documents: the file hangs off the FAMILY, not the slice ────────
+// A split payment is one family. The invoice is on the root; the P&L drills
+// into the slices. Resolving to the slice id would 404 and the row would claim
+// "no document" for a payment that plainly has one.
+const DD = require('../lib/drillDocs');
+const slice = { invoice_entry_id: 45, invoice_filename: 'gate-three.pdf', proof_entry_id: 87, proof_filename: 'proof.png' };
+assert('a slice inherits the ROOT entry that holds the invoice',
+  DD.docsOf(slice)[0].entry_id === 45 && DD.docsOf(slice)[0].type === 'invoice');
+assert('a slice carrying its OWN copy keeps its own entry id',
+  DD.docsOf(slice)[1].entry_id === 87 && DD.docsOf(slice)[1].type === 'proof');
+assert('preference order is invoice → proof → receipt → W-9',
+  DD.docsOf({ w9_entry_id: 1, receipt_entry_id: 2, proof_entry_id: 3, invoice_entry_id: 4 })
+    .map((d) => d.type).join(',') === 'invoice,proof,receipt,w9');
+assert('a row with nothing attached offers no button at all',
+  DD.docsOf({ invoice_filename: 'ghost.pdf' }).length === 0 && DD.docsOf(null).length === 0);
+assert('a missing filename never fabricates one', DD.docsOf({ receipt_entry_id: 9 })[0].filename === null);
+assert('every declared type is selected and labelled — no half-wired document type',
+  DD.DOC_TYPES.every((t) => DD.DOC_LABELS[t] && DD.docSelect().includes(`AS ${t}_entry_id`) && DD.docSelect().includes(`AS ${t}_filename`)));
+
+// ── Financials month drill: one anchor, and a second basis kept separate ────
+// The month page is opened from a monthly-rollup row. Anchor it anywhere but
+// the intake cohort and the page header contradicts the number that was
+// clicked. Cash out is deliberately a DIFFERENT set (payment-date basis) and
+// must never be folded into the cohort.
+const FE = require('../lib/financeExec');
+const sl = (o) => ({ root_id: o.root_id, usd: o.usd, paid: !!o.paid, paid_on: o.paid_on || null,
+  received_on: o.received_on, artist: o.artist ?? null, category: o.category ?? null,
+  payee: o.payee ?? null, invoice_number: o.invoice_number ?? null,
+  payment_status: o.paid ? 'Paid' : 'Unpaid' });
+const monthSlices = [
+  // Two slices of ONE split family — the cohort counts the money twice over,
+  // the invoice count once.
+  sl({ root_id: 1, usd: 60, received_on: '2026-06-03', paid: true, paid_on: '2026-06-20', artist: 'Zeke Bleu', category: 'Marketing', payee: 'Acme' }),
+  sl({ root_id: 1, usd: 40, received_on: '2026-06-03', paid: true, paid_on: '2026-06-20', artist: 'Nova Ray', category: 'Marketing', payee: 'Acme' }),
+  sl({ root_id: 2, usd: 25, received_on: '2026-06-11', paid: false, artist: 'Zeke Bleu', category: 'Travel', payee: 'Beta' }),
+  // Landed in June, paid in JULY — in the cohort, not in June's cash out.
+  sl({ root_id: 3, usd: 10, received_on: '2026-06-30', paid: true, paid_on: '2026-07-02', artist: '', category: '', payee: '' }),
+  // Landed in MAY, paid in June — June cash out, not June's cohort.
+  sl({ root_id: 4, usd: 500, received_on: '2026-05-09', paid: true, paid_on: '2026-06-15', artist: 'Ezra', category: 'Advance', payee: 'Gamma' }),
+];
+const jun = FE.foldMonth(monthSlices, '2026-06');
+assert('month drill: paid + open = received by construction',
+  round2(jun.summary.paid_usd + jun.summary.unpaid_usd) === jun.summary.received_usd && jun.summary.received_usd === 135);
+assert('month drill: a split family is ONE invoice, both slices of money',
+  jun.summary.invoice_count === 3 && jun.summary.received_usd === 135 && jun.summary.avg_invoice_usd === 45);
+assert('month drill: cash out is the payment-date basis, not the cohort',
+  jun.summary.cash_out_usd === 600 && jun.summary.cash_out_count === 2
+  && jun.summary.cash_out_usd !== jun.summary.paid_usd);
+assert('month drill: the cohort splits by CURRENT status, not by when it was paid',
+  jun.summary.paid_usd === 110 && jun.summary.unpaid_usd === 25);
+assert('month drill: every slicing of the month ties to the header total',
+  round2(jun.artists.reduce((t, a) => t + a.total_usd, 0)) === jun.summary.received_usd
+  && round2(jun.categories.reduce((t, c) => t + c.total_usd, 0)) === jun.summary.received_usd
+  && round2(jun.days.reduce((t, d) => t + d.received_usd, 0)) === jun.summary.received_usd
+  && round2(jun.vendors.reduce((t, v) => t + v.total_usd, 0)) === jun.summary.received_usd);
+assert('month drill: an artist category mix ties to that artist row',
+  jun.artists.every((a) => round2(a.categories.reduce((t, c) => t + c.total_usd, 0)) === a.total_usd));
+assert('month drill: unattributed money stays visible as its own row, uncounted as an artist',
+  jun.artists.some((a) => a.key === null && a.label === 'Unassigned' && a.total_usd === 10) && jun.summary.artist_count === 2);
+assert('month drill: split slices roll back up to the billed invoice',
+  jun.top_invoices[0].root_id === 1 && jun.top_invoices[0].usd === 100 && jun.top_invoices[0].artist === '2 artists');
+assert('month drill: prior month is the delta baseline, on both bases',
+  jun.prior.month === '2026-05' && jun.prior.received_usd === 500 && jun.prior.cash_out_usd === 0);
+assert('month drill: a foreign slice is never re-converted — usd arrives rounded at the row',
+  FE.foldMonth([sl({ root_id: 9, usd: 33.33, received_on: '2026-06-02', paid: false })], '2026-06').summary.received_usd === 33.33);
+assert('month drill: every day of the month emits a bar, quiet ones included',
+  jun.days.length === 30 && FE.foldMonth([], '2026-02').days.length === 28 && FE.foldMonth([], '2024-02').days.length === 29);
+assert('month drill: month-hop crosses the year boundary without special-casing',
+  FE.shiftMonth('2026-01', -1) === '2025-12' && FE.shiftMonth('2026-12', 1) === '2027-01');
+assert('month drill: a malformed month is refused, never coerced',
+  ['2026-13', '2026-9', '', 'abc', '1999-01'].every((bad) => {
+    try { FE.foldMonth([], bad); return false; } catch (e) { return e.status === 400; }
+  }));
+
+// ── Bookkeeper Reconcile — vendor NAME tiers, kept off the bank matcher ─────
+// lib/vendorMatch.js exists because lib/bankReconcile.js is calibrated for bank
+// DESCRIPTORS and held by the assertions above. These two must never be folded
+// together: retuning one to satisfy the other retunes a matcher that is live on
+// money. The tiers below are about legal suffixes, parenthetical asides and
+// reordered words — a human's typed vendor name, not a card descriptor.
+const VM = require('../lib/vendorMatch');
+assert('vendor tiers: identical is 1.0 and says so',
+  VM.vendorsMatch('Acme Co', 'acme co').score === 1.0 && VM.vendorsMatch('Acme Co', 'ACME CO').tier === 'exact');
+assert('vendor tiers: a parenthetical aside does not make a new vendor',
+  VM.vendorsMatch('10FIFTY LLC (UKG CENTRAL)', '10Fifty LLC').tier === 'parentheticals');
+assert('vendor tiers: legal suffixes are noise',
+  VM.vendorsMatch('Acme Co.', 'Acme Company LLC').match && VM.vendorsMatch('Acme Co.', 'Acme Company LLC').tier === 'suffixes');
+assert('vendor tiers: a lost space is still the same name',
+  VM.vendorsMatch('KYRAJOHNSON', 'Kyra Johnson').match);
+assert('vendor tiers: reordered words match, strangers do not',
+  VM.vendorsMatch('Jane M Doe', 'Doe Jane M').match && !VM.vendorsMatch('Jane Doe', 'Robert Smith').match);
+assert('vendor tiers: a 3-letter fragment is a coincidence, not containment',
+  !VM.vendorsMatch('Neo', 'Neon Media Group').match);
+assert('vendor tiers: an empty side never matches anything',
+  !VM.vendorsMatch('', 'Acme').match && VM.vendorsMatch('Acme', null).tier === 'empty');
+assert('vendor tiers: every tier carries a plain-English label for the report',
+  Object.keys(VM.TIERS).every((t) => typeof VM.TIERS[t] === 'string' && VM.TIERS[t].length > 3));
+assert('vendor tiers: exact outranks every fuzzy tier, so the best candidate wins',
+  VM.vendorsMatch('Acme Co', 'Acme Co').score > VM.vendorsMatch('Acme Co', 'Acme Co LLC').score);
+
+// ── Bookkeeper Reconcile — the diff itself ──────────────────────────────────
+const LD = require('../lib/ledgerDiff');
+const bk = (o) => ({ sheet: o.sheet || '2026', rowNum: o.rowNum || 7, vendor: o.vendor ?? '', invoice: o.invoice ?? '',
+  payee_name: o.payee_name ?? null, amount: o.amount ?? null, paid_date: o.paid_date ?? null,
+  paid_amount: o.paid_amount ?? null, invoice_date: o.invoice_date ?? null, artist: o.artist ?? null });
+const led = (o) => ({ id: o.id, payee: o.payee, invoice_number: o.invoice_number, amount: o.amount,
+  family_amount: o.family_amount ?? o.amount, currency: o.currency || 'USD', usd: o.usd ?? o.amount,
+  invoice_date: o.invoice_date || '2026-06-01', payment_date: o.payment_date || null,
+  payment_status: o.payment_status || 'Unpaid', artist: o.artist || null });
+
+assert('reconcile: "#0011" and "INV-11" are the same invoice number',
+  LD.diffLedger([bk({ vendor: 'Acme Co', invoice: '#0011', amount: 100 })],
+    [led({ id: 1, payee: 'Acme Co', invoice_number: 'INV-11', amount: 100 })]).counts.matched === 1);
+assert('reconcile: a split invoice is compared at the FULL billed amount',
+  LD.diffLedger([bk({ vendor: 'Acme Co', invoice: '11', amount: 100 })],
+    [led({ id: 1, payee: 'Acme Co', invoice_number: '11', amount: 60, family_amount: 100 })]).counts.matched === 1
+  && LD.diffLedger([bk({ vendor: 'Acme Co', invoice: '11', amount: 60 })],
+    [led({ id: 1, payee: 'Acme Co', invoice_number: '11', amount: 60, family_amount: 100 })]).counts.amount_mismatch === 1);
+assert('reconcile: a cent of drift is rounding, two cents is a disagreement',
+  LD.diffLedger([bk({ vendor: 'A', invoice: '1', amount: 100.01 })], [led({ id: 1, payee: 'A', invoice_number: '1', amount: 100 })]).counts.matched === 1
+  && LD.diffLedger([bk({ vendor: 'A', invoice: '1', amount: 100.02 })], [led({ id: 1, payee: 'A', invoice_number: '1', amount: 100 })]).counts.amount_mismatch === 1);
+assert('reconcile: a same-number DIFFERENT-vendor hit is a collision, and it claims nothing',
+  (() => {
+    const r = LD.diffLedger([bk({ vendor: 'Beta Films', invoice: '11', amount: 100 })],
+      [led({ id: 1, payee: 'Acme Co', invoice_number: '11', amount: 100 })], { sheetYears: [2026] });
+    // The bookkeeper row is unmatched AND the ledger row still surfaces — a
+    // silent claim would hide a real gap on both sides at once.
+    return r.counts.missing_from_ledger === 1 && r.counts.missing_from_bookkeeper === 1;
+  })());
+assert('reconcile: one row lands in exactly ONE bucket, strongest signal first',
+  (() => {
+    const r = LD.diffLedger([bk({ vendor: 'Acme Company', invoice: '11', amount: 90, paid_date: '2026-06-02' })],
+      [led({ id: 1, payee: 'Acme Co LLC', invoice_number: '11', amount: 100, payment_status: 'Unpaid' })]);
+    return r.counts.amount_mismatch === 1 && r.diffs.length === 1 && r.diffs[0].issues.length >= 3;
+  })());
+assert('reconcile: paid-status disagreement outranks a paid-date one',
+  LD.diffLedger([bk({ vendor: 'A', invoice: '1', amount: 100, paid_date: '2026-06-02' })],
+    [led({ id: 1, payee: 'A', invoice_number: '1', amount: 100, payment_status: 'Unpaid' })]).counts.paid_status_mismatch === 1);
+assert('reconcile: paid dates are only compared when both sides agree it is paid',
+  LD.diffLedger([bk({ vendor: 'A', invoice: '1', amount: 100, paid_date: '2026-06-02' })],
+    [led({ id: 1, payee: 'A', invoice_number: '1', amount: 100, payment_status: 'Paid', payment_date: '2026-06-05' })]).counts.paid_date_mismatch === 1);
+assert('reconcile: a matched row with only a spelling difference is LOW, not a money problem',
+  LD.diffLedger([bk({ vendor: 'Acme Company LLC', invoice: '1', amount: 100 })],
+    [led({ id: 1, payee: 'Acme Co', invoice_number: '1', amount: 100 })]).counts.vendor_name_variation === 1);
+assert('reconcile: a row with no invoice number is reported, never guessed at',
+  (() => {
+    const r = LD.diffLedger([bk({ vendor: 'A', invoice: '', amount: 100 })], []);
+    return r.counts.no_invoice_num === 1 && r.diffs[0].ledger === null;
+  })());
+assert('reconcile: "0" is not an invoice number on either side',
+  LD.diffLedger([bk({ vendor: 'A', invoice: '0', amount: 5 })], [led({ id: 1, payee: 'A', invoice_number: '000', amount: 5 })]).counts.no_invoice_num === 1);
+assert('reconcile: the reverse direction is capped by the workbook years and the week ending',
+  (() => {
+    const rows = [
+      led({ id: 1, payee: 'A', invoice_number: '1', amount: 10, invoice_date: '2019-01-01' }),  // before their engagement
+      led({ id: 2, payee: 'B', invoice_number: '2', amount: 20, invoice_date: '2026-08-01' }),  // after their snapshot
+      led({ id: 3, payee: 'C', invoice_number: '3', amount: 30, invoice_date: '2026-05-01' }),  // genuinely missing
+    ];
+    const r = LD.diffLedger([], rows, { sheetYears: [2026], weekEnding: '2026-06-30' });
+    return r.counts.missing_from_bookkeeper === 1
+      && r.diffs[0].ledger.id === 3
+      && r.suppressed.outside_sheet_years === 1 && r.suppressed.after_week_ending === 1;
+  })());
+assert('reconcile: with no year inferrable the filter falls OPEN rather than hiding rows',
+  LD.diffLedger([], [led({ id: 1, payee: 'A', invoice_number: '1', amount: 10, invoice_date: '2019-01-01' })], {}).counts.missing_from_bookkeeper === 1);
+assert('reconcile: amounts are compared native to native — a foreign row is never converted first',
+  (() => {
+    const r = LD.diffLedger([bk({ vendor: 'Euro Co', invoice: '1', amount: 100 })],
+      [led({ id: 1, payee: 'Euro Co', invoice_number: '1', amount: 100, currency: 'EUR', usd: 200 })]);
+    return r.counts.matched === 1;   // 100 EUR filed vs 100 EUR billed is agreement
+  })());
+assert('reconcile: a currency difference is disclosed rather than silently blamed on the vendor',
+  LD.diffLedger([bk({ vendor: 'Euro Co', invoice: '1', amount: 120 })],
+    [led({ id: 1, payee: 'Euro Co', invoice_number: '1', amount: 100, currency: 'EUR', usd: 200 })])
+    .diffs[0].issues.some((i) => /EUR/.test(i) && /unit difference/.test(i)));
+assert('reconcile: money at stake means the GAP on a mismatch and the WHOLE row when one side is blind',
+  (() => {
+    const gap = LD.rowDollarDelta({ kind: 'amount_mismatch', bookkeeper: { amount: 90 }, ledger: { family_amount: 100, usd: 100 } });
+    const whole = LD.rowDollarDelta({ kind: 'missing_from_bookkeeper', bookkeeper: null, ledger: { family_amount: 100, usd: 250 } });
+    const clean = LD.rowDollarDelta({ kind: 'matched', bookkeeper: { amount: 100 }, ledger: { family_amount: 100, usd: 100 } });
+    return gap === 10 && whole === 250 && clean === 0;   // USD-equivalent where the ledger has one
+  })());
+assert('reconcile: every category is counted, and clean rows sink to the end of the report',
+  LD.CATEGORY_KEYS.length === 8 && LD.CATEGORY_KEYS[LD.CATEGORY_KEYS.length - 1] === 'matched'
+  && LD.DIFF_CATEGORIES.every((c) => c.label && c.action && c.priority));
+
+// ── Bookkeeper Reconcile — reading someone else's workbook ──────────────────
+// These build an in-memory ExcelJS workbook (no file, no DB) shaped like the
+// real thing: a title block, a WEEK ENDING line, a BLANK row, a header that is
+// not row 1, and a two-row PAID sub-header.
+const XL = require('exceljs');
+const LDX = require('../lib/ledgerDiffXlsx');
+const bkWorkbook = (extraRows = []) => {
+  const wb = new XL.Workbook();
+  const ws = wb.addWorksheet('2026');
+  ws.addRow(['OUTSTANDING INVOICES SUMMARY']);
+  ws.addRow(['WEEK ENDING', '2026-06-30']);
+  ws.addRow([]);                                    // the blank row that matters
+  ws.addRow(['VENDOR', 'INVOICE #', 'AMOUNT', 'PAID', '']);
+  ws.addRow(['', '', '', 'DATE', 'AMOUNT']);        // merged-parent sub-header
+  ws.addRow(['Acme Co', 'INV-1', '$1,200.00', '2026-06-02', 1200]);
+  ws.addRow(['Beta LLC', '#2', '(500.00)', '', '']);
+  for (const r of extraRows) ws.addRow(r);
+  wb.addWorksheet('SUM').addRow(['TOTALS']);
+  return wb;
+};
+const parsed = LDX.parseBookkeeperWorkbook(bkWorkbook([['Gamma', '3', 900, '', '']]));
+assert('workbook: a BLANK row above the data does not eat the last data row',
+  // ExcelJS actualRowCount is a COUNT of non-empty rows and rowCount is the
+  // highest row NUMBER. Using the count as an upper bound silently drops one
+  // trailing row per blank row above it. This caught it live.
+  parsed.rows.length === 3 && parsed.rows[2].vendor === 'Gamma' && parsed.rows[2].rowNum === 8);
+assert('workbook: the header is found under a title block, not assumed to be row 1',
+  parsed.rows[0].rowNum === 6 && parsed.rows[0].vendor === 'Acme Co');
+assert('workbook: a two-row PAID block is read as paid date + paid amount',
+  parsed.rows[0].paid_date === '2026-06-02' && parsed.rows[0].paid_amount === 1200);
+assert('workbook: accounting formats parse — currency symbols, commas, parens-as-negative',
+  parsed.rows[0].amount === 1200 && parsed.rows[1].amount === -500);
+assert('workbook: summary / totals tabs are skipped with a stated reason',
+  parsed.sheets_skipped.length === 1 && parsed.sheets_skipped[0].sheet === 'SUM' && parsed.sheets_skipped[0].reason.length > 10);
+assert('workbook: the WEEK ENDING snapshot and the tab year are both picked up',
+  parsed.week_ending === '2026-06-30' && parsed.sheet_years.join() === '2026');
+assert('workbook: a sheet with no usable header is reported, never half-read',
+  (() => {
+    const wb = new XL.Workbook();
+    wb.addWorksheet('Notes').addRow(['just some prose about the month']);
+    const p = LDX.parseBookkeeperWorkbook(wb);
+    return p.rows.length === 0 && p.sheets_skipped.length === 1;
+  })());
 
 console.log(process.exitCode ? '\nFIXTURES FAILED' : '\nAll fixtures pass.');

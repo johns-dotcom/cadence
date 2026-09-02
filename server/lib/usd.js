@@ -42,7 +42,11 @@ async function rowUsd(e) {
   const cur = (e.currency || 'USD').toUpperCase();
   if (cur === 'USD' || !n) return n;
   const d = e.payment_date || e.invoice_date || e.created_at || null;
-  return toUSD(n, cur, d ? String(d).slice(0, 10) : null);
+  // Hand the raw value over — fx.dateKey() owns the coercion. Pre-flattening a
+  // pg Date with String(d).slice(0,10) produced "Tue Sep 01", which converted
+  // every unstamped foreign row at the hardcoded fallback rate instead of the
+  // rate on its own date.
+  return toUSD(n, cur, d);
 }
 
 // Rounded-at-the-row variant — the one rounding site for sheet/report rows.

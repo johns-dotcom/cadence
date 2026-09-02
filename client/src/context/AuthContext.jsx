@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
 import api from '../api'
 import { applyAccent, resetAccent } from '../utils/branding'
+import { resetCategoriesCache } from '../hooks/useCategories'
+import { resetReconciledCache } from '../hooks/useReconciledThrough'
 
 const AuthContext = createContext()
 
@@ -14,6 +16,26 @@ export const AuthProvider = ({ children }) => {
   // Impersonation — stash real admin token in a separate key while viewing as someone else
   const [impersonating, setImpersonating] = useState(!!localStorage.getItem('admin_token'))
   const [adminUser, setAdminUser]         = useState(null)
+
+  // Bumped whenever the ACTING identity changes — enter/leave a workspace, or
+  // impersonate/stop impersonating. App.jsx keys the route tree on it, so every
+  // mounted page unmounts and refetches.
+  //
+  // Why a counter and not `${user?.id}:${label?.id}`: a derived key also flips
+  // on first load (null → resolved) and would remount the whole app on every
+  // cold start, double-fetching every page. This changes on exactly the events
+  // that mean "you are now looking at different data".
+  //
+  // Why it is needed at all: entering a workspace was setState-only. React kept
+  // Dashboard, useTaskData and every other mounted page alive with the previous
+  // tenant's rows in state — new token, old numbers on screen.
+  const [sessionEpoch, setSessionEpoch] = useState(0)
+  const newSession = () => {
+    // Module-level caches live outside React and a remount does not clear them.
+    resetCategoriesCache()
+    resetReconciledCache()
+    setSessionEpoch(n => n + 1)
+  }
 
   useEffect(() => {
     if (token) fetchUser()
@@ -45,6 +67,10 @@ export const AuthProvider = ({ children }) => {
   }
 
   const applySession = (newToken, userData, labelData) => {
+    // A second login in the same tab (logout → sign in as someone else) reuses
+    // this module instance, so the per-workspace caches have to go.
+    resetCategoriesCache()
+    resetReconciledCache()
     localStorage.setItem('token', newToken)
     setToken(newToken)
     setUser(userData)
@@ -83,6 +109,8 @@ export const AuthProvider = ({ children }) => {
   }
 
   const logout = () => {
+    resetCategoriesCache()
+    resetReconciledCache()
     localStorage.removeItem('token')
     localStorage.removeItem('admin_token')
     setToken(null)
@@ -104,6 +132,7 @@ export const AuthProvider = ({ children }) => {
       setToken(impToken)
       setUser(impUser)
       setImpersonating(true)
+      newSession()
       return { success: true }
     } catch (err) {
       return { success: false, error: err.response?.data?.error || 'Failed to impersonate' }
@@ -123,6 +152,7 @@ export const AuthProvider = ({ children }) => {
       setUser(wsUser)
       setLabel(wsLabel)
       setImpersonating(true)
+      newSession()
       return { success: true }
     } catch (err) {
       return { success: false, error: err.response?.data?.error || 'Failed to enter workspace' }
@@ -137,6 +167,7 @@ export const AuthProvider = ({ children }) => {
     setToken(adminToken)
     setImpersonating(false)
     setAdminUser(null)
+    newSession()
     // Restore the real identity AND label context (we may have been viewing a
     // different workspace, so the label must be reset too).
     api.get('/auth/me').then(res => {
@@ -167,7 +198,7 @@ export const AuthProvider = ({ children }) => {
       user, label, token, loading,
       login, googleLogin, logout, updateLabel,
       impersonate, enterWorkspace, exitImpersonation, impersonating, adminUser,
-      pagePermissions, canView,
+      pagePermissions, canView, sessionEpoch,
     }}>
       {children}
     </AuthContext.Provider>
