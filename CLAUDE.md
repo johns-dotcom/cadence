@@ -5219,3 +5219,181 @@ three console surfaces cannot show one workspace in three colours; the drawer's
 one column is how they start disagreeing; `/platform/workspaces` and
 `/workspaces/:id` gained `console_color`; and `ACCENT_PRESETS` is no longer used
 by the drawer (the validated palette replaces an unvalidated six).
+
+---
+
+## Operator console — workspace message boards (2026-09-14)
+
+The console's `/messages` was operator-to-operator chat only (Platform HQ). It
+now also carries **every tenant's public channels**, readable and repliable from
+the console. **Zero new deps.** One new column, one new table, one new router.
+
+**Decisions taken by John, not inferred**: operators may **post**, not just read;
+**public channels only** — private channels, DMs and record-anchored threads are
+deliberately out; and every read is **audited operator-side, invisible to the
+tenant**.
+
+### The boundary is crossed in a new router, not widened in the old one
+`routes/chat.js` is the tenant surface: every query is keyed on `req.labelId` and
+`membership()` is the single function deciding who may read a conversation.
+Teaching it about operators would put a cross-tenant bypass **inside the security
+primitive every workspace user goes through**. New `routes/platform-chat.js`
+(`/api/platform/chat`, `authMiddleware + requirePlatformAdmin`) crosses the
+boundary where the operator allowlist already lives. The only edit to `chat.js`
+is `m.is_operator` in `MSG_SELECT`.
+
+- **`lib/operatorAccess.js` (new)** — `operatorAccess` / `accessibleLabelIds` /
+  `scopeClause` / `canAccessLabel`, **moved out of `routes/platform.js`**, which
+  now imports them. A second copy of a visibility rule is how one console page
+  ends up showing a workspace another page has blocked — the leak the console
+  closed two weeks ago. `canSubscribe` in realtime.js asks the same helper, so
+  the live feed and the REST history cannot disagree about what is visible.
+- **`BOARD_WHERE`** is the one definition of "a workspace board"
+  (`type='channel' AND NOT is_private AND NOT archived AND NOT l.is_system`),
+  used by the listing AND the per-channel guard, so a channel can never be
+  readable but unlistable or the reverse. Platform HQ is excluded — those are the
+  operator's own channels and are already in the same sidebar. A **suspended**
+  workspace stays listed (its people can't log in, which is exactly when someone
+  needs to read what was said) and ships its status.
+- `GET /boards` returns the **full accessible roster**, not just workspaces that
+  own a channel: a workspace with no board is worth seeing, and the console hands
+  out auto colour slots **by roster rank** — resolving against a subset would
+  paint a workspace one colour here and another on `/calendar`.
+- `GET /channels/:id/messages` · `POST /channels/:id/messages` ·
+  `GET /channels/:id/members` · `GET /audit`. Every `:id` goes through
+  `board(req, id)`, which `parseInt`-guards (a NaN reaches Postgres as 22P02, so
+  a bad request becomes a 500) and scopes through the allowlist.
+
+### An operator post is a marked message, not a membership
+`chat_messages.is_operator BOOLEAN DEFAULT FALSE`. The operator is **not**
+inserted into `chat_members`: membership would put them in the workspace's own
+member list and roster picker, reading as "someone from the platform joined our
+team", and would park their read state inside the tenant. The tenant sees exactly
+one new thing — a message badged **Cadence team**, rendered from the column in
+the shared `MessageRow` so it is marked in the *tenant's* client too. Message
+grouping breaks on a provenance change, or an operator reply would sit silently
+under a colleague's avatar. Unread counts already work (`msg.user_id <> $2`), and
+no read pointer is written on a board.
+
+Text only, no attachments: an upload endpoint reachable from outside the tenant
+is a wider door than reading and replying needs. Attachments are also absent from
+the READ payload — reading the conversation does not require handing out the
+invoices in it. `@mentions` resolve against the **workspace's** people through the
+existing `recordMentions`, so the composer's autocomplete is fed by
+`/channels/:id/members` rather than the operator roster (it would suggest handles
+resolving to nobody there). `@channel` is **not** offered on a board — only the
+tenant send route fans it out, and offering it would promise a notification
+nothing sends.
+
+### `operator_chat_audit` — and why it is not `activity_log`
+`activity_log` is the TENANT's feed; recording reads there would make observation
+visible to the workspace being observed. A **post is self-disclosing** (it appears
+in their channel); a **read is not**, which is the whole reason the table exists.
+Views are deduped per operator+channel per 10 minutes — opening a channel and
+paging back through it is one act of reading, and a row per scroll buries what the
+log is for. Posts are never deduped. `GET /audit` is visible to **any operator who
+can see the workspace**, not just the owner: the point of recording observation is
+that the other observers can see it. Surfaced as an "Access log" panel in the board
+header. `/messages` was deliberately NOT added to `RESTRICTABLE_PAGES` — boards are
+already scoped by the workspace allowlist, and adding a page silently revokes it
+from every operator who already has one.
+
+### Two realtime bugs found while building this, both pre-existing
+- **`channel:subscribe` was unauthenticated.** It joined `channel:<id>` for any
+  integer a client sent, and channel ids are global — so a room join, which is a
+  live subscription to every future message, let **any authenticated user stream
+  any other tenant's channel**. Now `canSubscribe()`: a workspace user gets only
+  channels they are a member of inside their own label; an operator additionally
+  gets the same public boards the REST router serves. Fails closed.
+  **Proved, not assumed**: with the original code a plain tenant `User` who is a
+  member of nothing received a message from another workspace's channel AND from
+  a private board in his own workspace (`{ravi_other_tenant:1, ravi_private:1}`);
+  with the guard both are 0 and the operator's legitimate feed still arrives.
+- **Every `socket.on()` was registered after an `await`.** The connection handler
+  awaited `channelRooms()` (a database round-trip) before wiring its listeners,
+  and socket.io does not buffer an event for a listener that does not exist yet —
+  so anything a client emitted in that window was **silently dropped**. The client
+  subscribes the instant it opens a conversation, which on a cold load beats the
+  query every time. That is why a just-opened or just-joined channel could stay
+  quiet until a reload. Listeners are now registered synchronously and the room
+  join runs after. Found because the operator's live feed didn't arrive while the
+  tenant's did; the same test passed with an 800 ms delay before the emit.
+
+### Client
+`Messages.jsx` serves both shells. `operatorMode = is_platform_admin && !impersonating`
+(an operator who has ENTERED a workspace is a normal member and gets the normal
+page). Each channel carries `scope`, and that alone picks the API base — derived
+once, not re-tested per call site. A "Workspace boards" sidebar group renders the
+console's **two** identity encodings (colour rail + two-letter tag, resolved
+against the whole roster via the shared `resolveColors`/`tagMap`, because colour
+alone stops separating past three tenants). `MessageRow`/`MessageList` gained
+`limited`, which hides react/edit/delete (there are no endpoints for them) and
+leaves threads readable and repliable; `ReactionChips` renders display-only when
+given no handler. The composer carries a standing warning naming the workspace and
+the label the message will wear.
+
+**A landmine avoided, worth knowing**: the message-load effect must depend on
+`resolved = !!active`, never on `active` itself. `active` is re-derived by
+`.find()` on every render, and the socket handler rebuilds the boards array on
+every incoming message — so depending on the object refetched the entire history,
+with a loading flash, on each message received.
+
+### Verification
+Fixtures 270/270 · `check-tdz` 205 clean · `check-render` shell clean all roles,
+89 routes · `check:vendor-lab` · `check:ws-colors` · `npm run build` clean, 0 `NaN`
+in the emitted CSS and every new utility present · `node --check` on all 6 changed
+server files. Live on the dev Neon box: owner sees 3 workspaces / restricted
+operator sees 1 (`scoped:true`); private channel, DM and Platform HQ all 404 to
+the owner; an out-of-allowlist board 404s to the restricted operator; a tenant
+Approver hitting `/platform/chat` 403s; NaN and unknown ids 404 (no 500);
+anonymous 401. A post landed `is_operator:true`, appeared in the tenant's own
+`/api/chat` feed badged **Cadence team**, raised Mara's unread to 1, wrote her a
+mention row with the operator as actor — and created **zero** `chat_members` rows.
+Audit showed one `post` + one `view`, and three further reads of the same channel
+added nothing (dedup); the restricted operator reads 0 rows of label 2's log.
+Search: an owner's `pineapple` found both public boards across two workspaces and
+**neither the private channel nor the DM that contained the same word**; a
+restricted operator got only their own workspace's hit; a tenant Approver 403s; a
+one-character query returns `[]`.
+**The dev database was restored to its exact pre-test state** (4 channels, max
+message id 50, 3 operators, 0 audit/access/mention rows).
+
+### Cross-tenant search
+`GET /api/platform/chat/search?q=` — one query across every board the operator may
+see. Membership cannot gate it the way the tenant search does (an operator is a
+member of nothing), so **`BOARD_WHERE` does the gating instead** — the identical
+predicate behind the listing and the per-channel guard, which is what keeps a
+search out of a private channel or a DM that no other endpoint here will serve.
+The sidebar fires both searches and renders two groups; they are deliberately NOT
+awaited together, so a cross-tenant scan never delays the common case and either
+side failing cannot blank the other. Board hits carry the workspace's colour rail
+and tag, and clicking one opens that board at that message.
+
+**A match is a snippet, not a visit**: hits are not audited per channel, because
+the operator has not opened them. The search itself is recorded **with the words**
+(new `operator_chat_audit.detail` — putting a query in `channel_name` would render
+it as if it were a channel), and clicking through fires the normal `view`. A
+search that returned nothing is not recorded: it revealed nothing. Because a
+search spans workspaces it carries no `label_id`, so it is absent from a
+per-workspace log and shows in the unfiltered one — and a **restricted** operator
+sees no search rows at all, since those rows cover workspaces outside their
+allowlist. Conservative on purpose.
+
+**The audit dedup became one statement, and that fixed a real bug.** The write is
+fire-and-forget, so a check-then-insert left a window wide enough for two
+in-flight requests to both decide the row was missing — six identical searches
+recorded twice. It is now a single `INSERT … SELECT … WHERE NOT EXISTS`, with
+**every parameter in the SELECT list explicitly cast**: a bare `$n` that also
+faces a column in the NOT EXISTS makes Postgres deduce two types and raise 42P08,
+the trap this file records three prior sightings of — and one that would be
+**silent here**, because the function swallows its errors by design. Verified the
+only way that proves anything for a swallowed write: the rows landed (6 searches →
+1 row, 4 views → 1, 2 posts → 2, no-match → 0) and the log carried zero audit
+errors.
+
+### Not done, deliberately
+No reactions, edits or deletes on a board. The tenant's channel-list `last_message` preview and `/chat/search` rows
+don't carry `is_operator`, so the badge appears on the message but not in those two
+previews (the author name is present in both). No unread tracking for boards — an
+operator is not a member, so there is no read pointer to count against, and boards
+deliberately do not inflate the console's nav badge.

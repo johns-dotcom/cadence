@@ -70,7 +70,7 @@ async function membership(channelId, userId, labelId) {
 // Shape a message row with author, reactions, and thread reply count.
 const MSG_SELECT = `
   SELECT m.id, m.channel_id, m.body, m.user_id, m.thread_root_id, m.edited_at, m.created_at,
-         m.is_system, m.meta,
+         m.is_system, m.meta, m.is_operator,
          u.name AS author_name,
          (SELECT COUNT(*)::int FROM chat_messages r WHERE r.thread_root_id = m.id AND r.deleted = false) AS reply_count,
          COALESCE((

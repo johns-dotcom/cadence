@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { Hash, Lock, Plus, Send, Smile, MessageSquare, X, Search, Users, Trash2, Pencil, ChevronLeft, Paperclip, FileText, Zap, Bell, BellOff } from 'lucide-react'
+import { Hash, Lock, Plus, Send, Smile, MessageSquare, X, Search, Users, Trash2, Pencil, ChevronLeft, Paperclip, FileText, Zap, Bell, BellOff, LifeBuoy, Building2, Eye, ShieldAlert } from 'lucide-react'
 import api from '../api'
 import { useAuth } from '../context/AuthContext'
 import { useSocket } from '../context/SocketContext'
 import { useToast } from '../context/ToastContext'
+import { useTheme } from '../context/ThemeContext'
+import { resolveColors, tagMap } from '../utils/workspaceColor'
 
 const QUICK_EMOJI = ['👍', '❤️', '😂', '🎉', '🔥', '👀', '✅', '🙏']
 // Attachments are served via a file-scoped, expiring signed URL that the server
@@ -109,6 +111,8 @@ export function Avatar({ name, online, size = 36 }) {
   )
 }
 
+// onToggle omitted = display-only (an operator reading a workspace board can
+// see the reactions but has no endpoint to add one).
 function ReactionChips({ reactions, myId, onToggle }) {
   if (!reactions?.length) return null
   return (
@@ -116,8 +120,8 @@ function ReactionChips({ reactions, myId, onToggle }) {
       {reactions.map(r => {
         const mine = (r.users || []).map(Number).includes(Number(myId))
         return (
-          <button key={r.emoji} onClick={() => onToggle(r.emoji)}
-            className={`text-xs px-1.5 py-0.5 rounded-full border ${mine ? 'bg-brand-500/10 border-brand-300 text-brand-700' : 'bg-card border-rule text-gray-600'} hover:border-brand-300`}>
+          <button key={r.emoji} onClick={() => onToggle?.(r.emoji)} disabled={!onToggle}
+            className={`text-xs px-1.5 py-0.5 rounded-full border ${mine ? 'bg-brand-500/10 border-brand-300 text-brand-700' : 'bg-card border-rule text-gray-600'} ${onToggle ? 'hover:border-brand-300' : 'cursor-default'}`}>
             {r.emoji} {r.count}
           </button>
         )
@@ -126,23 +130,28 @@ function ReactionChips({ reactions, myId, onToggle }) {
   )
 }
 
-function MessageRow({ m, prev, myId, myHandles, highlight, onReact, onReply, onEdit, onDelete, showThread = true }) {
+function MessageRow({ m, prev, myId, myHandles, highlight, onReact, onReply, onEdit, onDelete, showThread = true, limited = false }) {
   const [hover, setHover] = useState(false)
   const [picker, setPicker] = useState(false)
   const isSystem = m.is_system
-  const grouped = prev && prev.user_id === m.user_id && (new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000) && !m.thread_root_id && !isSystem
+  const isOperator = m.is_operator && !isSystem
+  // Grouping hides the author line, so a run that changes provenance must break:
+  // an operator reply must never sit silently under a colleague's avatar.
+  const grouped = prev && prev.user_id === m.user_id && !!prev.is_operator === !!m.is_operator && (new Date(m.created_at) - new Date(prev.created_at) < 5 * 60 * 1000) && !m.thread_root_id && !isSystem
   const mine = Number(m.user_id) === Number(myId)
   return (
     <div id={`msg-${m.id}`} className={`relative group px-3 transition-colors ${highlight ? 'bg-amber-50 ring-1 ring-amber-300 rounded-lg' : 'hover:bg-page/60'}`} onMouseEnter={() => setHover(true)} onMouseLeave={() => { setHover(false); setPicker(false) }}>
       <div className="flex gap-3">
         {grouped ? <div className="w-9 flex-shrink-0 text-[10px] text-transparent group-hover:text-gray-400 text-right pt-1">{fmtTime(m.created_at).replace(/ ?[AP]M/, '')}</div>
           : isSystem ? <div className="w-9 h-9 rounded-lg bg-violet-100 text-violet-600 flex items-center justify-center flex-shrink-0"><Zap size={18} /></div>
+          : isOperator ? <div className="w-9 h-9 rounded-lg bg-brand-500/15 text-brand-ink flex items-center justify-center flex-shrink-0" title="Cadence platform team"><LifeBuoy size={18} /></div>
           : <Avatar name={m.author_name} />}
         <div className="min-w-0 flex-1">
           {!grouped && (
             <div className="flex items-baseline gap-2">
               <span className="font-semibold text-ink text-sm">{isSystem ? 'Cadence' : (m.author_name || 'Unknown')}</span>
               {isSystem && <span className="text-[9px] font-bold uppercase tracking-wide bg-violet-100 text-violet-600 px-1 py-0.5 rounded">Bot</span>}
+              {isOperator && <span className="text-[9px] font-bold uppercase tracking-wide bg-brand-500/15 text-brand-ink px-1 py-0.5 rounded" title="Sent by the Cadence platform team, not a member of this workspace">Cadence team</span>}
               <span className="text-[11px] text-gray-400">{fmtTime(m.created_at)}</span>
             </div>
           )}
@@ -157,7 +166,7 @@ function MessageRow({ m, prev, myId, myHandles, highlight, onReact, onReply, onE
                 {m.body && <p className="text-sm text-ink whitespace-pre-wrap break-words">{renderMentions(m.body, myHandles)}{m.edited_at && <span className="text-[10px] text-gray-400 ml-1">(edited)</span>}</p>}
                 <Attachments items={m.attachments} />
               </>}
-          <ReactionChips reactions={m.reactions} myId={myId} onToggle={e => onReact(m.id, e)} />
+          <ReactionChips reactions={m.reactions} myId={myId} onToggle={limited ? undefined : (e => onReact(m.id, e))} />
           {showThread && m.reply_count > 0 && (
             <button onClick={() => onReply(m)} className="mt-1 text-xs text-brand-600 font-medium hover:underline flex items-center gap-1">
               <MessageSquare size={12} /> {m.reply_count} {m.reply_count === 1 ? 'reply' : 'replies'}
@@ -166,19 +175,19 @@ function MessageRow({ m, prev, myId, myHandles, highlight, onReact, onReply, onE
         </div>
       </div>
 
-      {hover && !m.deleted && (
+      {hover && !m.deleted && (limited ? showThread : true) && (
         <div className="absolute -top-3 right-3 flex items-center gap-0.5 bg-card border border-rule rounded-lg shadow-sm px-1 py-0.5">
-          <div className="relative">
+          {!limited && <div className="relative">
             <button onClick={() => setPicker(p => !p)} className="p-1 text-gray-500 hover:text-brand-600" title="React"><Smile size={15} /></button>
             {picker && (
               <div className="absolute right-0 top-7 z-10 bg-card border border-rule rounded-lg shadow-lg p-1 flex gap-0.5">
                 {QUICK_EMOJI.map(e => <button key={e} onClick={() => { onReact(m.id, e); setPicker(false) }} className="text-lg hover:scale-125 transition-transform">{e}</button>)}
               </div>
             )}
-          </div>
+          </div>}
           {showThread && <button onClick={() => onReply(m)} className="p-1 text-gray-500 hover:text-brand-600" title="Reply in thread"><MessageSquare size={15} /></button>}
-          {mine && <button onClick={() => onEdit(m)} className="p-1 text-gray-500 hover:text-brand-600" title="Edit"><Pencil size={14} /></button>}
-          {mine && <button onClick={() => onDelete(m)} className="p-1 text-gray-500 hover:text-danger" title="Delete"><Trash2 size={14} /></button>}
+          {!limited && mine && <button onClick={() => onEdit(m)} className="p-1 text-gray-500 hover:text-brand-600" title="Edit"><Pencil size={14} /></button>}
+          {!limited && mine && <button onClick={() => onDelete(m)} className="p-1 text-gray-500 hover:text-danger" title="Delete"><Trash2 size={14} /></button>}
         </div>
       )}
     </div>
@@ -186,7 +195,7 @@ function MessageRow({ m, prev, myId, myHandles, highlight, onReact, onReply, onE
 }
 
 // Renders a list of messages with day separators.
-export function MessageList({ messages, myId, myHandles, highlightId, onReact, onReply, onEdit, onDelete, showThread }) {
+export function MessageList({ messages, myId, myHandles, highlightId, onReact, onReply, onEdit, onDelete, showThread, limited }) {
   const out = []
   let lastDay = null
   messages.forEach((m, i) => {
@@ -195,13 +204,13 @@ export function MessageList({ messages, myId, myHandles, highlightId, onReact, o
       out.push(<div key={`d-${m.id}`} className="flex items-center gap-3 px-4 my-3"><div className="flex-1 h-px bg-rule" /><span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">{day}</span><div className="flex-1 h-px bg-rule" /></div>)
       lastDay = day
     }
-    out.push(<MessageRow key={m.id} m={m} prev={i > 0 ? messages[i - 1] : null} myId={myId} myHandles={myHandles} highlight={m.id === highlightId} onReact={onReact} onReply={onReply} onEdit={onEdit} onDelete={onDelete} showThread={showThread} />)
+    out.push(<MessageRow key={m.id} m={m} prev={i > 0 ? messages[i - 1] : null} myId={myId} myHandles={myHandles} highlight={m.id === highlightId} onReact={onReact} onReply={onReply} onEdit={onEdit} onDelete={onDelete} showThread={showThread} limited={limited} />)
   })
   return <div className="py-2">{out}</div>
 }
 
 export default function Messages() {
-  const { user } = useAuth()
+  const { user, impersonating } = useAuth()
   const { on, emit, online } = useSocket()
   const { toast } = useToast()
   const { channelId } = useParams()
@@ -230,6 +239,20 @@ export default function Messages() {
   const [highlightId, setHighlightId] = useState(null)
   const [searchQ, setSearchQ] = useState('')
   const [searchResults, setSearchResults] = useState(null) // null = not searching
+  const [boardResults, setBoardResults] = useState(null)   // cross-workspace hits
+
+  // ── Operator console: the workspace message boards ───────────────────────
+  // An operator in the platform shell (not one who has ENTERED a workspace —
+  // that identity is a normal member and gets the normal page) additionally
+  // sees every tenant's public channels. Everything about them is served by
+  // /platform/chat, a separate router: this page never asks /chat for a
+  // conversation outside the operator's own Platform HQ label.
+  const operatorMode = !!user?.is_platform_admin && !impersonating
+  const [boards, setBoards] = useState([])          // [{ id, name, channels[] }]
+  const [wsRoster, setWsRoster] = useState([])      // every accessible workspace
+  const [boardsScoped, setBoardsScoped] = useState(false)
+  const [boardRoster, setBoardRoster] = useState([])
+  const [accessLog, setAccessLog] = useState(null)  // null = panel closed
 
   // Open a channel, optionally jumping to a specific message (from search).
   const openChannel = (id, focus = null) => { setFocusId(focus); setActiveId(id) }
@@ -245,15 +268,53 @@ export default function Messages() {
   const scrollRef = useRef(null)
   const typingTimers = useRef({})
 
-  const active = channels.find(c => c.id === activeId) || null
+  // Workspace identity is the console's TWO encodings — a colour and a
+  // two-letter tag — resolved against the whole accessible roster so a
+  // workspace wears the same colour here as on /calendar and /workspaces.
+  // (Colour alone stops separating past three tenants; the tag is what still
+  // works at the ninth, for a colourblind reader, and in a screenshot.)
+  const { theme } = useTheme()
+  const wsColors = useMemo(() => resolveColors(wsRoster, theme), [wsRoster, theme])
+  const boardTags = useMemo(() => tagMap(wsRoster), [wsRoster])
+  const wsColor = (w) => wsColors.get(Number(w.id))?.color || 'var(--color-text-ink-faint)'
+
+  const wsChannels = useMemo(() => boards.flatMap(w => w.channels), [boards])
+  // One lookup over both lists. A workspace board carries scope:'ws', which is
+  // the ONLY thing that decides which API serves it — derived here once rather
+  // than re-tested at each call site.
+  const active = channels.find(c => c.id === activeId) || wsChannels.find(c => c.id === activeId) || null
+  const isWs = active?.scope === 'ws'
+  const chatBase = isWs ? '/platform/chat' : '/chat'
+  const activeWorkspace = isWs ? boards.find(w => w.id === active.label_id) : null
 
   const loadChannels = useCallback(async () => {
     try { const { data } = await api.get('/chat/channels'); setChannels(data.data || []) }
     catch { /* keep prior */ }
   }, [])
 
+  const loadBoards = useCallback(async () => {
+    if (!operatorMode) return
+    try {
+      const { data } = await api.get('/platform/chat/boards')
+      setBoards(data.data || []); setWsRoster(data.workspaces || []); setBoardsScoped(!!data.scoped)
+    } catch { /* keep prior */ }
+  }, [operatorMode])
+
   useEffect(() => { loadChannels() }, [loadChannels])
+  useEffect(() => { loadBoards() }, [loadBoards])
   useEffect(() => { api.get('/chat/users').then(({ data }) => setRoster(data.data || [])).catch(() => {}) }, [])
+
+  // The composer's @-autocomplete has to offer the WORKSPACE's people when
+  // writing to a workspace board — the operator roster would suggest handles
+  // that resolve to nobody there.
+  useEffect(() => {
+    if (!isWs || !activeId) { setBoardRoster([]); return }
+    let cancelled = false
+    api.get(`/platform/chat/channels/${activeId}/members`)
+      .then(({ data }) => { if (!cancelled) setBoardRoster(data.data || []) })
+      .catch(() => { if (!cancelled) setBoardRoster([]) })
+    return () => { cancelled = true }
+  }, [isWs, activeId])
 
   // Pick an initial channel once loaded.
   useEffect(() => {
@@ -271,12 +332,21 @@ export default function Messages() {
   // Load messages + mark read when the active channel changes. When jumping to
   // a searched message, load the window ending at it (so it's the newest shown
   // and lands at the bottom) and briefly highlight it.
+  // Gated on `active`, not `activeId`: a deep link can name a channel before
+  // either list has loaded, and firing then would ask /chat for a channel that
+  // turns out to be a workspace board (a guaranteed 403 rendered as an empty
+  // room). Once the lists arrive the effect runs with the right base.
+  // `resolved` is a BOOLEAN, not the channel object: `active` is re-derived by
+  // .find() on every render, so depending on it would re-run this effect — and
+  // refetch the whole history — every time a socket message rebuilt either
+  // list. Every other dependency here is a primitive for the same reason.
+  const resolved = !!active
   useEffect(() => {
-    if (!activeId) return
+    if (!resolved) return
     let cancelled = false
     setLoadingMsgs(true); setThread(null)
     emit('channel:subscribe', { channelId: activeId })
-    const url = focusId ? `/chat/channels/${activeId}/messages?before=${focusId + 1}` : `/chat/channels/${activeId}/messages`
+    const url = focusId ? `${chatBase}/channels/${activeId}/messages?before=${focusId + 1}` : `${chatBase}/channels/${activeId}/messages`
     api.get(url).then(({ data }) => {
       if (cancelled) return
       setMessages(data.data || [])
@@ -287,24 +357,35 @@ export default function Messages() {
         setTimeout(() => setHighlightId(null), 2800)
       }
     }).catch(() => { if (!cancelled) setLoadingMsgs(false) })
-    api.post(`/chat/channels/${activeId}/read`).then(() => {
-      setChannels(cs => cs.map(c => c.id === activeId ? { ...c, unread: 0 } : c))
-    }).catch(() => {})
+    // No read pointer on a workspace board: the operator is not a member of it,
+    // and writing one would put their read state inside the tenant.
+    if (!isWs) {
+      api.post(`/chat/channels/${activeId}/read`).then(() => {
+        setChannels(cs => cs.map(c => c.id === activeId ? { ...c, unread: 0 } : c))
+      }).catch(() => {})
+    }
     return () => { cancelled = true }
-  }, [activeId, focusId, emit])
+  }, [resolved, activeId, isWs, chatBase, focusId, emit])
 
   // Auto-scroll to the newest message (skip while highlighting a jumped-to one).
   useEffect(() => { if (highlightId) return; const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight }, [messages, loadingMsgs, highlightId])
 
   // Debounced message search across all the caller's channels.
+  // Two independent searches — the operator's own channels and, in the console,
+  // every workspace board. Deliberately not awaited together: the HQ result is
+  // the common case and should not wait on a cross-tenant scan, and either side
+  // failing must not blank the other.
   useEffect(() => {
     const q = searchQ.trim()
-    if (q.length < 2) { setSearchResults(null); return }
+    if (q.length < 2) { setSearchResults(null); setBoardResults(null); return }
     const t = setTimeout(() => {
       api.get(`/chat/search?q=${encodeURIComponent(q)}`).then(({ data }) => setSearchResults(data.data || [])).catch(() => setSearchResults([]))
+      if (operatorMode) {
+        api.get(`/platform/chat/search?q=${encodeURIComponent(q)}`).then(({ data }) => setBoardResults(data.data || [])).catch(() => setBoardResults([]))
+      }
     }, 250)
     return () => clearTimeout(t)
-  }, [searchQ])
+  }, [searchQ, operatorMode])
 
   // ── Socket wiring ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -323,6 +404,14 @@ export default function Messages() {
             ? { ...c, unread: (c.unread || 0) + 1, last_message: { body: m.body, created_at: m.created_at, author_name: m.author_name } }
             : c))
         }
+        // Workspace boards live in their own list, so their preview has to be
+        // bumped there — otherwise a board shows a stale last line forever.
+        setBoards(ws => ws.map(w => ({
+          ...w,
+          channels: w.channels.map(c => c.id === m.channel_id
+            ? { ...c, last_message: { body: m.body, created_at: m.created_at, author_name: m.author_name, is_system: m.is_system, is_operator: m.is_operator } }
+            : c),
+        })))
         // Bump last_message preview + reorder for the active channel too.
         setChannels(cs => {
           const idx = cs.findIndex(c => c.id === m.channel_id)
@@ -371,14 +460,17 @@ export default function Messages() {
 
   // Unique first-name handle if unambiguous, else the flattened full name (both
   // match server-side mention resolution).
+  const mentionRoster = isWs ? boardRoster : roster
   const handleFor = (u) => {
     const first = (u.name || '').split(/\s+/)[0]
-    const dupe = roster.filter(x => (x.name || '').split(/\s+/)[0].toLowerCase() === first.toLowerCase()).length > 1
+    const dupe = mentionRoster.filter(x => (x.name || '').split(/\s+/)[0].toLowerCase() === first.toLowerCase()).length > 1
     return dupe ? (u.name || '').replace(/\s+/g, '') : first
   }
   const mentionOptions = mention ? [
-    ...['channel', 'here'].filter(s => s.startsWith(mention.query)).map(s => ({ key: '@' + s, label: '@' + s, sub: 'Notify everyone in this channel', handle: s })),
-    ...roster.filter(u => u.name?.toLowerCase().includes(mention.query) || u.email?.toLowerCase().includes(mention.query)).slice(0, 6)
+    // @channel is only fanned out by the tenant send route. Offering it on a
+    // workspace board would promise a notification nothing sends.
+    ...(isWs ? [] : ['channel', 'here'].filter(x => x.startsWith(mention.query)).map(x => ({ key: '@' + x, label: '@' + x, sub: 'Notify everyone in this channel', handle: x }))),
+    ...mentionRoster.filter(u => u.name?.toLowerCase().includes(mention.query) || u.email?.toLowerCase().includes(mention.query)).slice(0, 6)
       .map(u => ({ key: u.id, label: u.name, sub: u.role, handle: handleFor(u), name: u.name })),
   ] : []
   const insertMention = (handle) => {
@@ -399,6 +491,15 @@ export default function Messages() {
       catch { toast('Edit failed', 'error') }
       return
     }
+    if (isWs) {
+      if (!body) return
+      setText('')
+      try {
+        const { data } = await api.post(`/platform/chat/channels/${activeId}/messages`, { body })
+        setMessages(ms => ms.some(x => x.id === data.data.id) ? ms : [...ms, data.data])
+      } catch (e) { toast(e.response?.data?.error || 'Send failed', 'error'); setText(body) }
+      return
+    }
     const files = mainFiles
     setText(''); setMainFiles([])
     try { const msg = await postMessage(activeId, body, files); setMessages(ms => ms.some(x => x.id === msg.id) ? ms : [...ms, msg]) }
@@ -408,6 +509,15 @@ export default function Messages() {
   const sendThread = async () => {
     const body = threadText.trim()
     if ((!body && !threadFiles.length) || !thread) return
+    if (isWs) {
+      if (!body) return
+      setThreadText('')
+      try {
+        const { data } = await api.post(`/platform/chat/channels/${activeId}/messages`, { body, thread_root_id: thread.id })
+        setThreadMsgs(tm => tm.some(x => x.id === data.data.id) ? tm : [...tm, data.data])
+      } catch (e) { toast(e.response?.data?.error || 'Reply failed', 'error'); setThreadText(body) }
+      return
+    }
     const files = threadFiles
     setThreadText(''); setThreadFiles([])
     try { const msg = await postMessage(activeId, body, files, thread.id); setThreadMsgs(tm => tm.some(x => x.id === msg.id) ? tm : [...tm, msg]) }
@@ -427,7 +537,7 @@ export default function Messages() {
   }
   const openThread = async (m) => {
     setThread(m); setThreadMsgs([])
-    try { const { data } = await api.get(`/chat/channels/${activeId}/messages?thread=${m.id}`); setThreadMsgs(data.data || []) } catch { /* */ }
+    try { const { data } = await api.get(`${chatBase}/channels/${activeId}/messages?thread=${m.id}`); setThreadMsgs(data.data || []) } catch { /* */ }
   }
   const startEdit = (m) => { setEditing(m); setText(m.body) }
   const del = async (m) => {
@@ -460,7 +570,9 @@ export default function Messages() {
           {searchResults !== null ? (
             <div>
               <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide px-2 mb-1">
-                {searchResults.length ? `${searchResults.length} result${searchResults.length === 1 ? '' : 's'}` : 'No matches'}
+                {operatorMode ? 'Your channels' : null}
+                {!operatorMode && (searchResults.length ? `${searchResults.length} result${searchResults.length === 1 ? '' : 's'}` : 'No matches')}
+                {operatorMode && !searchResults.length && <span className="font-normal normal-case tracking-normal"> — no matches</span>}
               </p>
               {searchResults.map(r => {
                 const label = r.channel_type === 'dm' ? (r.dm_peer || 'Direct message')
@@ -477,6 +589,29 @@ export default function Messages() {
                   </button>
                 )
               })}
+              {operatorMode && (
+                <div className="mt-4">
+                  <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide px-2 mb-1">
+                    Workspace boards
+                    {boardResults === null
+                      ? <span className="font-normal normal-case tracking-normal"> — searching…</span>
+                      : !boardResults.length && <span className="font-normal normal-case tracking-normal"> — no matches</span>}
+                  </p>
+                  {(boardResults || []).map(r => (
+                    <button key={`b-${r.id}`} onClick={() => { openChannel(r.channel_id, r.id); setSearchQ('') }}
+                      className="w-full text-left px-2 py-2 rounded-lg hover:bg-page">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-1 h-3 rounded-full flex-shrink-0" style={{ background: wsColor({ id: r.label_id }) }} />
+                        <span className="text-xs font-semibold text-brand-600 truncate flex-1">#{r.channel_name}</span>
+                        <span className="text-[9px] font-bold text-gray-400 tracking-wide flex-shrink-0">{boardTags.get(Number(r.label_id))}</span>
+                        <span className="text-[10px] text-gray-400 flex-shrink-0">{new Date(r.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                      </div>
+                      <p className="text-[10px] text-gray-400 truncate pl-2.5">{r.workspace_name}</p>
+                      <p className="text-xs text-gray-600 truncate pl-2.5">{r.is_system ? '' : `${r.author_name || 'Unknown'}: `}{r.body}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           ) : (
             <>
@@ -490,6 +625,32 @@ export default function Messages() {
                   <ChannelButton key={c.id} c={c} active={c.id === activeId} onPick={openChannel} online={online} />
                 ))}
               </div>
+              {operatorMode && (
+                <div>
+                  <div className="flex items-center justify-between px-2 mb-1">
+                    <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Workspace boards</span>
+                    {boardsScoped && <span className="text-[9px] text-gray-400" title="You only see workspaces your operator access admits">scoped</span>}
+                  </div>
+                  <p className="text-[10px] text-gray-400 px-2 mb-1.5">Public channels in each workspace</p>
+                  {boards.length === 0 && <p className="text-[11px] text-gray-400 px-2">No workspace boards to show.</p>}
+                  {boards.map(w => (
+                    <div key={w.id} className="mb-2">
+                      <div className="flex items-center gap-1.5 px-2 py-1">
+                        <span className="w-1 h-3.5 rounded-full flex-shrink-0" style={{ background: wsColor(w) }} />
+                        <span className="text-[11px] font-bold text-ink truncate flex-1">{w.name}</span>
+                        <span className="text-[9px] font-bold text-gray-400 tracking-wide">{boardTags.get(Number(w.id))}</span>
+                        {w.status === 'suspended' && <span className="text-[9px] font-bold uppercase text-warning">susp</span>}
+                      </div>
+                      <div className="ml-2 pl-1.5 border-l border-divider">
+                        {w.channels.length === 0 && <p className="text-[11px] text-gray-400 px-2 py-1">No public channels yet</p>}
+                        {w.channels.map(c => (
+                          <ChannelButton key={c.id} c={c} active={c.id === activeId} onPick={openChannel} online={online} />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               {channels.some(c => c.type === 'object') && (
                 <div>
                   <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide px-2">Threads</span>
@@ -517,30 +678,56 @@ export default function Messages() {
                 : (active.is_private ? <Lock size={16} className="text-gray-400" /> : <Hash size={18} className="text-gray-400" />)}
               <div className="min-w-0">
                 <p className="font-bold text-ink truncate leading-tight">{active.display_name || active.name || 'Thread'}</p>
-                {active.topic ? <p className="text-xs text-gray-400 truncate">{active.topic}</p>
+                {isWs ? (
+                  <p className="text-xs text-gray-400 truncate flex items-center gap-1">
+                    <Building2 size={11} /> {active.workspace_name}{active.topic ? ` · ${active.topic}` : ''}
+                  </p>
+                ) : active.topic ? <p className="text-xs text-gray-400 truncate">{active.topic}</p>
                   : active.type === 'object' && <p className="text-xs text-gray-400 truncate">Record discussion</p>}
               </div>
               <div className="ml-auto flex items-center gap-3">
-                {active.type === 'channel' && <span className="text-xs text-gray-400 flex items-center gap-1"><Users size={13} /> {active.members?.length || 0}</span>}
-                <button onClick={toggleMute} title={active.muted ? 'Unmute (count in badge again)' : 'Mute (hide from unread badge)'} className={`${active.muted ? 'text-amber-500' : 'text-gray-400'} hover:text-brand-600`}>
-                  {active.muted ? <BellOff size={16} /> : <Bell size={16} />}
-                </button>
+                {isWs ? (
+                  <>
+                    <span className="text-xs text-gray-400 flex items-center gap-1"><Users size={13} /> {active.member_count || 0}</span>
+                    <button onClick={() => setAccessLog(accessLog ? null : active.label_id)}
+                      className={`flex items-center gap-1 text-xs ${accessLog ? 'text-brand-600' : 'text-gray-400'} hover:text-brand-600`}
+                      title="Which operators have read or posted in this workspace">
+                      <Eye size={14} /> Access log
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {active.type === 'channel' && <span className="text-xs text-gray-400 flex items-center gap-1"><Users size={13} /> {active.members?.length || 0}</span>}
+                    <button onClick={toggleMute} title={active.muted ? 'Unmute (count in badge again)' : 'Mute (hide from unread badge)'} className={`${active.muted ? 'text-amber-500' : 'text-gray-400'} hover:text-brand-600`}>
+                      {active.muted ? <BellOff size={16} /> : <Bell size={16} />}
+                    </button>
+                  </>
+                )}
               </div>
             </header>
 
             <div ref={scrollRef} className={`flex-1 overflow-y-auto relative ${dragOver ? 'ring-2 ring-brand-400 ring-inset' : ''}`}
-              onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+              onDragOver={e => { e.preventDefault(); if (!isWs) setDragOver(true) }}
               onDragLeave={() => setDragOver(false)}
-              onDrop={e => { e.preventDefault(); setDragOver(false); addFiles(setMainFiles)(e.dataTransfer.files) }}>
+              onDrop={e => { e.preventDefault(); setDragOver(false); if (!isWs) addFiles(setMainFiles)(e.dataTransfer.files) }}>
               {dragOver && <div className="absolute inset-0 z-10 flex items-center justify-center bg-brand-500/10/80 text-brand-700 font-medium text-sm pointer-events-none">Drop files to attach</div>}
               {loadingMsgs ? <div className="p-6 text-sm text-gray-400">Loading…</div>
-                : messages.length === 0 ? <div className="p-6 text-sm text-gray-400">This is the beginning of {active.display_name ? `your conversation with ${active.display_name}` : `#${active.name}`}.</div>
-                : <MessageList messages={messages} myId={user.id} myHandles={myHandles} highlightId={highlightId} onReact={react} onReply={openThread} onEdit={startEdit} onDelete={del} showThread />}
+                : messages.length === 0 ? <div className="p-6 text-sm text-gray-400">{isWs ? `Nothing has been posted in #${active.name} yet.` : `This is the beginning of ${active.display_name ? `your conversation with ${active.display_name}` : `#${active.name}`}.`}</div>
+                : <MessageList messages={messages} myId={user.id} myHandles={myHandles} highlightId={highlightId} onReact={react} onReply={openThread} onEdit={startEdit} onDelete={del} showThread limited={isWs} />}
             </div>
 
             <div className="px-4 pb-3 flex-shrink-0">
               {typingNames.length > 0 && <p className="text-xs text-gray-400 mb-1 h-4">{typingNames.join(', ')} {typingNames.length === 1 ? 'is' : 'are'} typing…</p>}
               {editing && <div className="text-xs text-amber-600 mb-1 flex items-center gap-2">Editing message <button onClick={() => { setEditing(null); setText('') }} className="underline">cancel</button></div>}
+              {isWs && (
+                <div className="flex items-start gap-1.5 text-[11px] text-warning mb-1.5">
+                  <ShieldAlert size={13} className="flex-shrink-0 mt-px" />
+                  <span>
+                    Posting into <strong className="font-semibold">{active.workspace_name}</strong>. Everyone in
+                    {' '}#{active.name} sees this, labelled <strong className="font-semibold">Cadence team</strong> — you are not a member of this workspace.
+                  </span>
+                </div>
+              )}
               <div className="relative border border-rule rounded-xl bg-card p-2">
                 {mention && mentionOptions.length > 0 && (
                   <div className="absolute bottom-full left-2 mb-2 w-64 bg-card border border-rule rounded-lg shadow-modal overflow-hidden z-20">
@@ -556,7 +743,10 @@ export default function Messages() {
                 <FileChips files={mainFiles} onRemove={i => setMainFiles(fs => fs.filter((_, idx) => idx !== i))} />
                 <div className="flex items-end gap-1">
                   <input ref={fileInputRef} type="file" multiple hidden onChange={e => { addFiles(setMainFiles)(e.target.files); e.target.value = '' }} />
-                  <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-400 hover:text-brand-600" title="Attach files"><Paperclip size={17} /></button>
+                  {/* No attachments onto a workspace board: an upload endpoint
+                      reachable from outside the tenant is a wider door than
+                      reading and replying needs. */}
+                  {!isWs && <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-400 hover:text-brand-600" title="Attach files"><Paperclip size={17} /></button>}
                   <textarea
                     ref={mainTextRef} value={text} onChange={onType} rows={1}
                     onKeyDown={e => {
@@ -565,10 +755,10 @@ export default function Messages() {
                       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
                     }}
                     onPaste={e => { const fs = [...e.clipboardData.files]; if (fs.length) { e.preventDefault(); addFiles(setMainFiles)(fs) } }}
-                    placeholder={active.type === 'dm' ? `Message ${active.display_name}` : active.type === 'object' ? 'Message this thread' : `Message #${active.name}`}
+                    placeholder={isWs ? `Reply in #${active.name} as the Cadence team` : active.type === 'dm' ? `Message ${active.display_name}` : active.type === 'object' ? 'Message this thread' : `Message #${active.name}`}
                     className="flex-1 resize-none bg-transparent outline-none text-sm text-ink max-h-40 py-1.5 px-1"
                   />
-                  <button onClick={send} disabled={!text.trim() && !mainFiles.length} className="p-2 rounded-lg bg-brand-600 text-white disabled:opacity-40 hover:bg-brand-700"><Send size={16} /></button>
+                  <button onClick={send} disabled={!text.trim() && (isWs || !mainFiles.length)} className="p-2 rounded-lg bg-brand-600 text-white disabled:opacity-40 hover:bg-brand-700"><Send size={16} /></button>
                 </div>
               </div>
             </div>
@@ -585,16 +775,16 @@ export default function Messages() {
           </header>
           <div className="flex-1 overflow-y-auto">
             <div className="border-b border-rule pb-2">
-              <MessageRow m={thread} myId={user.id} myHandles={myHandles} onReact={react} onReply={() => {}} onEdit={startEdit} onDelete={del} showThread={false} />
+              <MessageRow m={thread} myId={user.id} myHandles={myHandles} onReact={react} onReply={() => {}} onEdit={startEdit} onDelete={del} showThread={false} limited={isWs} />
             </div>
-            <MessageList messages={threadMsgs} myId={user.id} myHandles={myHandles} onReact={react} onReply={() => {}} onEdit={startEdit} onDelete={del} showThread={false} />
+            <MessageList messages={threadMsgs} myId={user.id} myHandles={myHandles} onReact={react} onReply={() => {}} onEdit={startEdit} onDelete={del} showThread={false} limited={isWs} />
           </div>
           <div className="p-3 flex-shrink-0">
             <div className="border border-rule rounded-xl bg-card p-2">
               <FileChips files={threadFiles} onRemove={i => setThreadFiles(fs => fs.filter((_, idx) => idx !== i))} />
               <div className="flex items-end gap-1">
                 <input ref={threadFileRef} type="file" multiple hidden onChange={e => { addFiles(setThreadFiles)(e.target.files); e.target.value = '' }} />
-                <button onClick={() => threadFileRef.current?.click()} className="p-2 text-gray-400 hover:text-brand-600" title="Attach files"><Paperclip size={17} /></button>
+                {!isWs && <button onClick={() => threadFileRef.current?.click()} className="p-2 text-gray-400 hover:text-brand-600" title="Attach files"><Paperclip size={17} /></button>}
                 <textarea value={threadText} onChange={e => setThreadText(e.target.value)} rows={1}
                   onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendThread() } }}
                   onPaste={e => { const fs = [...e.clipboardData.files]; if (fs.length) { e.preventDefault(); addFiles(setThreadFiles)(fs) } }}
@@ -606,8 +796,64 @@ export default function Messages() {
         </aside>
       )}
 
+      {accessLog != null && (
+        <AccessLogPanel labelId={accessLog} workspaceName={activeWorkspace?.name || active?.workspace_name} onClose={() => setAccessLog(null)} />
+      )}
+
       {newModal && <NewConversationModal mode={newModal} onClose={() => setNewModal(null)} onDone={(id) => { setNewModal(null); loadChannels().then(() => id && setActiveId(id)) }} toast={toast} />}
     </div>
+  )
+}
+
+// Who has been looking. Reading a workspace board leaves no trace the tenant
+// can see, which is the whole reason it leaves one operators can: the people
+// with the same access are the check on it.
+function AccessLogPanel({ labelId, workspaceName, onClose }) {
+  const [rows, setRows] = useState(null)
+  const [error, setError] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    setRows(null); setError(false)
+    api.get(`/platform/chat/audit?label_id=${labelId}&limit=60`)
+      .then(({ data }) => { if (!cancelled) setRows(data.data || []) })
+      .catch(() => { if (!cancelled) setError(true) })
+    return () => { cancelled = true }
+  }, [labelId])
+  return (
+    <aside className="w-80 border-l border-rule flex flex-col bg-card hidden xl:flex">
+      <header className="h-14 px-4 border-b border-rule flex items-center justify-between flex-shrink-0">
+        <div className="min-w-0">
+          <p className="font-bold text-ink leading-tight">Access log</p>
+          <p className="text-[11px] text-gray-400 truncate">{workspaceName}</p>
+        </div>
+        <button onClick={onClose} className="text-gray-400 hover:text-ink"><X size={18} /></button>
+      </header>
+      <div className="flex-1 overflow-y-auto p-3">
+        <p className="text-[11px] text-gray-400 mb-3">
+          Operator reads and posts on this workspace's boards. Not visible to the workspace.
+          Repeat views of one channel are recorded once every 10 minutes.
+        </p>
+        {error ? <p className="text-sm text-danger">Couldn't load the log.</p>
+          : rows === null ? <p className="text-sm text-gray-400">Loading…</p>
+          : rows.length === 0 ? <p className="text-sm text-gray-400">No operator has opened these boards yet.</p>
+          : rows.map(r => (
+            <div key={r.id} className="flex items-start gap-2 py-1.5 border-b border-divider last:border-0">
+              {r.action === 'post' ? <Send size={12} className="text-brand-600 flex-shrink-0 mt-1" />
+                : r.action === 'search' ? <Search size={12} className="text-gray-400 flex-shrink-0 mt-1" />
+                : <Eye size={12} className="text-gray-400 flex-shrink-0 mt-1" />}
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-ink truncate">
+                  <span className="font-semibold">{r.operator_name || r.operator_email || 'Operator'}</span>
+                  {r.action === 'search'
+                    ? <> searched boards for <span className="text-gray-600">“{r.detail}”</span></>
+                    : <>{r.action === 'post' ? ' posted in ' : ' read '}<span className="text-gray-600">#{r.channel_name || r.channel_id}</span></>}
+                </p>
+                <p className="text-[10px] text-gray-400">{new Date(r.created_at).toLocaleString()}</p>
+              </div>
+            </div>
+          ))}
+      </div>
+    </aside>
   )
 }
 

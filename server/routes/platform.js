@@ -12,6 +12,7 @@ const { sendEmail, inviteEmail } = require('../lib/email');
 const { deleteUserWithSweep } = require('../lib/userDelete');
 const aiUsage = require('../lib/aiUsage');
 const activityBot = require('../lib/activityBot');
+const { operatorAccess, accessibleLabelIds, scopeClause } = require('../lib/operatorAccess');
 const { toUSD, warmRates } = require('../lib/fx');
 const { dayString, isValidDay } = require('../lib/calendarDay');
 const { foldMoney, buildAttention, round2 } = require('../lib/platformRollup');
@@ -534,43 +535,10 @@ router.get('/activity', async (req, res) => {
 // everybody today — which is why /analytics is deliberately not in this list.
 const RESTRICTABLE_PAGES = ['/workspaces', '/calendar', '/activity', '/announcements'];
 
-async function operatorAccess(email) {
-  const e = (email || '').toLowerCase();
-  const [ws, pg] = await Promise.all([
-    pool.query('SELECT label_id FROM operator_workspace_access WHERE operator_email = $1', [e]),
-    pool.query('SELECT page FROM operator_page_access WHERE operator_email = $1', [e]),
-  ]);
-  return {
-    workspaces: ws.rows.length ? ws.rows.map(r => r.label_id) : null, // null = all
-    pages: pg.rows.length ? pg.rows.map(r => r.page) : null,          // null = all
-  };
-}
-
-// The workspace ids this operator may SEE, or null for "no restriction".
-//
-// The allowlist used to gate only /enter and the member mutations, so a
-// restricted admin still read counts and audit lines for workspaces they were
-// explicitly blocked from. Visibility and reachability are now the same
-// answer. Owners are never restricted.
-//
-// Note operatorAccess() collapses "no rows" to null, so this never returns an
-// empty array by accident — an empty allowlist would mean "nothing", and
-// conflating that with "everything" is the classic inverse-state bug.
-async function accessibleLabelIds(req) {
-  if (req.user.platform_role === 'owner') return null;
-  const access = await operatorAccess(req.user.email);
-  return access.workspaces;
-}
-
-// Append ` AND <col> = ANY($n)` when the operator is restricted, pushing the id
-// array onto `params`. A no-op when unrestricted, so callers read the same
-// either way. `= ANY(empty)` matches nothing, which is the correct reading of
-// an explicitly-empty allowlist.
-function scopeClause(ids, col, params) {
-  if (!ids) return '';
-  params.push(ids);
-  return ` AND ${col} = ANY($${params.length}::int[])`;
-}
+// operatorAccess / accessibleLabelIds / scopeClause now live in
+// lib/operatorAccess.js — the cross-tenant message boards need the identical
+// answer, and a second copy of a visibility rule is how one console page ends
+// up showing a workspace another page has blocked.
 
 // Middleware: an admin-tier operator may only act on a workspace that's in
 // their allowlist (owners are unrestricted). Mirrors the /enter check — applied

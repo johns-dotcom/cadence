@@ -10,6 +10,7 @@ const sanitize = require('./middleware/sanitize');
 
 const authRoutes = require('./routes/auth');
 const platformRoutes = require('./routes/platform');
+const platformChatRoutes = require('./routes/platform-chat');
 const labelsRoutes = require('./routes/labels');
 const teamRoutes = require('./routes/team');
 const emailRoutes = require('./routes/email');
@@ -218,6 +219,7 @@ app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/forgot-password', authLimiter);
 app.use('/api/auth/reset-password', authLimiter);
 app.use('/api/auth', authRoutes);
+app.use('/api/platform/chat', platformChatRoutes);
 app.use('/api/platform', platformRoutes);
 app.use('/api/label', labelsRoutes);
 app.use('/api/team', teamRoutes);
@@ -2071,6 +2073,42 @@ const runMigrations = async () => {
   // meta carries an icon + deep-link for the client to render.
   await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE`);
   await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS meta JSONB`);
+
+  // Cross-tenant operator posts. A platform operator writing into a workspace
+  // board is NOT a colleague, and the tenant has to be able to tell at a
+  // glance — so the fact is a column on the message, not an inference from the
+  // author's home label (which a reader can't see). Authored by the operator's
+  // REAL user id, whose users row lives in Platform HQ; MSG_SELECT's author
+  // join is deliberately un-label-scoped, so the name still resolves.
+  await pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS is_operator BOOLEAN DEFAULT FALSE`);
+
+  // Operator reads/posts on tenant boards. Deliberately a platform-side table,
+  // not activity_log: activity_log is the TENANT's feed, and surfacing reads
+  // there would make observation visible to the workspace being observed. A
+  // post is self-disclosing (the message appears in their channel); a read is
+  // not, which is exactly why it is recorded here.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS operator_chat_audit (
+      id SERIAL PRIMARY KEY,
+      operator_id INT REFERENCES users(id) ON DELETE SET NULL,
+      operator_email VARCHAR(255),
+      operator_name VARCHAR(255),
+      label_id INT REFERENCES labels(id) ON DELETE CASCADE,
+      channel_id INT,
+      channel_name VARCHAR(120),
+      action VARCHAR(20) NOT NULL,
+      message_id INT,
+      ip_address VARCHAR(100),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_operator_chat_audit_label ON operator_chat_audit (label_id, created_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_operator_chat_audit_recent ON operator_chat_audit (created_at DESC)`);
+  // What was searched for. A cross-tenant search reads message bodies across
+  // workspaces without ever opening one, so the log has to be able to say what
+  // was looked for — `channel_name` would render a query as if it were a
+  // channel, which is worse than not recording it.
+  await pool.query(`ALTER TABLE operator_chat_audit ADD COLUMN IF NOT EXISTS detail VARCHAR(200)`);
 
   // ── Bank statements / reconciliation (item 8, premium finance) ──────────
   // Statements are a LENS over the master ledger — no staging copy. A parsed
