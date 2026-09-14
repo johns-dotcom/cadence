@@ -7,6 +7,7 @@ import UpdateBanner from './components/UpdateBanner'
 import PlatformLayout from './components/PlatformLayout'
 import PlatformOverview from './pages/PlatformOverview'
 import PlatformActivity from './pages/PlatformActivity'
+import PlatformMyWork from './pages/PlatformMyWork'
 import PlatformCalendar from './pages/PlatformCalendar'
 import PlatformAnalytics from './pages/PlatformAnalytics'
 import PlatformAnnouncements from './pages/PlatformAnnouncements'
@@ -165,6 +166,7 @@ function AppContent() {
         /* ── Platform operator shell ── */
         <Route element={<ProtectedRoute><PlatformLayout /></ProtectedRoute>}>
           <Route path="/"           element={<PlatformOverview />} />
+          <Route path="/my-work"    element={<PlatformMyWork />} />
           <Route path="/messages"   element={<Messages />} />
           <Route path="/messages/:channelId" element={<Messages />} />
           <Route path="/workspaces" element={<Workspaces />} />

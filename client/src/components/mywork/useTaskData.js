@@ -43,7 +43,17 @@ export function midpointFor(tasks, beforeId, afterId) {
   return null
 }
 
-export default function useTaskData(surface = 'mine') {
+/**
+ * `enabled: false` makes this hook inert — no fetches, no state churn.
+ *
+ * It exists because /my-work now OWNS its data: the page needs the same task
+ * array for its status pills, its Today tab and its rail as TaskSurface uses for
+ * the board, and two fetches would mean two arrays that can disagree about a
+ * count. TaskSurface therefore accepts a `data` prop, but a hook cannot be
+ * called conditionally — so it always calls this one and switches it off when a
+ * parent supplied the data instead.
+ */
+export default function useTaskData(surface = 'mine', { enabled = true } = {}) {
   const { toast } = useToast()
   // Impersonation and "enter workspace" swap the acting user WITHOUT unmounting the
   // route, so a load keyed only on `surface` left the previous person's tasks on
@@ -69,13 +79,14 @@ export default function useTaskData(surface = 'mine') {
   tasksRef.current = tasks
 
   const load = useCallback(() => {
+    if (!enabled) return Promise.resolve()
     setLoading(true)
     const url = surface === 'team' ? '/tasks?scope=team' : '/tasks'
     return api.get(url)
       .then(res => { setTasks(res.data.data || []); setError(null) })
       .catch(err => setError(err.response?.data?.error || 'Failed to load tasks'))
       .finally(() => setLoading(false))
-  }, [surface, actingUserId])
+  }, [surface, actingUserId, enabled])
 
   useEffect(() => { load() }, [load])
 
@@ -83,6 +94,7 @@ export default function useTaskData(surface = 'mine') {
   // roster all need names. GET /api/team is auth-only (not admin-gated) and
   // returns only name/email/role/department, already visible app-wide.
   useEffect(() => {
+    if (!enabled) return
     api.get('/team').then(res => setMembers(res.data.data || [])).catch(() => {})
     // Options for the drawer's release picker. `in_catalog=any&archived=any` opts
     // OUT of GET /releases' pipeline default — a task can legitimately hang off a
@@ -90,7 +102,7 @@ export default function useTaskData(surface = 'mine') {
     // those from the list while the task still displayed one.
     api.get('/releases', { params: { in_catalog: 'any', archived: 'any', limit: 500 } })
       .then(res => setReleases(res.data.data || [])).catch(() => {})
-  }, [actingUserId])
+  }, [actingUserId, enabled])
 
   const applyLocal = useCallback((id, fields) => {
     setTasks(ts => ts.map(t => (t.id === id ? { ...t, ...fields } : t)))

@@ -15,24 +15,35 @@ import { useAuth } from '../../context/AuthContext'
 import { localDateStr } from '../../utils/dates'
 import { dueBucketOf, isOpen } from './taskFields'
 
-function Tile({ to, icon: Icon, accent, iconClass, count, label, children }) {
+function Tile({ to, icon: Icon, accent, iconClass, count, label, rail, children }) {
   const inner = (
     <>
-      <Icon size={20} className={`${iconClass} flex-shrink-0`} aria-hidden="true" />
+      <Icon size={rail ? 16 : 20} className={`${iconClass} flex-shrink-0`} aria-hidden="true" />
       <div className="min-w-0">
-        <p className="text-lg font-bold text-ink leading-none">{count}</p>
+        <p className={`${rail ? 'text-sm' : 'text-lg'} font-bold text-ink leading-none`}>{count}</p>
         <p className="text-[11px] text-ink-muted mt-1">{label}</p>
         {children}
       </div>
     </>
   )
-  const cls = `card p-4 flex items-center gap-3 border-l-4 ${accent} min-w-[13rem] sm:min-w-0`
+  // In the rail every tile is full-width and stacked; in the strip they are
+  // fixed-width cards that scroll sideways on a phone.
+  const cls = rail
+    ? `card p-3 flex items-center gap-2.5 border-l-4 ${accent}`
+    : `card p-4 flex items-center gap-3 border-l-4 ${accent} min-w-[13rem] sm:min-w-0`
   return to
     ? <Link to={to} className={`${cls} hover:bg-elev transition`}>{inner}</Link>
     : <div className={cls}>{inner}</div>
 }
 
-export default function WaitingOnYou({ tasks, onBulkPatch }) {
+/**
+ * `layout="rail"` stacks the tiles into the right-hand column /my-work now runs;
+ * the default "strip" is the full-width row /team-work-shaped surfaces use. Same
+ * data, same components — only the geometry differs, so a fix to either lands on
+ * both.
+ */
+export default function WaitingOnYou({ tasks, onBulkPatch, layout = 'strip' }) {
+  const rail = layout === 'rail'
   const { user } = useAuth()
   const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
   const [pending, setPending] = useState(0)
@@ -84,15 +95,20 @@ export default function WaitingOnYou({ tasks, onBulkPatch }) {
   if (nothing) return null
 
   return (
-    <div className="mb-6">
+    <div className={rail ? '' : 'mb-6'}>
       <h2 className="text-xs font-bold text-ink-muted uppercase tracking-wide mb-2">Waiting on you</h2>
 
       {/* Horizontal strip on phones, tiles from sm up. */}
-      <div className="flex gap-3 overflow-x-auto pb-1 sm:overflow-visible sm:pb-0 sm:grid sm:grid-cols-2 lg:grid-cols-4">
+      <div className={rail
+        ? 'space-y-2'
+        : 'flex gap-3 overflow-x-auto pb-1 sm:overflow-visible sm:pb-0 sm:grid sm:grid-cols-2 lg:grid-cols-4'}>
         {overdue > 0 && (
-          <Tile icon={AlertTriangle} accent="border-l-red-500" iconClass="text-red-500" count={overdue}
+          <Tile rail={rail} icon={AlertTriangle} accent="border-l-red-500" iconClass="text-red-500" count={overdue}
             label={`Overdue task${overdue === 1 ? '' : 's'}`}>
-            {onBulkPatch && (
+            {/* One writer for "pull everything late onto today". On /my-work the
+                To Do Today tab owns that control, right above the rows it moves;
+                offering it twice on one screen is two buttons for one act. */}
+            {onBulkPatch && !rail && (
               <button
                 onClick={rescheduleOverdue}
                 disabled={rescheduling}
@@ -106,22 +122,22 @@ export default function WaitingOnYou({ tasks, onBulkPatch }) {
         )}
 
         {mentions.length > 0 && (
-          <Tile icon={AtSign} accent="border-l-violet-500" iconClass="text-violet-500"
+          <Tile rail={rail} icon={AtSign} accent="border-l-violet-500" iconClass="text-violet-500"
             count={mentions.length} label={`Unread mention${mentions.length === 1 ? '' : 's'}`} />
         )}
 
         {reminders.length > 0 && (
-          <Tile to="/bank-statements" icon={CalendarClock} accent="border-l-sky-500" iconClass="text-sky-500"
+          <Tile rail={rail} to="/bank-statements" icon={CalendarClock} accent="border-l-sky-500" iconClass="text-sky-500"
             count={reminders.length} label={`Reminder${reminders.length === 1 ? '' : 's'} due`} />
         )}
 
         {pending > 0 && (
-          <Tile to="/approvals" icon={Stamp} accent="border-l-amber-500" iconClass="text-amber-500"
+          <Tile rail={rail} to="/approvals" icon={Stamp} accent="border-l-amber-500" iconClass="text-amber-500"
             count={pending} label="Awaiting your approval" />
         )}
 
         {reviewCount > 0 && (
-          <Tile to="/artist-campaigns" icon={Inbox} accent="border-l-brand-500" iconClass="text-brand-500"
+          <Tile rail={rail} to="/artist-campaigns" icon={Inbox} accent="border-l-brand-500" iconClass="text-brand-500"
             count={reviewCount} label={`Campaign${reviewCount === 1 ? '' : 's'} to review`} />
         )}
       </div>

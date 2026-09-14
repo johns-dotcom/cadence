@@ -11,6 +11,7 @@ const sanitize = require('./middleware/sanitize');
 const authRoutes = require('./routes/auth');
 const platformRoutes = require('./routes/platform');
 const platformChatRoutes = require('./routes/platform-chat');
+const platformWorkRoutes = require('./routes/platform-work');
 const labelsRoutes = require('./routes/labels');
 const teamRoutes = require('./routes/team');
 const emailRoutes = require('./routes/email');
@@ -220,6 +221,9 @@ app.use('/api/auth/forgot-password', authLimiter);
 app.use('/api/auth/reset-password', authLimiter);
 app.use('/api/auth', authRoutes);
 app.use('/api/platform/chat', platformChatRoutes);
+// Before /api/platform, same as chat: the generic router would otherwise
+// swallow /work as an unknown path on itself.
+app.use('/api/platform/work', platformWorkRoutes);
 app.use('/api/platform', platformRoutes);
 app.use('/api/label', labelsRoutes);
 app.use('/api/team', teamRoutes);

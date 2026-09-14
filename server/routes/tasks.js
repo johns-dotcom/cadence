@@ -190,22 +190,37 @@ router.get('/', async (req, res) => {
   try {
     const params = [req.labelId];
     let where = 't.label_id = $1';
+    // True only on the default branch (my own tasks). Everything else is a view
+    // of OTHER people's work and gets the operator-ghost exclusion below.
+    let selfOnly = true;
 
     if (req.query.scope === 'team') {
       const frag = teamFilter(req, params);
       if (frag === null) return res.status(403).json({ success: false, error: 'Not a team lead' });
       where += frag;
+      selfOnly = false;
     } else if (isAdmin(req) && req.query.scope === 'all') {
-      // no extra filter — whole workspace
+      selfOnly = false; // no extra filter — whole workspace
     } else if (isAdmin(req) && req.query.user_id) {
       const uid = parseInt(req.query.user_id, 10);
       if (!Number.isInteger(uid)) return res.status(400).json({ success: false, error: 'Invalid user_id' });
       params.push(uid);
       where += ` AND t.user_id = $${params.length}`;
+      selfOnly = false;
     } else {
       params.push(req.user.id);
       where += ` AND t.user_id = $${params.length}`;
     }
+
+    // A platform operator holds a hidden membership in every workspace they have
+    // entered (lib/operatorGhost), and files their own cross-tenant to-do list
+    // against it from the console. routes/team.js already keeps that identity out
+    // of the workspace's roster; without the same exclusion here, those private
+    // notes would be published to every admin on /team-work — and the operator
+    // would show up as a team member carrying load in the Workload view.
+    // `IS NULL` keeps ORPHANED tasks (assignee removed) visible, which is the
+    // documented behaviour one comment down.
+    if (!selfOnly) where += ' AND (u.is_platform_admin = false OR u.is_platform_admin IS NULL)';
 
     // NOTE: an unassigned task (user_id went NULL when its owner was removed) has
     // no department, so it is invisible to a department-scoped Approver and shows

@@ -86,6 +86,22 @@ export function dueLabel(task) {
 
 export const isOpen = (t) => t.status !== 'Done'
 
+/**
+ * May this person mutate this task? The client mirror of canMutateTask in
+ * server/routes/tasks.js — own task · admin · or an Approver whose department
+ * matches the task OWNER's department.
+ *
+ * Pure and shared because TWO surfaces now ask: the database (TaskSurface) and
+ * the To Do Today tab, which hangs Start/snooze/done off the same cards. Two
+ * copies is how a button appears that is guaranteed to 403.
+ */
+export function canEditTaskFor(task, user) {
+  if (!task || !user) return false
+  if (task.user_id === user.id) return true
+  if (['Superadmin', 'Admin'].includes(user.role)) return true
+  return user.role === 'Approver' && !!user.department && task.assignee_department === user.department
+}
+
 // ── Group-by / sort options ────────────────────────────────────────────────
 // teamOnly: meaningless on /my-work (a single-person dataset).
 // adminOnly: a department lead's dataset is one department by construction.
@@ -169,7 +185,11 @@ export function matches(task, f = {}) {
 }
 
 // ── Sorting ────────────────────────────────────────────────────────────────
-const PRIORITY_RANK = Object.fromEntries(TASK_PRIORITIES.map((p, i) => [p, i]))
+// Derived from the vocabulary, never hand-listed: a second literal map is how a
+// new priority level ends up sorting below Low on one surface and above it on
+// another. Exported because the To Do Today tab and the operator console both
+// order by urgency too.
+export const PRIORITY_RANK = Object.fromEntries(TASK_PRIORITIES.map((p, i) => [p, i]))
 const STATUS_RANK = Object.fromEntries(TASK_STATUSES.map((s, i) => [s, i]))
 
 // Returns a comparable primitive, or null to mean "sorts last" regardless of

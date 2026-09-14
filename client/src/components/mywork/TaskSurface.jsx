@@ -21,7 +21,7 @@ import { formatDate, localDateStr } from '../../utils/dates'
 import useTaskData from './useTaskData'
 import useTaskView from './useTaskView'
 import useTaskDnd from './useTaskDnd'
-import { canDropInGroup, categoriesIn, dueBucketOf, groupFieldFor, groupTasks, isOpen, parseQuickAdd } from './taskFields'
+import { canDropInGroup, canEditTaskFor, categoriesIn, groupFieldFor, groupTasks, parseQuickAdd } from './taskFields'
 import TaskToolbar from './TaskToolbar'
 import Popover from './Popover'
 import TaskBoard from './TaskBoard'
@@ -30,6 +30,7 @@ import TaskCalendar from './TaskCalendar'
 import TaskDrawer from './TaskDrawer'
 import WorkloadView, { DEFAULT_CAPACITY } from './WorkloadView'
 import WaitingOnYou from './WaitingOnYou'
+import StatusPills from './StatusPills'
 
 // A menu button for the bulk bar. Deliberately buttons, not a <select> — see the
 // comment at the bar itself.
@@ -95,29 +96,21 @@ function ShorthandHint({ parsed, raw }) {
 // board renders and the same dueBucketOf, so the pills can never disagree with the
 // groups underneath them — which is why this lives here rather than on the page,
 // where it would need its own fetch and its own overdue rule.
-function StatusPills({ tasks }) {
-  const open = tasks.filter(isOpen)
-  const overdue = open.filter(t => dueBucketOf(t) === 'overdue').length
-  const today = open.filter(t => dueBucketOf(t) === 'today').length
-  const inProgress = open.filter(t => t.status === 'In Progress').length
-  const pills = [
-    overdue && { key: 'o', text: `${overdue} overdue`, cls: 'bg-red-500 text-white' },
-    today && { key: 't', text: `${today} due today`, cls: 'bg-amber-500 text-white' },
-    inProgress && { key: 'p', text: `${inProgress} in progress`, cls: 'bg-blue-500 text-white' },
-    open.length && { key: 'n', text: `${open.length} open`, cls: 'bg-elev text-ink-muted' },
-  ].filter(Boolean)
-
-  if (!pills.length) return null
-  return (
-    <div className="flex flex-wrap items-center gap-1.5 mb-4">
-      {pills.map(p => (
-        <span key={p.key} className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${p.cls}`}>{p.text}</span>
-      ))}
-    </div>
-  )
-}
-
-export default function TaskSurface({ surface = 'mine' }) {
+/**
+ * Props beyond `surface` exist so /my-work can put this database inside boom's
+ * tabbed shell without forking it:
+ *
+ *  · `data`   — a useTaskData result owned by the PAGE. The page's status pills,
+ *               its To Do Today tab and this board then reduce over one array, so
+ *               a tab count can never disagree with the rows behind it. Omitted
+ *               (Team Work), this fetches its own.
+ *  · `chrome` — false when the page renders the pills and the rail itself.
+ *  · `active` — false while this surface is mounted but hidden behind another
+ *               tab. Keeps its view config, search text and selection alive
+ *               across a tab switch while its hotkeys stay out of the way of
+ *               whatever IS on screen.
+ */
+export default function TaskSurface({ surface = 'mine', data: externalData = null, chrome = true, active = true }) {
   const { user, label } = useAuth()
   const isMobile = useIsMobile()
   const searchRef = useRef(null)
@@ -130,7 +123,10 @@ export default function TaskSurface({ surface = 'mine' }) {
   // merged by PATCH /api/label) and is already on AuthContext, so this costs no fetch.
   const capacity = Number(label?.settings?.task_capacity) || DEFAULT_CAPACITY
 
-  const data = useTaskData(surface)
+  // A hook cannot be called conditionally, so the own-data hook is always called
+  // and switched OFF when the page supplied its own — see useTaskData's `enabled`.
+  const ownData = useTaskData(surface, { enabled: !externalData })
+  const data = externalData || ownData
   const { tasks, members, releases, loading, error } = data
 
   const [collapsed, setCollapsed] = useState(() => new Set())
@@ -144,11 +140,7 @@ export default function TaskSurface({ surface = 'mine' }) {
 
   // ── Permissions: mirror the server so affordances match what will succeed ──
   // Server equivalent: canMutateTask in server/routes/tasks.js.
-  const canEditTask = useCallback((task) => {
-    if (!task) return false
-    if (task.user_id === user?.id || isAdmin) return true
-    return isApprover && !!myDept && task.assignee_department === myDept
-  }, [user?.id, isAdmin, isApprover, myDept])
+  const canEditTask = useCallback((task) => canEditTaskFor(task, user), [user])
 
   // Reassignment targets: admins → anyone; a lead → their own department only.
   const assignableMembers = useMemo(() => {
@@ -282,7 +274,10 @@ export default function TaskSurface({ surface = 'mine' }) {
   // ── Hotkeys ───────────────────────────────────────────────────────────────
   // Single keys only: useHotkeys bails on any meta/ctrl/alt and ignores events
   // from inputs, so ⌘-combos can't be expressed here (Layout owns those).
-  useHotkeys({
+  // An empty map while hidden: the handler map is read from a ref on every event,
+  // so this needs no support from the hook. Without it, pressing `2` on the Today
+  // tab would silently switch a board nobody is looking at.
+  useHotkeys(!active ? {} : {
     n: () => openAdd(null),
     f: () => searchRef.current?.focus(),
     z: () => data.undoLast(),
@@ -418,8 +413,8 @@ export default function TaskSurface({ surface = 'mine' }) {
     <div>
       {/* Personal rail, rendered here rather than in the page so it can reuse the
           task list this hook already fetched instead of asking for it again. */}
-      {surface === 'mine' && !loading && <WaitingOnYou tasks={tasks} onBulkPatch={data.bulkPatch} />}
-      {!loading && !error && <StatusPills tasks={tasks} />}
+      {chrome && surface === 'mine' && !loading && <WaitingOnYou tasks={tasks} onBulkPatch={data.bulkPatch} />}
+      {chrome && !loading && !error && <StatusPills tasks={tasks} />}
 
       <TaskToolbar
         surface={surface}

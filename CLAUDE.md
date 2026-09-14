@@ -2397,12 +2397,17 @@ diverge from every other table.
      `PALETTE` in `utils/workspaceColor.js`, which the similarity maths measures).
      Edit one and the console measures colours it is not showing. Also re-runs
      both published CVD/ΔE gates on every adjacent pair.
-  5. `npm run check:vendor-lab` — `VendorSubmitLab.jsx` is GENERATED from
+  5. `npm run check:mywork` — renders `/my-work` over a fixed five-task fixture
+     and asserts what the first paint SAYS: the tab badges, the status pills and
+     the To Do Today sections are three reductions over one array and must agree.
+     `check:render` stubs no data, so it only ever sees that page's loading
+     branch; a wrong count is not a crash and nothing else would catch it.
+  6. `npm run check:vendor-lab` — `VendorSubmitLab.jsx` is GENERATED from
      `VendorSubmit.jsx` by `client/scripts/sync-vendor-lab.mjs`. Touch the public
      vendor form (or `routes/vendor.js`) and the lab silently drifts out of sync
      with the page it exists to preview; `--check` fails instead, and
      `npm run sync:vendor-lab` regenerates it.
-  6. `node server/scripts/finance-fixtures.cjs` (270 assertions) + `node --check`
+  7. `node server/scripts/finance-fixtures.cjs` (270 assertions) + `node --check`
      every changed server file
   `client/scripts/check-tdz.cjs` is a Babel scope analyzer that fails the build on a
   `const`/`let` READ before its own declaration in the same function scope — a
@@ -5397,3 +5402,166 @@ don't carry `is_operator`, so the badge appears on the message but not in those 
 previews (the author name is present in both). No unread tracking for boards — an
 operator is not a member, so there is no read pointer to count against, and boards
 deliberately do not inflate the console's nav badge.
+
+---
+
+## My Work — boom shell on the tenant page, and a cross-workspace one for operators (2026-09-14)
+
+Two deliverables. `/my-work` moves to boom's shape without giving up the task
+database; the operator console gains its own `/my-work` that compiles an
+operator's tasks across every workspace. **Zero new deps, zero schema change.**
+One new gate (`npm run check:mywork`).
+
+### (A) `/my-work` — boom's shell, cadence's database inside it
+
+The page is boom's again: greeting + status pills, an at-risk release banner, ONE
+card with three tabs (**To Do Today · My Tasks · My Releases**), and the
+"Waiting on you" rail down the right. What sits inside **My Tasks** is unchanged
+— the Board/Table/Calendar/List database with grouping, filters, saved views and
+drag ordering. Only the shell changed, so `/team-work` keeps sharing
+`TaskSurface` and the two cannot drift.
+
+**The page now OWNS the task data.** `useTaskData` moved up into `MyWork.jsx` and
+is handed to `TaskSurface` as a prop, so the tab badges, the pills, the Today
+triage and the board are four reductions over ONE array — a count on a tab
+cannot disagree with the rows revealed by pressing it. A hook cannot be called
+conditionally, so `useTaskData` gained **`{ enabled }`**: TaskSurface always
+calls it and switches it off when a parent supplied the data. TaskSurface also
+gained `chrome` (the page renders the pills and rail itself) and **`active`**.
+
+**Every tab stays MOUNTED and hides with a class.** The database holds its view
+type, search text, collapsed groups and selection in component state; unmounting
+it would throw all four away every time somebody glanced at Today. `active` is
+what keeps the hidden surface's hotkeys off the visible one — pressing `2` on the
+Today tab would otherwise switch a board nobody is looking at. The hook reads its
+handler map from a ref on every event, so passing `{}` needed no change to
+`useHotkeys`.
+
+- **`TodayPanel.jsx`** (new) — the triage tab the Phase-8 pass deliberately
+  skipped. Overdue (most-late first) → due today → in progress, each task in
+  **exactly one** section, plus the rollover banner and boom's "Plan your day"
+  suggestions. Suggestions are **undated open work only**: a task due next month
+  is not a suggestion for today, and offering it would make the button mean
+  "bring work forward" instead of "decide when this happens". It is a LENS over
+  the page's array, never a second fetch.
+- **Rollover has ONE writer.** The rail's overdue tile keeps its count but drops
+  its "Reschedule all → today" button when `layout="rail"`, because the Today tab
+  now carries that control directly above the rows it moves. Two buttons for one
+  act on one screen is not a choice, it is a question.
+- **`StatusPills.jsx`** extracted from TaskSurface (the page prints it beside the
+  greeting; /team-work keeps it above its toolbar). **`canEditTaskFor(task, user)`**
+  moved into `taskFields.js` — the client mirror of `canMutateTask` now has ONE
+  definition, because the database and the Today cards both ask. **`PRIORITY_RANK`**
+  exported from `taskFields` (derived from `TASK_PRIORITIES`, never hand-listed)
+  and consumed by both new surfaces.
+- **`WaitingOnYou` gained `layout="rail"`** — the same tiles stacked. Below
+  `xl` the page renders the existing horizontal strip instead: five full-width
+  tiles above the card would push the tabs off a phone entirely. Grid is
+  `xl:grid-cols-[minmax(0,1fr)_300px]` (not boom's `lg`) so the table keeps full
+  width to 1280px.
+- **Tab state**: `?tab=` · last-used in `localStorage` · default `today`. Read in
+  the state INITIALIZER, not an effect — TaskSurface consumes `?new=task` in an
+  effect of its own and strips it from the URL, so a parent effect could find it
+  already gone and open the add form on a tab nobody is looking at.
+
+### (B) Operator console `/my-work` — one to-do list across every tenant
+
+**What makes it answerable, with no new table:** a platform operator is one
+person with many user rows — their Platform HQ home row plus one per workspace
+they have entered, all keyed to their **email** (an id identifies one
+workspace's ghost, not the human). So "my tasks everywhere" is
+`tasks.user_id = ANY(<my ghost ids>)`, and Platform HQ falls out as just another
+workspace on the list.
+
+- **`server/lib/operatorGhost.js`** (new) — `ensureGhost` / `ghostIds`, extracted
+  from `POST /platform/workspaces/:id/enter`, which now calls it. The console
+  mints the same row when filing a task into a workspace never entered, and a
+  second copy of an IDENTITY rule is how one surface creates a member the other
+  does not recognise (the argument that moved `operatorAccess` out of
+  `routes/platform.js`).
+- **`server/routes/platform-work.js`** (new, `/api/platform/work`) — its own
+  router for the same reason `platform-chat.js` is: `routes/tasks.js` is
+  `authMiddleware + withTenant`, every query pinned to one `req.labelId` with
+  `teamFilter()` as the single gate. Teaching either about operators would put a
+  cross-tenant bypass inside the primitive every workspace user goes through.
+  `GET /` (workspaces + mine + delegated in one round trip), `POST /tasks`,
+  `PATCH|DELETE /tasks/:id(\d+)`.
+- **Scope**: `accessibleLabelIds` narrows which ghosts count — **plus the
+  operator's own home label, always**. An allowlist names tenants, and confining
+  an operator to one tenant must never hide their own platform to-do list.
+- **Two lists, never summed.** "Mine" is work waiting on me; "Waiting on them" is
+  work I handed to a workspace's own people. They need opposite actions. The
+  delegated list is **read-only here** — editing somebody's queue from outside
+  their workspace is a different act from keeping your own list — and links into
+  the workspace instead.
+- **Writes are own-rows only**: create for yourself in any accessible workspace
+  (minting the ghost if needed), edit description/status/priority/due/category/
+  notes, delete. Deliberately **no `user_id`** in the editable set: cross-tenant
+  assignment is not this page's job. Group by **urgency (default) · workspace ·
+  priority**, switchable; search, workspace filter, show-done.
+- **Workspace identity is the console's TWO encodings** — the colour rail plus
+  the two-letter tag, resolved with the shared `resolveColors`/`tagMap` against
+  the WHOLE roster so filtering never repaints or renames one. Past three
+  workspaces no ordering of eight hues clears the CVD/ΔE gate and any two rows
+  here can sit adjacent, so the tag is the encoding that still works at the
+  ninth tenant.
+- **Bounded and disclosed**: open work always, finished work for 30 days, 500-row
+  cap per list — each stated on the page, along with the scoped-access note.
+  `RECENT_DONE` uses `COALESCE(completed_at, updated_at)`: that column is stamped
+  on the transition into Done, so a row finished before it existed carries NULL
+  and a bare comparison would hide it **forever** rather than for 30 days.
+- **Audit**: every write lands on a row the operator owns and is invisible to the
+  tenant, so there is nothing self-disclosing to record. The one act with a
+  tenant-side consequence — minting a membership — writes an `activity_log` line
+  in that workspace, exactly as entering does.
+
+### The privacy leak this feature would otherwise have opened
+
+`routes/team.js` hides the operator ghost from a workspace's roster, but
+`GET /tasks?scope=team` had no equivalent filter — so an operator's private
+cross-workspace notes ("audit this client's books") would have been **published
+to every Admin on that tenant's /team-work**, and the operator would have shown
+up in Workload as a team member carrying load. Proved on the dev box before
+fixing: the team join returned 4 rows, 3 after. Now every non-self branch of that
+route carries `(u.is_platform_admin = false OR u.is_platform_admin IS NULL)`;
+`IS NULL` keeps ORPHANED tasks visible, which is the documented behaviour one
+comment below it.
+
+### Found while building
+
+- **`key` was being spread into `TaskCard`** through a props object in TodayPanel.
+  React 18 warns; React 19 drops it entirely, silently destroying list
+  reconciliation. Caught by the new `check:mywork` gate on its first run — not by
+  the build, not by check-render.
+- `TASK_STATUSES`, `useAuth` and three lucide icons were imported and unused
+  across the new files; removed (the repo lints clean on `no-unused-vars`).
+
+### Verification
+`check:mywork` **14/14** · `check-tdz` 208 files clean · `check-render` shell
+clean for all roles, **90 routes** · `check:vendor-lab` · `check:ws-colors` ·
+fixtures **270/270** · `npm run build` clean with **0 `NaN`** in the emitted CSS
+and every new utility present (`xl:grid-cols-[minmax(0,1fr)_300px]`,
+`bg-danger/10`, `border-danger/40`, `!pl-8`, `min-w-[12rem]`) · `node --check` on
+all 5 changed server files.
+
+Exercised live on the dev Neon box: the aggregated payload across 4 workspaces
+with mine/delegated split correctly; create into a never-entered workspace mints
+the ghost and returns the row; status→Done stamps `completed_at` and reopening
+clears it; the whole guard matrix (bad enum 400, empty description 400, empty
+body 400, another operator's task 404, NaN id 404 not 500, unknown workspace
+404, anonymous 401, tenant Approver 403). A **real restricted operator** was
+created with an allowlist naming one workspace: they saw 2 of 4 workspaces (the
+allowed one plus their own Platform HQ), `scoped: true`, none of the blocked
+workspace's tasks, 403 on creating into it and 404 on patching a task inside it.
+**The dev database was restored to its exact pre-test state** (4 tasks, 11 users,
+0 audit rows).
+
+### Not done, deliberately
+No cross-tenant **assignment** from the console (John's call) — which also means
+**no workspace member can assign work to an operator**, since the ghost is hidden
+from every roster: this list only ever holds tasks the operator filed for
+themselves. No firehose view of every tenant's tasks. No `ObjectDiscussion` on a
+console task (the thread would live in the tenant). The delegated list has no
+nudge/reminder action. `/my-work` is not in `RESTRICTABLE_PAGES` — it is scoped
+by the operator's own identity, and adding a page silently revokes it from every
+operator who already has an allowlist.

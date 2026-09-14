@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Outlet, Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Building2, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users, ShieldCheck, Megaphone, MessageSquare, BarChart3, CalendarDays } from 'lucide-react'
+import { LayoutDashboard, Building2, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users, ShieldCheck, Megaphone, MessageSquare, BarChart3, CalendarDays, CheckSquare } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useSocket } from '../context/SocketContext'
 import { useTheme } from '../context/ThemeContext'
@@ -12,6 +12,7 @@ import ErrorBoundary from './ErrorBoundary'
 // Operators (managing other admins) is owner-only.
 const NAV = [
   { path: '/', label: 'Overview', icon: LayoutDashboard },
+  { path: '/my-work', label: 'My Work', icon: CheckSquare },
   { path: '/messages', label: 'Messages', icon: MessageSquare },
   { path: '/workspaces', label: 'Workspaces', icon: Building2 },
   { path: '/calendar', label: 'Calendar', icon: CalendarDays },
@@ -23,6 +24,7 @@ const NAV = [
 ]
 const META = {
   '/': { title: 'Overview', sub: 'Every workspace at a glance' },
+  '/my-work': { title: 'My Work', sub: 'Your tasks across every workspace' },
   '/messages': { title: 'Messages', sub: 'Operator team chat' },
   '/workspaces': { title: 'Workspaces', sub: 'Provision, monitor and manage label accounts' },
   '/calendar': { title: 'Calendar', sub: 'Releases and events across every workspace' },

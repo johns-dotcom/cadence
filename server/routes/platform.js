@@ -13,6 +13,7 @@ const { deleteUserWithSweep } = require('../lib/userDelete');
 const aiUsage = require('../lib/aiUsage');
 const activityBot = require('../lib/activityBot');
 const { operatorAccess, accessibleLabelIds, scopeClause } = require('../lib/operatorAccess');
+const { ensureGhost } = require('../lib/operatorGhost');
 const { toUSD, warmRates } = require('../lib/fx');
 const { dayString, isValidDay } = require('../lib/calendarDay');
 const { foldMoney, buildAttention, round2 } = require('../lib/platformRollup');
@@ -835,36 +836,11 @@ router.post('/workspaces/:labelId/enter', async (req, res) => {
     delete label.logo_r2_key;
     delete label.logo_data;
 
-    const email = (req.user.email || '').toLowerCase();
-    const cols = 'id, label_id, name, email, role, department, hierarchy_level, is_platform_admin, platform_role, token_version';
-
-    // The operator's tier decides their authority inside a workspace: an owner
-    // enters as Superadmin (full), a Workspace Admin as Admin (manage data/team,
-    // no owner-only powers). The ghost carries the operator's platform_role.
-    const opRole = req.user.platform_role === 'owner' ? 'owner' : 'admin';
-    const ghostRole = opRole === 'owner' ? 'Superadmin' : 'Admin';
-
     // Find this operator's existing membership in the target label, or mint one.
-    let target;
-    const existing = await pool.query(`SELECT ${cols} FROM users WHERE label_id = $1 AND LOWER(email) = $2`, [labelId, email]);
-    if (existing.rows.length) {
-      target = existing.rows[0];
-      // Keep the ghost aligned with the operator's current tier.
-      if (target.role !== ghostRole || !target.is_platform_admin || target.platform_role !== opRole) {
-        await pool.query('UPDATE users SET role = $1, is_platform_admin = true, platform_role = $2 WHERE id = $3', [ghostRole, opRole, target.id]);
-        target.role = ghostRole; target.is_platform_admin = true; target.platform_role = opRole;
-      }
-    } else {
-      // No password_hash → can't be used for a normal password login; this row
-      // is only ever assumed via the platform-enter flow.
-      const ins = await pool.query(
-        `INSERT INTO users (label_id, name, email, role, department, hierarchy_level, is_platform_admin, platform_role, created_at)
-         VALUES ($1, $2, $3, $4, 'Platform', 0, true, $5, NOW())
-         RETURNING ${cols}`,
-        [labelId, req.user.name || 'Platform Admin', email, ghostRole, opRole]
-      );
-      target = ins.rows[0];
-    }
+    // lib/operatorGhost owns that rule — the console's cross-workspace My Work
+    // mints the same row when filing a task into a workspace never entered, and
+    // two copies of an identity rule drift.
+    const target = await ensureGhost(labelId, req.user);
 
     // Audit the cross-tenant entry in the target label's log, attributed to the
     // operator by email.
