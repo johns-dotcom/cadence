@@ -5017,17 +5017,8 @@ from-after-to refused, and a **400-day ceiling** — without it a hand-built
 `?from=1900` pulls every row in every tenant and looks innocent doing it.
 All four guards verified live.
 
-**Colour carries the WORKSPACE, the icon carries the KIND** — the inverse of the
-tenant calendar, where one workspace leaves colour free to mean kind. The
-question this page exists to answer is "who is dropping what, when, and is
-anyone colliding", which is a question about tenants. `utils/workspaceColor.js`
-(new, shared by both pages so the legend cannot mean two things one page over):
-an explicitly-set `labels.accent_color` always wins; otherwise the colour is
-derived **from the workspace ID, not its index in the list** — index-based
-assignment reshuffles every colour the moment a workspace is created, suspended
-or filtered out. `accent_color` is null on every workspace in dev, so the
-fallback is the common case. Chips are a `color-mix` tint + a solid 2px rail,
-never coloured *text*: contrast stays `text-ink`'s job rather than luck.
+**Workspace identity is TWO encodings — a slot colour AND a two-letter tag** —
+and that is forced by arithmetic, not taste. See the follow-up entry below.
 
 DSP ships **off by default** and the chip says so — one row per release per
 platform across every tenant outnumbers everything else combined, and a month
@@ -5077,3 +5068,55 @@ feed would cross the department boundary `routes/tasks.js` enforces). No
 week/agenda view, no `?month=` in the URL, and no per-workspace colour picker
 on the console — `accent_color` is still only settable from the workspace
 drawer.
+
+### Follow-up, same day — the console's colours were carrying no information
+
+Reported against the shipped calendar: two chips on one day were indistinguishable
+greys. Three separate causes, all real, found by **computing rather than
+eyeballing** (the dataviz skill's `validate_palette.js`, OKLab ΔE + CVD simulation):
+
+1. **`labels.accent_color` was driving the chips.** Real workspaces set dark,
+   low-chroma brand colours, and two of those are the same grey chip. The console
+   now does **not** paint with `accent_color` at all: telling tenants apart and
+   expressing a brand are different jobs. `accent_color` still brands the
+   workspace's own shell and is still edited in the workspace drawer.
+2. **The old fallback palette was four blues.** Of 12 hand-picked hues, slots
+   0/5/10/11 were indigo/violet/blue/purple. Replaced with the validated 8-slot
+   categorical order (`--ws-1 … --ws-8` in `tokens.css`, **separate steppings for
+   the light and the dark card** — a selected dark palette, not an automatic
+   flip). Measured on the adjacent pairlist: worst CVD ΔE **9.1 light / 8.4 dark**
+   (≥8 target), worst normal-vision **19.6 / 19.3** (≥15 floor). **The slot ORDER
+   is the colourblind-safety mechanism, not decoration** — do not re-order it to
+   "look nicer". Returning `var(--ws-N)` rather than a hex is what makes a chip
+   theme-aware without plumbing the theme through every component, including the
+   OS-level "system" setting a JS theme value can miss.
+3. **The fill was the actual bug.** Chips were a ~20% wash of the slot colour.
+   Composite those fills and run them back through the validator: normal-vision
+   ΔE **2.2** on white, **2.3** on the dark card — a *seventh* of the floor. A
+   pale wash of any hue is a pale pastel, and pale pastels are the same colour.
+   The fill looked like it was carrying identity while carrying none. Chips are
+   now a **neutral `bg-elev` with one 4px block of the undiluted hue**; one
+   coloured element, and it is the one that was validated. `workspaceTint` is
+   deleted rather than tuned — the wash cannot be rescued by a percentage.
+
+**And colour alone was never going to be enough.** Past **three** slots no
+ordering of eight hues clears the `--pairs all` gate, and a calendar day can
+stack any two tenants — so `workspaceTag()` + `tagMap()` give every workspace a
+two-letter tag rendered beside its colour on **every** console surface (day-cell
+chip, day panel, legend, workspace card, upcoming-releases rail, activity rail).
+The tag is the encoding that still works at the ninth workspace, for a
+colourblind reader, and on a printout. Tags resolve against the **whole** roster
+in a stable id order (so filtering never renames one), take a third letter on a
+collision and a numeral after that — verified to give 10 unique tags for 10
+workspaces including two named identically, and to drop a leading article so
+"The Nest"/"The Nook" are not both `TN`.
+
+Two contrast consequences worth knowing: **text never wears the slot colour**
+(the coloured mark beside it carries identity) and **the workspace avatar is no
+longer white-on-solid** — three of the eight light slots sit under 3:1, so white
+text on them is unreadable for over a third of the palette. It is ink on
+`bg-elev`, with the card's full-height rail spending the colour instead.
+
+Rendered and looked at, both themes, rather than assumed: a headless-Chrome
+screenshot of eight chips against the real `tokens.css` in light and dark, beside
+the old tinted version for comparison.

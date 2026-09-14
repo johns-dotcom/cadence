@@ -71,6 +71,35 @@
   --color-gray-700:  55  65  81;
   --color-gray-800:  31  41  55;
   --color-gray-900:  17  24  39;
+
+  /* ── Workspace identity slots (operator console only) ────────────────────
+   * A categorical palette whose job is telling TENANTS APART, which is a
+   * different job from expressing a brand — which is why the console does not
+   * paint with `labels.accent_color`. Real workspaces set dark, low-chroma
+   * brand colours, and two of those are the same grey chip at a glance.
+   *
+   * These eight hues and both their steppings are a validated set: run
+   * `node scripts/validate_palette.js "<slots>" --mode light --surface "#ffffff"`
+   * (and `--mode dark --surface "#1c1f2b"`) before changing ANY value here.
+   * Measured on the adjacent pairlist: worst CVD deltaE 9.1 light / 8.4 dark
+   * (>=8 target), worst normal-vision 19.6 / 19.3 (>=15 floor).
+   *
+   * The ORDER is the colourblind-safety mechanism, not decoration — slot n and
+   * slot n+1 are the pair most likely to be compared, so they are the pair held
+   * furthest apart. Do not re-order to "look nicer".
+   *
+   * Eight slots cannot carry more than eight tenants, and past three slots no
+   * ordering clears the all-pairs gate. That is exactly why every console
+   * surface pairs the colour with a text tag: colour narrows, the tag decides.
+   */
+  --ws-1: #2a78d6;   /* blue */
+  --ws-2: #eb6834;   /* orange */
+  --ws-3: #1baf7a;   /* aqua */
+  --ws-4: #eda100;   /* yellow */
+  --ws-5: #e87ba4;   /* magenta */
+  --ws-6: #008300;   /* green */
+  --ws-7: #4a3aa7;   /* violet */
+  --ws-8: #e34948;   /* red */
 }
 
 .dark {
@@ -112,4 +141,16 @@
   --color-gray-700: 191 194 204;
   --color-gray-800: 213 215 222;
   --color-gray-900: 236 237 241;
+
+  /* The same eight hues re-stepped for the dark card — a selected palette,
+   * not an automatic flip. All eight clear 3:1 on #1c1f2b. */
+  --ws-1: #3987e5;   /* blue */
+  --ws-2: #d95926;   /* orange */
+  --ws-3: #199e70;   /* aqua */
+  --ws-4: #c98500;   /* yellow */
+  --ws-5: #d55181;   /* magenta */
+  --ws-6: #008300;   /* green */
+  --ws-7: #9085e9;   /* violet */
+  --ws-8: #e66767;   /* red */
+
 }

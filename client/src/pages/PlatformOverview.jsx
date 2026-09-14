@@ -11,7 +11,7 @@ import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import useHotkeys from '../hooks/useHotkeys'
 import { formatDate } from '../utils/dates'
-import { workspaceColor } from '../utils/workspaceColor'
+import { workspaceColor, tagMap } from '../utils/workspaceColor'
 
 // The operator's dashboard. Same vocabulary as a workspace dashboard — stat
 // cards, a bookkeeping band, activity — but every figure spans every workspace
@@ -100,6 +100,9 @@ export default function PlatformOverview() {
   const all = data?.workspaces || []
   const activity = (data?.recentActivity || []).filter(a => !NOISE.test(a.action || '')).slice(0, 8)
   const wsName = useMemo(() => new Map(all.map(w => [Number(w.id), w.name])), [all])
+  // The same colour + tag pairing the calendar uses, from the same source,
+  // so a workspace is recognisable across both console pages.
+  const tags = useMemo(() => tagMap(all), [all])
 
   // Search + sort run over the SAME array the header counts reduce over, so a
   // filtered grid never sits under a total that describes a different set —
@@ -264,11 +267,15 @@ export default function PlatformOverview() {
                 <div key={w.id} className="card p-0 overflow-hidden group hover:border-brand-300 transition-colors flex">
                   {/* The identity rail — the same colour this workspace wears
                       on every chip of the calendar. */}
-                  <span className="w-1 flex-shrink-0" style={{ background: color }} aria-hidden="true" />
+                  <span className="w-2 flex-shrink-0" style={{ background: color }} aria-hidden="true" />
                   <div className="flex-1 min-w-0 p-4">
                     <div className="flex items-center gap-2.5">
-                      <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: color }}>
-                        <span className="text-white font-bold text-xs">{w.name?.charAt(0)?.toUpperCase()}</span>
+                      {/* Neutral, so the card spends its colour in ONE place —
+                          the full-height rail. White-on-slot was not an option
+                          anyway: three of the eight light slots sit under 3:1,
+                          so white text on them is unreadable. */}
+                      <div className="w-9 h-9 rounded-lg bg-elev flex items-center justify-center flex-shrink-0">
+                        <span className="text-ink font-bold text-[11px] tracking-wide">{tags.get(w.id)}</span>
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-semibold text-ink truncate">{w.name}</p>
@@ -365,7 +372,8 @@ export default function PlatformOverview() {
                 <div className="min-w-0 flex-1">
                   <p className="text-sm text-ink truncate">{r.project_name}</p>
                   <p className="text-[11px] text-ink-faint truncate">
-                    {[wsName.get(Number(r.label_id)), r.artist_name].filter(Boolean).join(' · ')}
+                    <span className="font-bold text-ink-muted">{tags.get(Number(r.label_id))}</span>
+                    {' '}{[wsName.get(Number(r.label_id)), r.artist_name].filter(Boolean).join(' · ')}
                   </p>
                 </div>
                 <span className="text-[11px] font-semibold text-ink-muted flex-shrink-0">{formatDate(r.release_date)}</span>
@@ -389,6 +397,7 @@ export default function PlatformOverview() {
                 <div className="min-w-0">
                   <p className="text-sm text-ink leading-snug">{a.action}{a.detail ? <span className="text-ink-faint"> — {a.detail}</span> : ''}</p>
                   <p className="text-[11px] text-ink-faint truncate">
+                    <span className="font-bold text-ink-muted">{tags.get(Number(a.label_id))}</span>{' '}
                     <span className="font-medium text-ink-muted">{a.workspace}</span> · {a.user_name || 'System'} · {fmtAgo(a.created_at)}
                   </p>
                 </div>

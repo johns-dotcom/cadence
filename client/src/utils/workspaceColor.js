@@ -1,31 +1,25 @@
-// One colour per workspace, used by the operator console's Overview cards and
-// by every chip on the cross-workspace calendar. Shared so the two surfaces
-// can never disagree about which tenant is which colour — a legend that means
-// something different one page over is worse than no legend.
-
-// `labels.accent_color` is nullable and, in practice, unset on most workspaces,
-// so the fallback is the common case and has to be good rather than grey.
+// How the operator console tells one workspace from another.
 //
-// Mid-tone hues on purpose: the console renders in both themes, and a palette
-// picked for a white card goes muddy on the dark one. These are used as a solid
-// identifier (dot / rail) plus a low-percentage tint, never as a text colour —
-// which is what keeps contrast a token's job (`text-ink`) rather than luck.
-export const WORKSPACE_PALETTE = [
-  '#6366F1', // indigo
-  '#10B981', // emerald
-  '#F59E0B', // amber
-  '#EC4899', // pink
-  '#06B6D4', // cyan
-  '#8B5CF6', // violet
-  '#EF4444', // red
-  '#84CC16', // lime
-  '#F97316', // orange
-  '#14B8A6', // teal
-  '#3B82F6', // blue
-  '#A855F7', // purple
-]
+// TWO encodings, deliberately. A colour narrows the field; a short text tag
+// decides. That is not belt-and-braces — it is forced by the arithmetic:
+// running the categorical palette through a CVD/ΔE validator, no ordering of
+// eight hues clears the all-pairs gate past THREE slots, and a calendar day can
+// stack any two tenants side by side. So colour alone cannot carry identity
+// here, and anything that renders a workspace chip renders its tag too.
 
-const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i
+// ── Colour ──────────────────────────────────────────────────────────────────
+//
+// The console does NOT paint with `labels.accent_color`. Telling tenants apart
+// and expressing a brand are different jobs: real workspaces set dark, low-
+// chroma brand colours, and two of those are the same grey chip at a glance —
+// which is exactly the report that prompted this. `accent_color` still brands
+// the workspace's own shell and is still edited in the workspace drawer.
+//
+// The eight slots live in tokens.css as `--ws-1 … --ws-8`, with a separate
+// stepping for the dark card. Returning a `var()` rather than a hex is what
+// makes a chip theme-aware without plumbing the theme through every component —
+// including the OS-level "system" setting, which a JS theme value can miss.
+export const WORKSPACE_SLOTS = 8
 
 // Stable string hash, for the rare workspace with no numeric id to hand.
 function hash(str) {
@@ -34,36 +28,81 @@ function hash(str) {
   return Math.abs(h)
 }
 
-// Resolve a workspace's identity colour.
+// Which slot (1…8) a workspace owns.
 //
-// An explicitly-set accent_color always wins — that is the workspace's own
-// branding and an operator who set it expects to see it. Otherwise the colour
-// is derived from the workspace ID, NOT from its position in the list: index
-// -based assignment reshuffles every colour the moment a workspace is created,
-// suspended or filtered out, so the thing you learned to recognise changes.
-export function workspaceColor(ws) {
-  if (!ws) return WORKSPACE_PALETTE[0]
-  const accent = typeof ws === 'string' ? ws : ws.accent_color
-  if (accent && HEX.test(String(accent).trim())) return String(accent).trim()
-  const id = typeof ws === 'object' ? Number(ws.id) : NaN
+// Derived from the workspace ID, NOT its position in a list: index-based
+// assignment repaints every surviving workspace the moment one is created,
+// suspended or filtered out, and a colour you had learned to recognise becomes
+// somebody else's. Colour follows the entity, never its rank.
+export function workspaceSlot(ws) {
+  if (!ws) return 1
+  const id = typeof ws === 'object' ? Number(ws.id) : Number(ws)
   const seed = Number.isInteger(id) ? id : hash(ws?.name || ws || '')
-  return WORKSPACE_PALETTE[seed % WORKSPACE_PALETTE.length]
+  return (seed % WORKSPACE_SLOTS) + 1
 }
 
-// A translucent wash of the workspace colour, as an inline style.
+// The workspace's colour, as a CSS value usable in any inline style.
+export function workspaceColor(ws) {
+  return `var(--ws-${workspaceSlot(ws)})`
+}
+
+// ── Why there is no tint helper here ────────────────────────────────────────
 //
-// Inline rather than a Tailwind class because the colour is per-row data, and
-// `color-mix(... transparent)` rather than an opaque tint because it composites
-// onto whatever card surface the active theme paints — the same reason the
-// design tokens route their `/NN` modifiers through color-mix. An opaque
-// light-theme tint is the bug that made five `bg-brand-50` fills go near-white
-// in dark, taking their text with them.
-export function workspaceTint(color, pct = 14) {
-  return { backgroundColor: `color-mix(in srgb, ${color} ${pct}%, transparent)` }
+// The first cut filled each chip with a ~20% wash of the slot colour. Run the
+// composited fills back through the validator and they measure a normal-vision
+// deltaE of 2.2 on white and 2.3 on the dark card — a fifth of the >=15 floor.
+// A pale wash of ANY hue is a pale pastel, and pale pastels are the same
+// colour; the fill looked like it was carrying identity while carrying none,
+// which is precisely the "these all look grey" report.
+//
+// So the surfaces below paint chips in a NEUTRAL token and spend their colour
+// on one solid block of the undiluted slot hue, which measures deltaE 19.6
+// light / 19.3 dark between adjacent slots. One coloured element, and it is
+// the one that was validated.
+
+// ── Tag ─────────────────────────────────────────────────────────────────────
+//
+// The encoding that actually decides, and the one that keeps working at the
+// ninth tenant, for a colourblind reader, and on a printout.
+//
+// Initials from the first letters of up to two significant words; a leading
+// article is dropped because "The Nest" and "The Nook" would otherwise both be
+// "TN". A single remaining word gives up its first two letters.
+const STOPWORDS = new Set(['the', 'a', 'an'])
+export function workspaceTag(ws) {
+  const name = (typeof ws === 'string' ? ws : ws?.name) || ''
+  const words = name.trim().split(/[\s\-_/]+/).filter(Boolean)
+  const significant = words.filter(w => !STOPWORDS.has(w.toLowerCase()))
+  const use = significant.length ? significant : words
+  if (!use.length) return '??'
+  if (use.length === 1) return use[0].slice(0, 2).toUpperCase()
+  return (use[0][0] + use[1][0]).toUpperCase()
 }
 
-// Build the id → colour map once per render pass, so a list of 400 calendar
-// chips does not re-derive the same dozen colours.
+// Tags are only worth reading if they are unique. Where two workspaces collide
+// ("Nova Ray" and "Night Riders" are both NR) the loser takes a third letter
+// from its first word, and anything still colliding falls back to a numeral —
+// resolved against the WHOLE roster and in a stable id order, so a tag does not
+// change when a workspace is filtered off screen.
+export function tagMap(workspaces = []) {
+  const out = new Map()
+  const taken = new Set()
+  for (const w of [...workspaces].sort((a, b) => Number(a.id) - Number(b.id))) {
+    const base = workspaceTag(w)
+    let tag = base
+    if (taken.has(tag)) {
+      const name = (w.name || '').replace(/[^A-Za-z0-9]/g, '')
+      for (let i = 2; i < name.length && taken.has(tag); i++) tag = (base[0] + name[i]).toUpperCase()
+    }
+    for (let n = 2; taken.has(tag); n++) tag = base[0] + n
+    taken.add(tag)
+    out.set(Number(w.id), tag)
+  }
+  return out
+}
+
+// Build the id → colour map once per render pass, so a month of chips does not
+// re-derive the same eight values.
 export function colorMap(workspaces = []) {
   const m = new Map()
   for (const w of workspaces) m.set(Number(w.id), workspaceColor(w))

@@ -10,14 +10,21 @@ import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import useHotkeys from '../hooks/useHotkeys'
 import { localDateStr, formatDate } from '../utils/dates'
-import { workspaceColor, workspaceTint, colorMap } from '../utils/workspaceColor'
+import { workspaceColor, colorMap, tagMap } from '../utils/workspaceColor'
 
 // Every workspace's schedule on one grid.
 //
-// Colour carries the WORKSPACE and the icon carries the KIND — the opposite of
+// Identity is carried by the WORKSPACE and kind by the icon — the opposite of
 // the tenant calendar, where there is only one workspace so colour is free to
 // mean kind. The question this page exists to answer is "who is dropping what,
 // when, and is anyone colliding", and that is a question about tenants.
+//
+// Workspace identity is TWO encodings: a slot colour and a text tag (see
+// utils/workspaceColor). Running the categorical palette through a CVD/deltaE
+// validator, no ordering of eight hues clears the all-pairs gate past three
+// slots — and any two tenants can land in the same day cell — so the tag is not
+// decoration, it is the encoding that still works at the ninth tenant, for a
+// colourblind reader, and on a printout.
 
 const KINDS = {
   release:         { label: 'Release',          icon: Music,        group: 'releases' },
@@ -78,6 +85,9 @@ export default function PlatformCalendar() {
 
   const todayIso = localDateStr()
   const colors = useMemo(() => colorMap(workspaces), [workspaces])
+  // Tags resolve against the WHOLE roster, so hiding a workspace never
+  // renames another one's tag.
+  const tags = useMemo(() => tagMap(workspaces), [workspaces])
   const wsName = useMemo(() => new Map(workspaces.map(w => [Number(w.id), w.name])), [workspaces])
 
   const shown = useMemo(
@@ -237,10 +247,17 @@ export default function PlatformCalendar() {
                           <span
                             key={e.id}
                             title={`${wsName.get(Number(e.label_id)) || 'Workspace'} — ${e.title}${e.subtitle ? ` (${e.subtitle})` : ''}`}
-                            className="w-full flex items-center gap-1 pl-1 pr-1.5 py-0.5 rounded text-[10px] font-medium text-ink"
-                            style={{ ...workspaceTint(color, 16), borderLeft: `2px solid ${color}` }}
+                            className="w-full flex items-center gap-1 pl-1 pr-1.5 py-0.5 rounded-sm text-[10px] font-medium text-ink bg-elev"
+                            style={{ borderLeft: `4px solid ${color}` }}
                           >
-                            <Icon size={9} className="flex-shrink-0 opacity-70" />
+                            {/* The tag wears an ink token, never the slot
+                                colour: the coloured rail beside it carries
+                                identity, and small text in a series colour is
+                                the pairing that fails contrast. */}
+                            <span className="font-bold tracking-wide text-ink-muted flex-shrink-0">
+                              {tags.get(Number(e.label_id)) || '??'}
+                            </span>
+                            <Icon size={9} className="flex-shrink-0 opacity-60" />
                             <span className="truncate">{e.title}</span>
                           </span>
                         )
@@ -273,16 +290,20 @@ export default function PlatformCalendar() {
                       const Icon = K.icon
                       return (
                         <div key={e.id} className="flex items-start gap-2.5 p-2 rounded-lg hover:bg-elev group">
-                          <span className="mt-0.5 w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 text-ink" style={workspaceTint(color, 20)}>
+                          <span
+                            className="mt-0.5 w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 text-ink bg-elev"
+                            style={{ boxShadow: `inset 0 0 0 2px ${color}` }}
+                          >
                             <Icon size={13} />
                           </span>
                           <div className="min-w-0 flex-1">
                             <p className="text-sm text-ink leading-snug break-words">{e.title}</p>
                             {e.subtitle && <p className="text-[11px] text-ink-muted truncate">{e.subtitle}</p>}
                             {e.description && <p className="text-[11px] text-ink-muted mt-0.5 whitespace-pre-line">{e.description}</p>}
-                            <p className="text-[10px] text-ink-faint mt-0.5">
-                              <span className="font-semibold" style={{ color }}>●</span>{' '}
-                              {wsName.get(Number(e.label_id)) || 'Workspace'} · {K.label}{e.meta ? ` · ${e.meta}` : ''}
+                            <p className="text-[10px] text-ink-faint mt-0.5 flex items-center gap-1">
+                              <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
+                              <span className="font-bold text-ink-muted">{tags.get(Number(e.label_id)) || '??'}</span>
+                              <span className="truncate">{wsName.get(Number(e.label_id)) || 'Workspace'} · {K.label}{e.meta ? ` · ${e.meta}` : ''}</span>
                             </p>
                           </div>
                           {e.link && (
@@ -323,7 +344,8 @@ export default function PlatformCalendar() {
                         title={hidden ? 'Show on the calendar' : 'Hide from the calendar'}
                         className={`w-full flex items-center gap-2 px-1.5 py-1.5 rounded-lg hover:bg-elev transition-colors ${hidden ? 'opacity-45' : ''}`}
                       >
-                        <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: workspaceColor(w) }} />
+                        <span className="w-3 h-3 rounded-sm flex-shrink-0" style={{ background: workspaceColor(w) }} />
+                        <span className="text-[10px] font-bold tracking-wide text-ink-muted flex-shrink-0 w-6 text-left">{tags.get(id)}</span>
                         <span className="text-xs text-ink truncate flex-1 text-left">{w.name}</span>
                         {w.status === 'suspended' && <span className="text-[10px] font-semibold text-danger">susp.</span>}
                         <span className="text-[11px] font-semibold text-ink-faint flex-shrink-0">{n}</span>
@@ -333,7 +355,8 @@ export default function PlatformCalendar() {
                 </div>
               )}
               <p className="text-[10px] text-ink-faint mt-2.5">
-                Colour identifies the workspace; the icon identifies the kind of event. Counts are for {monthLabel} and follow the filters above.
+                Each workspace has a colour and a two-letter tag; the icon is the kind of event. The tag is what to read when two colours look alike —
+                eight colours cannot separate more than eight workspaces. Counts are for {monthLabel} and follow the filters above.
               </p>
             </div>
           </div>
