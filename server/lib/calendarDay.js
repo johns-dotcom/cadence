@@ -15,4 +15,21 @@ function isValidDay(s) {
   return d <= new Date(y, m, 0).getDate();
 }
 
-module.exports = { isValidDay };
+// Normalize a pg DATE (or timestamp) to 'YYYY-MM-DD' without a TZ round-trip.
+//
+// node-pg hands a DATE column back as a JS Date built at LOCAL midnight, so
+// `new Date(v).toISOString()` shifts the calendar day for anything east of
+// UTC. Reading the local parts off the Date pg already built keeps the day
+// intact. Returns null for anything that isn't a usable day.
+function dayString(value) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    const p = (n) => String(n).padStart(2, '0');
+    return `${value.getFullYear()}-${p(value.getMonth() + 1)}-${p(value.getDate())}`;
+  }
+  const s = String(value).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
+module.exports = { isValidDay, dayString };

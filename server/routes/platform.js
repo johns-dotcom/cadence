@@ -12,6 +12,9 @@ const { sendEmail, inviteEmail } = require('../lib/email');
 const { deleteUserWithSweep } = require('../lib/userDelete');
 const aiUsage = require('../lib/aiUsage');
 const activityBot = require('../lib/activityBot');
+const { toUSD, warmRates } = require('../lib/fx');
+const { dayString, isValidDay } = require('../lib/calendarDay');
+const { foldMoney, buildAttention, round2 } = require('../lib/platformRollup');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -160,40 +163,326 @@ router.get('/workspaces/:id', async (req, res) => {
   }
 });
 
-// GET /api/platform/overview — operator home: platform-wide totals, recent
-// cross-tenant activity, and the newest workspaces.
+// ── Cross-workspace roll-up ────────────────────────────────────────────────
+//
+// Shared SQL predicates. `LIVE_EXPENSE` is the family-root, not-deleted,
+// not-voided population every money surface in the app agrees on; `PLAIN_USD`
+// is the half that needs no FX round-trip (see lib/platformRollup foldMoney).
+const LIVE_EXPENSE = "(e.deleted = false OR e.deleted IS NULL) AND (e.voided = false OR e.voided IS NULL) AND e.parent_id IS NULL";
+const PLAIN_USD = "(COALESCE(e.currency,'USD') = 'USD' AND (e.fx_rate_to_usd IS NULL OR e.fx_rate_to_usd = 1))";
+const MTD_DATE = "COALESCE(e.payment_date, e.invoice_date, e.created_at::date)";
+
+// GET /api/platform/overview — the operator's dashboard: the same vocabulary as
+// a workspace dashboard, but every figure computed across every workspace the
+// caller can see.
+//
+// Two properties worth preserving:
+//  1. Every platform total is a REDUCTION over the per-workspace rows returned
+//     alongside it, never an independent COUNT. A headline computed separately
+//     from the list beneath it drifts, and this repo has fixed that class of
+//     bug on four surfaces already.
+//  2. One GROUP BY per domain, not the per-label correlated subqueries the
+//     /workspaces list uses — that shape is O(workspaces x domains) and this
+//     page is the one that has to stay fast as tenants are added.
 router.get('/overview', async (req, res) => {
   try {
-    const [totals, recent, newest] = await Promise.all([
-      pool.query(
-        `SELECT
-           (SELECT COUNT(*) FROM labels WHERE (is_system = false OR is_system IS NULL))::int AS workspaces,
-           (SELECT COUNT(*) FROM labels WHERE COALESCE(status,'active') = 'active' AND (is_system = false OR is_system IS NULL))::int AS active,
-           (SELECT COUNT(*) FROM labels WHERE status = 'suspended' AND (is_system = false OR is_system IS NULL))::int AS suspended,
-           (SELECT COUNT(*) FROM labels WHERE created_at > NOW() - INTERVAL '30 days' AND (is_system = false OR is_system IS NULL))::int AS new_30d,
-           (SELECT COUNT(*) FROM users WHERE is_platform_admin = false OR is_platform_admin IS NULL)::int AS members,
-           (SELECT COUNT(*) FROM artists)::int AS artists,
-           (SELECT COUNT(*) FROM releases)::int AS releases,
-           (SELECT COUNT(*) FROM deals)::int AS deals,
-           (SELECT COUNT(*) FROM contracts)::int AS contracts,
-           (SELECT COUNT(*) FROM expenses WHERE deleted = false OR deleted IS NULL)::int AS ledger_entries`
-      ),
-      pool.query(
-        `SELECT al.action, al.detail, al.created_at, l.name AS workspace, l.id AS label_id, u.name AS user_name
-         FROM activity_log al
-         JOIN labels l ON l.id = al.label_id
-         LEFT JOIN users u ON u.id = al.user_id AND u.label_id = al.label_id
-         ORDER BY al.created_at DESC LIMIT 20`
-      ),
-      pool.query(
-        `SELECT l.id, l.name, l.slug, l.created_at, COALESCE(l.status,'active') AS status,
-                (SELECT COUNT(*) FROM users u WHERE u.label_id = l.id AND (u.is_platform_admin = false OR u.is_platform_admin IS NULL))::int AS members
-         FROM labels l WHERE (l.is_system = false OR l.is_system IS NULL) ORDER BY l.created_at DESC LIMIT 5`
-      ),
+    const ids = await accessibleLabelIds(req);
+    // Each query owns its params array; scopeClause appends the allowlist when
+    // the operator is restricted and is a no-op when they are not.
+    const q = (sql, col, extra = []) => {
+      const params = [...extra];
+      return pool.query(sql.replace('/*SCOPE*/', scopeClause(ids, col, params)), params);
+    };
+
+    const [labels, members, artists, releases, deals, tasks, lastActive,
+           mtdAgg, mtdRows, pendAgg, pendRows, recent, upcoming] = await Promise.all([
+      q(`SELECT l.id, l.name, l.slug, l.accent_color, COALESCE(l.status,'active') AS status, l.created_at
+           FROM labels l WHERE (l.is_system = false OR l.is_system IS NULL) /*SCOPE*/
+          ORDER BY l.name`, 'l.id'),
+      q(`SELECT label_id, COUNT(*)::int AS n FROM users
+          WHERE (is_platform_admin = false OR is_platform_admin IS NULL) AND label_id IS NOT NULL /*SCOPE*/
+          GROUP BY 1`, 'label_id'),
+      q(`SELECT label_id, COUNT(*)::int AS n FROM artists WHERE 1=1 /*SCOPE*/ GROUP BY 1`, 'label_id'),
+      q(`SELECT label_id, COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE release_date > CURRENT_DATE AND status IS DISTINCT FROM 'Archived')::int AS upcoming
+           FROM releases WHERE 1=1 /*SCOPE*/ GROUP BY 1`, 'label_id'),
+      q(`SELECT label_id, COUNT(*)::int AS n FROM deals
+          WHERE stage NOT IN ('Signed','Passed') /*SCOPE*/ GROUP BY 1`, 'label_id'),
+      q(`SELECT label_id, COUNT(*)::int AS open,
+                COUNT(*) FILTER (WHERE due_date < CURRENT_DATE)::int AS overdue
+           FROM tasks WHERE status != 'Done' /*SCOPE*/ GROUP BY 1`, 'label_id'),
+      q(`SELECT label_id, MAX(created_at) AS t FROM activity_log WHERE 1=1 /*SCOPE*/ GROUP BY 1`, 'label_id'),
+
+      // Money, month to date. SQL sums the plain-USD half (rounded AT THE ROW,
+      // matching the tenant dashboard's own rule) so only rows that genuinely
+      // need a rate are pulled into JS.
+      q(`SELECT e.label_id, COUNT(*)::int AS invoices,
+                COALESCE(SUM(ROUND(e.amount,2)) FILTER (WHERE ${PLAIN_USD}),0) AS plain_logged,
+                COALESCE(SUM(ROUND(e.amount,2)) FILTER (WHERE ${PLAIN_USD} AND e.payment_status = 'Paid'),0) AS plain_paid
+           FROM expenses e
+          WHERE e.status = 'approved' AND ${LIVE_EXPENSE}
+            AND ${MTD_DATE} >= date_trunc('month', CURRENT_DATE) /*SCOPE*/
+          GROUP BY 1`, 'e.label_id'),
+      q(`SELECT e.label_id, e.amount, e.currency, e.fx_rate_to_usd, e.payment_status, ${MTD_DATE} AS d
+           FROM expenses e
+          WHERE e.status = 'approved' AND ${LIVE_EXPENSE}
+            AND ${MTD_DATE} >= date_trunc('month', CURRENT_DATE)
+            AND NOT ${PLAIN_USD} /*SCOPE*/`, 'e.label_id'),
+
+      // The approval queue is NOT month-scoped: an invoice raised in June and
+      // still unapproved in September is exactly what this figure is for.
+      q(`SELECT e.label_id, COUNT(*)::int AS invoices,
+                COALESCE(SUM(ROUND(e.amount,2)) FILTER (WHERE ${PLAIN_USD}),0) AS plain_logged,
+                0 AS plain_paid
+           FROM expenses e WHERE e.status = 'pending' AND ${LIVE_EXPENSE} /*SCOPE*/
+          GROUP BY 1`, 'e.label_id'),
+      q(`SELECT e.label_id, e.amount, e.currency, e.fx_rate_to_usd, NULL::varchar AS payment_status,
+                COALESCE(e.invoice_date, e.created_at::date) AS d
+           FROM expenses e
+          WHERE e.status = 'pending' AND ${LIVE_EXPENSE} AND NOT ${PLAIN_USD} /*SCOPE*/`, 'e.label_id'),
+
+      q(`SELECT al.action, al.detail, al.created_at, l.name AS workspace, l.id AS label_id, u.name AS user_name
+           FROM activity_log al
+           JOIN labels l ON l.id = al.label_id AND (l.is_system = false OR l.is_system IS NULL)
+           LEFT JOIN users u ON u.id = al.user_id AND u.label_id = al.label_id
+          WHERE 1=1 /*SCOPE*/
+          ORDER BY al.created_at DESC LIMIT 20`, 'al.label_id'),
+      q(`SELECT r.id, r.label_id, r.project_name, r.release_date, r.release_type, a.name AS artist_name
+           FROM releases r LEFT JOIN artists a ON a.id = r.artist_id AND a.label_id = r.label_id
+          WHERE r.release_date >= CURRENT_DATE
+            AND r.release_date < CURRENT_DATE + INTERVAL '45 days'
+            AND r.status IS DISTINCT FROM 'Archived' /*SCOPE*/
+          ORDER BY r.release_date LIMIT 20`, 'r.label_id'),
     ]);
-    res.json({ success: true, data: { totals: totals.rows[0], recentActivity: recent.rows, newestWorkspaces: newest.rows } });
+
+    // Resolve every FX rate this response needs in ONE parallel burst. Left
+    // per-row the awaits serialise into one HTTP round-trip per distinct date,
+    // inside the request (measured at ~270ms/row on /dashboard/widgets).
+    const fxRows = [...mtdRows.rows, ...pendRows.rows];
+    await warmRates(fxRows.filter(r => !(Number(r.fx_rate_to_usd) > 0)).map(r => r.d));
+    const rowUsd = async (r) => {
+      const amt = Number(r.amount) || 0;
+      const locked = Number(r.fx_rate_to_usd) || 0;
+      // A stamped rate is the historically-correct one and ALWAYS wins. Never
+      // a silent 1:1 fallback — that is the bug lib/usd.js exists to prevent.
+      if (locked > 0) return round2(amt / locked);
+      return round2(await toUSD(amt, r.currency, r.d));
+    };
+    for (const r of fxRows) r.usd = await rowUsd(r);
+
+    const mtdMoney = foldMoney(mtdAgg.rows, mtdRows.rows);
+    const pendMoney = foldMoney(pendAgg.rows, pendRows.rows);
+
+    const by = (rows, key = 'n') => {
+      const m = new Map();
+      for (const r of rows) m.set(Number(r.label_id), r[key]);
+      return m;
+    };
+    const mMembers = by(members.rows), mArtists = by(artists.rows), mDeals = by(deals.rows);
+    const mRel = new Map(releases.rows.map(r => [Number(r.label_id), r]));
+    const mTasks = new Map(tasks.rows.map(r => [Number(r.label_id), r]));
+    const mActive = by(lastActive.rows, 't');
+
+    const workspaces = labels.rows.map(l => {
+      const rel = mRel.get(l.id) || {}, tk = mTasks.get(l.id) || {};
+      const money = mtdMoney.get(l.id) || { invoices: 0, logged: 0, paid: 0 };
+      const pend = pendMoney.get(l.id) || { invoices: 0, logged: 0 };
+      return {
+        id: l.id, name: l.name, slug: l.slug, accent_color: l.accent_color,
+        status: l.status, created_at: l.created_at,
+        members: mMembers.get(l.id) || 0,
+        artists: mArtists.get(l.id) || 0,
+        releases: rel.total || 0,
+        upcoming: rel.upcoming || 0,
+        open_deals: mDeals.get(l.id) || 0,
+        open_tasks: tk.open || 0,
+        overdue_tasks: tk.overdue || 0,
+        pending: pend.invoices || 0,
+        pending_usd: round2(pend.logged),
+        invoices_mtd: money.invoices,
+        logged_mtd: money.logged,
+        paid_mtd: money.paid,
+        last_active: mActive.get(l.id) || null,
+      };
+    });
+
+    // Every headline is a reduction over the rows above — the grid and the band
+    // cannot disagree.
+    const sum = (k) => workspaces.reduce((a, w) => a + (Number(w[k]) || 0), 0);
+    const monthAgo = Date.now() - 30 * 86400000;
+    const totals = {
+      workspaces: workspaces.length,
+      active: workspaces.filter(w => w.status !== 'suspended').length,
+      suspended: workspaces.filter(w => w.status === 'suspended').length,
+      new_30d: workspaces.filter(w => w.created_at && new Date(w.created_at).getTime() > monthAgo).length,
+      members: sum('members'), artists: sum('artists'), releases: sum('releases'),
+      upcoming: sum('upcoming'), open_deals: sum('open_deals'),
+      open_tasks: sum('open_tasks'), overdue_tasks: sum('overdue_tasks'),
+      pending: sum('pending'),
+      pending_usd: round2(sum('pending_usd')),
+      invoices_mtd: sum('invoices_mtd'),
+      logged_mtd: round2(sum('logged_mtd')),
+      paid_mtd: round2(sum('paid_mtd')),
+    };
+
+    res.json({
+      success: true,
+      data: {
+        scoped: !!ids,                       // the console says so when the view is narrowed
+        totals,
+        workspaces,
+        attention: buildAttention(workspaces),
+        recentActivity: recent.rows,
+        upcomingReleases: upcoming.rows.map(r => ({ ...r, release_date: dayString(r.release_date) })),
+      },
+    });
   } catch (error) {
     console.error('Platform overview error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Cross-workspace calendar ───────────────────────────────────────────────
+//
+// The tenant calendar answers "what is happening here this month". This one
+// answers "what is happening ANYWHERE this month", which is the only view that
+// catches two labels dropping singles on the same Friday.
+//
+// Each source runs behind its own guard: one missing column or one slow table
+// should cost the month that bucket, not 500 a page whose other three feeds
+// were fine. The client is told which bucket degraded rather than being shown
+// a quietly thinner month.
+async function feedQuery(label, sql, params) {
+  try { return await pool.query(sql, params); }
+  catch (err) { console.error(`Platform calendar source "${label}" failed:`, err.message); return { rows: [], failed: true }; }
+}
+
+// GET /api/platform/calendar?from=&to= — every workspace's releases, manual
+// events, contract dates and DSP milestones in one feed, each row carrying the
+// workspace that owns it so the client can colour by tenant.
+router.get('/calendar', async (req, res) => {
+  try {
+    const ids = await accessibleLabelIds(req);
+
+    // Window server-side. The tenant calendar fetches everything and filters in
+    // the browser, which is fine for one label; across every tenant the DSP
+    // feed alone is one row per release per platform, so an unbounded pull is
+    // the thing that would make this page unusable at scale.
+    const today = dayString(new Date());
+    let { from, to } = req.query;
+    if (from !== undefined && !isValidDay(from)) return res.status(400).json({ success: false, error: 'Invalid "from" date' });
+    if (to !== undefined && !isValidDay(to)) return res.status(400).json({ success: false, error: 'Invalid "to" date' });
+    if (!from || !to) {
+      const now = new Date();
+      from = dayString(new Date(now.getFullYear(), now.getMonth(), 1));
+      to = dayString(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+    }
+    if (from > to) return res.status(400).json({ success: false, error: '"from" must not be after "to"' });
+    // A 400-day ceiling. Without it a hand-built ?from=1900 pulls every row in
+    // every tenant, and the request that does it looks perfectly innocent.
+    const span = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000);
+    if (span > 400) return res.status(400).json({ success: false, error: 'Range too wide (max 400 days)' });
+
+    const q = (name, sql, col) => {
+      const params = [from, to];
+      return feedQuery(name, sql.replace('/*SCOPE*/', scopeClause(ids, col, params)), params);
+    };
+
+    const [labels, releases, events, signed, expiring, dsp] = await Promise.all([
+      (() => { const params = []; return pool.query(
+        `SELECT l.id, l.name, l.accent_color, COALESCE(l.status,'active') AS status
+           FROM labels l WHERE (l.is_system = false OR l.is_system IS NULL)
+           ${scopeClause(ids, 'l.id', params)} ORDER BY l.name`, params); })(),
+
+      q('releases',
+        `SELECT r.id, r.label_id, r.project_name, r.release_date, r.release_type, a.name AS artist_name
+           FROM releases r LEFT JOIN artists a ON a.id = r.artist_id AND a.label_id = r.label_id
+          WHERE r.release_date BETWEEN $1::date AND $2::date
+            AND r.status IS DISTINCT FROM 'Archived' /*SCOPE*/`, 'r.label_id'),
+
+      q('events',
+        `SELECT id, label_id, title, event_date, description, color, event_type
+           FROM calendar_events
+          WHERE event_date BETWEEN $1::date AND $2::date /*SCOPE*/`, 'label_id'),
+
+      q('contracts_signed',
+        `SELECT c.id, c.label_id, c.type, c.date_signed, a.name AS artist_name
+           FROM contracts c LEFT JOIN artists a ON a.id = c.artist_id AND a.label_id = c.label_id
+          WHERE c.date_signed BETWEEN $1::date AND $2::date /*SCOPE*/`, 'c.label_id'),
+
+      q('contracts_expiring',
+        `SELECT c.id, c.label_id, c.type, c.expiration_date, a.name AS artist_name
+           FROM contracts c LEFT JOIN artists a ON a.id = c.artist_id AND a.label_id = c.label_id
+          WHERE c.expiration_date BETWEEN $1::date AND $2::date
+            AND c.status = 'Active' /*SCOPE*/`, 'c.label_id'),
+
+      q('dsp',
+        `SELECT d.id, d.label_id, d.platform, d.live_date, d.submitted_date, d.status,
+                r.project_name, r.id AS release_id
+           FROM dsp_submissions d JOIN releases r ON r.id = d.release_id AND r.label_id = d.label_id
+          WHERE (d.live_date BETWEEN $1::date AND $2::date
+              OR d.submitted_date BETWEEN $1::date AND $2::date) /*SCOPE*/`, 'd.label_id'),
+    ]);
+
+    const evs = [];
+    const push = (e) => { if (e.date) evs.push(e); };
+
+    for (const r of releases.rows) push({
+      kind: 'release', id: `release-${r.id}`, label_id: r.label_id,
+      title: r.project_name, subtitle: r.artist_name || null, meta: r.release_type || null,
+      date: dayString(r.release_date), link: `/releases/${r.id}`,
+    });
+    for (const e of events.rows) push({
+      kind: 'event', id: `event-${e.id}`, label_id: e.label_id,
+      title: e.title,
+      subtitle: e.event_type && e.event_type !== 'manual' ? e.event_type : null,
+      description: e.description, event_type: e.event_type || 'manual',
+      date: dayString(e.event_date), link: '/calendar',
+    });
+    for (const c of signed.rows) push({
+      kind: 'contract_signed', id: `csign-${c.id}`, label_id: c.label_id,
+      title: `${c.artist_name || 'Contract'} — signed`, subtitle: c.type || null,
+      date: dayString(c.date_signed), link: '/contracts',
+    });
+    for (const c of expiring.rows) push({
+      kind: 'contract_expiry', id: `cexp-${c.id}`, label_id: c.label_id,
+      title: `${c.artist_name || 'Contract'} — expires`, subtitle: c.type || null,
+      date: dayString(c.expiration_date), link: '/renewals',
+    });
+    for (const s of dsp.rows) {
+      // One row can carry BOTH milestones; the window matched if either landed
+      // in it, so each is re-tested rather than assumed.
+      const live = dayString(s.live_date), sub = dayString(s.submitted_date);
+      if (live && live >= from && live <= to) push({
+        kind: 'dsp_live', id: `dsplive-${s.id}`, label_id: s.label_id,
+        title: `${s.project_name} — live on ${s.platform}`, subtitle: s.platform,
+        meta: s.status || null, date: live, link: `/releases/${s.release_id}`,
+      });
+      if (sub && sub >= from && sub <= to) push({
+        kind: 'dsp_submitted', id: `dspsub-${s.id}`, label_id: s.label_id,
+        title: `${s.project_name} — submitted to ${s.platform}`, subtitle: s.platform,
+        meta: s.status || null, date: sub, link: `/releases/${s.release_id}`,
+      });
+    }
+
+    const degraded = [
+      releases.failed && 'releases', events.failed && 'events',
+      (signed.failed || expiring.failed) && 'contracts', dsp.failed && 'DSP',
+    ].filter(Boolean);
+
+    res.json({
+      success: true,
+      data: evs,
+      // The colour key rides along so the client needs no second fetch, and so
+      // a workspace with nothing on this month still gets a legend entry.
+      workspaces: labels.rows,
+      range: { from, to },
+      scoped: !!ids,
+      degraded: [...new Set(degraded)],
+      today,
+    });
+  } catch (error) {
+    console.error('Platform calendar error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
@@ -204,7 +493,15 @@ router.get('/activity', async (req, res) => {
   try {
     const params = [];
     let where = '1=1';
-    if (req.query.label_id) { params.push(parseInt(req.query.label_id, 10)); where += ` AND al.label_id = $${params.length}`; }
+    // A restricted operator's feed is narrowed to the workspaces they can
+    // actually enter — an audit line naming a workspace you are blocked from is
+    // a leak, not context.
+    where += scopeClause(await accessibleLabelIds(req), 'al.label_id', params);
+    if (req.query.label_id) {
+      const id = parseInt(req.query.label_id, 10);
+      if (!Number.isInteger(id)) return res.status(400).json({ success: false, error: 'Invalid workspace' });
+      params.push(id); where += ` AND al.label_id = $${params.length}`;
+    }
     if (req.query.q) { params.push(`%${req.query.q}%`); where += ` AND (al.action ILIKE $${params.length} OR al.detail ILIKE $${params.length})`; }
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 300);
     params.push(limit);
@@ -228,7 +525,12 @@ router.get('/activity', async (req, res) => {
 // Console pages an admin operator can be restricted from. Overview ('/') and
 // Account are always allowed so an operator is never fully locked out;
 // Operators is owner-only anyway.
-const RESTRICTABLE_PAGES = ['/workspaces', '/activity', '/announcements'];
+// Adding a page here is not free: the model is an ALLOWLIST, so any operator
+// who already has one silently loses a page the moment it becomes restrictable.
+// That is the right default for a NEW cross-tenant surface (/calendar, which
+// nobody has been granted yet) and the wrong one for a page that is visible to
+// everybody today — which is why /analytics is deliberately not in this list.
+const RESTRICTABLE_PAGES = ['/workspaces', '/calendar', '/activity', '/announcements'];
 
 async function operatorAccess(email) {
   const e = (email || '').toLowerCase();
@@ -240,6 +542,32 @@ async function operatorAccess(email) {
     workspaces: ws.rows.length ? ws.rows.map(r => r.label_id) : null, // null = all
     pages: pg.rows.length ? pg.rows.map(r => r.page) : null,          // null = all
   };
+}
+
+// The workspace ids this operator may SEE, or null for "no restriction".
+//
+// The allowlist used to gate only /enter and the member mutations, so a
+// restricted admin still read counts and audit lines for workspaces they were
+// explicitly blocked from. Visibility and reachability are now the same
+// answer. Owners are never restricted.
+//
+// Note operatorAccess() collapses "no rows" to null, so this never returns an
+// empty array by accident — an empty allowlist would mean "nothing", and
+// conflating that with "everything" is the classic inverse-state bug.
+async function accessibleLabelIds(req) {
+  if (req.user.platform_role === 'owner') return null;
+  const access = await operatorAccess(req.user.email);
+  return access.workspaces;
+}
+
+// Append ` AND <col> = ANY($n)` when the operator is restricted, pushing the id
+// array onto `params`. A no-op when unrestricted, so callers read the same
+// either way. `= ANY(empty)` matches nothing, which is the correct reading of
+// an explicitly-empty allowlist.
+function scopeClause(ids, col, params) {
+  if (!ids) return '';
+  params.push(ids);
+  return ` AND ${col} = ANY($${params.length}::int[])`;
 }
 
 // Middleware: an admin-tier operator may only act on a workspace that's in
@@ -382,26 +710,32 @@ router.delete('/announcements/:id', requirePlatformOwner, async (req, res) => {
 // GET /api/platform/analytics — growth over time + top workspaces by activity.
 router.get('/analytics', async (req, res) => {
   try {
+    const ids = await accessibleLabelIds(req);
+    const q = (sql, col) => {
+      const params = [];
+      return pool.query(sql.replace('/*SCOPE*/', scopeClause(ids, col, params)), params);
+    };
+    // Growth counts, top workspaces and catalog rankings are all narrowed to
+    // the caller's allowlist, and the system (Platform HQ) label is excluded
+    // from every one of them — it is not a tenant.
     const [wsByMonth, usersByMonth, topByActivity, topByReleases] = await Promise.all([
-      pool.query(
-        `SELECT to_char(date_trunc('month', created_at), 'YYYY-MM') AS month, COUNT(*)::int AS n
-         FROM labels WHERE created_at > NOW() - INTERVAL '12 months'
-         GROUP BY 1 ORDER BY 1`
-      ),
-      pool.query(
-        `SELECT to_char(date_trunc('month', created_at), 'YYYY-MM') AS month, COUNT(*)::int AS n
-         FROM users WHERE (is_platform_admin = false OR is_platform_admin IS NULL) AND created_at > NOW() - INTERVAL '12 months'
-         GROUP BY 1 ORDER BY 1`
-      ),
-      pool.query(
-        `SELECT l.id, l.name, COUNT(al.id)::int AS events
+      q(`SELECT to_char(date_trunc('month', l.created_at), 'YYYY-MM') AS month, COUNT(*)::int AS n
+         FROM labels l
+         WHERE l.created_at > NOW() - INTERVAL '12 months'
+           AND (l.is_system = false OR l.is_system IS NULL) /*SCOPE*/
+         GROUP BY 1 ORDER BY 1`, 'l.id'),
+      q(`SELECT to_char(date_trunc('month', created_at), 'YYYY-MM') AS month, COUNT(*)::int AS n
+         FROM users
+         WHERE (is_platform_admin = false OR is_platform_admin IS NULL)
+           AND created_at > NOW() - INTERVAL '12 months' AND label_id IS NOT NULL /*SCOPE*/
+         GROUP BY 1 ORDER BY 1`, 'label_id'),
+      q(`SELECT l.id, l.name, COUNT(al.id)::int AS events
          FROM labels l LEFT JOIN activity_log al ON al.label_id = l.id AND al.created_at > NOW() - INTERVAL '30 days'
-         GROUP BY l.id, l.name ORDER BY events DESC, l.name LIMIT 8`
-      ),
-      pool.query(
-        `SELECT l.id, l.name, (SELECT COUNT(*) FROM releases r WHERE r.label_id = l.id)::int AS releases
-         FROM labels l ORDER BY releases DESC, l.name LIMIT 8`
-      ),
+         WHERE (l.is_system = false OR l.is_system IS NULL) /*SCOPE*/
+         GROUP BY l.id, l.name ORDER BY events DESC, l.name LIMIT 8`, 'l.id'),
+      q(`SELECT l.id, l.name, (SELECT COUNT(*) FROM releases r WHERE r.label_id = l.id)::int AS releases
+         FROM labels l WHERE (l.is_system = false OR l.is_system IS NULL) /*SCOPE*/
+         ORDER BY releases DESC, l.name LIMIT 8`, 'l.id'),
     ]);
     res.json({
       success: true,

@@ -910,4 +910,86 @@ assert('workbook: a sheet with no usable header is reported, never half-read',
     return p.rows.length === 0 && p.sheets_skipped.length === 1;
   })());
 
+// ── lib/platformRollup — the operator console's cross-workspace money ───────
+const PR = require('../lib/platformRollup');
+
+{
+  // SQL hands back the plain-USD half already summed and row-rounded; only the
+  // rows needing a rate arrive individually, carrying a resolved `usd`.
+  const agg = [
+    { label_id: 2, invoices: 3, plain_logged: '150.00', plain_paid: '100.00' },
+    { label_id: 4, invoices: 1, plain_logged: '80.00', plain_paid: '0' },
+  ];
+  const rows = [
+    { label_id: 2, usd: 42.5, payment_status: 'Paid' },
+    { label_id: 2, usd: 7.25, payment_status: null },
+    { label_id: 9, usd: 10, payment_status: 'Paid' },   // no agg row at all
+  ];
+  const m = PR.foldMoney(agg, rows);
+  assert('platformRollup: the two money halves fold into one per-workspace figure',
+    m.get(2).logged === 199.75 && m.get(2).paid === 142.5 && m.get(2).invoices === 3);
+  assert('platformRollup: a workspace with only converted rows still appears',
+    m.get(9).logged === 10 && m.get(9).paid === 10 && m.get(9).invoices === 0);
+  assert('platformRollup: only rows marked Paid reach the paid figure',
+    m.get(4).paid === 0 && m.get(4).logged === 80);
+  assert('platformRollup: a label_id arriving as a string folds into the same bucket',
+    PR.foldMoney([{ label_id: '2', invoices: 1, plain_logged: '5', plain_paid: '0' }],
+                 [{ label_id: 2, usd: 5, payment_status: 'Paid' }]).get(2).logged === 10);
+  // Summing halves of a cent must not invent one: three 0.005s are 0.02 after
+  // row rounding, never 0.015 rounded up at the end.
+  assert('platformRollup: converted rows round AT THE ROW, matching lib/usd',
+    PR.foldMoney([], [
+      { label_id: 1, usd: 0.005, payment_status: 'Paid' },
+      { label_id: 1, usd: 0.005, payment_status: 'Paid' },
+    ]).get(1).logged === 0.02);
+  assert('platformRollup: an empty fold is empty, not a zero-filled row',
+    PR.foldMoney([], []).size === 0);
+}
+
+{
+  const NOW = new Date('2026-09-14T12:00:00Z').getTime();
+  const day = (n) => new Date(NOW - n * 86400000).toISOString();
+  const items = PR.buildAttention([
+    { id: 1, name: 'Alpha', status: 'active', members: 3, pending: 0, last_active: day(2) },
+    { id: 2, name: 'Bravo', status: 'active', members: 4, pending: 7, last_active: day(1) },
+    { id: 3, name: 'Charlie', status: 'suspended', members: 2, pending: 0, last_active: day(400) },
+    { id: 4, name: 'Delta', status: 'active', members: 0, pending: 0, last_active: null },
+    { id: 5, name: 'Echo', status: 'active', members: 2, pending: 1, last_active: day(45) },
+  ], { now: NOW });
+  const kinds = (id) => items.filter(i => i.label_id === id).map(i => i.kind).sort().join(',');
+
+  assert('attention: a healthy, recently-used workspace raises nothing',
+    kinds(1) === '');
+  assert('attention: a backlog at or above the threshold is a warning, below it is info',
+    items.find(i => i.label_id === 2).severity === 'warning' &&
+    items.find(i => i.label_id === 5 && i.kind === 'pending_approvals').severity === 'info');
+  assert('attention: a suspended workspace is not ALSO reported as idle',
+    // It is idle by design; saying so twice buries the line that explains it.
+    kinds(3) === 'suspended');
+  assert('attention: a workspace nobody has joined is called out as unusable',
+    kinds(4) === 'never_active,no_members');
+  assert('attention: an idle workspace names the actual number of days',
+    items.find(i => i.label_id === 5 && i.kind === 'idle').text === 'No activity for 45 days');
+  assert('attention: the worst thing on the platform sorts first',
+    items[0].severity === 'danger' && items[0].label_id === 3);
+  assert('attention: the pending count is pluralised off the real number',
+    items.find(i => i.label_id === 5 && i.kind === 'pending_approvals').text === '1 invoice awaiting approval' &&
+    items.find(i => i.label_id === 2).text === '7 invoices awaiting approval');
+}
+
+// ── lib/calendarDay dayString — the pg-DATE trap, now shared by two feeds ───
+{
+  const { dayString } = require('../lib/calendarDay');
+  // node-pg builds a DATE at LOCAL midnight. toISOString() would shift the day
+  // east of UTC; reading the local parts gives back the day pg meant.
+  assert('dayString: a pg Date keeps its calendar day',
+    dayString(new Date(2026, 8, 1)) === '2026-09-01');
+  assert('dayString: a timestamp string is truncated, not re-parsed',
+    dayString('2026-09-01T23:30:00.000Z') === '2026-09-01');
+  assert('dayString: null in, null out — never today as a default',
+    dayString(null) === null && dayString(undefined) === null);
+  assert('dayString: an unusable value is null rather than a guess',
+    dayString('Tue Sep 01') === null && dayString(new Date('nope')) === null);
+}
+
 console.log(process.exitCode ? '\nFIXTURES FAILED' : '\nAll fixtures pass.');

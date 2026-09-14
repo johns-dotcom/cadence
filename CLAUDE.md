@@ -4932,3 +4932,148 @@ Superadmin/Admin 6 groups / 51 rows / 51 pages → **8 / 49 / 53**; Approver
 6 / 43 / 43 → **7 / 41 / 44**; User 6 / 16 / 16 → **5 / 16 / 16**. Fewer rows,
 more reachable pages.
 
+
+---
+
+## Operator console — cross-workspace Overview + Calendar (2026-09-14)
+
+The platform console's `/` was a hero band plus two rails (newest workspaces,
+recent activity). It is now **a workspace dashboard computed across every
+workspace**, and it has a sibling **`/calendar`** showing every tenant's
+schedule on one grid. **Zero new deps, zero schema change.** Fixtures 253 → 270.
+
+### The access leak, fixed
+`operator_workspace_access` gated **only** `/enter` and the member mutations, so
+an admin-tier operator restricted to one workspace still read counts, audit
+lines and analytics rankings for every workspace they were explicitly blocked
+from. Visibility and reachability are now the same answer. New
+`accessibleLabelIds(req)` (owner → null = unrestricted) + `scopeClause(ids, col,
+params)`, applied to the new **`/overview`** and **`/calendar`** and retrofitted
+onto **`/activity`** and **`/analytics`**. `operatorAccess()` already collapses
+"no rows" to null, so this never returns an empty array by accident — an empty
+allowlist would mean *nothing* and conflating that with *everything* is the
+inverse-state bug `/settings` already fixed once. Proved live with a real
+restricted operator: overview 3 ws → 1, `$12,163.06` MTD → `$0.00`, 7 pending →
+0, `scoped:true`; calendar 7 events/legend [2,3,4] → 0/[4]; activity 100 rows
+across [1,2] → 4 across [4]; analytics top-by-activity [2,3,4] → [4].
+`/analytics` also stopped counting the **Platform HQ system label** as a tenant.
+**Still unfiltered, deliberately, and worth knowing**: `GET /platform/workspaces`
+and `/workspaces/:id` — the question named three routes, and those two are the
+management surface, so narrowing them is a product call, not a QA fix. Until
+then a restricted operator sees a shorter list on `/` than on `/workspaces`.
+
+### `GET /platform/overview` — rewritten
+Two properties that are load-bearing rather than stylistic:
+
+1. **Every platform total is a REDUCTION over the per-workspace rows shipped
+   alongside it**, never an independent `COUNT`. A headline computed separately
+   from the list beneath it drifts — this repo has fixed that class on four
+   surfaces already. Asserted live: all 12 summable keys match the sum of the
+   cards exactly.
+2. **One `GROUP BY` per domain**, not the per-label correlated subqueries
+   `/workspaces` uses. That shape is O(workspaces × domains) and this is the
+   page that has to survive tenant growth. 13 queries in one `Promise.all`;
+   measured **~210 ms steady** (710 ms cold, which is the FX warm).
+
+**Money is in scope** (John's call) and goes through the repo's own rule rather
+than a second one. `lib/platformRollup.js` (new, pure, fixtured) `foldMoney()`
+takes money in **two halves on purpose**: SQL sums the plain-USD rows with
+`SUM(ROUND(amount,2))` — round AT THE ROW, which is the convention and is what
+makes the operator figure *equal* the tenant widget — and only rows that
+genuinely need a rate (`NOT (currency='USD' AND (fx_rate_to_usd IS NULL OR
+= 1))`) are pulled into JS, warmed through `warmRates` in one burst and
+converted with the locked rate **always winning**. Cross-checked live against
+`GET /dashboard/widgets` for the same label and month: `logged 12163.06 · paid
+9180 · invoices 11 · awaiting 7` on **both**, with EUR and JPY rows in the set.
+The approval queue is deliberately **not** month-scoped — an invoice raised in
+June and still unapproved is exactly what that figure is for — and the page says
+so, along with the USD-equivalent disclosure.
+
+`buildAttention()` (also pure, fixtured) emits only conditions an operator can
+*act* on: suspended · no members · pending backlog (`warning` at ≥5, `info`
+below) · idle ≥30 days · never active. A suspended workspace is **not** also
+reported as idle — it is idle by design, and saying so twice buries the line
+that explains the other.
+
+Client `PlatformOverview.jsx` (rewrite): hero band → 6 platform stat cards →
+a **Bookkeeping band** (the cross-tenant form of the workspace widget) →
+**a card per workspace** carrying its accent rail, 4-up counts, MTD money and
+its own backlog/overdue chips → three rails (Needs attention · Upcoming releases
+· Recent activity). Search + sort over the same array the counts reduce over,
+with the filtered count stated separately. `r` refreshes.
+
+### `GET /platform/calendar` + `/calendar` — new
+Four sources, all four John asked for: releases · manual `calendar_events` ·
+contract signed/expiry · DSP submitted/live. Each behind its own `feedQuery`
+guard, with `degraded[]` naming the bucket that failed — a thinner month is
+never shown silently.
+
+**Windowed server-side**, unlike the tenant calendar which fetches everything
+and filters in the browser. Across every tenant the DSP feed alone is one row
+per release per platform, so an unbounded pull is the thing that would make the
+page unusable. `from`/`to` validated through `lib/calendarDay isValidDay`
+(so `2026-02-31` is a 400, not a Postgres type error surfacing as a 500),
+from-after-to refused, and a **400-day ceiling** — without it a hand-built
+`?from=1900` pulls every row in every tenant and looks innocent doing it.
+All four guards verified live.
+
+**Colour carries the WORKSPACE, the icon carries the KIND** — the inverse of the
+tenant calendar, where one workspace leaves colour free to mean kind. The
+question this page exists to answer is "who is dropping what, when, and is
+anyone colliding", which is a question about tenants. `utils/workspaceColor.js`
+(new, shared by both pages so the legend cannot mean two things one page over):
+an explicitly-set `labels.accent_color` always wins; otherwise the colour is
+derived **from the workspace ID, not its index in the list** — index-based
+assignment reshuffles every colour the moment a workspace is created, suspended
+or filtered out. `accent_color` is null on every workspace in dev, so the
+fallback is the common case. Chips are a `color-mix` tint + a solid 2px rail,
+never coloured *text*: contrast stays `text-ink`'s job rather than luck.
+
+DSP ships **off by default** and the chip says so — one row per release per
+platform across every tenant outnumbers everything else combined, and a month
+you must un-clutter before you can read is a month nobody reads. The workspace
+legend doubles as a per-tenant filter and carries each one's event count for the
+displayed month, counted **after** the kind filters but **before** the workspace
+filter, so hiding one never changes another's number.
+
+There is no `/releases/:id` inside the operator shell, so opening an event
+`enterWorkspace()`s first and then lands on the record — one gesture, stated on
+the button. Same flow behind the Overview's upcoming-releases rail.
+
+### Also
+- `lib/calendarDay.js` gained **`dayString`** — the pg-DATE → `'YYYY-MM-DD'`
+  coercion that `routes/calendar.js` held privately. Both feeds now share it
+  rather than keeping a second copy to go stale (fixtured: pg Date keeps its
+  calendar day, `null` in → `null` out never *today*, `"Tue Sep 01"` → null).
+- `/calendar` is restrictable; **`/analytics` deliberately is not**. The model is
+  an allowlist, so adding a page silently revokes it from every operator who
+  already has one. That is the right default for a brand-new cross-tenant
+  surface and the wrong one for a page everybody can see today.
+- `Workspaces.jsx` accepts **`?open=<id>`** (read once into state, not driven
+  from the URL, and the param is stripped on close or a refresh reopens it) so
+  the Overview's per-card "Manage" lands on the drawer.
+- Nav gains Calendar; `/analytics` finally has a `META` entry (it was falling
+  through to the generic "Platform" topbar title).
+
+### Verification
+`finance-fixtures.cjs` **270/270** (was 253; +17 for `foldMoney`'s two halves,
+round-at-the-row, string `label_id`, converted-rows-only workspaces;
+`buildAttention`'s five conditions, severity ordering, the suspended-is-not-also-
+idle rule and pluralisation; and `dayString`). `check-tdz` 204 clean ·
+`check-render` shell clean for all roles, **89 routes** · `check:vendor-lab`
+clean · `npm run build` clean · `node --check` on all 5 changed server files.
+Built CSS re-checked: **0 `NaN`**, and every new utility emits a real rule
+(`bg-danger/15` and `bg-warning/15` compile to `color-mix`, plus
+`hover:border-brand-300`, `min-h-[108px]`, `h-[34rem]`, `opacity-45`).
+No raw grays, no `dark:`, no `bg-brand-50` in either new page. The throwaway
+restricted operator created for the access test was removed afterwards.
+
+### Not done
+No **create/edit** of tenant calendar events from the console — the page is a
+visibility surface; writing into a tenant's calendar from outside it is a
+different decision. No cross-tenant **task** source (the tenant calendar's is
+"your own tasks", which has no operator equivalent, and a workspace-wide task
+feed would cross the department boundary `routes/tasks.js` enforces). No
+week/agenda view, no `?month=` in the URL, and no per-workspace colour picker
+on the console — `accent_color` is still only settable from the workspace
+drawer.

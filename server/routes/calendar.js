@@ -3,6 +3,7 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
+const { dayString } = require('../lib/calendarDay');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -20,17 +21,9 @@ async function safeQuery(label, sql, params) {
   }
 }
 
-// Normalize a pg DATE (or timestamp) to 'YYYY-MM-DD' without a TZ round-trip.
-// `new Date(d).toISOString()` shifts the day for anything east of UTC; reading
-// the local parts off the Date pg already built keeps the calendar day intact.
-function d(value) {
-  if (!value) return null;
-  if (value instanceof Date) {
-    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
-  }
-  const s = String(value).slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
-}
+// One definition of the pg-DATE → 'YYYY-MM-DD' coercion, shared with the
+// operator console's cross-workspace feed (lib/calendarDay.js).
+const d = dayString;
 
 // GET /api/calendar — unified event feed for the workspace.
 // Every source query is scoped to req.labelId.

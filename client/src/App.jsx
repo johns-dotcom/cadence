@@ -7,6 +7,7 @@ import UpdateBanner from './components/UpdateBanner'
 import PlatformLayout from './components/PlatformLayout'
 import PlatformOverview from './pages/PlatformOverview'
 import PlatformActivity from './pages/PlatformActivity'
+import PlatformCalendar from './pages/PlatformCalendar'
 import PlatformAnalytics from './pages/PlatformAnalytics'
 import PlatformAnnouncements from './pages/PlatformAnnouncements'
 import PlatformOperators from './pages/PlatformOperators'
@@ -167,6 +168,7 @@ function AppContent() {
           <Route path="/messages"   element={<Messages />} />
           <Route path="/messages/:channelId" element={<Messages />} />
           <Route path="/workspaces" element={<Workspaces />} />
+          <Route path="/calendar"   element={<PlatformCalendar />} />
           <Route path="/activity"   element={<PlatformActivity />} />
           <Route path="/analytics"  element={<PlatformAnalytics />} />
           <Route path="/announcements" element={<PlatformAnnouncements />} />

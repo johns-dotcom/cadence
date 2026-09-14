@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus, Building2, Copy, Check, LogIn, Search, Users, Music, Layers, Ban } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
@@ -43,7 +43,19 @@ export default function Workspaces() {
   const [copied, setCopied] = useState(false)
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState('created_at')
-  const [drawerId, setDrawerId] = useState(null)
+  // ?open=<id> so the Overview's per-workspace "Manage" lands straight on the
+  // drawer. Read ONCE into state rather than driven from the URL — the drawer
+  // is dismissed by its own onClose, and a URL-derived value would reopen it.
+  const [params, setParams] = useSearchParams()
+  const [drawerId, setDrawerId] = useState(() => {
+    const id = parseInt(params.get('open'), 10)
+    return Number.isInteger(id) ? id : null
+  })
+  const closeDrawer = () => {
+    setDrawerId(null)
+    // Strip the param too, or a refresh reopens a drawer you just closed.
+    if (params.get('open')) { params.delete('open'); setParams(params, { replace: true }) }
+  }
 
   const load = () => {
     setLoading(true)
@@ -267,7 +279,7 @@ export default function Workspaces() {
         <WorkspaceDrawer
           workspaceId={drawerId}
           isOwner={isOwner}
-          onClose={() => setDrawerId(null)}
+          onClose={closeDrawer}
           onEnter={(label) => enter(label)}
           onChanged={load}
         />
