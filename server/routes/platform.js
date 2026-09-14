@@ -58,7 +58,7 @@ router.use(authMiddleware, requirePlatformAdmin);
 router.get('/workspaces', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT l.id, l.name, l.slug, l.accent_color, l.logo_r2_key, l.logo_data,
+      `SELECT l.id, l.name, l.slug, l.accent_color, l.console_color, l.logo_r2_key, l.logo_data,
               COALESCE(l.status, 'active') AS status, l.suspended_at, l.created_at,
               (SELECT COUNT(*) FROM users u WHERE u.label_id = l.id AND (u.is_platform_admin = false OR u.is_platform_admin IS NULL))::int AS members,
               (SELECT COUNT(*) FROM artists WHERE label_id = l.id)::int AS artists,
@@ -97,7 +97,7 @@ router.get('/workspaces/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const labelRes = await pool.query(
-      `SELECT id, name, slug, accent_color, logo_r2_key, logo_data, COALESCE(status,'active') AS status, suspended_at, created_at, owner_user_id
+      `SELECT id, name, slug, accent_color, console_color, logo_r2_key, logo_data, COALESCE(status,'active') AS status, suspended_at, created_at, owner_user_id
          FROM labels WHERE id = $1`,
       [id]
     );
@@ -943,49 +943,73 @@ router.patch('/workspaces/:id', requirePlatformOwner, async (req, res) => {
   }
 });
 
-// PUT /api/platform/workspaces/:id/console-color — set (or clear) the colour a
-// workspace wears in the console.
+// PUT /api/platform/workspaces/:id/colors — set (or clear) a workspace's brand
+// accent and/or its console override, in one place.
 //
-// requireWorkspaceAccess, NOT requirePlatformOwner like the rest of the
-// workspace mutations: this changes nothing a tenant can see, and the operator
-// who cannot tell two chips apart is the one who needs to fix it. Body
-// { color: '#RRGGBB' } to set, { color: null } to fall back to the brand accent.
-router.put('/workspaces/:id(\\d+)/console-color', requireWorkspaceAccess, async (req, res) => {
+// Body { accent_color, console_color }, each optional; null or '' clears one.
+// `color` is accepted as a legacy alias for console_color so a browser tab
+// still running the previous bundle keeps working across the deploy.
+//
+// requireWorkspaceAccess, NOT requirePlatformOwner like the other workspace
+// mutations. The Manage tab that used to be the only way to set an accent is
+// owner-gated, which left every admin-tier operator unable to brand a workspace
+// they provision and work in every day. Picking a colour is cosmetic and
+// reversible; renaming a workspace (still on the owner-only PATCH) is not.
+// Both paths, ONE handler — not a redirect into router.handle(), which
+// re-enters the router and so re-runs authMiddleware (a second user-row read)
+// and the access check for every legacy call.
+router.put(['/workspaces/:id(\\d+)/colors', '/workspaces/:id(\\d+)/console-color'], requireWorkspaceAccess, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const raw = req.body.color;
-    // Validate rather than coerce: a colour that silently became null would
-    // look like the save worked and the palette ignored it.
-    let color = null;
-    if (raw !== null && raw !== undefined && String(raw).trim() !== '') {
-      color = String(raw).trim();
-      if (!/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color)) {
-        return res.status(400).json({ success: false, error: 'Colour must be a hex value like #2a78d6' });
-      }
+    // Validate, never coerce: a bad value that silently became null would look
+    // like the save worked and the palette ignored it.
+    const read = (v) => {
+      if (v === undefined) return undefined;                 // field absent → leave alone
+      if (v === null || String(v).trim() === '') return null; // explicit clear
+      const hex = String(v).trim();
+      if (!/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex)) throw new Error(hex);
+      return hex;
+    };
+
+    let accent, consoleColor;
+    try {
+      accent = read(req.body.accent_color);
+      consoleColor = read(req.body.console_color !== undefined ? req.body.console_color : req.body.color);
+    } catch (bad) {
+      return res.status(400).json({ success: false, error: `"${bad.message}" is not a hex colour like #2a78d6` });
     }
+    if (accent === undefined && consoleColor === undefined) {
+      return res.status(400).json({ success: false, error: 'No colour provided' });
+    }
+
+    const sets = [], values = [];
+    if (accent !== undefined) { values.push(accent); sets.push(`accent_color = $${values.length}`); }
+    if (consoleColor !== undefined) { values.push(consoleColor); sets.push(`console_color = $${values.length}`); }
+    values.push(id);
     const { rows } = await pool.query(
-      `UPDATE labels SET console_color = $1
-        WHERE id = $2 AND (is_system = false OR is_system IS NULL)
+      `UPDATE labels SET ${sets.join(', ')}
+        WHERE id = $${values.length} AND (is_system = false OR is_system IS NULL)
         RETURNING id, name, accent_color, console_color`,
-      [color, id]
+      values
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
+
     // This file audits operator actions to the Platform HQ activity channel,
     // not via logActivity (which is not imported here and is label-scoped to
     // the operator's own HQ row anyway). Keep to the local convention.
+    const parts = [];
+    if (accent !== undefined) parts.push(accent ? `brand ${accent}` : 'brand cleared');
+    if (consoleColor !== undefined) parts.push(consoleColor ? `console ${consoleColor}` : 'console override cleared');
     activityBot.postOperatorEvent({
-      text: color
-        ? `🎨 Console colour for *${rows[0].name}* set to ${color} — by ${req.user.name}`
-        : `🎨 Console colour for *${rows[0].name}* reset to its brand accent — by ${req.user.name}`,
-      icon: 'building', link: '/calendar',
+      text: `🎨 Colours for *${rows[0].name}* — ${parts.join(', ')} — by ${req.user.name}`,
+      icon: 'building', link: '/workspaces',
     });
     res.json({ success: true, data: rows[0] });
   } catch (error) {
-    console.error('Console colour error:', error);
+    console.error('Workspace colours error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
-
 // POST /api/platform/workspaces/:id/logo — upload/replace the workspace logo.
 router.post('/workspaces/:id/logo', requirePlatformOwner, upload.single('logo'), async (req, res) => {
   try {

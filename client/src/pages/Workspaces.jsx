@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus, Building2, Copy, Check, LogIn, Search, Users, Music, Layers, Ban } from 'lucide-react'
+import { Plus, Building2, Copy, Check, LogIn, Search, Users, Music, Layers, Ban, Palette } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import WorkspaceDrawer from '../components/WorkspaceDrawer'
+import WorkspaceColorPicker from '../components/WorkspaceColorPicker'
+import Popover from '../components/mywork/Popover'
+import { useTheme } from '../context/ThemeContext'
+import { resolveColors } from '../utils/workspaceColor'
 
 // Platform-admin command center: provision, monitor, and manage every label
 // workspace (tenant) on the platform.
@@ -57,11 +61,20 @@ export default function Workspaces() {
     if (params.get('open')) { params.delete('open'); setParams(params, { replace: true }) }
   }
 
+  // Brand colour is editable from the LIST because the drawer's Manage tab is
+  // owner-gated — which left every admin-tier operator unable to brand a
+  // workspace they provision and work in daily.
+  const [colorFor, setColorFor] = useState(null)
+  const { theme } = useTheme()
+
   const load = () => {
     setLoading(true)
     api.get('/platform/workspaces').then(res => setWorkspaces(res.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
+  // Resolved the same way the Overview and the calendar resolve it, so the
+  // three console surfaces cannot show one workspace in three colours.
+  const resolved = useMemo(() => resolveColors(workspaces, theme), [workspaces, theme])
   useEffect(() => { if (isOwner) api.get('/platform/operators').then(r => setOperators(r.data.data || [])).catch(() => {}) }, [isOwner])
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
@@ -236,7 +249,7 @@ export default function Workspaces() {
                       {w.logo_url ? (
                         <img src={w.logo_url} alt="" className="w-9 h-9 rounded-xl object-contain bg-gray-100 flex-shrink-0 ring-1 ring-black/5 p-0.5" />
                       ) : (
-                        <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ring-1 ring-black/5" style={{ background: w.accent_color || '#4F46E5' }}>
+                        <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ring-1 ring-black/5" style={{ background: resolved.get(Number(w.id))?.color || '#4F46E5' }}>
                           <span className="text-white font-bold text-sm">{w.name?.charAt(0)?.toUpperCase()}</span>
                         </div>
                       )}
@@ -259,6 +272,31 @@ export default function Workspaces() {
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-2">
+                      <div className="relative">
+                        <button
+                          onClick={() => setColorFor(c => (c === w.id ? null : w.id))}
+                          title={`Brand colour for ${w.name}`}
+                          className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-gray-900 px-2 py-1 rounded-lg hover:bg-gray-100 transition-colors"
+                        >
+                          <Palette size={13} />
+                          <span className="w-3 h-3 rounded-sm ring-1 ring-inset ring-black/10" style={{ background: resolved.get(Number(w.id))?.color }} />
+                        </button>
+                        <Popover open={colorFor === w.id} onClose={() => setColorFor(null)} title={w.name} align="right" width="w-64">
+                          <WorkspaceColorPicker
+                            workspace={w}
+                            workspaces={workspaces}
+                            field="accent_color"
+                            theme={theme}
+                            onSaved={(patch) => {
+                              // Patch in place rather than reloading — the list
+                              // query is eight correlated subqueries per
+                              // workspace, and a reload drops search and sort.
+                              setWorkspaces(list => list.map(x => (x.id === w.id ? { ...x, ...patch } : x)))
+                              setColorFor(null)
+                            }}
+                          />
+                        </Popover>
+                      </div>
                       <button onClick={() => setDrawerId(w.id)} className="text-xs font-semibold text-gray-500 hover:text-gray-900 px-2 py-1 rounded-lg hover:bg-gray-100 transition-colors">Details</button>
                       <button onClick={() => enter(w)} className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 border border-brand-200 hover:bg-brand-600 hover:text-white hover:border-brand-600 px-2.5 py-1 rounded-lg transition-colors"><LogIn size={13} /> Enter</button>
                     </div>

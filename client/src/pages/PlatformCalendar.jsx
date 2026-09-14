@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   ChevronLeft, ChevronRight, Music, FileText, Disc3, ExternalLink,
   Calendar as CalendarIcon, AlertCircle, RefreshCw, Building2, Eye, EyeOff,
-  Palette, Check, Wand2,
+  Wand2,
 } from 'lucide-react'
 import api from '../api'
 import Skeleton from '../components/Skeleton'
@@ -13,10 +13,8 @@ import useHotkeys from '../hooks/useHotkeys'
 import { localDateStr, formatDate } from '../utils/dates'
 import { useTheme } from '../context/ThemeContext'
 import Popover from '../components/mywork/Popover'
-import {
-  resolveColors, similarPairs, suggestColor, tagMap,
-  PALETTE, PALETTE_NAMES, isHexColor, normalizeHex, separation, DE_FLOOR, CVD_FLOOR,
-} from '../utils/workspaceColor'
+import WorkspaceColorPicker from '../components/WorkspaceColorPicker'
+import { resolveColors, similarPairs, suggestColor, tagMap, DE_FLOOR, CVD_TARGET } from '../utils/workspaceColor'
 
 // Every workspace's schedule on one grid.
 //
@@ -75,7 +73,6 @@ export default function PlatformCalendar() {
   const [hiddenWs, setHiddenWs] = useState(() => new Set())
   const [selected, setSelected] = useState(null)
   const [editing, setEditing] = useState(null)   // workspace id whose colour picker is open
-  const [hexDraft, setHexDraft] = useState('')
   const [savingColor, setSavingColor] = useState(false)
 
   const monthStart = useMemo(() => new Date(cursor.getFullYear(), cursor.getMonth(), 1), [cursor])
@@ -175,26 +172,12 @@ export default function PlatformCalendar() {
     else toast(r.error || 'Could not enter workspace', 'error')
   }
 
-  // Colour is stored on the workspace, not per operator: "which of these is
-  // which" has one answer for the whole console team.
-  const saveColor = async (id, color) => {
-    setSavingColor(true)
-    try {
-      await api.put(`/platform/workspaces/${id}/console-color`, { color })
-      // Patch locally — a full reload would re-fetch the whole month to change
-      // one swatch, and drop the day the operator had selected.
-      setWorkspaces(ws => ws.map(w => (Number(w.id) === Number(id) ? { ...w, console_color: color } : w)))
-      setEditing(null)
-    } catch (err) {
-      toast(err.response?.data?.error || 'Could not save that colour', 'error')
-    } finally { setSavingColor(false) }
-  }
-
   // Fix every measured clash at once. Only the SECOND workspace of each pair
   // moves, so a colour somebody deliberately set is not overwritten first, and
   // suggestColor is re-run against the colours already applied in this pass —
   // otherwise two fixes can land on the same slot and trade one clash for another.
   const autoFix = async () => {
+    setSavingColor(true)
     const moved = new Set()
     let roster = workspaces
     for (const pair of clashes) {
@@ -204,10 +187,11 @@ export default function PlatformCalendar() {
       const color = suggestColor(id, roster, resolveColors(roster, theme), theme)
       roster = roster.map(w => (Number(w.id) === id ? { ...w, console_color: color } : w))
       moved.add(id)
-      try { await api.put(`/platform/workspaces/${id}/console-color`, { color }) }
-      catch { toast(`Could not recolour ${target.name}`, 'error'); return }
+      try { await api.put(`/platform/workspaces/${id}/colors`, { console_color: color }) }
+      catch { toast(`Could not recolour ${target.name}`, 'error'); setSavingColor(false); return }
     }
     setWorkspaces(roster)
+    setSavingColor(false)
     if (moved.size) toast(`Recoloured ${moved.size} workspace${moved.size === 1 ? '' : 's'}`)
   }
 
@@ -400,7 +384,7 @@ export default function PlatformCalendar() {
                       {c.a.name} · {c.b.name} —{' '}
                       {c.normal < DE_FLOOR
                         ? `ΔE ${c.normal.toFixed(1)} (needs ${DE_FLOOR})`
-                        : `colourblind ΔE ${c.cvd.toFixed(1)} (needs ${CVD_FLOOR})`}
+                        : `colourblind ΔE ${c.cvd.toFixed(1)} (needs ${CVD_TARGET})`}
                     </p>
                   ))}
                   {clashes.length > 3 && <p className="text-[10px] text-ink-faint mt-1">+{clashes.length - 3} more</p>}
@@ -420,13 +404,12 @@ export default function PlatformCalendar() {
                     const hidden = hiddenWs.has(id)
                     const n = wsCounts.get(id) || 0
                     const res = resolved.get(id) || {}
-                    const steps = PALETTE[theme === 'dark' ? 'dark' : 'light']
                     return (
                       <div key={id} className={`relative flex items-center gap-2 px-1.5 py-1.5 rounded-lg hover:bg-elev transition-colors ${hidden ? 'opacity-45' : ''}`}>
                         {/* Swatch EDITS, row toggles. A view-click and a
                             change-click must never be the same gesture. */}
                         <button
-                          onClick={() => { setEditing(e => (e === id ? null : id)); setHexDraft(res.color || '') }}
+                          onClick={() => setEditing(e => (e === id ? null : id))}
                           title={`Change ${w.name}'s colour (${res.source === 'brand' ? 'brand accent' : res.source === 'custom' ? 'set by an operator' : 'auto-assigned'})`}
                           className="w-3.5 h-3.5 rounded-sm flex-shrink-0 ring-1 ring-inset ring-black/10 hover:scale-125 transition-transform"
                           style={{ background: res.color }}
@@ -440,60 +423,19 @@ export default function PlatformCalendar() {
                           <span className="text-[11px] font-semibold text-ink-faint flex-shrink-0">{n}</span>
                         </button>
 
-                        <Popover open={editing === id} onClose={() => setEditing(null)} title={w.name} align="right" width="w-60">
-                          <div className="p-3">
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-ink-faint mb-2">Palette</p>
-                            <div className="grid grid-cols-4 gap-1.5">
-                              {steps.map((hex, i) => (
-                                <button key={hex} onClick={() => saveColor(id, hex)} disabled={savingColor}
-                                  title={PALETTE_NAMES[i]}
-                                  className="h-7 rounded-md ring-1 ring-inset ring-black/10 flex items-center justify-center disabled:opacity-50"
-                                  style={{ background: hex }}>
-                                  {normalizeHex(res.color) === hex && <Check size={13} className="text-white drop-shadow" />}
-                                </button>
-                              ))}
-                            </div>
-
-                            <p className="text-[10px] font-bold uppercase tracking-wider text-ink-faint mt-3 mb-1.5">Custom</p>
-                            <div className="flex items-center gap-1.5">
-                              <input value={hexDraft} onChange={e => setHexDraft(e.target.value)}
-                                placeholder="#2a78d6" className="input !py-1 text-xs font-mono flex-1" />
-                              <button onClick={() => saveColor(id, normalizeHex(hexDraft))}
-                                disabled={savingColor || !isHexColor(hexDraft)}
-                                className="btn-primary !py-1 !px-2.5 text-xs disabled:opacity-40">Set</button>
-                            </div>
-
-                            {/* The consequence of the choice, before it is made. */}
-                            {isHexColor(hexDraft) && (() => {
-                              const others = workspaces.filter(x => Number(x.id) !== id)
-                              if (!others.length) return null
-                              const worst = others
-                                .map(x => ({ x, s: separation(normalizeHex(hexDraft), resolved.get(Number(x.id))?.color) }))
-                                .sort((p, q) => Math.min(p.s.normal, p.s.cvd * 2) - Math.min(q.s.normal, q.s.cvd * 2))[0]
-                              return (
-                                <p className={`text-[10px] mt-1.5 ${worst.s.ok ? 'text-ink-faint' : 'text-warning'}`}>
-                                  {worst.s.ok ? 'Clearly distinct from ' : 'Too close to '}{worst.x.name}
-                                  {' '}(ΔE {worst.s.normal.toFixed(1)}, colourblind {worst.s.cvd.toFixed(1)})
-                                </p>
-                              )
-                            })()}
-
-                            <div className="flex items-center gap-3 mt-3 pt-2.5 border-t border-divider">
-                              <button onClick={() => saveColor(id, suggestColor(id, workspaces, resolved, theme))}
-                                disabled={savingColor}
-                                className="text-[11px] font-semibold text-brand-ink hover:underline inline-flex items-center gap-1 disabled:opacity-50">
-                                <Wand2 size={11} /> Pick the most distinct
-                              </button>
-                              {/* Only offered when there IS a brand colour to fall back to —
-                                  otherwise "reset" silently means "auto-assign". */}
-                              {w.accent_color && res.source === 'custom' && (
-                                <button onClick={() => saveColor(id, null)} disabled={savingColor}
-                                  className="text-[11px] font-semibold text-ink-muted hover:text-ink disabled:opacity-50">
-                                  Use brand colour
-                                </button>
-                              )}
-                            </div>
-                          </div>
+                        <Popover open={editing === id} onClose={() => setEditing(null)} title={w.name} align="right" width="w-64">
+                          <WorkspaceColorPicker
+                            workspace={w}
+                            workspaces={workspaces}
+                            field="console_color"
+                            theme={theme}
+                            onSaved={(patch) => {
+                              // Patch locally — reloading would re-fetch the whole
+                              // month to change one swatch, and drop the selected day.
+                              setWorkspaces(ws => ws.map(x => (Number(x.id) === id ? { ...x, ...patch } : x)))
+                              setEditing(null)
+                            }}
+                          />
                         </Popover>
                       </div>
                     )

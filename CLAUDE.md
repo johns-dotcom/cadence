@@ -2392,12 +2392,17 @@ diverge from every other table.
   1. `cd client && npm run build`
   2. `npm run check:tdz` (see below)
   3. `npm run check:render` — module-loads AND server-renders every route in `App.jsx`
-  4. `npm run check:vendor-lab` — `VendorSubmitLab.jsx` is GENERATED from
+  4. `npm run check:ws-colors` — the operator console's identity palette lives in
+     TWO places (`--ws-1 … --ws-8` in `tokens.css`, which the browser paints, and
+     `PALETTE` in `utils/workspaceColor.js`, which the similarity maths measures).
+     Edit one and the console measures colours it is not showing. Also re-runs
+     both published CVD/ΔE gates on every adjacent pair.
+  5. `npm run check:vendor-lab` — `VendorSubmitLab.jsx` is GENERATED from
      `VendorSubmit.jsx` by `client/scripts/sync-vendor-lab.mjs`. Touch the public
      vendor form (or `routes/vendor.js`) and the lab silently drifts out of sync
      with the page it exists to preview; `--check` fails instead, and
      `npm run sync:vendor-lab` regenerates it.
-  5. `node server/scripts/finance-fixtures.cjs` (253 assertions) + `node --check`
+  6. `node server/scripts/finance-fixtures.cjs` (270 assertions) + `node --check`
      every changed server file
   `client/scripts/check-tdz.cjs` is a Babel scope analyzer that fails the build on a
   `const`/`let` READ before its own declaration in the same function scope — a
@@ -5179,3 +5184,38 @@ reported shape) resolves brand-first, flags the pair at ΔE 11.5 / CVD 11.3 in
 both themes, and the one-click fix leaves **zero** clashes. Endpoint exercised
 for set / `#abc` / invalid-hex 400 / clear-to-null / ghost-id 404 / non-numeric
 404. Dev workspaces restored to their pre-test state afterwards.
+
+### Third follow-up — brand colours editable from the Workspaces page
+
+`PUT /platform/workspaces/:id/console-color` became **`PUT …/colors`**, taking
+`{ accent_color, console_color }` — each optional, each validated-never-coerced,
+`null`/`''` clears one. Both paths are registered on **one handler** (the legacy
+path and `{ color }` body still work, so a tab on the previous bundle survives
+the deploy) rather than a redirect into `router.handle()`, which re-enters the
+router and re-runs `authMiddleware` — a second user-row read per legacy call.
+
+**It is `requireWorkspaceAccess`, and the gap it closes is real**: the drawer's
+Manage tab — the only place an accent could be set — is `isOwner`-gated, so every
+admin-tier operator was unable to brand a workspace they provision and work in
+daily. Renaming stays on the owner-only `PATCH`; picking a colour is cosmetic and
+reversible, renaming is not. Proved live with a real non-owner operator: brand
+colour on an allowed workspace **200** and the value landed, the same call on a
+workspace outside their allowlist **403**, and a rename of the allowed one still
+**403**. The Platform HQ system label is refused (404) on every path.
+
+**One picker, three surfaces.** New `components/WorkspaceColorPicker.jsx` — the
+validated 8 swatches, a custom hex field, the live distinctness readout ("Too
+close to NARK — ΔE 11.5") and "pick the most distinct" — used by the Workspaces
+list (writing `accent_color`), the workspace drawer (same) and the calendar
+legend (writing `console_color`). It takes **one `field` at a time on purpose**:
+a single panel offering both invites picking a brand colour while a toggle is
+silently set to the override. It measures against every other workspace's
+**resolved** colour, not their raw accent, or the readout would be about a colour
+nobody is looking at.
+
+Also: the Workspaces list avatar now renders the **resolved** colour, so the
+three console surfaces cannot show one workspace in three colours; the drawer's
+`saveBranding` became `saveName` and sends only the name, because two writers for
+one column is how they start disagreeing; `/platform/workspaces` and
+`/workspaces/:id` gained `console_color`; and `ACCENT_PRESETS` is no longer used
+by the drawer (the validated palette replaces an unvalidated six).

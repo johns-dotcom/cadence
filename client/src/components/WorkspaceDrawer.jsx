@@ -7,7 +7,8 @@ import {
 import api from '../api'
 import { useToast } from '../context/ToastContext'
 import { dropTarget } from '../utils/drop'
-import { ACCENT_PRESETS, isValidHex } from '../utils/branding'
+import WorkspaceColorPicker from './WorkspaceColorPicker'
+import { useTheme } from '../context/ThemeContext'
 
 const MEMBER_ROLES = ['Superadmin', 'Admin', 'Approver', 'User']
 
@@ -34,6 +35,7 @@ const STAT_DEFS = [
 
 export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, onEnter, onChanged }) {
   const { toast } = useToast()
+  const { theme } = useTheme()
   const [tab, setTab] = useState('overview')
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -41,7 +43,6 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
 
   // Manage-tab form state
   const [name, setName] = useState('')
-  const [accent, setAccent] = useState('')
   const [resetPw, setResetPw] = useState('')
   const [handoff, setHandoff] = useState(null)
   const [copied, setCopied] = useState(false)
@@ -74,7 +75,7 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
     api.get(`/platform/workspaces/${workspaceId}`)
       .then(r => {
         const d = r.data.data
-        setData(d); setName(d.label.name); setAccent(d.label.accent_color || '')
+        setData(d); setName(d.label.name)
         setAiType(d.ai?.type || 'requests')
         setAiLimit(d.ai && (d.ai.limit !== d.ai.default || d.ai.type !== 'requests') ? String(d.ai.limit) : '')
       })
@@ -83,8 +84,12 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
   }
   useEffect(() => { load() }, [workspaceId])
 
-  const saveBranding = async () => {
-    try { await api.patch(`/platform/workspaces/${workspaceId}`, { name: name.trim(), accent_color: accent || null }); toast('Saved'); load(); onChanged?.() }
+  // Name only. Colour now goes through the dedicated /colors endpoint, which
+  // any operator with access to this workspace may call — two writers for one
+  // column is how they start disagreeing, and PATCH stays owner-only because
+  // renaming a workspace is not cosmetic.
+  const saveName = async () => {
+    try { await api.patch(`/platform/workspaces/${workspaceId}`, { name: name.trim() }); toast('Saved'); load(); onChanged?.() }
     catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
   const uploadLogo = (e) => { doUploadLogo(e.target.files?.[0]); if (e.target) e.target.value = '' }
@@ -357,20 +362,23 @@ export default function WorkspaceDrawer({ workspaceId, isOwner = true, onClose, 
                     <h3 className="text-sm font-bold text-ink mb-2 flex items-center gap-1.5"><Palette size={14} /> Branding</h3>
                     <label className="label">Workspace name</label>
                     <input className="input mb-2" value={name} onChange={e => setName(e.target.value)} />
-                    <label className="label">Accent color</label>
-                    <div className="flex items-center gap-2 mb-2">
-                      <input className="input !w-32 font-mono" value={accent} onChange={e => setAccent(e.target.value)} placeholder="#4F46E5" />
-                      <div className="flex gap-1">
-                        {ACCENT_PRESETS.slice(0, 6).map(p => (
-                          <button key={p.hex} onClick={() => setAccent(p.hex)} className="w-6 h-6 rounded-full border border-rule" style={{ background: p.hex }} title={p.name} />
-                        ))}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 mb-3">
                       <button onClick={() => logoRef.current?.click()} className="btn-secondary !py-1.5 text-xs" {...dropTarget(doUploadLogo)}><Upload size={13} /> {data.label.logo_url ? 'Replace logo' : 'Upload logo'}</button>
                       {data.label.logo_url && <button onClick={removeLogo} className="text-xs text-gray-400 hover:text-red-600">Remove</button>}
                       <input ref={logoRef} type="file" accept="image/*" className="hidden" onChange={uploadLogo} />
-                      <button onClick={saveBranding} disabled={accent && !isValidHex(accent)} className="btn-primary !py-1.5 text-xs ml-auto">Save</button>
+                      <button onClick={saveName} className="btn-primary !py-1.5 text-xs ml-auto">Save name</button>
+                    </div>
+                    {/* The same picker the Workspaces list and the calendar use,
+                        so all three measure distinctness the same way. Saves on
+                        click — there is no second Save to forget. */}
+                    <div className="rounded-xl border border-rule">
+                      <WorkspaceColorPicker
+                        workspace={data.label}
+                        workspaces={[data.label]}
+                        field="accent_color"
+                        theme={theme}
+                        onSaved={() => { load(); onChanged?.() }}
+                      />
                     </div>
                   </div>
 
