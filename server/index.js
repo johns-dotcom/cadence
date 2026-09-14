@@ -368,6 +368,12 @@ const runMigrations = async () => {
   // System label = the permanent home for platform operators, so no tenant
   // workspace deletion can ever cascade-delete them. Hidden from the console.
   await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE`);
+  // The colour a workspace wears in the OPERATOR CONSOLE, overriding its brand
+  // accent there. Separate from accent_color on purpose: accent_color is the
+  // workspace's own branding and belongs to the tenant, while this answers a
+  // question only the console asks — "which of these twelve is which" — and two
+  // tenants with similar brand colours are a console problem, not a brand one.
+  await pool.query(`ALTER TABLE labels ADD COLUMN IF NOT EXISTS console_color VARCHAR(20)`);
   // Owner-customizable workspace settings (tagline, dashboard welcome, home
   // widget config + pinned links). Shallow-merged on PATCH so each Settings
   // sub-section saves independently.

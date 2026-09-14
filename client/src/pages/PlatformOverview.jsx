@@ -11,7 +11,8 @@ import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import useHotkeys from '../hooks/useHotkeys'
 import { formatDate } from '../utils/dates'
-import { workspaceColor, tagMap } from '../utils/workspaceColor'
+import { useTheme } from '../context/ThemeContext'
+import { resolveColors, tagMap } from '../utils/workspaceColor'
 
 // The operator's dashboard. Same vocabulary as a workspace dashboard — stat
 // cards, a bookkeeping band, activity — but every figure spans every workspace
@@ -103,6 +104,12 @@ export default function PlatformOverview() {
   // The same colour + tag pairing the calendar uses, from the same source,
   // so a workspace is recognisable across both console pages.
   const tags = useMemo(() => tagMap(all), [all])
+  // Same resolution the calendar uses — brand accent by default, an operator
+  // override when set, a validated palette slot otherwise — so a workspace is
+  // the same colour on both console pages.
+  const { theme } = useTheme()
+  const resolved = useMemo(() => resolveColors(all, theme), [all, theme])
+  const colorOf = (id) => resolved.get(Number(id))?.color || '#888888'
 
   // Search + sort run over the SAME array the header counts reduce over, so a
   // filtered grid never sits under a total that describes a different set —
@@ -261,7 +268,7 @@ export default function PlatformOverview() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {shown.map(w => {
-              const color = workspaceColor(w)
+              const color = colorOf(w.id)
               const suspended = w.status === 'suspended'
               return (
                 <div key={w.id} className="card p-0 overflow-hidden group hover:border-brand-300 transition-colors flex">
@@ -368,7 +375,7 @@ export default function PlatformOverview() {
           <div className="card divide-y divide-divider">
             {loading ? <div className="p-4"><Skeleton.TaskList count={4} /></div> : (data?.upcomingReleases || []).slice(0, 8).map(r => (
               <button key={r.id} onClick={() => enter(r.label_id, `/releases/${r.id}`)} className="w-full text-left px-4 py-2.5 hover:bg-elev transition-colors flex items-center gap-2.5">
-                <span className="w-1.5 h-8 rounded-full flex-shrink-0" style={{ background: workspaceColor({ id: r.label_id }) }} />
+                <span className="w-1.5 h-8 rounded-full flex-shrink-0" style={{ background: colorOf(r.label_id) }} />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm text-ink truncate">{r.project_name}</p>
                   <p className="text-[11px] text-ink-faint truncate">
@@ -393,7 +400,7 @@ export default function PlatformOverview() {
           <div className="card divide-y divide-divider">
             {loading ? <div className="p-4"><Skeleton.TaskList count={6} /></div> : activity.map((a, i) => (
               <div key={i} className="px-4 py-2.5 flex items-start gap-2.5">
-                <span className="w-1.5 h-8 rounded-full flex-shrink-0" style={{ background: workspaceColor({ id: a.label_id }) }} />
+                <span className="w-1.5 h-8 rounded-full flex-shrink-0" style={{ background: colorOf(a.label_id) }} />
                 <div className="min-w-0">
                   <p className="text-sm text-ink leading-snug">{a.action}{a.detail ? <span className="text-ink-faint"> — {a.detail}</span> : ''}</p>
                   <p className="text-[11px] text-ink-faint truncate">

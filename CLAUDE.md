@@ -5017,8 +5017,8 @@ from-after-to refused, and a **400-day ceiling** — without it a hand-built
 `?from=1900` pulls every row in every tenant and looks innocent doing it.
 All four guards verified live.
 
-**Workspace identity is TWO encodings — a slot colour AND a two-letter tag** —
-and that is forced by arithmetic, not taste. See the follow-up entry below.
+**Workspace identity is TWO encodings — a colour AND a two-letter tag** — and
+that is forced by arithmetic, not taste. See the two follow-up entries below.
 
 DSP ships **off by default** and the chip says so — one row per release per
 platform across every tenant outnumbers everything else combined, and a month
@@ -5120,3 +5120,62 @@ text on them is unreadable for over a third of the palette. It is ink on
 Rendered and looked at, both themes, rather than assumed: a headless-Chrome
 screenshot of eight chips against the real `tokens.css` in light and dark, beside
 the old tinted version for comparison.
+
+### Second follow-up — brand colours back as the default, and operator-editable
+
+Reported again: the auto palette produced two greens. Two distinct causes.
+
+**The assignment was outside the palette's own guarantee.** Slots were handed
+out by `id % 8`, but the order's separation guarantee is about **adjacent**
+slots — so a hash that pairs slot 3 with slot 6 lands outside it. Measured, that
+is the reported pair at ΔE **15.6** (a scrape past the 15 floor that still reads
+as two greens); slots 1 and 2 measure **33.6**. Auto colours are now handed out
+**in palette order by roster rank**, taken over the whole roster in id order so
+filtering never repaints a survivor — only creating or deleting a workspace can.
+
+**Brand colours are the default again** (John's call), with an operator
+override. Resolution is `console_color` → `accent_color` → palette slot. New
+`labels.console_color VARCHAR(20)` and `PUT /platform/workspaces/:id/console-color`
+— **`requireWorkspaceAccess`, not `requirePlatformOwner` like every other
+workspace mutation**: this changes nothing a tenant can see, and the operator who
+cannot tell two chips apart is the one who needs to fix it. Hex validated, never
+coerced (a colour that silently became null would look like the save worked).
+Audited through `activityBot.postOperatorEvent`, the convention this file already
+uses — `logActivity` is **not imported here**, so the first draft's call to it
+would have been a live `ReferenceError` on the success path.
+
+**Brand-by-default reintroduces the collision risk, so the console measures it
+rather than silently overriding branding.** `utils/workspaceColor.js` now ports
+the validator's OKLab ΔE + Machado CVD simulation, so the legend flags every
+visible pair below a published gate, **names the pair and the number**, and
+offers one-click fixes: per workspace ("pick the most distinct" — a maximin
+choice over the slots, so fixing one clash cannot quietly create another) and
+for the whole month. The custom-hex field previews the consequence *before* the
+save ("Too close to NARK — ΔE 11.5"). Only the second workspace of a pair moves,
+and `suggestColor` re-runs against colours already applied in the same pass, or
+two fixes trade one clash for another. Editing is a **swatch** click; the row
+still toggles visibility — a view-click and a change-click must never be the
+same gesture.
+
+**The CVD gate is `min(protan, deutan)`, and tritan is reported but NOT gated.**
+Taking the min across all three is stricter than the validated standard and
+rejects sets that are genuinely fine — it failed this palette's yellow↔magenta
+at 5.8 while protan/deutan are comfortably clear. `separation()` mirrors the
+validator: ≥8 target, 6–8 a floor legal only alongside secondary encoding (the
+tag), <6 a hard fail. That correction was found by the new gate, not by reading.
+
+**New gate: `npm run check:ws-colors`** — add it to "Verify before push". It
+catches the one thing nothing else can: the palette lives in **two** places,
+`--ws-1 … --ws-8` in `tokens.css` (what the browser paints) and `PALETTE` in
+`utils/workspaceColor.js` (what the similarity maths measures), and editing one
+would make the console measure colours it is not showing. It asserts they are
+identical in both themes, re-runs both published gates on every adjacent pair,
+and holds the resolution order, the in-palette-order rule, the
+filtering-does-not-repaint property and the tag rules. Verified to bite:
+corrupting one slot in `tokens.css` fails it with a diff.
+
+Verified live: a workspace with two similar dark-green brand accents (the
+reported shape) resolves brand-first, flags the pair at ΔE 11.5 / CVD 11.3 in
+both themes, and the one-click fix leaves **zero** clashes. Endpoint exercised
+for set / `#abc` / invalid-hex 400 / clear-to-null / ghost-id 404 / non-numeric
+404. Dev workspaces restored to their pre-test state afterwards.

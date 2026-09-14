@@ -196,7 +196,8 @@ router.get('/overview', async (req, res) => {
 
     const [labels, members, artists, releases, deals, tasks, lastActive,
            mtdAgg, mtdRows, pendAgg, pendRows, recent, upcoming] = await Promise.all([
-      q(`SELECT l.id, l.name, l.slug, l.accent_color, COALESCE(l.status,'active') AS status, l.created_at
+      q(`SELECT l.id, l.name, l.slug, l.accent_color, l.console_color,
+                COALESCE(l.status,'active') AS status, l.created_at
            FROM labels l WHERE (l.is_system = false OR l.is_system IS NULL) /*SCOPE*/
           ORDER BY l.name`, 'l.id'),
       q(`SELECT label_id, COUNT(*)::int AS n FROM users
@@ -288,7 +289,8 @@ router.get('/overview', async (req, res) => {
       const money = mtdMoney.get(l.id) || { invoices: 0, logged: 0, paid: 0 };
       const pend = pendMoney.get(l.id) || { invoices: 0, logged: 0 };
       return {
-        id: l.id, name: l.name, slug: l.slug, accent_color: l.accent_color,
+        id: l.id, name: l.name, slug: l.slug,
+        accent_color: l.accent_color, console_color: l.console_color,
         status: l.status, created_at: l.created_at,
         members: mMembers.get(l.id) || 0,
         artists: mArtists.get(l.id) || 0,
@@ -390,7 +392,7 @@ router.get('/calendar', async (req, res) => {
 
     const [labels, releases, events, signed, expiring, dsp] = await Promise.all([
       (() => { const params = []; return pool.query(
-        `SELECT l.id, l.name, l.accent_color, COALESCE(l.status,'active') AS status
+        `SELECT l.id, l.name, l.accent_color, l.console_color, COALESCE(l.status,'active') AS status
            FROM labels l WHERE (l.is_system = false OR l.is_system IS NULL)
            ${scopeClause(ids, 'l.id', params)} ORDER BY l.name`, params); })(),
 
@@ -937,6 +939,49 @@ router.patch('/workspaces/:id', requirePlatformOwner, async (req, res) => {
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Update workspace error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PUT /api/platform/workspaces/:id/console-color — set (or clear) the colour a
+// workspace wears in the console.
+//
+// requireWorkspaceAccess, NOT requirePlatformOwner like the rest of the
+// workspace mutations: this changes nothing a tenant can see, and the operator
+// who cannot tell two chips apart is the one who needs to fix it. Body
+// { color: '#RRGGBB' } to set, { color: null } to fall back to the brand accent.
+router.put('/workspaces/:id(\\d+)/console-color', requireWorkspaceAccess, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const raw = req.body.color;
+    // Validate rather than coerce: a colour that silently became null would
+    // look like the save worked and the palette ignored it.
+    let color = null;
+    if (raw !== null && raw !== undefined && String(raw).trim() !== '') {
+      color = String(raw).trim();
+      if (!/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color)) {
+        return res.status(400).json({ success: false, error: 'Colour must be a hex value like #2a78d6' });
+      }
+    }
+    const { rows } = await pool.query(
+      `UPDATE labels SET console_color = $1
+        WHERE id = $2 AND (is_system = false OR is_system IS NULL)
+        RETURNING id, name, accent_color, console_color`,
+      [color, id]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
+    // This file audits operator actions to the Platform HQ activity channel,
+    // not via logActivity (which is not imported here and is label-scoped to
+    // the operator's own HQ row anyway). Keep to the local convention.
+    activityBot.postOperatorEvent({
+      text: color
+        ? `🎨 Console colour for *${rows[0].name}* set to ${color} — by ${req.user.name}`
+        : `🎨 Console colour for *${rows[0].name}* reset to its brand accent — by ${req.user.name}`,
+      icon: 'building', link: '/calendar',
+    });
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Console colour error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

@@ -10,7 +10,8 @@
     "check:tdz": "node scripts/check-tdz.cjs",
     "check:render": "node scripts/check-render.mjs",
     "sync:vendor-lab": "node scripts/sync-vendor-lab.mjs",
-    "check:vendor-lab": "node scripts/sync-vendor-lab.mjs --check"
+    "check:vendor-lab": "node scripts/sync-vendor-lab.mjs --check",
+    "check:ws-colors": "node scripts/check-workspace-colors.mjs"
   },
   "dependencies": {
     "@react-oauth/google": "^0.13.4",
