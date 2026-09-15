@@ -25,8 +25,16 @@ const DUE_TEXT = {
 // coin flip on whether the row was To Do or In Progress.
 const nextStatus = (status) => (status === 'Done' ? 'To Do' : 'Done')
 
+// A note is a body of text; a row shows its first non-empty line. Collapsing
+// newlines instead would run two thoughts together into one sentence that reads
+// as something the author never wrote.
+const firstLine = (s) => {
+  const line = String(s).split('\n').map(x => x.trim()).find(Boolean) || ''
+  return line.length > 120 ? `${line.slice(0, 120)}…` : line
+}
+
 export default function TaskCard({
-  task, onOpen, showAssignee = false, selected = false, onToggleSelect,
+  task, onOpen, showAssignee = false, selected = false, onToggleSelect, showNote = true,
   draggable = false, dragging = false, dragHandlers = {}, insertBefore = false, insertAfter = false,
   onPatch, canEdit = false,
 }) {
@@ -111,6 +119,17 @@ export default function TaskCard({
                 multiplied with the drag opacity to 24% — a Done card mid-drag was
                 effectively invisible. */}
             <p className={`text-sm text-ink break-words ${done ? 'line-through text-ink-muted' : ''}`}>{task.description}</p>
+            {/* The note, one line, under the title — boom's row anatomy. It is the
+                only field whose VALUE is the reason you'd open the task, and it was
+                represented by a 10px icon that said a note existed without saying
+                what it said. "No note" is deliberate: it advertises an affordance
+                people otherwise never find, and it is the muted tier so a row that
+                HAS a note still wins the scan. */}
+            {showNote && (
+              <p className={`text-[12px] mt-0.5 truncate ${task.notes ? 'text-ink-muted' : 'text-ink-faint italic'}`}>
+                {task.notes ? firstLine(task.notes) : 'No note'}
+              </p>
+            )}
             <div className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 mt-1 text-[11px]">
               {showAssignee && (
                 <>
@@ -125,7 +144,9 @@ export default function TaskCard({
               {task.release_name && <><span className="text-ink-faint" aria-hidden="true">·</span><span className="text-ink-muted truncate">{task.release_name}</span></>}
               {/* lucide spreads `title` onto the <svg>, where it does nothing —
                   SVG needs a <title> child — so this needs a real accessible name. */}
-              {task.notes && <StickyNote size={10} className="text-ink-faint" role="img" aria-label="Has notes" />}
+              {/* Only when the preview line is suppressed — otherwise the row says
+                  "has a note" twice, once with the note itself. */}
+              {!showNote && task.notes && <StickyNote size={10} className="text-ink-faint" role="img" aria-label="Has notes" />}
             </div>
           </div>
 

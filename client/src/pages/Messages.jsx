@@ -251,6 +251,14 @@ export default function Messages() {
   const [boards, setBoards] = useState([])          // [{ id, name, channels[] }]
   const [wsRoster, setWsRoster] = useState([])      // every accessible workspace
   const [boardsScoped, setBoardsScoped] = useState(false)
+  // Failures are STATE, not a swallowed catch. A `catch {}` here renders an
+  // empty rail that is indistinguishable from "this operator has no
+  // workspaces" — and a swallowed history failure renders "this is the
+  // beginning of your conversation", which tells somebody their messages are
+  // gone when they are sitting in the database. Both cost a real diagnosis.
+  const [boardsError, setBoardsError] = useState(null)
+  const [msgError, setMsgError] = useState(null)
+  const [msgReload, setMsgReload] = useState(0)  // Retry: a primitive, so the load effect can depend on it
   const [boardRoster, setBoardRoster] = useState([])
   const [accessLog, setAccessLog] = useState(null)  // null = panel closed
 
@@ -297,7 +305,10 @@ export default function Messages() {
     try {
       const { data } = await api.get('/platform/chat/boards')
       setBoards(data.data || []); setWsRoster(data.workspaces || []); setBoardsScoped(!!data.scoped)
-    } catch { /* keep prior */ }
+      setBoardsError(null)
+    } catch (e) {
+      setBoardsError(e.response?.data?.error || e.message || 'Could not load workspace boards')
+    }
   }, [operatorMode])
 
   useEffect(() => { loadChannels() }, [loadChannels])
@@ -344,7 +355,7 @@ export default function Messages() {
   useEffect(() => {
     if (!resolved) return
     let cancelled = false
-    setLoadingMsgs(true); setThread(null)
+    setLoadingMsgs(true); setThread(null); setMsgError(null)
     emit('channel:subscribe', { channelId: activeId })
     const url = focusId ? `${chatBase}/channels/${activeId}/messages?before=${focusId + 1}` : `${chatBase}/channels/${activeId}/messages`
     api.get(url).then(({ data }) => {
@@ -356,7 +367,14 @@ export default function Messages() {
         setTimeout(() => { document.getElementById(`msg-${focusId}`)?.scrollIntoView({ block: 'center' }) }, 80)
         setTimeout(() => setHighlightId(null), 2800)
       }
-    }).catch(() => { if (!cancelled) setLoadingMsgs(false) })
+    }).catch((e) => {
+      if (cancelled) return
+      setLoadingMsgs(false)
+      setMessages([])
+      // Never fall through to the empty state: "no messages" and "we could not
+      // read the messages" are opposite facts about somebody's history.
+      setMsgError(e.response?.data?.error || e.message || 'Could not load this conversation')
+    })
     // No read pointer on a workspace board: the operator is not a member of it,
     // and writing one would put their read state inside the tenant.
     if (!isWs) {
@@ -365,7 +383,7 @@ export default function Messages() {
       }).catch(() => {})
     }
     return () => { cancelled = true }
-  }, [resolved, activeId, isWs, chatBase, focusId, emit])
+  }, [resolved, activeId, isWs, chatBase, focusId, emit, msgReload])
 
   // Auto-scroll to the newest message (skip while highlighting a jumped-to one).
   useEffect(() => { if (highlightId) return; const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight }, [messages, loadingMsgs, highlightId])
@@ -632,7 +650,15 @@ export default function Messages() {
                     {boardsScoped && <span className="text-[9px] text-gray-400" title="You only see workspaces your operator access admits">scoped</span>}
                   </div>
                   <p className="text-[10px] text-gray-400 px-2 mb-1.5">Public channels in each workspace</p>
-                  {boards.length === 0 && <p className="text-[11px] text-gray-400 px-2">No workspace boards to show.</p>}
+                  {boardsError ? (
+                    <div className="px-2 py-1.5">
+                      <p className="text-[11px] text-danger font-semibold">Couldn't load workspace boards.</p>
+                      <p className="text-[10px] text-ink-faint mt-0.5 break-words">{boardsError}</p>
+                      <button onClick={loadBoards} className="text-[10px] font-semibold text-brand-ink hover:underline mt-1">Retry</button>
+                    </div>
+                  ) : boards.length === 0 && (
+                    <p className="text-[11px] text-gray-400 px-2">No workspaces to show.</p>
+                  )}
                   {boards.map(w => (
                     <div key={w.id} className="mb-2">
                       <div className="flex items-center gap-1.5 px-2 py-1">
@@ -712,6 +738,21 @@ export default function Messages() {
               onDrop={e => { e.preventDefault(); setDragOver(false); if (!isWs) addFiles(setMainFiles)(e.dataTransfer.files) }}>
               {dragOver && <div className="absolute inset-0 z-10 flex items-center justify-center bg-brand-500/10/80 text-brand-700 font-medium text-sm pointer-events-none">Drop files to attach</div>}
               {loadingMsgs ? <div className="p-6 text-sm text-gray-400">Loading…</div>
+                : msgError ? (
+                  <div className="p-6">
+                    <div className="flex items-start gap-2 text-sm text-danger">
+                      <ShieldAlert size={15} className="flex-shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <p className="font-semibold">Couldn't load this conversation.</p>
+                        {/* Said explicitly, because the state this replaces implied
+                            the opposite: a failed read is not an empty history. */}
+                        <p className="text-ink-muted mt-0.5">Nothing has been deleted — the messages just could not be read right now.</p>
+                        <p className="text-[11px] text-ink-faint mt-1">{msgError}</p>
+                        <button onClick={() => setMsgReload(n => n + 1)} className="btn-secondary !py-1 !px-2.5 text-xs mt-2">Retry</button>
+                      </div>
+                    </div>
+                  </div>
+                )
                 : messages.length === 0 ? <div className="p-6 text-sm text-gray-400">{isWs ? `Nothing has been posted in #${active.name} yet.` : `This is the beginning of ${active.display_name ? `your conversation with ${active.display_name}` : `#${active.name}`}.`}</div>
                 : <MessageList messages={messages} myId={user.id} myHandles={myHandles} highlightId={highlightId} onReact={react} onReply={openThread} onEdit={startEdit} onDelete={del} showThread limited={isWs} />}
             </div>

@@ -137,6 +137,13 @@ export const DUE_FILTERS = [
 // differs from the column key. `render` is display-only.
 export const COLS = [
   { key: 'description', label: 'Task', kind: 'text', width: 'min-w-[18rem]', render: t => t.description },
+  // The note as a column, so the Table view can show WHAT a task says and not
+  // merely that it says something. Display is the first non-empty line — a
+  // multi-line body flattened into one cell would read as a sentence nobody
+  // wrote — while editing commits the whole field, so a cell edit here cannot
+  // silently truncate the rest of the note.
+  { key: 'notes', label: 'Note', kind: 'text', width: 'min-w-[14rem]',
+    render: t => (t.notes ? String(t.notes).split('\n').map(x => x.trim()).find(Boolean) || '' : '') },
   { key: 'status', label: 'Status', kind: 'select', options: TASK_STATUSES, width: 'w-32' },
   { key: 'priority', label: 'Priority', kind: 'select', options: TASK_PRIORITIES, width: 'w-28' },
   { key: 'due_date', label: 'Due', kind: 'date', width: 'w-32', render: t => formatDate(t.due_date) },

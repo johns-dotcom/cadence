@@ -143,6 +143,29 @@ export default function TaskDrawer({ task, tasks, members, releases = [], canEdi
               onBlur={e => e.target.value.trim() && e.target.value !== task.description && onPatch(task.id, { description: e.target.value.trim() })} />
           </div>
 
+          {/* The note is the BODY of a task, not its last field — it is what you
+              opened the drawer to read. boom put it immediately under the title
+              and gave it the room; here it sits above the metadata grid for the
+              same reason. It autosaves (600ms) and on blur. */}
+          <div>
+            <label className="label">Note</label>
+            <textarea
+              className={`${field} resize-y`}
+              rows={8}
+              value={notes}
+              disabled={!canEdit}
+              onChange={e => { setNotes(e.target.value); setNotesDirty(true); scheduleNotesSave(e.target.value) }}
+              onBlur={saveNotes}
+              placeholder="Longer detail, links, context…"
+            />
+            {notesDirty && (
+              <div className="flex items-center gap-2 mt-1">
+                <Button size="sm" variant="secondary" onClick={saveNotes}>Save note</Button>
+                <span className="text-[11px] text-warning">Saving…</span>
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="label">Status</label>
@@ -181,25 +204,6 @@ export default function TaskDrawer({ task, tasks, members, releases = [], canEdi
               {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
             {!canAssign && <p className="text-[11px] text-ink-muted mt-1">Only team leads can reassign.</p>}
-          </div>
-
-          <div>
-            <label className="label">Notes</label>
-            <textarea
-              className={`${field} resize-y`}
-              rows={5}
-              value={notes}
-              disabled={!canEdit}
-              onChange={e => { setNotes(e.target.value); setNotesDirty(true); scheduleNotesSave(e.target.value) }}
-              onBlur={saveNotes}
-              placeholder="Longer detail, links, context…"
-            />
-            {notesDirty && (
-              <div className="flex items-center gap-2 mt-1">
-                <Button size="sm" variant="secondary" onClick={saveNotes}>Save notes</Button>
-                <span className="text-[11px] text-warning">Saving…</span>
-              </div>
-            )}
           </div>
 
           {/* The link was readonly here even though PATCH has always accepted

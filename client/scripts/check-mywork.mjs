@@ -92,10 +92,17 @@ export function useSocket(){ return value }
 export default { SocketProvider, useSocket };`;
 
 const DAY = 86400000;
-const iso = (off) => new Date(Date.now() + off * DAY).toISOString().slice(0, 10);
+// LOCAL calendar parts, never toISOString(): the page buckets tasks with
+// daysUntilLocal, so a fixture built on the UTC day would call tomorrow "today"
+// every evening west of Greenwich — a gate that fails after 5pm PT and passes in
+// the morning. Same trap the app itself documents; it bit this file first.
+const iso = (off) => {
+  const d = new Date(Date.now() + off * DAY);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 const TASKS = JSON.stringify([
-  { id: 1, user_id: 1, description: 'Chase the Zeke Bleu W9', status: 'To Do', priority: 'Urgent', due_date: iso(-4), category: 'Finance', assignee_department: 'Executive' },
-  { id: 2, user_id: 1, description: 'Approve NRM-2 invoice', status: 'To Do', priority: 'High', due_date: iso(0), category: 'Finance', assignee_department: 'Executive' },
+  { id: 1, user_id: 1, description: 'Chase the Zeke Bleu W9', status: 'To Do', priority: 'Urgent', due_date: iso(-4), category: 'Finance', assignee_department: 'Executive', notes: 'hit kim' },
+  { id: 2, user_id: 1, description: 'Approve NRM-2 invoice', status: 'To Do', priority: 'High', due_date: iso(0), category: 'Finance', assignee_department: 'Executive', notes: '\n  first line of the note\nsecond line' },
   { id: 3, user_id: 1, description: 'Draft Q3 recoupment statement', status: 'In Progress', priority: 'Medium', due_date: iso(9), category: 'Finance', assignee_department: 'Executive' },
   { id: 4, user_id: 1, description: 'Rewrite the onboarding email', status: 'To Do', priority: 'High', due_date: null, category: 'Marketing', assignee_department: 'Executive' },
   { id: 5, user_id: 1, description: 'Ship the artwork batch', status: 'Done', priority: 'Low', due_date: iso(-9), category: 'Release', assignee_department: 'Executive' },
@@ -147,6 +154,11 @@ const checks = [
   ['done task NOT in triage',      !html.split('Plan your day')[0].includes('Ship the artwork batch')],
   ['tasks tab hidden, not gone',   has('class="hidden"') && has('Group')],
   ['two-column grid class',        has('xl:grid-cols-[minmax(0,1fr)_300px]')],
+  // The note is the field whose VALUE is the reason to open a task; a row that
+  // only says a note EXISTS is the state this replaced.
+  ['note preview on a row',        has('hit kim')],
+  ['no-note rows advertise it',    has('No note')],
+  ['multi-line note shows line 1', has('first line of the note') && !has('second line')],
 ];
 let bad = 0;
 for (const [name, ok] of checks) { if (!ok) bad++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`); }
