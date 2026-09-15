@@ -6,7 +6,7 @@
 
 import { Check, Circle, CircleDot, Clock, GripVertical, StickyNote } from 'lucide-react'
 import { localDateStr } from '../../utils/dates'
-import { categoryTint, dueBucketOf, dueLabel, PRIORITY_STRIPE } from './taskFields'
+import { PRIORITY_STRIPE, categoryTint, dueBucketOf, dueLabel, noteLine } from './taskFields'
 
 // Only two states carry information: late and due-today. The other four buckets all
 // resolved to the same muted gray, so colour was differentiating them by nothing.
@@ -24,14 +24,6 @@ const DUE_TEXT = {
 // board drag — a three-stop cycle on a one-click control made "mark this done" a
 // coin flip on whether the row was To Do or In Progress.
 const nextStatus = (status) => (status === 'Done' ? 'To Do' : 'Done')
-
-// A note is a body of text; a row shows its first non-empty line. Collapsing
-// newlines instead would run two thoughts together into one sentence that reads
-// as something the author never wrote.
-const firstLine = (s) => {
-  const line = String(s).split('\n').map(x => x.trim()).find(Boolean) || ''
-  return line.length > 120 ? `${line.slice(0, 120)}…` : line
-}
 
 export default function TaskCard({
   task, onOpen, showAssignee = false, selected = false, onToggleSelect, showNote = true,
@@ -127,7 +119,7 @@ export default function TaskCard({
                 HAS a note still wins the scan. */}
             {showNote && (
               <p className={`text-[12px] mt-0.5 truncate ${task.notes ? 'text-ink-muted' : 'text-ink-faint italic'}`}>
-                {task.notes ? firstLine(task.notes) : 'No note'}
+                {task.notes ? noteLine(task.notes) : 'No note'}
               </p>
             )}
             <div className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 mt-1 text-[11px]">

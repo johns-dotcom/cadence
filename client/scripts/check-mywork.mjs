@@ -160,6 +160,18 @@ const checks = [
   ['no-note rows advertise it',    has('No note')],
   ['multi-line note shows line 1', has('first line of the note') && !has('second line')],
 ];
+// noteLine is PURE and now shared by three surfaces (task card, the Table
+// view's Note column, and the operator console, which has no drawer). Asserted
+// directly rather than only through the rendered page, because the console's
+// use of it cannot be reached by an SSR first paint.
+const { noteLine } = await vite.ssrLoadModule('/src/components/mywork/taskFields.js');
+checks.push(
+  ['noteLine: first non-empty line', noteLine('\n\n  hit kim \nsecond') === 'hit kim'],
+  ['noteLine: empty in, empty out',  noteLine(null) === '' && noteLine('') === '' && noteLine('   ') === ''],
+  ['noteLine: caps long lines',      noteLine('x'.repeat(200)).length === 121 && noteLine('x'.repeat(200)).endsWith('…')],
+  ['noteLine: single line intact',   noteLine('just one line') === 'just one line'],
+);
+
 let bad = 0;
 for (const [name, ok] of checks) { if (!ok) bad++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`); }
 console.log(`\n${checks.length - bad}/${checks.length} checks passed`);

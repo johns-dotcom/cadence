@@ -16,7 +16,7 @@
 // handed to somebody inside a workspace and am waiting on THEM for. They need
 // opposite actions, so one number over both would be a number nobody can act on.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle, ArrowUpRight, Building2, CalendarClock, Check, CheckCircle2, ChevronDown,
   Clock, Loader2, Plus, RefreshCw, Search, Trash2, UserCheck,
@@ -33,7 +33,7 @@ import { TASK_PRIORITIES } from '../constants'
 // The tenant task surface's own vocabulary maps. Pure data — imported rather
 // than re-typed so a priority means the same thing, and looks the same, on both
 // sides of the platform boundary.
-import { PRIORITY_DOT, PRIORITY_RANK } from '../components/mywork/taskFields'
+import { PRIORITY_DOT, PRIORITY_RANK, noteLine } from '../components/mywork/taskFields'
 
 // The urgency buckets. Fixed order, because scanning top-down IS the answer to
 // "what do I do next" — and `order` lives with the label so a new bucket can
@@ -97,6 +97,14 @@ export default function PlatformMyWork() {
   const [busy, setBusy] = useState(null)       // task id mid-write
   const [menuFor, setMenuFor] = useState(null) // task id whose priority menu is open
   const [confirmDel, setConfirmDel] = useState(null)
+  // The console has no task drawer, so the note is edited in place. `draft`
+  // holds the text being typed: rendering straight from `data` would fight the
+  // optimistic patch and jump the caret on every autosave.
+  const [openNote, setOpenNote] = useState(null)   // task id whose note is open
+  const [draft, setDraft] = useState('')
+  const noteTimer = useRef(null)
+  const draftRef = useRef({ id: null, value: '' })
+  draftRef.current = { id: openNote, value: draft }
 
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState({ label_id: '', description: '', priority: 'Medium', due_date: '', category: '' })
@@ -184,6 +192,42 @@ export default function PlatformMyWork() {
       if (before) setData(d => ({ ...d, mine: (d.mine || []).map(t => (t.id === id ? before : t)) }))
       toast(e.response?.data?.error || 'Could not update the task', 'error')
     } finally { setBusy(null) }
+  }
+
+  // Autosave the note: debounced while typing, flushed on close. The id is
+  // captured from the ref at FIRE time, not from the closure, so a save armed
+  // against one task can never land on the next one after a fast switch.
+  const saveNote = useCallback((id, value) => {
+    clearTimeout(noteTimer.current)
+    return api.patch(`/platform/work/tasks/${id}`, { notes: value.trim() || null })
+      .then(r => setData(d => ({ ...d, mine: (d.mine || []).map(t => (t.id === id ? r.data.data : t)) })))
+      .catch(e => toast(e.response?.data?.error || 'Could not save the note', 'error'))
+  }, [toast])
+
+  const scheduleNote = (id, value) => {
+    clearTimeout(noteTimer.current)
+    noteTimer.current = setTimeout(() => {
+      const d = draftRef.current
+      if (d.id === id) saveNote(id, d.value)
+    }, 600)
+  }
+
+  const closeNote = () => {
+    const d = draftRef.current
+    clearTimeout(noteTimer.current)
+    if (d.id != null) {
+      const row = (data.mine || []).find(t => t.id === d.id)
+      // Only write when it actually changed — closing a note you only read
+      // should not stamp updated_at.
+      if (row && (row.notes || '') !== d.value) saveNote(d.id, d.value)
+    }
+    setOpenNote(null); setDraft('')
+  }
+
+  const toggleNote = (t) => {
+    if (openNote === t.id) { closeNote(); return }
+    if (openNote != null) closeNote()
+    setOpenNote(t.id); setDraft(t.notes || '')
   }
 
   const remove = async (t) => {
@@ -446,8 +490,51 @@ export default function PlatformMyWork() {
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${PRIORITY_DOT[t.priority] || PRIORITY_DOT.Medium}`}
                             title={t.priority || 'Medium'} aria-hidden="true" />
-                          <p className={`text-sm min-w-0 ${done ? 'line-through text-ink-muted' : 'text-ink'}`}>{t.description}</p>
+                          {/* The title opens the note. This page has no drawer, so
+                              without it the note would be readable nowhere. */}
+                          {mine ? (
+                            <button
+                              onClick={() => toggleNote(t)}
+                              aria-expanded={openNote === t.id}
+                              className={`text-sm min-w-0 text-left rounded truncate
+                                focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400
+                                ${done ? 'line-through text-ink-muted' : 'text-ink hover:text-brand-ink'}`}
+                            >{t.description}</button>
+                          ) : (
+                            <p className={`text-sm min-w-0 ${done ? 'line-through text-ink-muted' : 'text-ink'}`}>{t.description}</p>
+                          )}
                         </div>
+
+                        {/* The note itself, not a marker saying one exists. "No
+                            note" is the muted tier so a row that HAS one still
+                            wins the scan — and it advertises a field nobody would
+                            otherwise discover on this page. */}
+                        {openNote !== t.id && (
+                          <p className={`text-[12px] mt-0.5 truncate ${t.notes ? 'text-ink-muted' : 'text-ink-faint italic'}`}>
+                            {t.notes ? noteLine(t.notes) : (mine ? 'No note' : '')}
+                          </p>
+                        )}
+
+                        {openNote === t.id && (
+                          <div className="mt-1.5">
+                            <textarea
+                              autoFocus
+                              rows={4}
+                              value={draft}
+                              onChange={e => { setDraft(e.target.value); scheduleNote(t.id, e.target.value) }}
+                              onBlur={() => saveNote(t.id, draftRef.current.value)}
+                              onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); closeNote() } }}
+                              placeholder="Longer detail, links, context…"
+                              className="input resize-y w-full text-[13px]"
+                            />
+                            <div className="flex items-center gap-2 mt-1">
+                              <button onClick={closeNote}
+                                className="text-[11px] font-semibold text-brand-ink hover:underline rounded
+                                           focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400">Done</button>
+                              <span className="text-[10px] text-ink-faint">Saves as you type</span>
+                            </div>
+                          </div>
+                        )}
                         <div className="flex items-center gap-2 mt-1 flex-wrap text-[11px] text-ink-muted">
                           {groupBy !== 'workspace' && (
                             <WorkspaceMark ws={wsById.get(Number(t.label_id))} color={colorOf(t.label_id)} tag={tagOf(t.label_id)} />

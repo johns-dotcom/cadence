@@ -84,6 +84,21 @@ export function dueLabel(task) {
   return `Due ${formatDate(task.due_date)}`
 }
 
+/**
+ * What a ROW shows of a note: its first non-empty line, capped.
+ *
+ * A note is a body of text. Collapsing its newlines into one line instead would
+ * run two separate thoughts together into a sentence the author never wrote —
+ * so the row shows the first line and the drawer owns the rest. Shared by the
+ * task card, the Table view's Note column and the operator console, because
+ * three different answers to "what does this note say" is three bugs.
+ */
+export function noteLine(notes, max = 120) {
+  if (!notes) return ''
+  const line = String(notes).split('\n').map(x => x.trim()).find(Boolean) || ''
+  return line.length > max ? `${line.slice(0, max)}…` : line
+}
+
 export const isOpen = (t) => t.status !== 'Done'
 
 /**
@@ -142,8 +157,7 @@ export const COLS = [
   // multi-line body flattened into one cell would read as a sentence nobody
   // wrote — while editing commits the whole field, so a cell edit here cannot
   // silently truncate the rest of the note.
-  { key: 'notes', label: 'Note', kind: 'text', width: 'min-w-[14rem]',
-    render: t => (t.notes ? String(t.notes).split('\n').map(x => x.trim()).find(Boolean) || '' : '') },
+  { key: 'notes', label: 'Note', kind: 'text', width: 'min-w-[14rem]', render: t => noteLine(t.notes) },
   { key: 'status', label: 'Status', kind: 'select', options: TASK_STATUSES, width: 'w-32' },
   { key: 'priority', label: 'Priority', kind: 'select', options: TASK_PRIORITIES, width: 'w-28' },
   { key: 'due_date', label: 'Due', kind: 'date', width: 'w-32', render: t => formatDate(t.due_date) },
