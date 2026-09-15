@@ -35,8 +35,14 @@ export function defaultView(surface = 'mine') {
   return {
     v: VIEW_VERSION,
     surface,
-    type: team ? 'workload' : 'board',
-    group: team ? 'assignee' : 'status',
+    // Split is the personal default: a list you scan with the task you are
+    // reading beside it. Team Work keeps Workload — a lead's question is "who is
+    // carrying what", which a detail pane cannot answer.
+    type: team ? 'workload' : 'split',
+    // Urgency, not status: in a list you are asking what is late, and the Split
+    // view's left column is a list. Board users can still group by status in a
+    // click; the toolbar setting is per-view.
+    group: team ? 'assignee' : 'due',
     sort: { key: 'manual', dir: 'asc' },
     filters: { ...EMPTY_FILTERS },
     columns: team ? [...DEFAULT_TEAM_COLS] : [...DEFAULT_COLS],

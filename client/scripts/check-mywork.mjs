@@ -153,6 +153,12 @@ const checks = [
   ['undated task is a suggestion', has('Rewrite the onboarding email')],
   ['done task NOT in triage',      !html.split('Plan your day')[0].includes('Ship the artwork batch')],
   ['tasks tab hidden, not gone',   has('class="hidden"') && has('Group')],
+  // The personal default is the split view: a list with the task you are reading
+  // beside it. If this regresses to the Board, /my-work silently stops looking
+  // like the page it was asked to look like.
+  ['default view is Split',        has('Split') && has('lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]')],
+  ['split renders the detail pane', has('Assigned to') || has('Pick a task to open it here')],
+  ['no overlay drawer in split',   !has('fixed inset-0 z-[60]')],
   ['two-column grid class',        has('xl:grid-cols-[minmax(0,1fr)_300px]')],
   // The note is the field whose VALUE is the reason to open a task; a row that
   // only says a note EXISTS is the state this replaced.

@@ -4,10 +4,7 @@
 // bottom of a 390px viewport is unreachable.
 
 import { useRef, useState } from 'react'
-import {
-  ArrowDown, ArrowUp, Calendar as CalendarIcon, Check, ChevronDown, Filter, LayoutGrid,
-  List as ListIcon, Plus, Search, SlidersHorizontal, Star, Table as TableIcon, Trash2, Users,
-} from 'lucide-react'
+import { ArrowDown, ArrowUp, Calendar as CalendarIcon, Check, ChevronDown, PanelRight, Filter, LayoutGrid, List as ListIcon, Plus, Search, SlidersHorizontal, Star, Table as TableIcon, Trash2, Users } from 'lucide-react'
 import Button from '../ui/Button'
 import ConfirmDialog from '../ui/ConfirmDialog'
 import Popover from './Popover'
@@ -17,6 +14,9 @@ import {
 } from './taskFields'
 
 const VIEW_TYPES = [
+  // Split leads the strip on /my-work: it is the view that answers "what is this
+  // task", which is what a personal page is mostly for.
+  { key: 'split', label: 'Split', icon: PanelRight, mineOnly: true },
   { key: 'board', label: 'Board', icon: LayoutGrid },
   { key: 'table', label: 'Table', icon: TableIcon },
   { key: 'calendar', label: 'Calendar', icon: CalendarIcon },
@@ -45,7 +45,7 @@ export default function TaskToolbar({
   const [pendingDelete, setPendingDelete] = useState(null)
   const saveRef = useRef(null)
 
-  const types = VIEW_TYPES.filter(t => !t.teamOnly || surface === 'team')
+  const types = VIEW_TYPES.filter(t => (!t.teamOnly || surface === 'team') && (!t.mineOnly || surface === 'mine'))
   const groups = GROUP_BYS.filter(g => canGroupBy(g))
   const categories = categoriesIn(tasks)
   const f = view.filters

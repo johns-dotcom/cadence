@@ -19,7 +19,19 @@ import { categoriesIn, dueLabel } from './taskFields'
 
 const NOTES_DEBOUNCE_MS = 600
 
-export default function TaskDrawer({ task, tasks, members, releases = [], canEdit, canAssign, canUnassign = false, onClose, onPatch, onDelete }) {
+/**
+ * `variant="pane"` renders the SAME body inline, as the right half of the split
+ * view, instead of as an overlay.
+ *
+ * One definition of "the task detail", two containers. A second component for
+ * the pane would be a second place for the notes autosave, the lead-gated
+ * assignee rule and the release picker to drift — and the drawer is still how
+ * every other view opens a task, so they would drift in opposite directions.
+ * Only the SHELL differs: a pane owns no overlay, traps no focus and claims no
+ * Escape, because it is not modal and nothing is stacked over the page.
+ */
+export default function TaskDrawer({ task, tasks, members, releases = [], canEdit, canAssign, canUnassign = false, onClose, onPatch, onDelete, variant = 'drawer' }) {
+  const pane = variant === 'pane'
   const [notes, setNotes] = useState('')
   const [notesDirty, setNotesDirty] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -55,7 +67,7 @@ export default function TaskDrawer({ task, tasks, members, releases = [], canEdi
   // key even when it declines to close, so the page-level handler can never clear a
   // multi-select out from under an open drawer. Previously both this and
   // TaskSurface's useHotkeys fired for one keypress.
-  useEscapeStack(!!task, (e) => {
+  useEscapeStack(!!task && !pane, (e) => {
     // Don't close out from under someone typing — Escape mid-notes would throw away
     // the draft. Declining still consumes the key.
     const el = e.target
@@ -66,7 +78,7 @@ export default function TaskDrawer({ task, tasks, members, releases = [], canEdi
   // aria-modal="true" is a promise to assistive tech that focus stays inside; these
   // two make it true. Without them, Tab from an open drawer walked straight into the
   // sidebar behind it and the board scrolled under a stray wheel.
-  const panelRef = useFocusTrap(!!task)
+  const panelRef = useFocusTrap(!!task && !pane)
   useEffect(() => {
     if (!task) return
     const prev = document.body.style.overflow
@@ -117,7 +129,11 @@ export default function TaskDrawer({ task, tasks, members, releases = [], canEdi
   // quick-add form's on the same page and focused invisibly.
   const field = 'input disabled:opacity-60'
 
-  return (
+  // The two shells. Everything between them is identical by construction — the
+  // body below is written once.
+  const Shell = ({ children }) => pane ? (
+    <div className="flex flex-col h-full min-w-0">{children}</div>
+  ) : (
     <div className="fixed inset-0 z-[60] flex justify-end bg-overlay" onClick={onClose}>
       <div
         ref={panelRef}
@@ -128,15 +144,28 @@ export default function TaskDrawer({ task, tasks, members, releases = [], canEdi
         aria-modal="true"
         aria-label="Task detail"
       >
-        <div className="sticky top-0 bg-card border-b border-divider px-4 py-3 flex items-start justify-between gap-2 z-10">
+        {children}
+      </div>
+    </div>
+  )
+
+  return (
+    <Shell>
+        <div className={pane
+          ? 'pb-3 mb-1 border-b border-divider flex items-start justify-between gap-2'
+          : 'sticky top-0 bg-card border-b border-divider px-4 py-3 flex items-start justify-between gap-2 z-10'}>
           <div className="min-w-0">
             <p className="text-xs text-ink-muted">{task.assignee_name || 'Unassigned'} · {dueLabel(task)}</p>
-            <h2 className="text-sm font-semibold text-ink break-words">{task.description}</h2>
+            <h2 className={`font-semibold text-ink break-words ${pane ? 'text-lg tracking-tight' : 'text-sm'}`}>{task.description}</h2>
           </div>
-          <button onClick={onClose} className="text-ink-muted hover:text-ink flex-shrink-0 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400" aria-label="Close"><X size={18} /></button>
+          {/* A pane has nothing stacked over the page to dismiss; below the split
+              breakpoint it renders under the list, where a close IS meaningful. */}
+          <button onClick={onClose}
+            className={`text-ink-muted hover:text-ink flex-shrink-0 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 ${pane ? 'lg:hidden' : ''}`}
+            aria-label="Close"><X size={18} /></button>
         </div>
 
-        <div className="p-4 space-y-4 flex-1">
+        <div className={pane ? 'space-y-4 flex-1 overflow-y-auto pr-1' : 'p-4 space-y-4 flex-1'}>
           <div>
             <label className="label">Task</label>
             <input className={field} defaultValue={task.description} disabled={!canEdit}
@@ -247,12 +276,22 @@ export default function TaskDrawer({ task, tasks, members, releases = [], canEdi
           />
         </div>
 
-        <div className="sticky bottom-0 bg-card border-t border-divider px-4 py-3 flex items-center justify-between">
-          <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)} disabled={!canEdit}>
-            <Trash2 size={14} /> Delete
-          </Button>
-          <Button variant="secondary" size="sm" onClick={onClose}>Close</Button>
-        </div>
+        {pane ? (
+          <div className="pt-3 mt-1 border-t border-divider flex items-center justify-end">
+            <button onClick={() => setConfirmDelete(true)} disabled={!canEdit} aria-label="Delete task"
+              className="text-ink-faint hover:text-danger p-1 rounded disabled:opacity-40
+                         focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400">
+              <Trash2 size={14} aria-hidden="true" />
+            </button>
+          </div>
+        ) : (
+          <div className="sticky bottom-0 bg-card border-t border-divider px-4 py-3 flex items-center justify-between">
+            <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)} disabled={!canEdit}>
+              <Trash2 size={14} /> Delete
+            </Button>
+            <Button variant="secondary" size="sm" onClick={onClose}>Close</Button>
+          </div>
+        )}
 
         {/* Was a native confirm interpolating an unbounded description — a long task
             title produced an unreadable wall of text. */}
@@ -264,7 +303,6 @@ export default function TaskDrawer({ task, tasks, members, releases = [], canEdi
           message={`“${String(task.description).slice(0, 80)}${String(task.description).length > 80 ? '…' : ''}” will be permanently deleted. This can't be undone.`}
           confirmLabel="Delete task"
         />
-      </div>
-    </div>
+    </Shell>
   )
 }

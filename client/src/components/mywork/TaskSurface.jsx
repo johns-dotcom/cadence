@@ -265,11 +265,33 @@ export default function TaskSurface({ surface = 'mine', data: externalData = nul
     v.setGroup('status')
   }
 
+  // The split breakpoint, matching the lg: grid in the view body. Below it the
+  // pane renders under the list, so nothing is auto-opened.
+  const wide = !useIsMobile('(max-width: 1023px)')
+
+  // Both containers of the task detail take the SAME props — declared once so the
+  // split view's pane and the overlay drawer cannot end up with different
+  // permissions or a different roster.
+  const detailProps = () => ({
+    tasks, releases, members: assignableMembers,
+    canEdit: canEditTask(drawerTask), canAssign: isLead && assignableMembers.length > 0,
+    canUnassign: isAdmin, onPatch: patch, onDelete: data.removeTask,
+  })
+
   // Keep the open drawer in sync with the live row.
   const drawerTask = openTask ? tasks.find(t => t.id === openTask.id) || null : null
   // A refetch can drop the open task (deleted elsewhere, reassigned out of scope).
   // The drawer used to just vanish mid-edit with no explanation.
   const drawerMissing = !!openTask && !drawerTask
+
+  // Keep a pane's worth of content on screen. If nothing is picked — or the pick
+  // has fallen out of the filtered set — take the first row rather than leaving
+  // an empty pane beside a full list.
+  useEffect(() => {
+    if (view.type !== 'split' || !wide || !sorted.length) return
+    if (openTask && sorted.some(t => t.id === openTask.id)) return
+    setOpenTask(sorted[0])
+  }, [view.type, wide, sorted, openTask])
 
   // ── Hotkeys ───────────────────────────────────────────────────────────────
   // Single keys only: useHotkeys bails on any meta/ctrl/alt and ignores events
@@ -405,6 +427,31 @@ export default function TaskSurface({ surface = 'mine', data: externalData = nul
     }
     if (view.type === 'list') {
       return <TaskTable {...sharedViewProps} columns={['description']} dense />
+    }
+    if (view.type === 'split') {
+      // The list answers "what is on my plate"; the pane beside it answers "what
+      // is this one". Same rows, same pipeline — the left half IS the List view.
+      return (
+        <div className="lg:grid lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)] lg:gap-5">
+          <div className="min-w-0 lg:max-h-[34rem] lg:overflow-y-auto lg:pr-1">
+            <TaskTable {...sharedViewProps} columns={['description']} dense />
+          </div>
+          {/* Below lg the pane renders UNDER the list and only once something is
+              picked: a permanently-open detail would push the list off a phone. */}
+          <div className={`min-w-0 lg:border-l lg:border-divider lg:pl-5 ${drawerTask ? 'mt-5 lg:mt-0' : 'hidden lg:block'}`}>
+            {drawerTask ? (
+              <TaskDrawer task={drawerTask} variant="pane" onClose={() => setOpenTask(null)} {...detailProps()} />
+            ) : (
+              <div className="h-full flex items-center justify-center text-center py-16">
+                <div>
+                  <CheckSquare size={26} className="text-ink-faint mx-auto mb-2" aria-hidden="true" />
+                  <p className="text-sm text-ink-muted">Pick a task to open it here.</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )
     }
     return <TaskBoard {...sharedViewProps} onAdd={openAdd} showAssignee={surface === 'team'} />
   }
@@ -599,18 +646,12 @@ export default function TaskSurface({ surface = 'mine', data: externalData = nul
         </div>
       )}
 
-      <TaskDrawer
-        task={drawerTask}
-        tasks={tasks}
-        releases={releases}
-        members={assignableMembers}
-        canEdit={canEditTask(drawerTask)}
-        canAssign={isLead && assignableMembers.length > 0}
-        canUnassign={isAdmin}
-        onClose={() => setOpenTask(null)}
-        onPatch={patch}
-        onDelete={data.removeTask}
-      />
+      {/* The overlay is how every OTHER view opens a task. In the split view the
+          same component is already on screen as the pane, and rendering both
+          would mount two editors over one row — two notes drafts, two autosaves. */}
+      {view.type !== 'split' && (
+        <TaskDrawer task={drawerTask} onClose={() => setOpenTask(null)} {...detailProps()} />
+      )}
 
       <Modal
         open={drawerMissing}
