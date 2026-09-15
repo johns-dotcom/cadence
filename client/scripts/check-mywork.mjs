@@ -172,6 +172,31 @@ checks.push(
   ['noteLine: single line intact',   noteLine('just one line') === 'just one line'],
 );
 
+// The operator console's detail pane. Exported and rendered with props because
+// that page fetches in an effect, and SSR runs no effects — rendering the page
+// itself would only ever prove its skeleton, which is what let a missing note
+// feature ship unnoticed once already.
+const { TaskDetail } = await vite.ssrLoadModule('/src/pages/PlatformMyWork.jsx');
+const detailHtml = renderToString(
+  React.createElement(MemoryRouter, null,
+    React.createElement(ThemeProvider, null,
+      React.createElement(ToastProvider, null,
+        React.createElement(TaskDetail, {
+          task: { id: 1, description: '2025 taxes', status: 'To Do', priority: 'Medium',
+                  category: 'General', due_date: null, notes: 'hit kim', label_id: 2,
+                  label_name: 'The Nest', label_status: 'active' },
+          editable: true, busy: false, draft: 'hit kim',
+          onDraft: () => {}, onDraftBlur: () => {}, onPatch: () => {}, onDelete: () => {},
+          onClose: () => {}, workspace: { id: 2, name: 'The Nest' }, color: '#888', tag: 'TN',
+        })))));
+const dHas = (x) => detailHtml.includes(x);
+checks.push(
+  ['console pane: title',        dHas('2025 taxes')],
+  ['console pane: note body',    dHas('hit kim')],
+  ['console pane: meta row',     dHas('To Do') && dHas('Medium') && dHas('General')],
+  ['console pane: workspace',    dHas('The Nest') && dHas('TN')],
+);
+
 let bad = 0;
 for (const [name, ok] of checks) { if (!ok) bad++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`); }
 console.log(`\n${checks.length - bad}/${checks.length} checks passed`);

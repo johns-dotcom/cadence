@@ -19,13 +19,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle, ArrowUpRight, Building2, CalendarClock, Check, CheckCircle2, ChevronDown,
-  Clock, Loader2, Plus, RefreshCw, Search, Trash2, UserCheck,
+  Clock, Loader2, Plus, RefreshCw, Search, StickyNote, Trash2, UserCheck, X,
 } from 'lucide-react'
 import api from '../api'
 import Button from '../components/ui/Button'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Skeleton from '../components/Skeleton'
 import { useTheme } from '../context/ThemeContext'
+import useIsMobile from '../hooks/useIsMobile'
 import { useToast } from '../context/ToastContext'
 import { resolveColors, tagMap } from '../utils/workspaceColor'
 import { daysUntilLocal, formatDate, localDateStr } from '../utils/dates'
@@ -80,8 +81,196 @@ function WorkspaceMark({ ws, color, tag }) {
   )
 }
 
+// The detail pane — what a task IS, beside the list of what there is.
+//
+// Every control that acts on one task lives here rather than on the row: a list
+// where each line carries six controls is a toolbar per line, and it stops
+// reading as a list. The note is the BODY, borderless and given the room, because
+// it is the reason you opened the task.
+export function TaskDetail({
+  task, editable, busy, draft, onDraft, onDraftBlur, onPatch, onDelete, onClose,
+  workspace, color, tag,
+}) {
+  const done = task.status === 'Done'
+  const late = bucketOf(task) === 'overdue'
+  const [menu, setMenu] = useState(null) // 'priority' | null
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          {editable ? (
+            <input
+              key={task.id}
+              defaultValue={task.description}
+              onBlur={e => {
+                const v = e.target.value.trim()
+                if (v && v !== task.description) onPatch(task.id, { description: v })
+                else e.target.value = task.description
+              }}
+              className={`w-full bg-transparent border-0 p-0 text-xl font-bold tracking-tight outline-none
+                          focus:ring-0 ${done ? 'line-through text-ink-muted' : 'text-ink'}`}
+              aria-label="Task name"
+            />
+          ) : (
+            <h2 className={`text-xl font-bold tracking-tight ${done ? 'line-through text-ink-muted' : 'text-ink'}`}>{task.description}</h2>
+          )}
+        </div>
+        <button onClick={onClose} aria-label="Close detail"
+          className="lg:hidden text-ink-muted hover:text-ink p-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400">
+          <X size={16} aria-hidden="true" />
+        </button>
+      </div>
+
+      {/* Meta row — status · priority · category, then the date and the
+          destructive action kept apart from them. */}
+      <div className="flex items-center gap-2 flex-wrap mt-2 text-sm">
+        {editable ? (
+          <button
+            onClick={() => onPatch(task.id, { status: done ? 'To Do' : 'Done' })}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 text-ink-muted hover:text-ink rounded px-1 -ml-1
+                       focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+          >
+            <span className={`w-4 h-4 rounded-full border flex items-center justify-center
+              ${done ? 'bg-success border-success text-white' : 'border-rule'}`}>
+              {done && <Check size={10} aria-hidden="true" />}
+            </span>
+            {task.status}
+          </button>
+        ) : (
+          <span className="text-ink-muted">{task.status}</span>
+        )}
+
+        <span className="text-ink-faint" aria-hidden="true">·</span>
+
+        {editable ? (
+          <div className="relative">
+            <button onClick={() => setMenu(menu === 'priority' ? null : 'priority')}
+              aria-haspopup="menu" aria-expanded={menu === 'priority'}
+              className="inline-flex items-center gap-1 text-ink-muted hover:text-ink rounded px-1
+                         focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400">
+              <span className={`w-1.5 h-1.5 rounded-full ${PRIORITY_DOT[task.priority] || PRIORITY_DOT.Medium}`} aria-hidden="true" />
+              {task.priority || 'Medium'} <ChevronDown size={12} aria-hidden="true" />
+            </button>
+            {menu === 'priority' && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setMenu(null)} aria-hidden="true" />
+                <div role="menu" className="absolute left-0 top-full mt-1 z-20 card p-1 w-32 shadow-lg">
+                  {TASK_PRIORITIES.map(pr => (
+                    <button key={pr} role="menuitem"
+                      onClick={() => { setMenu(null); onPatch(task.id, { priority: pr }) }}
+                      className="w-full text-left text-xs px-2 py-1.5 rounded text-ink hover:bg-elev">{pr}</button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <span className="text-ink-muted">{task.priority || 'Medium'}</span>
+        )}
+
+        <span className="text-ink-faint" aria-hidden="true">·</span>
+
+        {editable ? (
+          <input
+            key={`cat-${task.id}`}
+            defaultValue={task.category || ''}
+            placeholder="No category"
+            onBlur={e => {
+              const v = e.target.value.trim() || null
+              if (v !== (task.category || null)) onPatch(task.id, { category: v })
+            }}
+            className="bg-transparent border-0 p-0 text-sm text-ink-muted outline-none focus:ring-0 w-28"
+            aria-label="Category"
+          />
+        ) : (
+          <span className="text-ink-muted">{task.category || 'No category'}</span>
+        )}
+      </div>
+
+      <div className="flex items-center gap-3 mt-2">
+        {editable ? (
+          <input
+            type="date"
+            value={task.due_date ? String(task.due_date).slice(0, 10) : ''}
+            onChange={e => onPatch(task.id, { due_date: e.target.value || null })}
+            disabled={busy}
+            aria-label="Due date"
+            className={`bg-transparent border border-rule rounded px-1.5 py-0.5 text-xs
+                        focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400
+                        ${late ? 'text-danger' : 'text-ink-muted'}`}
+          />
+        ) : (
+          <span className={`text-xs ${late ? 'text-danger' : 'text-ink-muted'}`}>{dueLabel(task) || 'No due date'}</span>
+        )}
+
+        {editable && !done && (
+          <>
+            {task.status !== 'In Progress' && (
+              <button onClick={() => onPatch(task.id, { status: 'In Progress' })} disabled={busy}
+                className="text-[11px] font-semibold text-ink-muted hover:text-ink rounded px-1
+                           focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400">Start</button>
+            )}
+            {/* Relative to TODAY, not to the old due date: snoozing a task five
+                days late must mean "tomorrow", not "four days late". */}
+            <button onClick={() => onPatch(task.id, { due_date: localDateStr(new Date(Date.now() + 864e5)) })} disabled={busy}
+              title="Due tomorrow"
+              className="text-[11px] font-semibold text-ink-muted hover:text-ink rounded px-1
+                         focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400">+1d</button>
+          </>
+        )}
+
+        <div className="ml-auto flex items-center gap-2">
+          {busy && <Loader2 size={13} className="animate-spin text-ink-faint" aria-hidden="true" />}
+          {editable && (
+            <button onClick={onDelete} aria-label="Delete task"
+              className="text-ink-faint hover:text-danger p-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400">
+              <Trash2 size={14} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Which workspace this belongs to — both console encodings, because the
+          pane is where you confirm you are about to act on the right tenant. */}
+      <div className="flex items-center gap-2 mt-3 pb-3 border-b border-divider text-[11px] text-ink-muted">
+        <WorkspaceMark ws={workspace} color={color} tag={tag} />
+        <span className="truncate">{task.label_name}</span>
+        {task.label_status === 'suspended' && <span className="text-warning font-semibold">suspended</span>}
+        {task.release_name && <span className="truncate">· ♪ {task.release_name}</span>}
+        {!editable && task.assignee_name && <span>· waiting on {task.assignee_name}</span>}
+        {!editable && (
+          <a href={`/workspaces?open=${task.label_id}`}
+            className="ml-auto font-semibold text-brand-ink hover:underline inline-flex items-center gap-0.5">
+            Workspace <ArrowUpRight size={10} aria-hidden="true" />
+          </a>
+        )}
+      </div>
+
+      {/* The note. Borderless and full-height on purpose: it is the body of the
+          document, not one more labelled field. */}
+      {editable ? (
+        <textarea
+          value={draft}
+          onChange={e => onDraft(e.target.value)}
+          onBlur={onDraftBlur}
+          placeholder="Write a note… saves as you type"
+          className="mt-3 w-full flex-1 min-h-[14rem] bg-transparent border-0 p-0 text-sm text-ink
+                     placeholder:text-ink-faint resize-none outline-none focus:ring-0"
+          aria-label="Note"
+        />
+      ) : (
+        <p className="mt-3 text-sm text-ink whitespace-pre-wrap">{task.notes || <span className="text-ink-faint italic">No note</span>}</p>
+      )}
+    </div>
+  )
+}
+
 export default function PlatformMyWork() {
   const { theme } = useTheme()
+  // The two-pane breakpoint, matching the lg: grid below.
+  const wide = !useIsMobile('(max-width: 1023px)')
   const { toast } = useToast()
 
   const [data, setData] = useState({ workspaces: [], mine: [], delegated: [], scoped: false, capped: false, delegated_capped: false })
@@ -95,16 +284,15 @@ export default function PlatformMyWork() {
   const [showDone, setShowDone] = useState(false)
   const [tab, setTab] = useState('mine')
   const [busy, setBusy] = useState(null)       // task id mid-write
-  const [menuFor, setMenuFor] = useState(null) // task id whose priority menu is open
   const [confirmDel, setConfirmDel] = useState(null)
   // The console has no task drawer, so the note is edited in place. `draft`
   // holds the text being typed: rendering straight from `data` would fight the
   // optimistic patch and jump the caret on every autosave.
-  const [openNote, setOpenNote] = useState(null)   // task id whose note is open
+  const [selectedId, setSelectedId] = useState(null)
   const [draft, setDraft] = useState('')
   const noteTimer = useRef(null)
   const draftRef = useRef({ id: null, value: '' })
-  draftRef.current = { id: openNote, value: draft }
+  draftRef.current = { id: selectedId, value: draft }
 
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState({ label_id: '', description: '', priority: 'Medium', due_date: '', category: '' })
@@ -175,6 +363,21 @@ export default function PlatformMyWork() {
     return list
   }, [shown, groupBy, wsById])
 
+  // Re-derived from the live rows, never held as an object: a stale copy here
+  // would keep showing the pre-patch task after an edit.
+  const selected = useMemo(() => shown.find(t => t.id === selectedId) || null, [shown, selectedId])
+
+  // Keep a pane's worth of content on screen: if the selection falls out of the
+  // filtered set, take the first row instead of leaving an empty pane beside a
+  // full list. Desktop only — on a phone the detail renders BELOW the list, and
+  // auto-opening it would push the list off the screen on arrival.
+  useEffect(() => {
+    if (wide && shown.length && !shown.some(t => t.id === selectedId)) {
+      setSelectedId(shown[0].id)
+      setDraft(shown[0].notes || '')
+    }
+  }, [wide, shown, selectedId])
+
   const openCount = (list) => list.filter(t => t.status !== 'Done').length
   const overdueCount = useMemo(() => shown.filter(t => bucketOf(t) === 'overdue').length, [shown])
 
@@ -212,22 +415,21 @@ export default function PlatformMyWork() {
     }, 600)
   }
 
-  const closeNote = () => {
+  // Commit whatever is in the box before it stops being on screen. Only when it
+  // actually CHANGED — leaving a note you merely read must not stamp updated_at.
+  const flushNote = useCallback(() => {
     const d = draftRef.current
     clearTimeout(noteTimer.current)
-    if (d.id != null) {
-      const row = (data.mine || []).find(t => t.id === d.id)
-      // Only write when it actually changed — closing a note you only read
-      // should not stamp updated_at.
-      if (row && (row.notes || '') !== d.value) saveNote(d.id, d.value)
-    }
-    setOpenNote(null); setDraft('')
-  }
+    if (d.id == null) return
+    const row = (data.mine || []).find(t => t.id === d.id)
+    if (row && (row.notes || '') !== d.value) saveNote(d.id, d.value)
+  }, [data.mine, saveNote])
 
-  const toggleNote = (t) => {
-    if (openNote === t.id) { closeNote(); return }
-    if (openNote != null) closeNote()
-    setOpenNote(t.id); setDraft(t.notes || '')
+  const selectTask = (t) => {
+    if (t.id === selectedId) return
+    flushNote()
+    setSelectedId(t.id)
+    setDraft(t.notes || '')
   }
 
   const remove = async (t) => {
@@ -455,171 +657,110 @@ export default function PlatformMyWork() {
                   onClick={() => { setQ(''); setWsFilter('all'); setShowDone(false) }}>Clear filters</Button>
               )}
             </div>
-          ) : groups.map(g => (
-            <section key={g.key} className="mb-5 last:mb-0">
-              <div className="flex items-center gap-2 mb-2">
-                {groupBy === 'workspace'
-                  ? <WorkspaceMark ws={wsById.get(g.order)} color={colorOf(g.order)} tag={tagOf(g.order)} />
-                  : <g.icon size={14} className={g.tone} aria-hidden="true" />}
-                <h3 className="text-xs font-bold text-ink uppercase tracking-wide">{g.label}</h3>
-                <span className="text-[11px] text-ink-muted">{g.items.length}</span>
-              </div>
-              <div className="card divide-y divide-divider">
-                {g.items.map(t => {
-                  const done = t.status === 'Done'
-                  const mine = tab === 'mine'
-                  const late = bucketOf(t) === 'overdue'
-                  return (
-                    <div key={t.id} className="flex items-start gap-3 px-3 py-2.5">
-                      {mine ? (
-                        <button
-                          onClick={() => patch(t.id, { status: done ? 'To Do' : 'Done' })}
-                          disabled={busy === t.id}
-                          aria-label={done ? 'Mark as not done' : 'Mark as done'}
-                          className={`mt-0.5 w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 transition
-                            focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400
-                            ${done ? 'bg-success border-success text-white' : 'border-rule hover:border-brand-400'}`}
-                        >
-                          {done && <Check size={10} aria-hidden="true" />}
-                        </button>
-                      ) : (
-                        <UserCheck size={14} className="text-ink-faint mt-1 flex-shrink-0" aria-hidden="true" />
-                      )}
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${PRIORITY_DOT[t.priority] || PRIORITY_DOT.Medium}`}
-                            title={t.priority || 'Medium'} aria-hidden="true" />
-                          {/* The title opens the note. This page has no drawer, so
-                              without it the note would be readable nowhere. */}
-                          {mine ? (
-                            <button
-                              onClick={() => toggleNote(t)}
-                              aria-expanded={openNote === t.id}
-                              className={`text-sm min-w-0 text-left rounded truncate
-                                focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400
-                                ${done ? 'line-through text-ink-muted' : 'text-ink hover:text-brand-ink'}`}
-                            >{t.description}</button>
-                          ) : (
-                            <p className={`text-sm min-w-0 ${done ? 'line-through text-ink-muted' : 'text-ink'}`}>{t.description}</p>
-                          )}
-                        </div>
-
-                        {/* The note itself, not a marker saying one exists. "No
-                            note" is the muted tier so a row that HAS one still
-                            wins the scan — and it advertises a field nobody would
-                            otherwise discover on this page. */}
-                        {openNote !== t.id && (
-                          <p className={`text-[12px] mt-0.5 truncate ${t.notes ? 'text-ink-muted' : 'text-ink-faint italic'}`}>
-                            {t.notes ? noteLine(t.notes) : (mine ? 'No note' : '')}
-                          </p>
-                        )}
-
-                        {openNote === t.id && (
-                          <div className="mt-1.5">
-                            <textarea
-                              autoFocus
-                              rows={4}
-                              value={draft}
-                              onChange={e => { setDraft(e.target.value); scheduleNote(t.id, e.target.value) }}
-                              onBlur={() => saveNote(t.id, draftRef.current.value)}
-                              onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); closeNote() } }}
-                              placeholder="Longer detail, links, context…"
-                              className="input resize-y w-full text-[13px]"
-                            />
-                            <div className="flex items-center gap-2 mt-1">
-                              <button onClick={closeNote}
-                                className="text-[11px] font-semibold text-brand-ink hover:underline rounded
-                                           focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400">Done</button>
-                              <span className="text-[10px] text-ink-faint">Saves as you type</span>
-                            </div>
-                          </div>
-                        )}
-                        <div className="flex items-center gap-2 mt-1 flex-wrap text-[11px] text-ink-muted">
-                          {groupBy !== 'workspace' && (
-                            <WorkspaceMark ws={wsById.get(Number(t.label_id))} color={colorOf(t.label_id)} tag={tagOf(t.label_id)} />
-                          )}
-                          <span className="truncate max-w-[14rem]">{t.label_name}</span>
-                          {t.label_status === 'suspended' && <span className="text-warning font-semibold">suspended</span>}
-                          {t.category && <span className="px-1.5 py-0.5 rounded bg-elev">{t.category}</span>}
-                          {t.release_name && <span className="truncate max-w-[12rem]">♪ {t.release_name}</span>}
-                          {!mine && t.assignee_name && <span>→ {t.assignee_name}</span>}
-                          {dueLabel(t) && (
-                            <span className={late ? 'text-danger font-semibold' : ''}>{dueLabel(t)}</span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        {mine && !done && (
-                          <>
-                            {t.status !== 'In Progress' && (
-                              <button onClick={() => patch(t.id, { status: 'In Progress' })} disabled={busy === t.id}
-                                className="text-[10px] font-semibold text-ink-muted hover:text-ink px-1.5 py-1 rounded
-                                           focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400">Start</button>
-                            )}
-                            {/* Relative to TODAY, not to the old due date: snoozing a
-                                task 5 days late must mean "tomorrow", not "4 days late". */}
-                            <button onClick={() => patch(t.id, { due_date: localDateStr(new Date(Date.now() + 864e5)) })}
-                              disabled={busy === t.id} title="Due tomorrow"
-                              className="text-[10px] font-semibold text-ink-muted hover:text-ink px-1.5 py-1 rounded
-                                         focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400">+1d</button>
-                            <div className="relative">
-                              <button onClick={() => setMenuFor(menuFor === t.id ? null : t.id)}
-                                aria-haspopup="menu" aria-expanded={menuFor === t.id}
-                                className="text-[10px] font-semibold text-ink-muted hover:text-ink px-1.5 py-1 rounded inline-flex items-center gap-0.5
-                                           focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400">
-                                {t.priority || 'Medium'} <ChevronDown size={10} aria-hidden="true" />
-                              </button>
-                              {menuFor === t.id && (
-                                <>
-                                  <div className="fixed inset-0 z-10" onClick={() => setMenuFor(null)} aria-hidden="true" />
-                                  <div role="menu" className="absolute right-0 top-full mt-1 z-20 card p-1 w-28 shadow-lg">
-                                    {TASK_PRIORITIES.map(p => (
-                                      <button key={p} role="menuitem"
-                                        onClick={() => { setMenuFor(null); patch(t.id, { priority: p }) }}
-                                        className="w-full text-left text-xs px-2 py-1.5 rounded text-ink hover:bg-elev">
-                                        {p}
-                                      </button>
-                                    ))}
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                            <input
-                              type="date"
-                              value={t.due_date ? String(t.due_date).slice(0, 10) : ''}
-                              onChange={e => patch(t.id, { due_date: e.target.value || null })}
-                              disabled={busy === t.id}
-                              aria-label="Due date"
-                              className="text-[10px] bg-transparent border border-rule rounded px-1 py-0.5 text-ink-muted
-                                         focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
-                            />
-                          </>
-                        )}
-                        {mine && (
-                          <button onClick={() => setConfirmDel(t)} disabled={busy === t.id} aria-label="Delete task"
-                            className="text-ink-faint hover:text-danger p-1 rounded
-                                       focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400">
-                            <Trash2 size={12} aria-hidden="true" />
-                          </button>
-                        )}
-                        {!mine && (
-                          <a
-                            href={`/workspaces?open=${t.label_id}`}
-                            className="text-[10px] font-semibold text-brand-ink hover:underline inline-flex items-center gap-0.5 px-1.5 py-1"
-                          >
-                            Workspace <ArrowUpRight size={10} aria-hidden="true" />
-                          </a>
-                        )}
-                        {busy === t.id && <Loader2 size={12} className="animate-spin text-ink-faint" aria-hidden="true" />}
-                      </div>
+          ) : (
+            /* Two panes: the list answers "what is on my plate", the pane beside
+               it answers "what is this one". The row therefore carries only what
+               you scan by — title, note, workspace — and every control that acts
+               on a single task moved into the detail, which is why the list reads
+               as a list instead of a toolbar per line. */
+            <div className="lg:grid lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)] lg:gap-5">
+              <div className="min-w-0 lg:max-h-[34rem] lg:overflow-y-auto lg:pr-1">
+                {groups.map(g => (
+                  <section key={g.key} className="mb-4 last:mb-0">
+                    <div className="flex items-center gap-2 mb-1.5">
+                      {groupBy === 'workspace'
+                        ? <WorkspaceMark ws={wsById.get(g.order)} color={colorOf(g.order)} tag={tagOf(g.order)} />
+                        : <g.icon size={13} className={g.tone} aria-hidden="true" />}
+                      <h3 className="text-[11px] font-bold text-ink uppercase tracking-wide">{g.label}</h3>
+                      <span className="text-[11px] text-ink-muted">{g.items.length}</span>
                     </div>
-                  )
-                })}
+                    <div className="card divide-y divide-divider overflow-hidden">
+                      {g.items.map(t => {
+                        const done = t.status === 'Done'
+                        const late = bucketOf(t) === 'overdue'
+                        const on = t.id === selectedId
+                        return (
+                          <div
+                            key={t.id}
+                            className={`flex items-start gap-2.5 px-3 py-2 transition ${on ? 'bg-selected' : 'hover:bg-elev'}`}
+                          >
+                            {tab === 'mine' ? (
+                              <button
+                                onClick={() => patch(t.id, { status: done ? 'To Do' : 'Done' })}
+                                disabled={busy === t.id}
+                                aria-label={done ? 'Mark as not done' : 'Mark as done'}
+                                className={`mt-0.5 w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 transition
+                                  focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400
+                                  ${done ? 'bg-success border-success text-white' : 'border-rule hover:border-brand-400'}`}
+                              >
+                                {done && <Check size={10} aria-hidden="true" />}
+                              </button>
+                            ) : (
+                              <UserCheck size={13} className="text-ink-faint mt-1 flex-shrink-0" aria-hidden="true" />
+                            )}
+
+                            <button
+                              onClick={() => selectTask(t)}
+                              aria-current={on}
+                              className="min-w-0 flex-1 text-left rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${PRIORITY_DOT[t.priority] || PRIORITY_DOT.Medium}`}
+                                  title={t.priority || 'Medium'} aria-hidden="true" />
+                                <span className={`text-sm truncate ${done ? 'line-through text-ink-muted' : 'text-ink font-medium'}`}>{t.description}</span>
+                              </div>
+                              {/* The note, not a marker that one exists. "No note"
+                                  is the muted tier so a row that HAS one still wins
+                                  the scan, and it advertises the field. */}
+                              <p className={`text-[12px] truncate mt-0.5 ${t.notes ? 'text-ink-muted' : 'text-ink-faint italic'}`}>
+                                {t.notes ? noteLine(t.notes) : (tab === 'mine' ? 'No note' : '')}
+                              </p>
+                              <div className="flex items-center gap-1.5 mt-1 text-[10px] text-ink-muted flex-wrap">
+                                <WorkspaceMark ws={wsById.get(Number(t.label_id))} color={colorOf(t.label_id)} tag={tagOf(t.label_id)} />
+                                <span className="truncate max-w-[9rem]">{t.label_name}</span>
+                                {t.category && <span className="uppercase tracking-wide text-ink-faint truncate">{t.category}</span>}
+                                {dueLabel(t) && <span className={late ? 'text-danger font-semibold' : ''}>{dueLabel(t)}</span>}
+                              </div>
+                            </button>
+                            {busy === t.id && <Loader2 size={12} className="animate-spin text-ink-faint mt-1 flex-shrink-0" aria-hidden="true" />}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </section>
+                ))}
               </div>
-            </section>
-          ))}
+
+              {/* Detail. Below lg it renders under the list rather than beside it,
+                  and only once something is picked — a permanently-open pane on a
+                  phone would push the list off the screen. */}
+              <div className={`min-w-0 lg:border-l lg:border-divider lg:pl-5 ${selected ? 'mt-5 lg:mt-0' : 'hidden lg:block'}`}>
+                {selected ? (
+                  <TaskDetail
+                    task={selected}
+                    editable={tab === 'mine'}
+                    busy={busy === selected.id}
+                    draft={draft}
+                    onDraft={v => { setDraft(v); scheduleNote(selected.id, v) }}
+                    onDraftBlur={() => saveNote(selected.id, draftRef.current.value)}
+                    onPatch={patch}
+                    onDelete={() => setConfirmDel(selected)}
+                    onClose={() => { flushNote(); setSelectedId(null) }}
+                    workspace={wsById.get(Number(selected.label_id))}
+                    color={colorOf(selected.label_id)}
+                    tag={tagOf(selected.label_id)}
+                  />
+                ) : (
+                  <div className="h-full flex items-center justify-center text-center py-16">
+                    <div>
+                      <StickyNote size={26} className="text-ink-faint mx-auto mb-2" aria-hidden="true" />
+                      <p className="text-sm text-ink-muted">Pick a task to read and write its note.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Disclosures, not silence. A capped list that says nothing reads as a
               complete one, and a scoped list reads as the whole platform. */}
