@@ -1399,6 +1399,29 @@ const runMigrations = async () => {
       ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  // REPAIR BEFORE INDEX. This table shipped in M5 with `created_at`; Phase 8
+  // rewrote the CREATE above to use `ts`. CREATE TABLE IF NOT EXISTS is a no-op
+  // on an existing table, so every database that ran M5 kept `created_at` — and
+  // the index below then failed with 42703. Because runMigrations() is ONE
+  // promise chain, that one error aborted EVERY migration after this line, and
+  // production silently ran a half-built schema from Phase 8 until 2026-09-14
+  // (chat_messages.is_operator, operator_chat_audit and salary_payment_history
+  // never got created; chat 500'd on every read and send).
+  //
+  // The rename is guarded on the exact legacy shape and keeps the rows, so it is
+  // a no-op on a fresh database and runs at most once anywhere else.
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_name = 'page_views' AND column_name = 'created_at')
+         AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                          WHERE table_name = 'page_views' AND column_name = 'ts')
+      THEN
+        ALTER TABLE page_views RENAME COLUMN created_at TO ts;
+      END IF;
+    END $$;
+  `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_page_views_label_ts ON page_views (label_id, ts DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_page_views_label_path ON page_views (label_id, path)`);
   // Powers the per-user+path dedup window on insert.
