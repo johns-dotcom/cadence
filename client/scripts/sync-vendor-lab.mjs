@@ -109,12 +109,54 @@ export default function VendorSubmitLab() {
     replace: `  if (done) return <SandboxReport result={done} onReset={submitAnother} />`,
   },
   {
-    name: 'sandbox banner',
+    name: 'sandbox banner + skip-gates toggle',
     find: `      <div className="max-w-2xl mx-auto">
         <div className="text-center mb-5">`,
     replace: `      <div className="max-w-2xl mx-auto">
-        <SandboxBanner slug={slug} />
+        <SandboxBanner slug={slug} skipGates={skipGates} onToggleSkip={setSkipGates} />
         <div className="text-center mb-5">`,
+  },
+  // ── Lab-only: skip the client-side gates ───────────────────────────────────
+  // The three deltas below exist so the LAB can walk the wizard without filling
+  // it in. They deliberately do NOT touch the validation itself: every gate
+  // function stays byte-identical to the public form, and only the places that
+  // CALL them are rewritten. Duplicating a rule here would break the one thing
+  // the lab is for — that a refusal in the lab is the refusal a vendor gets.
+  //
+  // The public form has no `skipGates` binding at all, so there is no boolean
+  // there to invert, no default to flip, and no prop to pass by mistake.
+  {
+    name: 'skip-gates state (lab only)',
+    find: `  const [step, setStep] = useState(1)\n`,
+    replace: `  const [step, setStep] = useState(1)\n  // Lab only — see scripts/sync-vendor-lab.mjs. Turns off the CLIENT gates so an\n  // admin can reach any step, and the server's verdict, without filling three.\n  const [skipGates, setSkipGates] = useState(false)\n`,
+  },
+  {
+    name: 'step nav honours skipGates',
+    find: `            {step === 1 && <button type="button" onClick={nextFromInfo} className="btn-primary">Next — upload documents <ArrowRight size={15} /></button>}
+            {step === 2 && <button type="button" onClick={nextFromDocs} disabled={checking} className="btn-primary">{checking ? 'Reading your invoice…' : <>Next — review &amp; submit <ArrowRight size={15} /></>}</button>}
+            {step === 3 && <button type="button" onClick={submit} disabled={submitting || step3Missing.length > 0} className="btn-primary">{submitting ? 'Submitting…' : <><Upload size={16} /> Submit {isReimb ? 'reimbursement' : 'invoice'}</>}</button>}`,
+    replace: `            {step === 1 && <button type="button" onClick={skipGates ? () => { setError(''); setStep(2) } : nextFromInfo} className="btn-primary">Next — upload documents <ArrowRight size={15} /></button>}
+            {step === 2 && <button type="button" onClick={skipGates ? () => { setError(''); setStep(3) } : nextFromDocs} disabled={checking && !skipGates} className="btn-primary">{checking && !skipGates ? 'Reading your invoice…' : <>Next — review &amp; submit <ArrowRight size={15} /></>}</button>}
+            {step === 3 && <button type="button" onClick={submit} disabled={submitting || (!skipGates && step3Missing.length > 0)} className="btn-primary">{submitting ? 'Submitting…' : <><Upload size={16} /> Submit {isReimb ? 'reimbursement' : 'invoice'}</>}</button>}`,
+  },
+  {
+    // With the gates off you will usually be sending something incomplete on
+    // purpose, and the server answers with EVERY objection at once. The public
+    // form shows a vendor one thing at a time, which is right for a vendor and
+    // useless for testing — so the lab prints the whole list.
+    name: 'lab shows every server refusal, not just the first',
+    find: `    } catch (err) { setError(err.response?.data?.error || 'Submission failed. Please try again.') }`,
+    replace: `    } catch (err) {
+      const d = err.response?.data
+      setError(Array.isArray(d?.errors) && d.errors.length > 1
+        ? \`The server refused \${d.errors.length} things: \${d.errors.join(' · ')}\`
+        : (d?.error || 'Submission failed. Please try again.'))
+    }`,
+  },
+  {
+    name: 'pre-submit completeness gate honours skipGates',
+    find: '    if (step3Missing.length) return setError(`Still needed before you can submit: ${step3Missing.join(\' · \')}`)',
+    replace: '    if (!skipGates && step3Missing.length) return setError(`Still needed before you can submit: ${step3Missing.join(\' · \')}`)',
   },
 ];
 
@@ -150,6 +192,16 @@ function generate(src) {
   }
   if (/useParams/.test(out)) {
     throw new Error('post-condition: the generated lab still reads a route param — its token must come from the signed-in workspace');
+  }
+  // The skip-the-gates escape hatch must exist ONLY in the generated lab. If the
+  // live form ever grows its own `skipGates`, the deltas above stop being the
+  // only way to disable a vendor-facing check — which is the failure this file
+  // exists to prevent.
+  if (/skipGates/.test(src)) {
+    throw new Error('post-condition: VendorSubmit.jsx (the PUBLIC form) references skipGates — the gate-skipping hatch must be lab-only');
+  }
+  if (!/const \[skipGates, setSkipGates\]/.test(out)) {
+    throw new Error('post-condition: the generated lab has no skipGates state — the toggle would render but do nothing');
   }
   return out;
 }

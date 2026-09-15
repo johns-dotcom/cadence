@@ -6,9 +6,9 @@
 // `pages/VendorSubmit.jsx` by `client/scripts/sync-vendor-lab.mjs`, so the
 // less bespoke JSX that lives inside the generated file, the fewer anchors
 // there are to break when the live form changes.
-import { FlaskConical, ShieldCheck, FileText, AlertTriangle, XCircle, ExternalLink } from 'lucide-react'
+import { AlertTriangle, ExternalLink, FileText, FlaskConical, ShieldCheck, XCircle } from 'lucide-react'
 
-export function SandboxBanner({ slug }) {
+export function SandboxBanner({ slug, skipGates = false, onToggleSkip }) {
   return (
     <div className="rounded-xl border border-brand-600/40 bg-brand-500/10 px-4 py-3 mb-5">
       <p className="text-xs font-bold text-brand-ink inline-flex items-center gap-1.5 uppercase tracking-wider">
@@ -19,6 +19,40 @@ export function SandboxBanner({ slug }) {
         no ledger entry, no file upload, no email, no payment record. <span className="font-semibold text-ink">Validation still runs in full</span>,
         so a refusal here is exactly the refusal a vendor would get.
       </p>
+
+      {/* Skip-the-gates toggle. Lab-only by construction: it lives in the lab's
+          hand-written chrome and is wired in by a delta, so the public form has
+          no such state to invert — see scripts/sync-vendor-lab.mjs.
+          It turns off the CLIENT-side gates only. That distinction is the whole
+          point and is stated on the control: the server still validates every
+          field, which is what you came here to exercise. Skipping the client
+          gates is how you reach that verdict without filling three steps first. */}
+      {onToggleSkip && (
+        <div className="mt-2.5 pt-2.5 border-t border-brand-600/20">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={skipGates}
+              onChange={e => onToggleSkip(e.target.checked)}
+              className="mt-0.5 flex-shrink-0 cursor-pointer"
+            />
+            <span className="min-w-0">
+              <span className="text-[12px] font-semibold text-ink">Skip the client-side checks</span>
+              <span className="block text-[11px] text-ink-muted">
+                Move between steps without filling anything, and submit an incomplete form on purpose.
+                The <span className="font-semibold text-ink">server still validates in full</span> — this is
+                how you see ITS refusal instead of being stopped by the form first.
+              </span>
+            </span>
+          </label>
+          {skipGates && (
+            <p className="text-[11px] text-warning font-semibold mt-1.5 inline-flex items-center gap-1">
+              <AlertTriangle size={11} /> Gates off — this is not what a vendor experiences.
+            </p>
+          )}
+        </div>
+      )}
+
       {slug && (
         <a href={`/submit/${slug}`} target="_blank" rel="noopener noreferrer"
           className="text-[12px] font-semibold text-brand-ink hover:underline inline-flex items-center gap-1 mt-1.5">

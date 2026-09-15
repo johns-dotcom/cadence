@@ -94,6 +94,9 @@ export default function VendorSubmitLab() {
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [step, setStep] = useState(1)
+  // Lab only — see scripts/sync-vendor-lab.mjs. Turns off the CLIENT gates so an
+  // admin can reach any step, and the server's verdict, without filling three.
+  const [skipGates, setSkipGates] = useState(false)
 
   const [form, setForm] = useState(BLANK)
   const [pay, setPay] = useState(BLANK_PAY)
@@ -322,7 +325,7 @@ export default function VendorSubmitLab() {
 
   const submit = async (e) => {
     e.preventDefault(); setError('')
-    if (step3Missing.length) return setError(`Still needed before you can submit: ${step3Missing.join(' · ')}`)
+    if (!skipGates && step3Missing.length) return setError(`Still needed before you can submit: ${step3Missing.join(' · ')}`)
     const rosterSet = new Set(roster.map(n => n.toLowerCase()))
     const cleanSplits = splits
       .map(l => ({
@@ -365,7 +368,12 @@ export default function VendorSubmitLab() {
       const { data } = await api.post(`/vendor/${slug}/submit?sandbox=1`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
       try { localStorage.removeItem(draftKey) } catch { /* ignore */ }
       setDone(data.data || {})
-    } catch (err) { setError(err.response?.data?.error || 'Submission failed. Please try again.') }
+    } catch (err) {
+      const d = err.response?.data
+      setError(Array.isArray(d?.errors) && d.errors.length > 1
+        ? `The server refused ${d.errors.length} things: ${d.errors.join(' · ')}`
+        : (d?.error || 'Submission failed. Please try again.'))
+    }
     finally { setSubmitting(false) }
   }
 
@@ -385,7 +393,7 @@ export default function VendorSubmitLab() {
   return (
     <div className="min-h-screen bg-page py-10 px-4">
       <div className="max-w-2xl mx-auto">
-        <SandboxBanner slug={slug} />
+        <SandboxBanner slug={slug} skipGates={skipGates} onToggleSkip={setSkipGates} />
         <div className="text-center mb-5">
           <div className="inline-flex items-center gap-2.5 mb-2">
             {ctx.logo_url ? <img src={ctx.logo_url} alt="" className="w-10 h-10 rounded-xl object-contain bg-page p-0.5" />
@@ -631,9 +639,9 @@ export default function VendorSubmitLab() {
           {/* Nav */}
           <div className="flex items-center justify-between pt-1">
             {step > 1 ? <button type="button" onClick={() => { setError(''); setStep(step - 1) }} className="btn-secondary"><ArrowLeft size={15} /> Back</button> : <span />}
-            {step === 1 && <button type="button" onClick={nextFromInfo} className="btn-primary">Next — upload documents <ArrowRight size={15} /></button>}
-            {step === 2 && <button type="button" onClick={nextFromDocs} disabled={checking} className="btn-primary">{checking ? 'Reading your invoice…' : <>Next — review &amp; submit <ArrowRight size={15} /></>}</button>}
-            {step === 3 && <button type="button" onClick={submit} disabled={submitting || step3Missing.length > 0} className="btn-primary">{submitting ? 'Submitting…' : <><Upload size={16} /> Submit {isReimb ? 'reimbursement' : 'invoice'}</>}</button>}
+            {step === 1 && <button type="button" onClick={skipGates ? () => { setError(''); setStep(2) } : nextFromInfo} className="btn-primary">Next — upload documents <ArrowRight size={15} /></button>}
+            {step === 2 && <button type="button" onClick={skipGates ? () => { setError(''); setStep(3) } : nextFromDocs} disabled={checking && !skipGates} className="btn-primary">{checking && !skipGates ? 'Reading your invoice…' : <>Next — review &amp; submit <ArrowRight size={15} /></>}</button>}
+            {step === 3 && <button type="button" onClick={submit} disabled={submitting || (!skipGates && step3Missing.length > 0)} className="btn-primary">{submitting ? 'Submitting…' : <><Upload size={16} /> Submit {isReimb ? 'reimbursement' : 'invoice'}</>}</button>}
           </div>
         </div>
 
