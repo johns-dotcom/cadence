@@ -197,6 +197,31 @@ checks.push(
   ['console pane: workspace',    dHas('The Nest') && dHas('TN')],
 );
 
+// The assignee picker: the console's one cross-tenant write. Rendered for both
+// a task the operator holds and one a tenant member now owns, since the two
+// states differ (an owned task shows "Me" selected; a delegated one must show
+// the PERSON, or the control would read as if nobody held it).
+const detailAssigned = renderToString(
+  React.createElement(MemoryRouter, null,
+    React.createElement(ThemeProvider, null,
+      React.createElement(ToastProvider, null,
+        React.createElement(TaskDetail, {
+          task: { id: 2, description: 'Send the Q3 statement', status: 'To Do', priority: 'High',
+                  category: null, due_date: null, notes: null, label_id: 2, user_id: 9,
+                  assignee_name: 'Milo Marketer', label_name: 'The Nest', label_status: 'active' },
+          editable: false, busy: false, draft: '',
+          onDraft: () => {}, onDraftBlur: () => {}, onPatch: () => {}, onDelete: () => {},
+          onClose: () => {}, workspace: { id: 2, name: 'The Nest' }, color: '#888', tag: 'TN',
+          roster: [{ id: 9, name: 'Milo Marketer', department: 'Marketing' }],
+          onAssign: () => {},
+        })))));
+checks.push(
+  ['assignee picker renders',    detailAssigned.includes('Assigned to')],
+  ['picker lists the roster',    detailAssigned.includes('Milo Marketer')],
+  ['delegated shows the holder', /<option[^>]*value="9"[^>]*selected/.test(detailAssigned) || detailAssigned.includes('waiting on them')],
+  ['no picker without onAssign', !detailHtml.includes('Assigned to')],
+);
+
 let bad = 0;
 for (const [name, ok] of checks) { if (!ok) bad++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`); }
 console.log(`\n${checks.length - bad}/${checks.length} checks passed`);

@@ -3,7 +3,7 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
-const { sendEmail, taskAssignmentEmail } = require('../lib/email');
+const { buildAssignmentCtx, sendAssignment } = require('../lib/taskNotify');
 // TASK_PRIORITIES, not PRIORITIES: tasks carry an 'Urgent' level that releases and
 // deals deliberately do not (lib/constants.js).
 const { TASK_STATUSES, TASK_PRIORITIES } = require('../lib/constants');
@@ -150,29 +150,19 @@ function logCrossUserMutation(req, action, task) {
  */
 async function notifyAssignee(req, assigneeId, task) {
   try {
-    const { rows } = await pool.query(
-      `SELECT u.name, u.email, l.name AS workspace FROM users u JOIN labels l ON l.id = u.label_id
-       WHERE u.id = $1 AND u.label_id = $2`,
-      [assigneeId, req.labelId]
-    );
-    const a = rows[0];
-    if (!a?.email) return null;
     const mode = req.body?.notify;
     if (mode === 'none') return null;
-
-    const origin = process.env.FRONTEND_URL || req.headers.origin || '';
+    // The payload shape lives in lib/taskNotify — the operator console assigns
+    // into a workspace too, and two builders would drift into two emails.
+    const ctx = await buildAssignmentCtx({
+      labelId: req.labelId, assigneeId, task, assignerName: req.user.name,
+      origin: process.env.FRONTEND_URL || req.headers.origin || '',
+    });
+    if (!ctx) return null;
     // Exactly the shape emailDispatch's `task_assigned` template consumes, so the
     // preview the admin edits is the email that gets sent.
-    const ctx = {
-      to: a.email,
-      assigneeName: a.name, workspaceName: a.workspace, description: task.description,
-      dueDate: task.due_date ? String(task.due_date).slice(0, 10) : null, priority: task.priority,
-      assignerName: req.user.name, link: origin ? `${origin.replace(/\/$/, '')}/my-work` : null,
-    };
     if (mode === 'preview') return { kind: 'task_assigned', ctx };
-
-    const msg = taskAssignmentEmail(ctx);
-    sendEmail({ to: a.email, subject: msg.subject, html: msg.html, text: msg.text }).catch(() => {});
+    sendAssignment(ctx);
     return null;
   } catch (_) { return null; /* best-effort */ }
 }

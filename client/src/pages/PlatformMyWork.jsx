@@ -89,7 +89,7 @@ function WorkspaceMark({ ws, color, tag }) {
 // it is the reason you opened the task.
 export function TaskDetail({
   task, editable, busy, draft, onDraft, onDraftBlur, onPatch, onDelete, onClose,
-  workspace, color, tag,
+  workspace, color, tag, roster = [], onAssign,
 }) {
   const done = task.status === 'Done'
   const late = bucketOf(task) === 'overdue'
@@ -234,19 +234,43 @@ export function TaskDetail({
 
       {/* Which workspace this belongs to — both console encodings, because the
           pane is where you confirm you are about to act on the right tenant. */}
-      <div className="flex items-center gap-2 mt-3 pb-3 border-b border-divider text-[11px] text-ink-muted">
+      <div className="flex items-center gap-2 mt-3 text-[11px] text-ink-muted">
         <WorkspaceMark ws={workspace} color={color} tag={tag} />
         <span className="truncate">{task.label_name}</span>
         {task.label_status === 'suspended' && <span className="text-warning font-semibold">suspended</span>}
         {task.release_name && <span className="truncate">· ♪ {task.release_name}</span>}
-        {!editable && task.assignee_name && <span>· waiting on {task.assignee_name}</span>}
-        {!editable && (
-          <a href={`/workspaces?open=${task.label_id}`}
-            className="ml-auto font-semibold text-brand-ink hover:underline inline-flex items-center gap-0.5">
-            Workspace <ArrowUpRight size={10} aria-hidden="true" />
-          </a>
-        )}
+        <a href={`/workspaces?open=${task.label_id}`}
+          className="ml-auto font-semibold text-brand-ink hover:underline inline-flex items-center gap-0.5">
+          Workspace <ArrowUpRight size={10} aria-hidden="true" />
+        </a>
       </div>
+
+      {/* Who holds it. The one write allowed on a task a tenant's person owns:
+          moving work you created is the other half of being able to assign it,
+          while its CONTENT stays theirs. */}
+      {onAssign && (
+        <div className="flex items-center gap-2 mt-2 pb-3 border-b border-divider">
+          <span className="text-[11px] text-ink-muted flex-shrink-0">Assigned to</span>
+          <select
+            value={editable ? '' : String(task.user_id ?? '')}
+            disabled={busy}
+            onChange={e => onAssign(e.target.value)}
+            className="input !h-7 !py-0 text-xs max-w-[14rem]"
+            aria-label="Assign this task to"
+          >
+            <option value="">Me (in the console)</option>
+            {roster.map(m => (
+              <option key={m.id} value={m.id}>{m.name}{m.department ? ` · ${m.department}` : ''}</option>
+            ))}
+            {/* An assignee who has since left the roster would otherwise render
+                as "Me", which is the one reading that is definitely wrong. */}
+            {!editable && task.assignee_name && !roster.some(m => m.id === task.user_id) && (
+              <option value={String(task.user_id)}>{task.assignee_name}</option>
+            )}
+          </select>
+          {!editable && <span className="text-[11px] text-ink-faint">waiting on them</span>}
+        </div>
+      )}
 
       {/* The note. Borderless and full-height on purpose: it is the body of the
           document, not one more labelled field. */}
@@ -294,8 +318,26 @@ export default function PlatformMyWork() {
   const draftRef = useRef({ id: null, value: '' })
   draftRef.current = { id: selectedId, value: draft }
 
+  // Per-workspace rosters, fetched only when one is actually needed. The console
+  // has no single tenant, so there is no roster to load up front — and loading
+  // every workspace's people to fill one select would be a cross-tenant read
+  // nobody asked for.
+  const [rosters, setRosters] = useState({})
+  const loadRoster = useCallback((labelId) => {
+    const id = Number(labelId)
+    if (!Number.isInteger(id)) return
+    setRosters(r => (r[id] ? r : { ...r, [id]: 'loading' }))
+    api.get(`/platform/work/workspaces/${id}/members`)
+      .then(res => setRosters(r => ({ ...r, [id]: res.data.data || [] })))
+      .catch(() => setRosters(r => ({ ...r, [id]: [] })))
+  }, [])
+  const rosterFor = (labelId) => {
+    const v = rosters[Number(labelId)]
+    return Array.isArray(v) ? v : []
+  }
+
   const [showAdd, setShowAdd] = useState(false)
-  const [form, setForm] = useState({ label_id: '', description: '', priority: 'Medium', due_date: '', category: '' })
+  const [form, setForm] = useState({ label_id: '', description: '', priority: 'Medium', due_date: '', category: '', user_id: '' })
   const [saving, setSaving] = useState(false)
 
   const load = useCallback((silent = false) => {
@@ -375,8 +417,9 @@ export default function PlatformMyWork() {
     if (wide && shown.length && !shown.some(t => t.id === selectedId)) {
       setSelectedId(shown[0].id)
       setDraft(shown[0].notes || '')
+      loadRoster(shown[0].label_id)
     }
-  }, [wide, shown, selectedId])
+  }, [wide, shown, selectedId, loadRoster])
 
   const openCount = (list) => list.filter(t => t.status !== 'Done').length
   const overdueCount = useMemo(() => shown.filter(t => bucketOf(t) === 'overdue').length, [shown])
@@ -430,6 +473,30 @@ export default function PlatformMyWork() {
     flushNote()
     setSelectedId(t.id)
     setDraft(t.notes || '')
+    // The pane offers a reassign picker, which needs that tenant's people.
+    loadRoster(t.label_id)
+  }
+
+  // Hand a task on, or take it back. Both lists are rewritten from the response
+  // rather than patched in place: the row MOVES between "mine" and "waiting on
+  // them", and a local patch would leave it under the heading it just left.
+  const assign = async (t, userId) => {
+    setBusy(t.id)
+    try {
+      const r = await api.post(`/platform/work/tasks/${t.id}/assign`, { user_id: userId || null })
+      const row = r.data.data
+      const mineNow = !userId
+      setData(d => ({
+        ...d,
+        mine: mineNow ? [row, ...(d.mine || []).filter(x => x.id !== t.id)] : (d.mine || []).filter(x => x.id !== t.id),
+        delegated: mineNow ? (d.delegated || []).filter(x => x.id !== t.id) : [row, ...(d.delegated || []).filter(x => x.id !== t.id)],
+      }))
+      setTab(mineNow ? 'mine' : 'delegated')
+      setSelectedId(row.id)
+      if (!r.data.unchanged) toast(mineNow ? 'Taken back' : `Assigned to ${row.assignee_name}`, 'success')
+    } catch (e) {
+      toast(e.response?.data?.error || 'Could not reassign the task', 'error')
+    } finally { setBusy(null) }
   }
 
   const remove = async (t) => {
@@ -452,12 +519,19 @@ export default function PlatformMyWork() {
         ...form,
         label_id: Number(form.label_id),
         due_date: form.due_date || null,
+        user_id: form.user_id || null,
       })
-      setData(d => ({ ...d, mine: [r.data.data, ...(d.mine || [])] }))
-      setForm(f => ({ label_id: f.label_id, description: '', priority: 'Medium', due_date: '', category: '' }))
+      // It lands in whichever list it belongs to. Pushing an assigned task into
+      // "mine" would show it under the wrong heading until the next refetch.
+      const row = r.data.data
+      const toMine = !form.user_id
+      setData(d => toMine
+        ? { ...d, mine: [row, ...(d.mine || [])] }
+        : { ...d, delegated: [row, ...(d.delegated || [])] })
+      setForm(f => ({ label_id: f.label_id, description: '', priority: 'Medium', due_date: '', category: '', user_id: '' }))
       setShowAdd(false)
-      setTab('mine')
-      toast(`Added to ${r.data.data.label_name}`, 'success')
+      setTab(toMine ? 'mine' : 'delegated')
+      toast(toMine ? `Added to ${row.label_name}` : `Assigned to ${row.assignee_name} in ${row.label_name}`, 'success')
     } catch (err) {
       toast(err.response?.data?.error || 'Could not create the task', 'error')
     } finally { setSaving(false) }
@@ -560,7 +634,13 @@ export default function PlatformMyWork() {
               <div className="lg:col-span-2">
                 <label className="label">Workspace</label>
                 <select className="input" required value={form.label_id}
-                  onChange={e => setForm(f => ({ ...f, label_id: e.target.value }))}>
+                  onChange={e => {
+                    // The assignee only means anything inside one workspace, so a
+                    // workspace change clears it rather than carrying a person
+                    // who is not a member of the new one.
+                    setForm(f => ({ ...f, label_id: e.target.value, user_id: '' }))
+                    loadRoster(e.target.value)
+                  }}>
                   <option value="">Choose…</option>
                   {workspaces.map(w => (
                     <option key={w.id} value={w.id}>
@@ -591,15 +671,31 @@ export default function PlatformMyWork() {
                 <input className="input" value={form.category} placeholder="Optional"
                   onChange={e => setForm(f => ({ ...f, category: e.target.value }))} />
               </div>
+              <div>
+                <label className="label">Assign to</label>
+                <select className="input" value={form.user_id} disabled={!form.label_id}
+                  onChange={e => setForm(f => ({ ...f, user_id: e.target.value }))}>
+                  <option value="">Me (kept in the console)</option>
+                  {rosterFor(form.label_id).map(m => (
+                    <option key={m.id} value={m.id}>{m.name}{m.department ? ` · ${m.department}` : ''}</option>
+                  ))}
+                </select>
+              </div>
               <div className="flex items-end gap-2 lg:col-span-2">
                 <Button type="submit" disabled={saving}>{saving ? 'Adding…' : 'Add task'}</Button>
                 <Button type="button" variant="ghost" onClick={() => setShowAdd(false)}>Cancel</Button>
               </div>
             </div>
             <p className="text-[11px] text-ink-faint mt-2.5">
-              The task is assigned to you inside that workspace — it is not visible to its team, and you
-              keep it here. Filing into a workspace you have never opened creates your membership there,
-              which is logged in that workspace exactly as entering it is.
+              {form.user_id ? (
+                <>Assigned to <span className="font-semibold text-ink-muted">{rosterFor(form.label_id).find(m => String(m.id) === String(form.user_id))?.name || 'them'}</span> in
+                that workspace: it appears in their My Work, they are emailed, and the assignment is recorded in that
+                workspace's activity log. You keep it here under “Waiting on them”.</>
+              ) : (
+                <>The task is assigned to you inside that workspace — it is not visible to its team, and you
+                keep it here. Filing into a workspace you have never opened creates your membership there,
+                which is logged in that workspace exactly as entering it is.</>
+              )}
             </p>
           </form>
         )}
@@ -746,6 +842,8 @@ export default function PlatformMyWork() {
                     onPatch={patch}
                     onDelete={() => setConfirmDel(selected)}
                     onClose={() => { flushNote(); setSelectedId(null) }}
+                    roster={rosterFor(selected.label_id)}
+                    onAssign={uid => assign(selected, uid)}
                     workspace={wsById.get(Number(selected.label_id))}
                     color={colorOf(selected.label_id)}
                     tag={tagOf(selected.label_id)}

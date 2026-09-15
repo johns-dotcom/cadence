@@ -36,6 +36,7 @@ const { requirePlatformAdmin } = require('../middleware/tenant');
 const { accessibleLabelIds } = require('../lib/operatorAccess');
 const { ensureGhost, ghostIds } = require('../lib/operatorGhost');
 const { TASK_STATUSES, TASK_PRIORITIES } = require('../lib/constants');
+const { buildAssignmentCtx, sendAssignment } = require('../lib/taskNotify');
 
 const router = express.Router();
 
@@ -166,6 +167,66 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/platform/work/workspaces/:id/members — who an operator may hand work
+// to inside one workspace.
+//
+// Platform identities are excluded, matching routes/team.js: the ghost is hidden
+// from that workspace's own roster, so offering it here would let an operator
+// assign work to a colleague's invisible membership — a task nobody would ever
+// see on a roster, in a queue nobody reads.
+router.get('/workspaces/:id(\\d+)/members', async (req, res) => {
+  try {
+    const labelId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(labelId)) return res.status(400).json({ success: false, error: 'Invalid workspace' });
+    const ids = await visibleLabelIds(req);
+    if (ids && !ids.includes(labelId)) return res.status(403).json({ success: false, error: 'You do not have access to this workspace' });
+    const { rows } = await pool.query(
+      // Same predicate and ordering routes/team.js uses, so this picker lists
+      // exactly the people that workspace's own Team page does.
+      `SELECT id, name, email, role, department FROM users
+        WHERE label_id = $1 AND (is_platform_admin = false OR is_platform_admin IS NULL)
+        ORDER BY hierarchy_level, name`,
+      [labelId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Platform work roster error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+/**
+ * Resolve an assignee inside `labelId`, or explain the refusal.
+ *
+ * Validate, never coerce: a user id from another workspace must be a refusal,
+ * not a silent self-assign — writing the task to the wrong tenant's person is
+ * the one outcome that is worse than an error.
+ */
+async function resolveAssignee(labelId, raw) {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, id: null };
+  const id = parseInt(raw, 10);
+  if (!Number.isInteger(id)) return { ok: false, code: 400, error: 'Invalid assignee' };
+  const { rows } = await pool.query(
+    `SELECT id, name FROM users WHERE id = $1 AND label_id = $2
+       AND (is_platform_admin = false OR is_platform_admin IS NULL)`,
+    [id, labelId]
+  );
+  if (!rows.length) return { ok: false, code: 400, error: 'That person is not a member of this workspace' };
+  return { ok: true, id, name: rows[0].name };
+}
+
+// Assigning into a tenant is the one act here with a consequence for THEM, so it
+// is recorded in their own activity feed. (Creating a task for yourself is not:
+// it is invisible to the workspace, and logging it would disclose the operator's
+// private list to the tenant.)
+function auditAssignment(req, labelId, ghostId, endpoint, description, assigneeName) {
+  pool.query(
+    `INSERT INTO activity_log (label_id, user_id, action, detail, method, endpoint, created_at)
+     VALUES ($1, $2, 'Task assigned by platform admin', $3, 'POST', $4, NOW())`,
+    [labelId, ghostId, `${description} → ${assigneeName}`, endpoint]
+  ).catch(() => {});
+}
+
 // POST /api/platform/work/tasks — file a task for myself in one workspace.
 router.post('/tasks', async (req, res) => {
   try {
@@ -203,18 +264,37 @@ router.post('/tasks', async (req, res) => {
       ).catch(() => {});
     }
 
+    // Optional assignee. Absent → the operator's own list, which is what this
+    // page was for originally; present → a task in that person's queue, filed by
+    // the operator's own identity so it comes back under "Waiting on them".
+    const who = await resolveAssignee(labelId, req.body.user_id);
+    if (!who.ok) return res.status(who.code).json({ success: false, error: who.error });
+    const assigneeId = who.id ?? ghost.id;
+
     const { rows } = await pool.query(
       `INSERT INTO tasks (label_id, user_id, assigned_by, description, priority, status, due_date,
                           notes, category, sort_order, created_at, updated_at)
-       VALUES ($1,$2,$2,$3,COALESCE($4,'Medium'),COALESCE($5,'To Do'),$6,$7,$8,
+       VALUES ($1,$2,$3,$4,COALESCE($5,'Medium'),COALESCE($6,'To Do'),$7,$8,$9,
                (SELECT COALESCE(MIN(sort_order), 0) - 1024 FROM tasks WHERE label_id = $1),
                NOW(),NOW())
        RETURNING id`,
-      [labelId, ghost.id, description, req.body.priority || null, req.body.status || null,
+      [labelId, assigneeId, ghost.id, description, req.body.priority || null, req.body.status || null,
        req.body.due_date || null, text(req.body.notes, NOTES_MAX), text(req.body.category, CATEGORY_MAX)]
     );
 
     const { rows: out } = await pool.query(`${WORK_SELECT} WHERE t.id = $1`, [rows[0].id]);
+
+    if (who.id) {
+      auditAssignment(req, labelId, ghost.id, req.originalUrl?.split('?')[0] || null, description, who.name);
+      // Tell them. A task that appears in somebody's queue with no word from
+      // anyone is how work sits unnoticed; `notify: false` opts out.
+      if (req.body.notify !== false && req.body.notify !== 'none') {
+        buildAssignmentCtx({
+          labelId, assigneeId, task: out[0], assignerName: req.user.name,
+          origin: process.env.FRONTEND_URL || req.headers.origin || '',
+        }).then(sendAssignment).catch(() => {});
+      }
+    }
     res.status(201).json({ success: true, data: out[0] });
   } catch (error) {
     console.error('Platform work create error:', error);
@@ -223,8 +303,11 @@ router.post('/tasks', async (req, res) => {
 });
 
 // The fields an operator may change on their own task. `description` included:
-// this is their own note to themselves. Deliberately no user_id — reassignment
-// across a tenant boundary is not this page's job.
+// this is their own note to themselves.
+//
+// `user_id` is deliberately NOT here: reassignment is a different act on a
+// different set of rows (see reassignTask below) and folding it into the field
+// loop would let it inherit that loop's ownership rule.
 const EDITABLE = ['description', 'status', 'priority', 'due_date', 'category', 'notes'];
 
 // Resolve a task id to a row this operator OWNS, inside a workspace they can
@@ -239,6 +322,68 @@ async function ownTask(req, id) {
     'SELECT id, label_id, status FROM tasks WHERE id = $1 AND user_id = ANY($2::int[])', [id, myIds]);
   return rows[0] || null;
 }
+
+/**
+ * Tasks this operator may HAND ON: their own, plus the ones they delegated.
+ *
+ * Wider than ownTask on purpose, and only for the assignee. Moving work you
+ * created — to somebody else, or back to yourself — is the other half of being
+ * able to assign it. Editing the CONTENT of a task a tenant's person now owns
+ * stays out of reach: that is their queue, and this is not their workspace.
+ */
+async function reassignableTask(req, id) {
+  const ids = await visibleLabelIds(req);
+  const ghosts = await ghostIds(req.user.email);
+  const myIds = ghosts.filter(g => !ids || ids.includes(Number(g.label_id))).map(g => g.id);
+  if (!myIds.length) return null;
+  const { rows } = await pool.query(
+    `SELECT id, label_id, description, user_id FROM tasks
+      WHERE id = $1 AND (user_id = ANY($2::int[]) OR assigned_by = ANY($2::int[]))`,
+    [id, myIds]
+  );
+  return rows[0] || null;
+}
+
+// POST /api/platform/work/tasks/:id/assign — hand a task to somebody in its
+// workspace, or take it back (user_id omitted → the operator's own membership).
+router.post('/tasks/:id(\\d+)/assign', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ success: false, error: 'Invalid task' });
+
+    const task = await reassignableTask(req, id);
+    if (!task) return res.status(404).json({ success: false, error: 'Task not found' });
+
+    const who = await resolveAssignee(task.label_id, req.body.user_id);
+    if (!who.ok) return res.status(who.code).json({ success: false, error: who.error });
+
+    // Taking it back means the operator's membership in THAT workspace, minted
+    // if this is a workspace they have never opened.
+    const ghost = who.id ? null : await ensureGhost(task.label_id, req.user);
+    const assigneeId = who.id ?? ghost.id;
+    if (assigneeId === task.user_id) {
+      return res.json({ success: true, data: (await pool.query(`${WORK_SELECT} WHERE t.id = $1`, [id])).rows[0], unchanged: true });
+    }
+
+    await pool.query('UPDATE tasks SET user_id = $1, updated_at = NOW() WHERE id = $2', [assigneeId, id]);
+    const { rows } = await pool.query(`${WORK_SELECT} WHERE t.id = $1`, [id]);
+
+    if (who.id) {
+      const myGhost = await ensureGhost(task.label_id, req.user);
+      auditAssignment(req, task.label_id, myGhost.id, req.originalUrl?.split('?')[0] || null, task.description, who.name);
+      if (req.body.notify !== false && req.body.notify !== 'none') {
+        buildAssignmentCtx({
+          labelId: task.label_id, assigneeId, task: rows[0], assignerName: req.user.name,
+          origin: process.env.FRONTEND_URL || req.headers.origin || '',
+        }).then(sendAssignment).catch(() => {});
+      }
+    }
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('Platform work assign error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
 
 router.patch('/tasks/:id(\\d+)', async (req, res) => {
   try {
