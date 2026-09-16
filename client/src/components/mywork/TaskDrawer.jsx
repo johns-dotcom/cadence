@@ -32,7 +32,10 @@ const NOTES_DEBOUNCE_MS = 600
  */
 export default function TaskDrawer({ task, tasks, members, releases = [], canEdit, canAssign, canUnassign = false, onClose, onPatch, onDelete, variant = 'drawer' }) {
   const pane = variant === 'pane'
-  const [notes, setNotes] = useState('')
+  // Seeded from the task rather than '' + an effect: the effect still handles
+  // SWITCHING tasks, but on first mount an empty initial value meant one paint
+  // with the note blank before it appeared.
+  const [notes, setNotes] = useState(() => task?.notes || '')
   const [notesDirty, setNotesDirty] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const notesTimer = useRef(null)
@@ -154,9 +157,24 @@ export default function TaskDrawer({ task, tasks, members, releases = [], canEdi
         <div className={pane
           ? 'pb-3 mb-1 border-b border-divider flex items-start justify-between gap-2'
           : 'sticky top-0 bg-card border-b border-divider px-4 py-3 flex items-start justify-between gap-2 z-10'}>
-          <div className="min-w-0">
-            <p className="text-xs text-ink-muted">{task.assignee_name || 'Unassigned'} · {dueLabel(task)}</p>
-            <h2 className={`font-semibold text-ink break-words ${pane ? 'text-lg tracking-tight' : 'text-sm'}`}>{task.description}</h2>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] text-ink-muted">{task.assignee_name || 'Unassigned'} · {dueLabel(task)}</p>
+            {/* The title IS the input. It used to be rendered here as a heading
+                AND again below as a labelled "Task" field — the same string twice,
+                with only the second one editable. */}
+            <input
+              key={task.id}
+              defaultValue={task.description}
+              disabled={!canEdit}
+              aria-label="Task name"
+              onBlur={e => {
+                const v = e.target.value.trim()
+                if (v && v !== task.description) onPatch(task.id, { description: v })
+                else e.target.value = task.description
+              }}
+              className={`w-full bg-transparent border-0 p-0 font-semibold text-ink outline-none focus:ring-0
+                          disabled:opacity-100 ${pane ? 'text-lg tracking-tight' : 'text-sm'}`}
+            />
           </div>
           {/* A pane has nothing stacked over the page to dismiss; below the split
               breakpoint it renders under the list, where a close IS meaningful. */}
@@ -166,26 +184,26 @@ export default function TaskDrawer({ task, tasks, members, releases = [], canEdi
         </div>
 
         <div className={pane ? 'space-y-4 flex-1 overflow-y-auto pr-1' : 'p-4 space-y-4 flex-1'}>
-          <div>
-            <label className="label">Task</label>
-            <input className={field} defaultValue={task.description} disabled={!canEdit}
-              onBlur={e => e.target.value.trim() && e.target.value !== task.description && onPatch(task.id, { description: e.target.value.trim() })} />
-          </div>
-
           {/* The note is the BODY of a task, not its last field — it is what you
               opened the drawer to read. boom put it immediately under the title
               and gave it the room; here it sits above the metadata grid for the
               same reason. It autosaves (600ms) and on blur. */}
           <div>
-            <label className="label">Note</label>
+            {/* Borderless in the pane: it is the body of the document, and a boxed
+                field with a label reads as one input among six. Four rows rather
+                than eight so Status/Priority/Due stay above the fold — it is still
+                resizable, and the drawer keeps its labelled box. */}
+            {!pane && <label className="label">Note</label>}
             <textarea
-              className={`${field} resize-y`}
-              rows={8}
+              className={pane
+                ? 'w-full bg-transparent border-0 p-0 text-sm text-ink placeholder:text-ink-faint resize-y outline-none focus:ring-0 min-h-[5rem]'
+                : `${field} resize-y`}
+              rows={pane ? 4 : 6}
               value={notes}
               disabled={!canEdit}
               onChange={e => { setNotes(e.target.value); setNotesDirty(true); scheduleNotesSave(e.target.value) }}
               onBlur={saveNotes}
-              placeholder="Longer detail, links, context…"
+              placeholder={pane ? 'Write a note…' : 'Longer detail, links, context…'}
             />
             {notesDirty && (
               <div className="flex items-center gap-2 mt-1">

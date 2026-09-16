@@ -139,6 +139,25 @@ const html = renderToString(
       React.createElement(ToastProvider, null, React.createElement(MyWork)))));
 
 const has = (s) => html.includes(s);
+// The split view's pane renders only once a task is picked, and SSR runs no
+// effects — so the auto-select never fires and the PAGE render shows the empty
+// pane. Render the pane directly instead, the same way the console's detail is
+// covered below. Asserting it through the page would have been a check that
+// passed on the empty state and saw nothing.
+const TaskDrawer = (await vite.ssrLoadModule('/src/components/mywork/TaskDrawer.jsx')).default;
+const paneTask = { id: 1, description: 'Chase the Zeke Bleu W9', status: 'To Do', priority: 'Urgent',
+  category: 'Finance', due_date: null, notes: 'hit kim', user_id: 1, assignee_name: 'QA Superadmin',
+  assigner_name: 'QA Superadmin', created_at: '2026-09-01T00:00:00Z' };
+const paneHtml = renderToString(
+  React.createElement(MemoryRouter, null,
+    React.createElement(ThemeProvider, null,
+      React.createElement(ToastProvider, null,
+        React.createElement(TaskDrawer, {
+          task: paneTask, tasks: [paneTask], members: [], releases: [], canEdit: true,
+          canAssign: false, canUnassign: false, variant: 'pane',
+          onClose: () => {}, onPatch: () => {}, onDelete: () => {},
+        })))));
+const pHas = (x) => paneHtml.includes(x);
 const checks = [
   ['greeting rendered',            /Good (morning|afternoon|evening)(<!-- -->)?, (<!-- -->)?John/.test(html)],
   ['3 tabs present',               has('To Do Today') && has('My Tasks') && has('My Releases')],
@@ -157,8 +176,19 @@ const checks = [
   // beside it. If this regresses to the Board, /my-work silently stops looking
   // like the page it was asked to look like.
   ['default view is Split',        has('Split') && has('lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]')],
-  ['split renders the detail pane', has('Assigned to') || has('Pick a task to open it here')],
   ['no overlay drawer in split',   !has('fixed inset-0 z-[60]')],
+  // The pane, rendered for real:
+  ['pane: title is editable',      /<input[^>]+aria-label="Task name"/.test(paneHtml)],
+  ['pane: no duplicate Task field', !/<label class="label">Task<\/label>/.test(paneHtml)],
+  ['pane: note is the body',       pHas('hit kim') && !/<label class="label">Note<\/label>/.test(paneHtml)],
+  ['pane: fields still present',   pHas('Status') && pHas('Priority') && pHas('Due date')],
+  ['pane: is not an overlay',      !/fixed inset-0/.test(paneHtml) && !/aria-modal/.test(paneHtml)],
+  // Polish, held as facts rather than left to a screenshot:
+  // · an empty due-bucket is a dead section in a list (five of them above one task),
+  // · the title was rendered as a heading AND a labelled field, the same string twice,
+  // · and a personal page put YOUR name on every row of your own list.
+  ['no empty group sections',      !has('>Empty<')],
+  ['no self-assignee on my rows',  !has('QA Superadmin')],
   ['two-column grid class',        has('xl:grid-cols-[minmax(0,1fr)_300px]')],
   // The note is the field whose VALUE is the reason to open a task; a row that
   // only says a note EXISTS is the state this replaced.

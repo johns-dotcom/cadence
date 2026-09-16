@@ -406,7 +406,7 @@ export default function TaskSurface({ surface = 'mine', data: externalData = nul
       // 7 columns at 390px leaves ~40px of text per chip, so every task read
       // "Fini…". Fall back to the day-grouped dense list rather than a new component.
       if (isMobile) {
-        return <TaskTable {...sharedViewProps} groups={mobileDayGroups} columns={['description']} dense />
+        return <TaskTable {...sharedViewProps} groups={mobileDayGroups} columns={['description']} dense showAssignee={surface === 'team'} />
       }
       return (
         <TaskCalendar
@@ -422,11 +422,11 @@ export default function TaskSurface({ surface = 'mine', data: externalData = nul
       // Below 768px a 6-column grid is unusable, so the table falls back to the
       // list rendering (same branch style as Ledger.jsx:427).
       return isMobile
-        ? <TaskTable {...sharedViewProps} columns={['description']} dense />
+        ? <TaskTable {...sharedViewProps} columns={['description']} dense showAssignee={surface === 'team'} />
         : <TaskTable {...sharedViewProps} columns={view.columns} />
     }
     if (view.type === 'list') {
-      return <TaskTable {...sharedViewProps} columns={['description']} dense />
+      return <TaskTable {...sharedViewProps} columns={['description']} dense showAssignee={surface === 'team'} />
     }
     if (view.type === 'split') {
       // The list answers "what is on my plate"; the pane beside it answers "what
@@ -434,7 +434,7 @@ export default function TaskSurface({ surface = 'mine', data: externalData = nul
       return (
         <div className="lg:grid lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)] lg:gap-5">
           <div className="min-w-0 lg:max-h-[34rem] lg:overflow-y-auto lg:pr-1">
-            <TaskTable {...sharedViewProps} columns={['description']} dense />
+            <TaskTable {...sharedViewProps} columns={['description']} dense showAssignee={surface === 'team'} />
           </div>
           {/* Below lg the pane renders UNDER the list and only once something is
               picked: a permanently-open detail would push the list off a phone. */}

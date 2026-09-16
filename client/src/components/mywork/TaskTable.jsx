@@ -31,7 +31,7 @@ const CELL_SHADOW = {
 }
 
 export default function TaskTable({
-  groups, columns, members, dense = false,
+  groups, columns, members, dense = false, showAssignee = false,
   collapsed, onToggleGroup,
   selected, onToggleSelect,
   onOpen, onPatch, canEditTask, canAssign = false, canUnassign = false,
@@ -46,9 +46,15 @@ export default function TaskTable({
 
   // ── List view: reuse TaskCard so a task reads identically to the board ──
   if (dense) {
+    // An empty group is MEANINGFUL on the board — it is a column you can drop
+    // into. In a list it is a header and the word "Empty", and with due-date
+    // grouping that is five dead sections stacked above the one task you have.
+    // Dropping is still possible on every group that HAS a row, and the toolbar
+    // count still reports the whole set.
+    const shownGroups = groups.filter(g => g.items.length > 0)
     return (
       <div className="space-y-4">
-        {groups.map(group => {
+        {(shownGroups.length ? shownGroups : groups).map(group => {
           const isCollapsed = collapsed.has(group.key)
           return (
             <div key={group.key}>
@@ -64,7 +70,7 @@ export default function TaskTable({
                     <TaskCard
                       key={task.id}
                       task={task}
-                      showAssignee
+                      showAssignee={showAssignee}
                       onOpen={onOpen}
                       onPatch={onPatch}
                       canEdit={canEditTask ? canEditTask(task) : true}
@@ -77,7 +83,8 @@ export default function TaskTable({
                       insertAfter={over?.groupKey === group.key && over?.beforeId === task.id}
                     />
                   ))}
-                  {group.items.length === 0 && <p className="text-xs text-ink-muted px-1 py-2">Empty</p>}
+                  {/* Only reachable in the all-groups-empty fallback above. */}
+                  {group.items.length === 0 && <p className="text-xs text-ink-faint px-1 py-2">Nothing here</p>}
                 </div>
               )}
             </div>
