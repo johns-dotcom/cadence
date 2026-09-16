@@ -59,7 +59,6 @@ import RecordingBudgetDetail from './pages/RecordingBudgetDetail'
 import Campaigns from './pages/Campaigns'
 import ArtistCampaigns from './pages/ArtistCampaigns'
 import ArtistCampaignDetail from './pages/ArtistCampaignDetail'
-import AdAllocation from './pages/AdAllocation'
 import Ledger from './pages/Ledger'
 import InvoiceSearch from './pages/InvoiceSearch'
 import Approvals from './pages/Approvals'
@@ -237,7 +236,6 @@ function AppContent() {
         <Route path="/artist-campaigns" element={<AdminRoute><ArtistCampaigns /></AdminRoute>} />
         <Route path="/artist-campaigns/:artist" element={<AdminRoute><ArtistCampaignDetail /></AdminRoute>} />
         <Route path="/artist-campaigns/:artist/:song" element={<AdminRoute><ArtistCampaignDetail /></AdminRoute>} />
-        <Route path="/ad-allocation" element={<AdminRoute><AdAllocation /></AdminRoute>} />
         <Route path="/approvals"    element={<AdminRoute><Approvals /></AdminRoute>} />
         <Route path="/ledger"       element={<AdminRoute><Ledger /></AdminRoute>} />
         {/* Search-oriented invoices index — distinct from /invoices (outbound creator) */}

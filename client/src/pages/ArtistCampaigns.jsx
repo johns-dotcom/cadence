@@ -198,11 +198,17 @@ export default function ArtistCampaigns() {
                     <span className="text-ink-faint text-[11px]"> · open the rows</span>
                   </button>
                 )}
+                {/* A disclosure, not an action. This used to offer "allocate it"
+                    and navigate to /ad-allocation, which no longer exists as a
+                    page — a button that lands on a 404 is worse than a figure
+                    that simply states itself. The number is still worth showing:
+                    it is the slice of unattributed spend that bills the label
+                    rather than an artist. */}
                 {meta?.label_level?.total > 0 && (
-                  <button onClick={() => navigate('/ad-allocation')} className="text-ink-muted hover:underline">
+                  <span className="text-ink-muted">
                     <span className="font-bold text-ink tabular-nums">{usd(meta.label_level.total)}</span> bills the label
-                    <span className="text-ink-faint text-[11px]"> · {meta.label_level.count} charges — allocate it</span>
-                  </button>
+                    <span className="text-ink-faint text-[11px]"> · {meta.label_level.count} charges</span>
+                  </span>
                 )}
                 {meta?.excluded?.count > 0 && (
                   <button onClick={() => setExcludedOpen(true)} className="text-ink-muted hover:underline">

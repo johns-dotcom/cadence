@@ -5,7 +5,7 @@ import {
   FolderOpen, GitMerge, Image as ImageIcon, Landmark, Layers, LayoutDashboard,
   Lock, Megaphone, MessageSquare, MessageSquarePlus, Music, PackageCheck,
   PieChart, PiggyBank, PlusCircle, Receipt, RefreshCw, Scale, ScrollText,
-  Settings, Shield, ShieldCheck, Target, TrendingUp, UploadCloud, UserCheck,
+  Settings, Shield, ShieldCheck, TrendingUp, UploadCloud, UserCheck,
   UserPlus, Users, Users2, Wallet,
 } from 'lucide-react'
 
@@ -35,7 +35,6 @@ export const PAGE_LABELS = {
   '/calendar':   'Calendar',
   '/financials': 'Financials',
   '/reports': 'Reports',
-  '/ad-allocation': 'Allocate Advertising',
   '/bank-statements': 'Bank Statements',
   '/bank-matching': 'Bank Matching',
   '/ledger-matching': 'Bookkeeper Reconcile',
@@ -245,7 +244,6 @@ export function buildNavGroups({ isAdmin, isApprover, chatUnread = 0, pendingApp
       }] : []),
       ...(isApprover ? [{ path: '/artist-budgets', label: 'Artist Budgets', icon: Scale, synonyms: 'budget per artist spend limit variance committed' }] : []),
       ...(isApprover ? [{ path: '/artist-campaigns', label: 'Artist Campaigns', icon: Megaphone, synonyms: 'campaign spend cobrand promo per artist per song marketing' }] : []),
-      ...(isApprover ? [{ path: '/ad-allocation', label: 'Allocate Ads', icon: Target, synonyms: 'advertising allocate ads spend split facebook meta attribute pool' }] : []),
       ...(isAdmin ? [{ path: '/salary', label: 'Salary', icon: Banknote, synonyms: 'payroll wages staff pay compensation' }] : []),
       ...(isApprover ? [{ path: '/bulk-deals', label: 'Bulk Deals', icon: PackageCheck, synonyms: 'bulk units delivery quantity mark deals batch recoupable' }] : []),
     ],
