@@ -75,14 +75,17 @@ const _err = console.error;
 // ── The fixture, and the page rendered over it ─────────────────────────────
 const STUB_AUTH = `
 import React from 'react';
-const user = { id: 1, label_id: 2, name: 'John Skead', email: 'dev@cadence.local',
-  role: 'Superadmin', department: 'Executive', hierarchy_level: 1, is_platform_admin: true, platform_role: 'owner' };
 const label = { id: 2, name: 'Audit Test Label', settings: {} };
-const value = { user, label, token: 'qa', loading: false, pagePermissions: null, impersonating: false,
+// Recomputed per call so one render can be an operator and the next an ordinary
+// member — the operator-only tab has to be proven ABSENT as well as present.
+export const useAuth = () => ({
+  user: { id: 1, label_id: 2, name: 'John Skead', email: 'dev@cadence.local',
+    role: 'Superadmin', department: 'Executive', hierarchy_level: 1,
+    is_platform_admin: globalThis.__QA_OPERATOR !== false, platform_role: 'owner' },
+  label, token: 'qa', loading: false, pagePermissions: null, impersonating: false,
   adminUser: null, canView: () => true, login: async()=>{}, logout: ()=>{}, updateLabel: ()=>{},
-  impersonate: async()=>{}, enterWorkspace: async()=>{}, exitImpersonation: ()=>{} };
+  impersonate: async()=>{}, enterWorkspace: async()=>{}, exitImpersonation: ()=>{} });
 export const AuthProvider = ({children}) => React.createElement(React.Fragment,null,children);
-export const useAuth = () => value;
 export default { AuthProvider, useAuth };`;
 const STUB_SOCKET = `
 import React from 'react';
@@ -139,6 +142,14 @@ const html = renderToString(
       React.createElement(ToastProvider, null, React.createElement(MyWork)))));
 
 const has = (s) => html.includes(s);
+
+// The same page rendered as an ordinary workspace member.
+globalThis.__QA_OPERATOR = false;
+const memberHtml = renderToString(
+  React.createElement(MemoryRouter, { initialEntries: ['/my-work'] },
+    React.createElement(ThemeProvider, null,
+      React.createElement(ToastProvider, null, React.createElement(MyWork)))));
+globalThis.__QA_OPERATOR = true;
 // The split view's pane renders only once a task is picked, and SSR runs no
 // effects — so the auto-select never fires and the PAGE render shows the empty
 // pane. Render the pane directly instead, the same way the console's detail is
@@ -177,6 +188,11 @@ const checks = [
   // like the page it was asked to look like.
   ['default view is Split',        has('Split') && has('lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]')],
   ['no overlay drawer in split',   !has('fixed inset-0 z-[60]')],
+  // An operator standing inside a workspace can see every workspace's tasks from
+  // here. A member must not even see the tab — it would render a cross-tenant
+  // surface they are not allowed to load.
+  ['operator gets All workspaces',  has('All workspaces')],
+  ['member does NOT',               !memberHtml.includes('All workspaces')],
   // The pane, rendered for real:
   ['pane: title is editable',      /<input[^>]+aria-label="Task name"/.test(paneHtml)],
   ['pane: no duplicate Task field', !/<label class="label">Task<\/label>/.test(paneHtml)],

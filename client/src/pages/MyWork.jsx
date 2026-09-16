@@ -14,9 +14,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { AlertTriangle, CalendarCheck, CheckSquare, Disc3 } from 'lucide-react'
+import { AlertTriangle, CalendarCheck, CheckSquare, Disc3, Globe2 } from 'lucide-react'
 import api from '../api'
 import TaskSurface from '../components/mywork/TaskSurface'
+import PlatformMyWork from './PlatformMyWork'
 import TodayPanel from '../components/mywork/TodayPanel'
 import StatusPills from '../components/mywork/StatusPills'
 import WaitingOnYou from '../components/mywork/WaitingOnYou'
@@ -50,6 +51,8 @@ const RELEASE_SORTS = [
 ]
 
 const TAB_KEY = 'mywork_tab_v1'
+// 'all' is operator-only and appended below, so a workspace member can never
+// land on a tab that does not exist for them via ?tab= or a stale localStorage.
 const TABS = ['today', 'tasks', 'releases']
 
 // The releases assigned to me — a second dimension of work the tasks table knows
@@ -164,6 +167,11 @@ export default function MyWork() {
   const { releases, atRisk, loading: releasesLoading } = useMyReleases()
   const [params] = useSearchParams()
   const [rescheduling, setRescheduling] = useState(false)
+  // A platform operator standing inside a workspace still has work in the OTHER
+  // ones. The console answers that; this tab puts the same answer here, so they
+  // do not have to leave the workspace to see what else is on their plate.
+  const isOperator = !!user?.is_platform_admin
+  const [allCount, setAllCount] = useState(null)
 
   // Below xl the rail renders as the horizontal strip it already knows how to be:
   // a vertical stack of five full-width tiles above the card would push the tabs
@@ -174,13 +182,18 @@ export default function MyWork() {
   // in an effect of its own and strips it from the URL, so by the time a parent
   // effect ran the param could already be gone — and the add form would open on a
   // tab nobody is looking at.
+  const tabKeys = useMemo(() => (isOperator ? [...TABS, 'all'] : TABS), [isOperator])
   const [tab, setTab] = useState(() => {
     if (params.get('new') === 'task') return 'tasks'
     const asked = params.get('tab')
-    if (TABS.includes(asked)) return asked
+    const allowed = user?.is_platform_admin ? [...TABS, 'all'] : TABS
+    if (allowed.includes(asked)) return asked
     const last = localStorage.getItem(TAB_KEY)
-    return TABS.includes(last) ? last : 'today'
+    return allowed.includes(last) ? last : 'today'
   })
+  // Losing operator status (exiting a workspace, a demotion) must not strand the
+  // page on a tab that no longer renders.
+  useEffect(() => { if (!tabKeys.includes(tab)) setTab('today') }, [tabKeys, tab])
   useEffect(() => { localStorage.setItem(TAB_KEY, tab) }, [tab])
 
   const openCount = useMemo(() => tasks.filter(isOpen).length, [tasks])
@@ -210,6 +223,7 @@ export default function MyWork() {
     { id: 'today', label: 'To Do Today', count: todayCount, icon: CalendarCheck },
     { id: 'tasks', label: 'My Tasks', count: openCount, icon: CheckSquare },
     { id: 'releases', label: 'My Releases', count: releases.length, icon: Disc3 },
+    ...(isOperator ? [{ id: 'all', label: 'All workspaces', count: allCount, icon: Globe2 }] : []),
   ]
 
   return (
@@ -273,8 +287,10 @@ export default function MyWork() {
                   >
                     <t.icon size={13} aria-hidden="true" />
                     {t.label}
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold
-                      ${on ? 'bg-brand-500/15 text-brand-ink' : 'bg-elev text-ink-muted'}`}>{t.count}</span>
+                    {t.count != null && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold
+                        ${on ? 'bg-brand-500/15 text-brand-ink' : 'bg-elev text-ink-muted'}`}>{t.count}</span>
+                    )}
                   </button>
                 )
               })}
@@ -309,6 +325,12 @@ export default function MyWork() {
               <div className={tab === 'releases' ? '' : 'hidden'}>
                 {releasesLoading ? <Skeleton.TaskList count={3} /> : <ReleaseList releases={releases} />}
               </div>
+
+              {isOperator && (
+                <div className={tab === 'all' ? '' : 'hidden'}>
+                  <PlatformMyWork embedded onCount={setAllCount} />
+                </div>
+              )}
             </div>
           </div>
         </div>

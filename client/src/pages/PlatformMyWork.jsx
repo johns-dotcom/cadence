@@ -291,7 +291,17 @@ export function TaskDetail({
   )
 }
 
-export default function PlatformMyWork() {
+/**
+ * `embedded` renders this inside the tenant /my-work as its "All workspaces"
+ * tab, for an operator who has ENTERED a workspace. It drops the four stat
+ * cards: the page around it already prints status pills for the workspace the
+ * operator is standing in, and two rows of numbers about two different sets of
+ * tasks, side by side, is a way to read the wrong one.
+ *
+ * `onCount` reports the open count upward so the tab that owns this can carry a
+ * badge without fetching the same thing twice.
+ */
+export default function PlatformMyWork({ embedded = false, onCount }) {
   const { theme } = useTheme()
   // The two-pane breakpoint, matching the lg: grid below.
   const wide = !useIsMobile('(max-width: 1023px)')
@@ -349,6 +359,9 @@ export default function PlatformMyWork() {
   }, [])
 
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    onCount?.((data.mine || []).filter(t => t.status !== 'Done').length)
+  }, [data.mine, onCount])
   useEffect(() => { localStorage.setItem('pwork_group_v1', groupBy) }, [groupBy])
 
   const workspaces = data.workspaces || []
@@ -549,7 +562,7 @@ export default function PlatformMyWork() {
   if (loading) {
     return (
       <div className="space-y-4">
-        <Skeleton.StatCards count={3} />
+        {!embedded && <Skeleton.StatCards count={3} />}
         <Skeleton.TaskList count={6} />
       </div>
     )
@@ -573,7 +586,7 @@ export default function PlatformMyWork() {
       {/* Headline. Deliberately three separate figures — mine, waiting on them,
           and how much of mine is late — never one total: they call for different
           actions and summing them would produce a number nobody can act on. */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className={`grid grid-cols-2 lg:grid-cols-4 gap-3 ${embedded ? 'hidden' : ''}`}>
         <div className="card p-4">
           <p className="text-2xl font-bold text-ink leading-none">{openCount(data.mine || [])}</p>
           <p className="text-[11px] text-ink-muted mt-1.5">Open, assigned to me</p>
@@ -593,6 +606,13 @@ export default function PlatformMyWork() {
           <p className="text-[11px] text-ink-muted mt-1.5">Workspaces with work</p>
         </div>
       </div>
+
+      {embedded && (
+        <p className="text-[11px] text-ink-muted">
+          Every task assigned to you across every workspace you can reach, including this one and Platform HQ —
+          not the tasks of the workspace you are standing in.
+        </p>
+      )}
 
       <div className="card overflow-hidden">
         <div className="flex items-center border-b border-divider px-3 sm:px-5 gap-1 flex-wrap" role="tablist">
