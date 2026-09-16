@@ -171,6 +171,13 @@ export default function PlatformOperators() {
 function AccessModal({ op, onClose, onSaved }) {
   const { toast } = useToast()
   const [workspaces, setWorkspaces] = useState([])
+  // What they may BE inside a workspace. A default plus overrides: a newly
+  // granted workspace then inherits a decision instead of needing one before
+  // they can use it.
+  const [defaultRole, setDefaultRole] = useState('')
+  const [wsRoles, setWsRoles] = useState({})
+  const [roleOptions, setRoleOptions] = useState(['Superadmin', 'Admin', 'Approver', 'User'])
+  const [fallbackRole, setFallbackRole] = useState('Admin')
   const [restrictablePages, setRestrictablePages] = useState([])
   const [wsMode, setWsMode] = useState('all')   // 'all' | 'specific'
   const [pageMode, setPageMode] = useState('all')
@@ -187,6 +194,10 @@ function AccessModal({ op, onClose, onSaved }) {
         setRestrictablePages(d.restrictablePages || [])
         if (d.workspaces) { setWsMode('specific'); setWsSel(d.workspaces) }
         if (d.pages) { setPageMode('specific'); setPageSel(d.pages) }
+        if (d.assignableRoles?.length) setRoleOptions(d.assignableRoles)
+        if (d.defaultRole) setFallbackRole(d.defaultRole)
+        setDefaultRole(d.roles?.default || '')
+        setWsRoles(d.roles?.byLabel || {})
       }).catch(() => {}),
     ]).finally(() => setLoading(false))
   }, [op.email])
@@ -199,6 +210,8 @@ function AccessModal({ op, onClose, onSaved }) {
       await api.put(`/platform/operators/${encodeURIComponent(op.email)}/access`, {
         workspaces: wsMode === 'specific' ? wsSel : null,
         pages: pageMode === 'specific' ? pageSel : null,
+        default_role: defaultRole || null,
+        workspace_roles: wsRoles,
       })
       onSaved()
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
@@ -233,6 +246,52 @@ function AccessModal({ op, onClose, onSaved }) {
                 </div>
               )}
             </div>
+            {/* What they may DO inside a workspace. This is the half that is
+                enforced: every route in the app gates on role, so a tier set
+                here is a real limit, not a hidden menu item. */}
+            <div>
+              <h3 className="text-sm font-bold text-ink mb-2">What they can do inside a workspace</h3>
+              <p className="text-[11px] text-gray-400 mb-2">
+                The role their identity takes when they enter. Enforced on every request — an Approver
+                cannot reach admin-only finance routes, a User cannot read the ledger. Changing it ends
+                their current session in that workspace; their console session is untouched.
+              </p>
+              <label className="flex items-center gap-2 text-sm text-gray-600 mb-2">
+                <span className="w-28 flex-shrink-0 text-xs font-semibold text-gray-500">Default</span>
+                <select
+                  className="input !h-8 text-sm"
+                  value={defaultRole}
+                  onChange={e => setDefaultRole(e.target.value)}
+                >
+                  <option value="">{fallbackRole} (unchanged)</option>
+                  {roleOptions.map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </label>
+              {(wsMode === 'specific' ? workspaces.filter(w => wsSel.includes(w.id)) : workspaces).length > 0 && (
+                <div className="border border-rule rounded-lg p-2 max-h-48 overflow-y-auto space-y-1">
+                  <p className="text-[11px] text-gray-400 px-1">Override per workspace — blank inherits the default.</p>
+                  {(wsMode === 'specific' ? workspaces.filter(w => wsSel.includes(w.id)) : workspaces).map(w => (
+                    <label key={w.id} className="flex items-center gap-2 text-sm text-gray-600 px-1">
+                      <span className="flex-1 min-w-0 truncate">{w.name}</span>
+                      <select
+                        className="input !h-7 !w-auto text-xs"
+                        value={wsRoles[w.id] || ''}
+                        onChange={e => setWsRoles(r => {
+                          const next = { ...r }
+                          if (e.target.value) next[w.id] = e.target.value
+                          else delete next[w.id]   // cleared → inherit, not "no access"
+                          return next
+                        })}
+                      >
+                        <option value="">Default ({defaultRole || fallbackRole})</option>
+                        {roleOptions.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Pages */}
             <div>
               <h3 className="text-sm font-bold text-ink mb-2">Console pages they can view</h3>

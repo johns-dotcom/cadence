@@ -1575,6 +1575,37 @@ const runMigrations = async () => {
     );
   `);
 
+  // WHAT an operator may do INSIDE a workspace, as opposed to which workspaces
+  // they may reach (operator_workspace_access above).
+  //
+  // The answer is a ROLE, not a page list, because role is what all 562 routes
+  // already enforce — a page list is a nav filter the server never consults, and
+  // canView() short-circuits to true for Superadmin/Admin/Approver anyway, which
+  // is exactly what an operator enters as.
+  //
+  // `label_id IS NULL` is the operator's DEFAULT tier; a row with a label is an
+  // override for that workspace. Deliberately NOT a column on
+  // operator_workspace_access: any row there means "confined to this list", so
+  // recording a role override would silently restrict which workspaces the
+  // operator can reach.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS operator_workspace_roles (
+      id SERIAL PRIMARY KEY,
+      operator_email VARCHAR(255) NOT NULL,
+      label_id INT REFERENCES labels(id) ON DELETE CASCADE,
+      role VARCHAR(20) NOT NULL,
+      updated_by VARCHAR(255),
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  // Partial indexes: one default per operator, one override per workspace. A
+  // plain UNIQUE would not constrain the default rows, since NULLs never
+  // collide in a multi-column unique index.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_operator_role_default
+    ON operator_workspace_roles (operator_email) WHERE label_id IS NULL`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_operator_role_workspace
+    ON operator_workspace_roles (operator_email, label_id) WHERE label_id IS NOT NULL`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_page_permissions (
       id SERIAL PRIMARY KEY,

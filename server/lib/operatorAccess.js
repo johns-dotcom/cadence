@@ -59,4 +59,64 @@ function scopeClause(ids, col, params) {
   return ` AND ${col} = ANY($${params.length}::int[])`;
 }
 
-module.exports = { operatorAccess, accessibleLabelIds, canAccessLabel, scopeClause };
+/**
+ * The tiers an operator may be given inside a workspace, most authority first.
+ *
+ * These are TENANT roles, deliberately — every route in the app already gates on
+ * them, so an operator held at 'Approver' genuinely cannot reach an admin-only
+ * finance route, delete a workspace or manage its team. A page list would not do
+ * this: the server never checks pages, and canView() short-circuits to true for
+ * Superadmin/Admin/Approver, which is what an operator enters as.
+ */
+const OPERATOR_ROLES = ['Superadmin', 'Admin', 'Approver', 'User'];
+
+// What an admin-tier operator gets where nothing has been said about them.
+// 'Admin' is exactly what they entered as before this setting existed, so an
+// untouched operator's access does not change.
+const DEFAULT_OPERATOR_ROLE = 'Admin';
+
+/**
+ * The role this operator's identity assumes inside `labelId`.
+ *
+ * Owners are never restricted — decided deliberately, so there is always a
+ * break-glass path into every workspace and nobody can lock the platform out of
+ * a tenant by mistake.
+ *
+ * Resolution: per-workspace override → the operator's default → 'Admin'.
+ */
+async function workspaceRoleFor(operator, labelId) {
+  if (operator.platform_role === 'owner') return 'Superadmin';
+  const email = (operator.email || '').toLowerCase();
+  const { rows } = await pool.query(
+    `SELECT label_id, role FROM operator_workspace_roles
+      WHERE operator_email = $1 AND (label_id IS NULL OR label_id = $2)`,
+    [email, labelId]
+  );
+  const override = rows.find(r => Number(r.label_id) === Number(labelId));
+  const fallback = rows.find(r => r.label_id === null);
+  const picked = override?.role || fallback?.role || DEFAULT_OPERATOR_ROLE;
+  // Validate on READ as well as write: a role that is not in the vocabulary
+  // would sail past every `includes()` gate in the app and land the operator
+  // somewhere nothing recognises.
+  return OPERATOR_ROLES.includes(picked) ? picked : DEFAULT_OPERATOR_ROLE;
+}
+
+// The whole picture for the owner's editor: the default plus every override.
+async function operatorRoles(email) {
+  const { rows } = await pool.query(
+    'SELECT label_id, role FROM operator_workspace_roles WHERE operator_email = $1',
+    [(email || '').toLowerCase()]
+  );
+  const byLabel = {};
+  let def = null;
+  for (const r of rows) {
+    if (r.label_id === null) def = r.role;
+    else byLabel[r.label_id] = r.role;
+  }
+  return { default: def, byLabel };
+}
+
+module.exports = {
+  operatorAccess, accessibleLabelIds, canAccessLabel, scopeClause,
+  workspaceRoleFor, operatorRoles, OPERATOR_ROLES, DEFAULT_OPERATOR_ROLE,
+};

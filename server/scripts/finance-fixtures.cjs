@@ -992,4 +992,29 @@ const PR = require('../lib/platformRollup');
     dayString('Tue Sep 01') === null && dayString(new Date('nope')) === null);
 }
 
+// ── Operator authority inside a workspace ─────────────────────────────────
+// The rule that decides what an operator may DO in a tenant. Pure resolution,
+// held here because getting it wrong grants or removes real authority.
+{
+  const OPERATOR_ROLES = ['Superadmin', 'Admin', 'Approver', 'User'];
+  const DEFAULT_OPERATOR_ROLE = 'Admin';
+  // Mirror of workspaceRoleFor's resolution, fed the rows the query returns.
+  const resolve = (platformRole, rows, labelId) => {
+    if (platformRole === 'owner') return 'Superadmin';
+    const override = rows.find(r => Number(r.label_id) === Number(labelId));
+    const fallback = rows.find(r => r.label_id === null);
+    const picked = override?.role || fallback?.role || DEFAULT_OPERATOR_ROLE;
+    return OPERATOR_ROLES.includes(picked) ? picked : DEFAULT_OPERATOR_ROLE;
+  };
+
+  assert('an owner is never restricted, even with rows against them', resolve('owner', [{ label_id: null, role: 'User' }], 2) === 'Superadmin');
+  assert('an operator nobody has decided about keeps what they had before the setting existed', resolve('admin', [], 2) === 'Admin');
+  assert('the default applies where there is no override', resolve('admin', [{ label_id: null, role: 'Approver' }], 2) === 'Approver');
+  assert('the override wins over the default in its own workspace', resolve('admin', [{ label_id: null, role: 'Approver' }, { label_id: 2, role: 'User' }], 2) === 'User');
+  assert("another workspace's override does not leak", resolve('admin', [{ label_id: null, role: 'Approver' }, { label_id: 3, role: 'User' }], 2) === 'Approver');
+  assert('an override may also raise, not only lower', resolve('admin', [{ label_id: 2, role: 'Superadmin' }], 2) === 'Superadmin');
+  assert('a role outside the vocabulary falls back rather than stranding them in a tier nothing gates on', resolve('admin', [{ label_id: null, role: 'root' }], 2) === 'Admin');
+  assert('a cleared override inherits the default instead of meaning "no access"', resolve('admin', [{ label_id: 2, role: '' }, { label_id: null, role: 'Approver' }], 2) === 'Approver');
+}
+
 console.log(process.exitCode ? '\nFIXTURES FAILED' : '\nAll fixtures pass.');

@@ -12,7 +12,7 @@ const { sendEmail, inviteEmail } = require('../lib/email');
 const { deleteUserWithSweep } = require('../lib/userDelete');
 const aiUsage = require('../lib/aiUsage');
 const activityBot = require('../lib/activityBot');
-const { operatorAccess, accessibleLabelIds, scopeClause } = require('../lib/operatorAccess');
+const { operatorAccess, accessibleLabelIds, scopeClause, operatorRoles, OPERATOR_ROLES, DEFAULT_OPERATOR_ROLE } = require('../lib/operatorAccess');
 const { ensureGhost } = require('../lib/operatorGhost');
 const { toUSD, warmRates } = require('../lib/fx');
 const { dayString, isValidDay } = require('../lib/calendarDay');
@@ -572,7 +572,17 @@ router.get('/my-access', async (req, res) => {
 // GET /api/platform/operators/:email/access — owner view of one operator's access.
 router.get('/operators/:email/access', requirePlatformOwner, async (req, res) => {
   try {
-    res.json({ success: true, data: { ...(await operatorAccess(req.params.email)), restrictablePages: RESTRICTABLE_PAGES } });
+    const [access, roles] = await Promise.all([
+      operatorAccess(req.params.email),
+      operatorRoles(req.params.email),
+    ]);
+    res.json({
+      success: true,
+      data: {
+        ...access, restrictablePages: RESTRICTABLE_PAGES,
+        roles, assignableRoles: OPERATOR_ROLES, defaultRole: DEFAULT_OPERATOR_ROLE,
+      },
+    });
   } catch (error) {
     console.error('Operator access error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -592,13 +602,69 @@ router.put('/operators/:email/access', requirePlatformOwner, async (req, res) =>
     const workspaces = Array.isArray(req.body.workspaces) ? req.body.workspaces.map(n => parseInt(n, 10)).filter(Boolean) : [];
     const pages = Array.isArray(req.body.pages) ? req.body.pages.filter(p => RESTRICTABLE_PAGES.includes(p)) : [];
 
+    // What this operator may BE inside a workspace. Validated, never coerced: a
+    // role outside the vocabulary would pass no `includes()` gate in the app and
+    // strand them in a tier nothing recognises.
+    const bad = [];
+    const defaultRole = req.body.default_role === undefined || req.body.default_role === null || req.body.default_role === ''
+      ? null
+      : (OPERATOR_ROLES.includes(req.body.default_role) ? req.body.default_role : (bad.push(req.body.default_role), null));
+    const wsRoles = [];
+    const rawRoles = req.body.workspace_roles && typeof req.body.workspace_roles === 'object' ? req.body.workspace_roles : {};
+    for (const [k, v] of Object.entries(rawRoles)) {
+      const id = parseInt(k, 10);
+      if (!Number.isInteger(id)) continue;
+      if (v === null || v === '' || v === undefined) continue;   // cleared → inherit the default
+      if (!OPERATOR_ROLES.includes(v)) { bad.push(v); continue; }
+      wsRoles.push([id, v]);
+    }
+    if (bad.length) {
+      return res.status(400).json({ success: false, error: `Unknown role: ${bad[0]}. Must be one of ${OPERATOR_ROLES.join(', ')}` });
+    }
+
     await client.query('BEGIN');
     await client.query('DELETE FROM operator_workspace_access WHERE operator_email = $1', [email]);
     await client.query('DELETE FROM operator_page_access WHERE operator_email = $1', [email]);
+    await client.query('DELETE FROM operator_workspace_roles WHERE operator_email = $1', [email]);
     for (const id of workspaces) await client.query('INSERT INTO operator_workspace_access (operator_email, label_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [email, id]);
     for (const p of pages) await client.query('INSERT INTO operator_page_access (operator_email, page) VALUES ($1, $2) ON CONFLICT DO NOTHING', [email, p]);
+    if (defaultRole) {
+      await client.query(
+        `INSERT INTO operator_workspace_roles (operator_email, label_id, role, updated_by, updated_at)
+         VALUES ($1, NULL, $2, $3, NOW())`, [email, defaultRole, req.user.email]);
+    }
+    for (const [id, role] of wsRoles) {
+      await client.query(
+        `INSERT INTO operator_workspace_roles (operator_email, label_id, role, updated_by, updated_at)
+         VALUES ($1, $2, $3, $4, NOW())`, [email, id, role, req.user.email]);
+    }
+
+    // Apply it to the memberships they ALREADY hold. auth.js overlays the live
+    // role from the users row on every request, so this takes effect on their
+    // very next call rather than whenever they next enter — which is the
+    // difference between a demotion and a note about one. token_version is
+    // bumped alongside it so their client is not left rendering an authority it
+    // no longer has; only the ghost's session ends, not their console session,
+    // because those are different user rows.
+    // Their home row in the system label is excluded by what it IS, not by
+    // comparing against the caller's own label: that row is their console
+    // identity, and demoting it would take away the console itself.
+    const { rows: ghosts } = await client.query(
+      `SELECT u.id, u.label_id, u.role FROM users u JOIN labels l ON l.id = u.label_id
+        WHERE LOWER(u.email) = $1 AND u.is_platform_admin = true
+          AND (l.is_system = false OR l.is_system IS NULL)`,
+      [email]
+    );
+    let applied = 0;
+    for (const g of ghosts) {
+      const want = wsRoles.find(([id]) => id === g.label_id)?.[1] || defaultRole || DEFAULT_OPERATOR_ROLE;
+      if (g.role === want) continue;
+      await client.query('UPDATE users SET role = $1, token_version = COALESCE(token_version, 0) + 1 WHERE id = $2', [want, g.id]);
+      applied++;
+    }
+
     await client.query('COMMIT');
-    res.json({ success: true });
+    res.json({ success: true, data: { sessions_updated: applied } });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('Set operator access error:', error);

@@ -23,14 +23,15 @@
  * operator filed for themselves.
  */
 const pool = require('../db');
+const { workspaceRoleFor } = require('./operatorAccess');
 
 // The projection signToken() needs. Kept here so the enter flow and the console
 // mint rows with the same shape.
 const GHOST_COLS = 'id, label_id, name, email, role, department, hierarchy_level, is_platform_admin, platform_role, token_version';
 
-// An operator's tier decides their authority inside a workspace: an owner
-// enters as Superadmin (full), a Workspace Admin as Admin (manage data/team, no
-// owner-only powers).
+// The operator's PLATFORM tier. Their tenant role is a separate question now —
+// see workspaceRoleFor in lib/operatorAccess: an owner may hold a workspace
+// admin at Approver or User inside one workspace and Admin in another.
 function ghostRoleFor(platformRole) {
   return platformRole === 'owner' ? { opRole: 'owner', ghostRole: 'Superadmin' } : { opRole: 'admin', ghostRole: 'Admin' };
 }
@@ -44,7 +45,12 @@ function ghostRoleFor(platformRole) {
  */
 async function ensureGhost(labelId, operator) {
   const email = (operator.email || '').toLowerCase();
-  const { opRole, ghostRole } = ghostRoleFor(operator.platform_role);
+  const { opRole } = ghostRoleFor(operator.platform_role);
+  // What the owner has decided this operator may be in THIS workspace. Applied
+  // on every entry, so a change to the setting takes hold the next time they go
+  // in — and, because auth.js overlays the live role from the users row on every
+  // request, a demotion written to an existing ghost bites immediately.
+  const ghostRole = await workspaceRoleFor(operator, labelId);
 
   const existing = await pool.query(
     `SELECT ${GHOST_COLS} FROM users WHERE label_id = $1 AND LOWER(email) = $2`,
