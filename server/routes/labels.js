@@ -32,6 +32,10 @@ router.get('/', async (req, res) => {
     const label = rows[0];
     label.logo_url = label.logo_r2_key ? await logoUrl(label.logo_r2_key) : (label.logo_data || null);
     delete label.logo_r2_key;
+    // The address mail falls back to, so Settings can NAME it instead of saying
+    // "the default" — and so nobody has to hardcode it in the client, where it
+    // would drift from EMAIL_FROM the first time that changes.
+    label.platform_from_address = require('../lib/email').PLATFORM_FROM_ADDRESS;
     delete label.logo_data;
     res.json({ success: true, data: label });
   } catch (error) {
@@ -58,6 +62,19 @@ router.patch('/', requireAdmin, async (req, res) => {
     if (settings && settings.email_reply_to && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(settings.email_reply_to).trim())) {
       return res.status(400).json({ success: false, error: 'Reply-to must be a valid email address' });
     }
+    if (settings && settings.email_from_address && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(settings.email_from_address).trim())) {
+      return res.status(400).json({ success: false, error: 'Send-from must be a valid email address' });
+    }
+    if (settings && settings.email_from_name !== undefined && String(settings.email_from_name).length > 80) {
+      return res.status(400).json({ success: false, error: 'Sender name must be 80 characters or fewer' });
+    }
+    // Verification belongs to the endpoint that earns it, never to a PATCH body:
+    // accepting a stamp from the client would let anyone assert that any address
+    // is verified and start sending from it.
+    if (settings) {
+      delete settings.email_from_verified_at;
+      delete settings.email_from_verified_for;
+    }
 
     // Empty string clears the accent (back to Cadence default).
     const accentValue = accent_color === '' ? null : accent_color;
@@ -81,6 +98,76 @@ router.patch('/', requireAdmin, async (req, res) => {
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Update label error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/label/email-sender/verify — prove a custom send-from address works,
+// and only then let mail go out as it.
+//
+// The proof is a real send FROM that address. There is no cheaper honest check:
+// the provider decides whether a domain is verified, not us, and a regex says
+// nothing about whether Resend will accept it. On success we stamp the address
+// that earned the stamp; on failure we return the provider's own words, which is
+// what tells somebody their DNS is not set up yet.
+router.post('/email-sender/verify', requireAdmin, async (req, res) => {
+  try {
+    const { sendEmail, PLATFORM_FROM_ADDRESS } = require('../lib/email');
+    const { loadLabelIdentity } = require('../lib/emailDispatch');
+    const address = String(req.body.from_address || '').trim();
+    const to = String(req.body.to || req.user.email || '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
+      return res.status(400).json({ success: false, error: 'Enter a valid address to verify' });
+    }
+    if (!to) return res.status(400).json({ success: false, error: 'No recipient to send the test to' });
+
+    const identity = await loadLabelIdentity(req.labelId);
+    const name = String(req.body.from_name || identity?.email_from_name || identity?.name || 'Cadence').trim();
+
+    // Sent with the candidate identity FORCED — not the stored one, or a first
+    // verification would test the address it is trying to replace.
+    const result = await sendEmail({
+      to,
+      subject: `Cadence: confirming ${address} can send for ${identity?.name || 'your workspace'}`,
+      html: `<p>This test was sent from <strong>${address}</strong>.</p>
+             <p>If you received it, that address is able to send your workspace's email — invites,
+             vendor decisions, payment confirmations and alerts will now come from it.</p>`,
+      text: `This test was sent from ${address}. If you received it, that address can send your workspace's email.`,
+      label: {
+        name: identity?.name || 'Cadence',
+        email_from_name: name,
+        email_from_address: address,
+        // Treat it as verified FOR THIS SEND ONLY, so the test actually uses the
+        // candidate. Nothing is persisted unless the provider accepts it.
+        email_from_verified_at: new Date().toISOString(),
+        email_from_verified_for: address,
+        email_reply_to: identity?.email_reply_to || null,
+      },
+    });
+
+    if (!result.sent) {
+      return res.status(502).json({
+        success: false,
+        error: result.reason || 'The provider refused that address',
+        hint: `Mail is still going out from ${PLATFORM_FROM_ADDRESS}. Verify the domain with your email provider, then try again.`,
+      });
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE labels SET settings = COALESCE(settings, '{}'::jsonb) || $1::jsonb
+        WHERE id = $2
+        RETURNING COALESCE(settings, '{}'::jsonb) AS settings`,
+      [JSON.stringify({
+        email_from_address: address,
+        email_from_name: name,
+        email_from_verified_at: new Date().toISOString(),
+        email_from_verified_for: address,
+      }), req.labelId]
+    );
+    await logActivity(req, 'Verified outbound email sender', address);
+    res.json({ success: true, data: { settings: rows[0].settings, sent_to: to, via: result.via } });
+  } catch (error) {
+    console.error('Verify sender error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

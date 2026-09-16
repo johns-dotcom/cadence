@@ -51,7 +51,7 @@ router.post('/', async (req, res) => {
         workspaceName: lbl[0]?.name || `Workspace ${req.labelId}`,
         requestType: kind, title: subject, details: body || '', page,
       });
-      email = await sendEmail({ to: PLATFORM_INBOX, cc: req.user.email, subject: tpl.subject, html: tpl.html, text: tpl.text });
+      email = await sendEmail({ to: PLATFORM_INBOX, cc: req.user.email, subject: tpl.subject, html: tpl.html, text: tpl.text, label: await loadLabelIdentity(req.labelId) });
     } catch (e) { console.error('Internal request email failed:', e.message); }
 
     res.status(201).json({ success: true, data: rows[0], emailed: !!email.sent });

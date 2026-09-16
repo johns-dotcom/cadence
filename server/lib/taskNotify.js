@@ -12,6 +12,7 @@
  */
 const pool = require('../db');
 const { sendEmail, taskAssignmentEmail } = require('./email');
+const { loadLabelIdentity } = require('./emailDispatch');
 
 /**
  * Resolve the assignee inside their own workspace and build the template
@@ -32,6 +33,9 @@ async function buildAssignmentCtx({ labelId, assigneeId, task, assignerName, ori
     assigneeName: a.name, workspaceName: a.workspace, description: task.description,
     dueDate: task.due_date ? String(task.due_date).slice(0, 10) : null, priority: task.priority,
     assignerName, link: base ? `${base}/my-work` : null,
+    // The workspace this task belongs to — so the mail goes out as THEM, which
+    // for a console assignment is the target tenant, not the operator's own.
+    _label: await loadLabelIdentity(labelId),
   };
 }
 
@@ -39,7 +43,7 @@ async function buildAssignmentCtx({ labelId, assigneeId, task, assignerName, ori
 function sendAssignment(ctx) {
   if (!ctx) return;
   const msg = taskAssignmentEmail(ctx);
-  sendEmail({ to: ctx.to, subject: msg.subject, html: msg.html, text: msg.text }).catch(() => {});
+  sendEmail({ to: ctx.to, subject: msg.subject, html: msg.html, text: msg.text, label: ctx._label }).catch(() => {});
 }
 
 module.exports = { buildAssignmentCtx, sendAssignment };

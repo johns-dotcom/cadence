@@ -83,12 +83,38 @@ const FROM_NAME = (FROM.match(/^\s*(.*?)\s*</)?.[1] || 'Cadence').trim();
 // verified with the provider) but show "<Label> via Cadence" as the display
 // name, and set Reply-To to the label's chosen mailbox so vendors reply to the
 // label, not to us.
+/**
+ * The address a workspace's mail goes out AS.
+ *
+ * The display NAME is free — it changes nothing about deliverability. The
+ * ADDRESS is not: with Resend or SendGrid the sending domain must be verified
+ * with the provider, and an unverified one is rejected outright. Since
+ * sendEmail() swallows failures into { sent: false }, letting a workspace type
+ * any address would silently stop ALL of their email — invites, vendor
+ * decisions, payment confirmations — with nothing on screen to say why.
+ *
+ * So a custom address is used only once a test send FROM it has actually
+ * succeeded (labels.settings.email_from_verified_at, stamped against that exact
+ * address by POST /api/label/email-sender/verify). Until then mail keeps going
+ * out on the platform address, which always works. Verification is tied to the
+ * address string, so editing it drops back to unverified rather than trusting a
+ * stamp earned by a different address.
+ */
 function identityFor(label) {
   if (!label || !label.name) return { from: FROM, replyTo: null };
-  const from = `${label.name} via Cadence <${FROM_ADDR}>`;
-  const replyTo = label.email_reply_to || null;
-  return { from, replyTo };
+  const verified = !!label.email_from_verified_at
+    && String(label.email_from_address || '').toLowerCase() === String(label.email_from_verified_for || '').toLowerCase()
+    && !!label.email_from_address;
+  const addr = verified ? String(label.email_from_address).trim() : FROM_ADDR;
+  // A workspace that has not named itself keeps the "via Cadence" form, which
+  // tells a vendor who is actually sending when the address is ours.
+  const name = String(label.email_from_name || '').trim() || `${label.name} via Cadence`;
+  return { from: `${name} <${addr}>`, replyTo: label.email_reply_to || null };
 }
+
+// The address everything falls back to. Exported so the UI can name it rather
+// than saying "the default".
+const PLATFORM_FROM_ADDRESS = FROM_ADDR;
 
 async function sendEmail({ to, cc, subject, html, text, attachments, label }) {
   try {
@@ -236,4 +262,4 @@ function chatMentionEmail({ recipientName, actorName, workspaceName, channelLabe
   return { subject, html: shell('You were mentioned', body), text: `${subject}: ${snippet}` };
 }
 
-module.exports = { sendEmail, identityFor, inviteEmail, vendorDecisionEmail, paymentConfirmationEmail, passwordResetEmail, taskAssignmentEmail, internalRequestEmail, approvalRequestEmail, chatMentionEmail };
+module.exports = { sendEmail, identityFor, PLATFORM_FROM_ADDRESS, inviteEmail, vendorDecisionEmail, paymentConfirmationEmail, passwordResetEmail, taskAssignmentEmail, internalRequestEmail, approvalRequestEmail, chatMentionEmail };

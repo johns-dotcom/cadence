@@ -5,6 +5,7 @@ const authMiddleware = require('../middleware/auth');
 const { withTenant, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
 const { sendEmail, inviteEmail } = require('../lib/email');
+const { loadLabelIdentity } = require('../lib/emailDispatch');
 const { checkUserDeletable, deleteUserWithSweep } = require('../lib/userDelete');
 const { ROLES, DEPARTMENTS, RELEASE_CHECKLIST_COLUMNS } = require('../lib/constants');
 
@@ -279,7 +280,7 @@ router.post('/', requireAdmin, async (req, res) => {
       expiresDays: INVITE_DAYS,
     });
     const mail = notify
-      ? await sendEmail({ to: rows[0].email, subject: msg.subject, html: msg.html, text: msg.text })
+      ? await sendEmail({ to: rows[0].email, subject: msg.subject, html: msg.html, text: msg.text, label: await loadLabelIdentity(req.labelId) })
       : { sent: false, reason: 'deferred' };
 
     await logActivity(req, 'Invited team member', `${name} (${role || 'User'})`);
@@ -310,7 +311,7 @@ router.post('/:id/resend', requireAdmin, async (req, res) => {
     const notify = req.body.notify !== false;
     const msg = inviteEmail({ inviteeName: rows[0].name, workspaceName: label.rows[0]?.name || 'your workspace', inviterName: req.user.name, link, expiresDays: INVITE_DAYS });
     const mail = notify
-      ? await sendEmail({ to: rows[0].email, subject: msg.subject, html: msg.html, text: msg.text })
+      ? await sendEmail({ to: rows[0].email, subject: msg.subject, html: msg.html, text: msg.text, label: await loadLabelIdentity(req.labelId) })
       : { sent: false, reason: 'deferred' };
     res.json({ success: true, data: {
       invite_link: link, email: rows[0].email, name: rows[0].name,

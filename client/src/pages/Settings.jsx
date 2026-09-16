@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Upload, Trash2, Check, Link2, Copy, RefreshCw, Plus, X, LayoutDashboard, Mail, Send, Gauge, PanelLeft, Moon, Sun, Eye, EyeOff } from 'lucide-react'
+import { Check, Copy, Eye, EyeOff, Gauge, LayoutDashboard, Link2, Mail, Moon, PanelLeft, Plus, RefreshCw, Send, ShieldCheck, Sun, Trash2, Upload, X } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
@@ -63,6 +63,13 @@ export default function Settings() {
 
   // Outbound email identity
   const [replyTo, setReplyTo] = useState('')
+  const [fromName, setFromName] = useState('')
+  const [fromAddr, setFromAddr] = useState('')
+  const [verifiedFor, setVerifiedFor] = useState('')
+  const [verifying, setVerifying] = useState(false)
+  // Named by the server (EMAIL_FROM), never hardcoded here — a copy in the
+  // client would go stale the first time that env var changes.
+  const [platformSender, setPlatformSender] = useState('the Cadence address')
   const [savingEmail, setSavingEmail] = useState(false)
   const [taskCapacity, setTaskCapacity] = useState('10')
   const [savingCapacity, setSavingCapacity] = useState(false)
@@ -75,6 +82,7 @@ export default function Settings() {
       setAccent(d.accent_color || '')
       setLogoUrl(d.logo_url || null)
       setInv(d.invoice_settings || {})
+      if (d.platform_from_address) setPlatformSender(d.platform_from_address)
       const s = d.settings || {}
       setTagline(s.tagline || '')
       setWelcome(s.welcome || '')
@@ -82,6 +90,10 @@ export default function Settings() {
       setDashWidgets(s.dashboard?.widgets || {})
       setPinned(Array.isArray(s.dashboard?.pinned) ? s.dashboard.pinned : [])
       setReplyTo(s.email_reply_to || '')
+      setFromName(s.email_from_name || '')
+      setFromAddr(s.email_from_address || '')
+      // The address the stamp was earned BY — not merely that a stamp exists.
+      setVerifiedFor(s.email_from_verified_at ? (s.email_from_verified_for || '') : '')
       setTaskCapacity(String(s.task_capacity || 10))
     }).catch(() => {})
   }, [isAdmin])
@@ -129,12 +141,33 @@ export default function Settings() {
     if (rt && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rt)) { toast('Reply-to must be a valid email address', 'error'); return }
     setSavingEmail(true)
     try {
-      const { data } = await api.patch('/label', { settings: { email_reply_to: rt } })
+      const { data } = await api.patch('/label', {
+        settings: { email_reply_to: rt, email_from_name: fromName.trim(), email_from_address: fromAddr.trim() },
+      })
       updateLabel({ settings: data.data.settings })
+      setVerifiedFor(data.data.settings?.email_from_verified_at ? (data.data.settings.email_from_verified_for || '') : '')
       toast('Email settings saved')
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
     finally { setSavingEmail(false) }
   }
+  // Verification is a real send FROM the address. Nothing else proves the
+  // provider will accept it, and until it does we keep sending from Cadence so
+  // a half-configured domain cannot silently stop this workspace's email.
+  const verifySender = async () => {
+    const addr = fromAddr.trim()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr)) { toast('Enter a valid send-from address first', 'error'); return }
+    setVerifying(true)
+    try {
+      const { data } = await api.post('/label/email-sender/verify', { from_address: addr, from_name: fromName.trim() })
+      updateLabel({ settings: data.data.settings })
+      setVerifiedFor(data.data.settings?.email_from_verified_for || addr)
+      toast(`Verified — sent from ${addr} to ${data.data.sent_to}`)
+    } catch (err) {
+      const d = err.response?.data
+      toast([d?.error, d?.hint].filter(Boolean).join(' — ') || 'Could not verify that address', 'error')
+    } finally { setVerifying(false) }
+  }
+
   const sendTestEmail = async () => {
     setTesting(true)
     try { const { data } = await api.post('/label/test-email'); toast(`Test email sent to ${data.data.to}`) }
@@ -157,6 +190,10 @@ export default function Settings() {
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
     finally { setSavingCapacity(false) }
   }
+
+  // Addresses compare case-insensitively — the server's rule, mirrored, so the
+  // badge cannot disagree with what actually sends.
+  const sameAddr = (a, b) => !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase()
 
   const toggleWidget = (k) => setDashWidgets(w => ({ ...w, [k]: w[k] === false ? true : false }))
   const setPin = (i, field) => (e) => setPinned(ps => ps.map((p, idx) => idx === i ? { ...p, [field]: e.target.value } : p))
@@ -471,14 +508,46 @@ export default function Settings() {
           {/* Outbound email identity */}
           <form onSubmit={saveEmail} className="card p-5">
             <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><Mail size={15} /> Outbound email</h2>
-            <p className="text-xs text-gray-400 mb-4">Emails to vendors and approvers are sent as <span className="font-medium text-ink">“{labelName || 'Your workspace'} via Cadence”</span> and tinted with your accent color. Set a reply-to so replies reach your inbox, not ours.</p>
-            <div className="max-w-md">
-              <label className="label">Reply-to address</label>
-              <input className="input" type="email" value={replyTo} onChange={e => setReplyTo(e.target.value)} placeholder="billing@yourlabel.com" />
-              <p className="text-[11px] text-gray-400 mt-1">Leave blank to use the default Cadence reply address.</p>
+            <p className="text-xs text-gray-400 mb-4">Every email this workspace sends — invites, vendor decisions, payment confirmations, task assignments, mention alerts — goes out with this identity and your accent color.</p>
+            <div className="max-w-md space-y-4">
+              <div>
+                <label className="label">Sender name</label>
+                <input className="input" value={fromName} onChange={e => setFromName(e.target.value)}
+                  placeholder={`${labelName || 'Your workspace'} via Cadence`} maxLength={80} />
+                <p className="text-[11px] text-gray-400 mt-1">What recipients see as the sender. Safe to change at any time.</p>
+              </div>
+              <div>
+                <label className="label">Send from</label>
+                <input className="input" type="email" value={fromAddr} onChange={e => setFromAddr(e.target.value)}
+                  placeholder={platformSender} />
+                <div className="mt-1.5 text-[11px]">
+                  {!fromAddr.trim() ? (
+                    <span className="text-gray-400">Blank sends from <span className="font-medium text-ink">{platformSender}</span>.</span>
+                  ) : sameAddr(fromAddr, verifiedFor) ? (
+                    <span className="text-success font-semibold inline-flex items-center gap-1">
+                      <Check size={12} /> Verified — your email sends from this address.
+                    </span>
+                  ) : (
+                    <span className="text-warning">
+                      Not verified yet, so mail still goes out from <span className="font-medium text-ink">{platformSender}</span>.
+                      Your email provider must be set up to send for this domain — press Verify to prove it with a real send.
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div>
+                <label className="label">Reply-to address</label>
+                <input className="input" type="email" value={replyTo} onChange={e => setReplyTo(e.target.value)} placeholder="billing@yourlabel.com" />
+                <p className="text-[11px] text-gray-400 mt-1">Where replies land. Leave blank to use the default Cadence reply address.</p>
+              </div>
             </div>
             <div className="flex flex-wrap gap-2 mt-4">
               <button type="submit" disabled={savingEmail} className="btn-primary">{savingEmail ? 'Saving…' : 'Save email settings'}</button>
+              {fromAddr.trim() && !sameAddr(fromAddr, verifiedFor) && (
+                <button type="button" onClick={verifySender} disabled={verifying} className="btn-secondary">
+                  <ShieldCheck size={15} /> {verifying ? 'Verifying…' : 'Verify this address'}
+                </button>
+              )}
               <button type="button" onClick={sendTestEmail} disabled={testing} className="btn-secondary"><Send size={15} /> {testing ? 'Sending…' : 'Send test to me'}</button>
             </div>
           </form>

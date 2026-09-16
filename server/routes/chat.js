@@ -7,6 +7,7 @@ const rt = require('../lib/realtime');
 const { recordMentions } = require('../lib/mentions');
 const { ensureActivityChannel } = require('../lib/activityBot');
 const { sendEmail, chatMentionEmail } = require('../lib/email');
+const { loadLabelIdentity } = require('../lib/emailDispatch');
 const { sendFileSafely } = require('../lib/safeFiles');
 const { uploadFile, getSignedFileUrl, loadFileBuffer, deleteFile, isConfigured } = require('../lib/r2');
 const { attachmentUrl, verifyAttachmentSig } = require('../lib/mediaToken');
@@ -487,8 +488,10 @@ router.post('/channels/:id/messages', upload.array('files', 10), async (req, res
           const offline = ids.filter(id => !onlineSet.has(Number(id)));
           if (offline.length) {
             const recips = await pool.query(`SELECT id, name, email FROM users WHERE id = ANY($1::int[]) AND email IS NOT NULL AND email <> ''`, [offline]);
-            const lab = await pool.query('SELECT name FROM labels WHERE id = $1', [req.labelId]);
-            const workspaceName = lab.rows[0]?.name || 'your workspace';
+            // One load: the name for the copy AND the outbound identity, so a
+            // mention mail goes out as the workspace like every other tenant email.
+            const identity = await loadLabelIdentity(req.labelId);
+            const workspaceName = identity?.name || 'your workspace';
             const origin = process.env.FRONTEND_URL || req.headers.origin || '';
             const channelLabel = mem?.type === 'object' ? (mem.name || 'a thread') : (mem?.name ? `#${mem.name}` : 'a conversation');
             const snippet = body.slice(0, 280);
@@ -499,7 +502,7 @@ router.post('/channels/:id/messages', upload.array('files', 10), async (req, res
               if (nowMs - (mentionEmailAt.get(r.id) || 0) < MENTION_EMAIL_WINDOW_MS) continue;
               mentionEmailAt.set(r.id, nowMs);
               const msg = chatMentionEmail({ recipientName: r.name, actorName: req.user.name, workspaceName, channelLabel, snippet, link: `${origin}/messages/${req.params.id}` });
-              sendEmail({ to: r.email, subject: msg.subject, html: msg.html, text: msg.text }).catch(() => {});
+              sendEmail({ to: r.email, subject: msg.subject, html: msg.html, text: msg.text, label: identity }).catch(() => {});
             }
             if (mentionEmailAt.size > 5000) mentionEmailAt.clear();
           }

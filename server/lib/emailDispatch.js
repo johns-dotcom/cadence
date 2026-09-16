@@ -17,11 +17,25 @@ async function loadLabelIdentity(labelId) {
   if (!labelId) return null;
   try {
     const { rows } = await pool.query(
-      `SELECT name, accent_color, COALESCE(settings->>'email_reply_to','') AS email_reply_to FROM labels WHERE id = $1`,
+      `SELECT name, accent_color,
+              COALESCE(settings->>'email_reply_to','')        AS email_reply_to,
+              COALESCE(settings->>'email_from_name','')       AS email_from_name,
+              COALESCE(settings->>'email_from_address','')    AS email_from_address,
+              settings->>'email_from_verified_at'             AS email_from_verified_at,
+              COALESCE(settings->>'email_from_verified_for','') AS email_from_verified_for
+         FROM labels WHERE id = $1`,
       [labelId]
     );
     if (!rows.length) return null;
-    return { name: rows[0].name, accent_color: rows[0].accent_color || null, email_reply_to: rows[0].email_reply_to || null };
+    const r = rows[0];
+    return {
+      name: r.name, accent_color: r.accent_color || null,
+      email_reply_to: r.email_reply_to || null,
+      email_from_name: r.email_from_name || null,
+      email_from_address: r.email_from_address || null,
+      email_from_verified_at: r.email_from_verified_at || null,
+      email_from_verified_for: r.email_from_verified_for || null,
+    };
   } catch { return null; }
 }
 

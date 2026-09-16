@@ -1017,4 +1017,40 @@ const PR = require('../lib/platformRollup');
   assert('a cleared override inherits the default instead of meaning "no access"', resolve('admin', [{ label_id: 2, role: '' }, { label_id: null, role: 'Approver' }], 2) === 'Approver');
 }
 
+// ── Outbound sender identity ──────────────────────────────────────────────
+// Which address a workspace's mail actually leaves as. Held because the failure
+// mode is silent: sendEmail swallows a provider refusal into { sent: false }, so
+// trusting an unverified address would stop every email a workspace sends with
+// nothing on screen to say why.
+{
+  const { identityFor } = require('../lib/email');
+  const addrOf = (id) => (id.from.match(/<([^>]+)>/) || [])[1];
+  const nameOf = (id) => id.from.replace(/\s*<[^>]*>$/, '');
+  const PLATFORM = addrOf(identityFor({ name: 'Anything' }));
+
+  assert('no workspace at all falls back to the platform identity',
+    !!identityFor(null).from);
+  assert('a workspace with no settings sends as "<name> via Cadence"',
+    nameOf(identityFor({ name: 'The Nest' })) === 'The Nest via Cadence');
+  assert('a custom display name is honoured without any verification',
+    nameOf(identityFor({ name: 'The Nest', email_from_name: 'The Nest Team' })) === 'The Nest Team');
+  assert('a display name never changes the ADDRESS',
+    addrOf(identityFor({ name: 'The Nest', email_from_name: 'The Nest Team' })) === PLATFORM);
+  assert('an UNVERIFIED custom address is ignored, so mail keeps working',
+    addrOf(identityFor({ name: 'The Nest', email_from_address: 'alerts@thenest.co' })) === PLATFORM);
+  assert('a verified custom address is used',
+    addrOf(identityFor({ name: 'The Nest', email_from_address: 'alerts@thenest.co',
+      email_from_verified_at: '2026-09-16T00:00:00Z', email_from_verified_for: 'alerts@thenest.co' })) === 'alerts@thenest.co');
+  assert('verification is tied to the address, so editing it drops back to the platform',
+    addrOf(identityFor({ name: 'The Nest', email_from_address: 'new@thenest.co',
+      email_from_verified_at: '2026-09-16T00:00:00Z', email_from_verified_for: 'alerts@thenest.co' })) === PLATFORM);
+  assert('a stamp with no address is not a licence to send from nothing',
+    addrOf(identityFor({ name: 'The Nest', email_from_verified_at: '2026-09-16T00:00:00Z' })) === PLATFORM);
+  assert('the address match is case-insensitive, as addresses are',
+    addrOf(identityFor({ name: 'The Nest', email_from_address: 'Alerts@TheNest.co',
+      email_from_verified_at: '2026-09-16T00:00:00Z', email_from_verified_for: 'alerts@thenest.co' })) === 'Alerts@TheNest.co');
+  assert('reply-to passes through untouched',
+    identityFor({ name: 'The Nest', email_reply_to: 'ap@thenest.co' }).replyTo === 'ap@thenest.co');
+}
+
 console.log(process.exitCode ? '\nFIXTURES FAILED' : '\nAll fixtures pass.');
