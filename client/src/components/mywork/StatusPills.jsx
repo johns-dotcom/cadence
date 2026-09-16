@@ -1,7 +1,7 @@
 // The day's headline, in four words or fewer.
 //
 // Lifted out of TaskSurface so /my-work can print it beside the greeting — the
-// place boom put it — while /team-work keeps it above its own toolbar. One
+// place boom put it — while the Team tab keeps it above its own toolbar. One
 // definition, so the two surfaces cannot disagree about what "overdue" means:
 // every count here comes from the same `dueBucketOf`/`isOpen` the board groups on.
 

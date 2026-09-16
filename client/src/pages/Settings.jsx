@@ -605,7 +605,7 @@ export default function Settings() {
             <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><Gauge size={15} /> Workload target</h2>
             <p className="text-xs text-ink-muted mb-4">
               How many open tasks one person is expected to carry. The load bars on{' '}
-              <Link to="/team-work" className="text-brand-ink hover:underline font-medium">Team Work</Link>{' '}
+              <Link to="/my-work?tab=team" className="text-brand-ink hover:underline font-medium">Team Work</Link>{' '}
               fill against this, so anyone above it reads as over capacity.
             </p>
             <div className="max-w-[10rem]">

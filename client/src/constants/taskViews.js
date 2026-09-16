@@ -1,4 +1,5 @@
-// View configs for My Work (/my-work) and Team Work (/team-work).
+// View configs for the task surfaces on /my-work — the personal one and the
+// Team tab. `surface` is what keeps a team view off the personal list.
 //
 // Built-in presets are CONSTANTS, not seeded database rows — so the "My Views"
 // strip works on first load with no writes and no onboarding migration, and an

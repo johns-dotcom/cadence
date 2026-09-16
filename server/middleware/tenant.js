@@ -44,7 +44,7 @@ function requireRole(...allowed) {
 const requireAdmin = requireRole('Superadmin', 'Admin');
 const requireApprover = requireRole('Superadmin', 'Admin', 'Approver');
 
-// NOTE for Team Work (/team-work): there is deliberately no requireTeamLead gate
+// NOTE for the Team tab (/my-work?tab=team): there is deliberately no requireTeamLead gate
 // here. Team access isn't a whole-route decision — GET /api/tasks serves both
 // surfaces, and `?scope=team` is authorized inline by teamFilter() in
 // routes/tasks.js, which both checks the role AND narrows an Approver to their own

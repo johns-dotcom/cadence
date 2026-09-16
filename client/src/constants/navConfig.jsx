@@ -31,7 +31,6 @@ export const PAGE_LABELS = {
   '/':           'Dashboard',
   '/my-work':    'My Work',
   '/messages':   'Messages',
-  '/team-work':  'Team Work',
   '/calendar':   'Calendar',
   '/financials': 'Financials',
   '/reports': 'Reports',
@@ -135,7 +134,6 @@ export function buildNavGroups({ isAdmin, isApprover, chatUnread = 0, pendingApp
       { path: '/',         label: 'Dashboard', icon: LayoutDashboard, synonyms: 'home overview start' },
       { path: '/my-work',  label: 'My Work',   icon: Briefcase, synonyms: 'tasks todo my tasks assignments' },
       // Team leads only. canView() below still applies, so an admin can revoke it.
-      ...(isApprover ? [{ path: '/team-work', label: 'Team Work', icon: Users2, synonyms: 'team tasks department workload' }] : []),
       { path: '/messages', label: 'Messages',  icon: MessageSquare, badge: chatUnread, synonyms: 'chat slack dm direct message channels' },
       { path: '/calendar', label: 'Calendar',  icon: CalendarDays, synonyms: 'schedule events dates' },
       // Top-level and ungated, not tucked under Workspace: the hub spans the

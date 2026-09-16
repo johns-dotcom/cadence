@@ -8,7 +8,6 @@ export const PAGE_GROUPS = [
   { group: 'General', pages: [
     { path: '/', label: 'Dashboard' },
     { path: '/my-work', label: 'My Work' },
-    { path: '/team-work', label: 'Team Work' },
     { path: '/calendar', label: 'Calendar' },
     // Ungated in the sidebar for every role, so it has to be grantable too —
     // a User on an explicit permission set could see the row and not the page.

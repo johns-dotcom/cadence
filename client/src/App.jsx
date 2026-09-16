@@ -33,7 +33,6 @@ import ArtistClearance from './pages/ArtistClearance'
 import Renewals from './pages/Renewals'
 import CreateContract from './pages/CreateContract'
 import MyWork from './pages/MyWork'
-import TeamWork from './pages/TeamWork'
 import Calendar from './pages/Calendar'
 import Financials from './pages/Financials'
 import FinancialsMonth from './pages/FinancialsMonth'
@@ -184,7 +183,10 @@ function AppContent() {
         <Route path="/my-work"      element={<MyWork />} />
         {/* AdminRoute is misleadingly named — it gates on Approver-or-above, which
             is exactly the team-lead tier. The server re-decides scope per request. */}
-        <Route path="/team-work"    element={<AdminRoute><TeamWork /></AdminRoute>} />
+        {/* Team Work is a TAB on /my-work now. Kept as a redirect rather than
+            deleted: bookmarks, the notification bell and the user manual all
+            pointed here, and a dead link is a worse answer than a moved page. */}
+        <Route path="/team-work"    element={<Navigate to="/my-work?tab=team" replace />} />
         <Route path="/messages"     element={<Messages />} />
         <Route path="/messages/:channelId" element={<Messages />} />
         <Route path="/calendar"     element={<Calendar />} />

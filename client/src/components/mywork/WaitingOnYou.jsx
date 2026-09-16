@@ -38,7 +38,7 @@ function Tile({ to, icon: Icon, accent, iconClass, count, label, rail, children 
 
 /**
  * `layout="rail"` stacks the tiles into the right-hand column /my-work now runs;
- * the default "strip" is the full-width row /team-work-shaped surfaces use. Same
+ * the default "strip" is the full-width row the team surface uses. Same
  * data, same components — only the geometry differs, so a fix to either lands on
  * both.
  */

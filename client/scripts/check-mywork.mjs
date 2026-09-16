@@ -80,7 +80,7 @@ const label = { id: 2, name: 'Audit Test Label', settings: {} };
 // member — the operator-only tab has to be proven ABSENT as well as present.
 export const useAuth = () => ({
   user: { id: 1, label_id: 2, name: 'John Skead', email: 'dev@cadence.local',
-    role: 'Superadmin', department: 'Executive', hierarchy_level: 1,
+    role: globalThis.__QA_ROLE || 'Superadmin', department: 'Executive', hierarchy_level: 1,
     is_platform_admin: globalThis.__QA_OPERATOR !== false, platform_role: 'owner' },
   label, token: 'qa', loading: false, pagePermissions: null, impersonating: false,
   adminUser: null, canView: () => true, login: async()=>{}, logout: ()=>{}, updateLabel: ()=>{},
@@ -150,6 +150,18 @@ const memberHtml = renderToString(
     React.createElement(ThemeProvider, null,
       React.createElement(ToastProvider, null, React.createElement(MyWork)))));
 globalThis.__QA_OPERATOR = true;
+
+// And again as a plain User — neither an operator nor a team lead. The previous
+// render is a Superadmin who is not an operator, which is the right test for the
+// cross-workspace tab but NOT for the Team tab: a Superadmin IS a lead.
+globalThis.__QA_OPERATOR = false;
+globalThis.__QA_ROLE = 'User';
+const plainHtml = renderToString(
+  React.createElement(MemoryRouter, { initialEntries: ['/my-work'] },
+    React.createElement(ThemeProvider, null,
+      React.createElement(ToastProvider, null, React.createElement(MyWork)))));
+globalThis.__QA_OPERATOR = true;
+globalThis.__QA_ROLE = 'Superadmin';
 // The split view's pane renders only once a task is picked, and SSR runs no
 // effects — so the auto-select never fires and the PAGE render shows the empty
 // pane. Render the pane directly instead, the same way the console's detail is
@@ -193,6 +205,12 @@ const checks = [
   // surface they are not allowed to load.
   ['operator gets All workspaces',  has('All workspaces')],
   ['member does NOT',               !memberHtml.includes('All workspaces')],
+  // Team Work is a tab here now, not a page. A lead must get it; a plain member
+  // must not even see it, since teamFilter would 403 the surface behind it.
+  // The label is a bare text node between the icon and the (absent) badge, so
+  // this is the exact shape it renders as.
+  ['lead gets the Team tab',        has('</svg>Team</button>')],
+  ['a plain member does not',       !plainHtml.includes('</svg>Team</button>')],
   // The pane, rendered for real:
   ['pane: title is editable',      /<input[^>]+aria-label="Task name"/.test(paneHtml)],
   ['pane: no duplicate Task field', !/<label class="label">Task<\/label>/.test(paneHtml)],

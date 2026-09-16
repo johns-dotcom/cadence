@@ -4,7 +4,7 @@
 // tabs (To Do Today · My Tasks · My Releases), and a "Waiting on you" rail down
 // the right. What sits INSIDE the My Tasks tab is cadence's own task database
 // (Board / Table / Calendar / List, grouping, filters, saved views) — the shell
-// is what changed, not the surface it wraps, so /team-work keeps sharing it.
+// is what changed, not the surface it wraps, which the Team tab shares.
 //
 // The page OWNS the task data (useTaskData here, handed down to TaskSurface).
 // The tab counts, the status pills, the Today triage and the board therefore all
@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { AlertTriangle, CalendarCheck, CheckSquare, Disc3, Globe2 } from 'lucide-react'
+import { AlertTriangle, CalendarCheck, CheckSquare, Disc3, Globe2, Users2 } from 'lucide-react'
 import api from '../api'
 import TaskSurface from '../components/mywork/TaskSurface'
 import PlatformMyWork from './PlatformMyWork'
@@ -172,6 +172,15 @@ export default function MyWork() {
   // do not have to leave the workspace to see what else is on their plate.
   const isOperator = !!user?.is_platform_admin
   const [allCount, setAllCount] = useState(null)
+  // Team Work was a separate page showing the same database pointed at a team.
+  // It is a tab here instead — the tabs already widen left to right (today, mine,
+  // my releases, the team, every workspace), and a second page meant leaving
+  // your own work to see your team's.
+  //
+  // WHO sees it is still decided server-side by teamFilter: Superadmin/Admin get
+  // the workspace, an Approver their own department, everyone else a 403. The
+  // tab mirrors that so nobody is offered a surface that will refuse them.
+  const isLead = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
 
   // Below xl the rail renders as the horizontal strip it already knows how to be:
   // a vertical stack of five full-width tiles above the card would push the tabs
@@ -182,11 +191,20 @@ export default function MyWork() {
   // in an effect of its own and strips it from the URL, so by the time a parent
   // effect ran the param could already be gone — and the add form would open on a
   // tab nobody is looking at.
-  const tabKeys = useMemo(() => (isOperator ? [...TABS, 'all'] : TABS), [isOperator])
+  const tabKeys = useMemo(() => [
+    ...TABS,
+    ...(isLead ? ['team'] : []),
+    ...(isOperator ? ['all'] : []),
+  ], [isLead, isOperator])
+
   const [tab, setTab] = useState(() => {
     if (params.get('new') === 'task') return 'tasks'
     const asked = params.get('tab')
-    const allowed = user?.is_platform_admin ? [...TABS, 'all'] : TABS
+    const allowed = [
+      ...TABS,
+      ...(['Superadmin', 'Admin', 'Approver'].includes(user?.role) ? ['team'] : []),
+      ...(user?.is_platform_admin ? ['all'] : []),
+    ]
     if (allowed.includes(asked)) return asked
     const last = localStorage.getItem(TAB_KEY)
     return allowed.includes(last) ? last : 'today'
@@ -195,6 +213,12 @@ export default function MyWork() {
   // page on a tab that no longer renders.
   useEffect(() => { if (!tabKeys.includes(tab)) setTab('today') }, [tabKeys, tab])
   useEffect(() => { localStorage.setItem(TAB_KEY, tab) }, [tab])
+  // The team surface runs its own `?scope=team` query, which is the heaviest on
+  // the page. Mounted on first OPEN rather than with the page, so somebody who
+  // never looks at it never pays for it — and kept mounted afterwards, so its
+  // view config and search survive a tab switch like every other tab's.
+  const [mounted, setMounted] = useState(() => new Set())
+  useEffect(() => { setMounted(m => (m.has(tab) ? m : new Set(m).add(tab))) }, [tab])
 
   const openCount = useMemo(() => tasks.filter(isOpen).length, [tasks])
   const todayCount = useMemo(() => {
@@ -223,6 +247,7 @@ export default function MyWork() {
     { id: 'today', label: 'To Do Today', count: todayCount, icon: CalendarCheck },
     { id: 'tasks', label: 'My Tasks', count: openCount, icon: CheckSquare },
     { id: 'releases', label: 'My Releases', count: releases.length, icon: Disc3 },
+    ...(isLead ? [{ id: 'team', label: 'Team', count: null, icon: Users2 }] : []),
     ...(isOperator ? [{ id: 'all', label: 'All workspaces', count: allCount, icon: Globe2 }] : []),
   ]
 
@@ -325,6 +350,17 @@ export default function MyWork() {
               <div className={tab === 'releases' ? '' : 'hidden'}>
                 {releasesLoading ? <Skeleton.TaskList count={3} /> : <ReleaseList releases={releases} />}
               </div>
+
+              {isLead && mounted.has('team') && (
+                <div className={tab === 'team' ? '' : 'hidden'}>
+                  <p className="text-[11px] text-ink-muted mb-3">
+                    {['Superadmin', 'Admin'].includes(user?.role)
+                      ? 'Everyone in this workspace.'
+                      : `Your team${user?.department ? ` · ${user.department}` : ''}.`}
+                  </p>
+                  <TaskSurface surface="team" active={tab === 'team'} />
+                </div>
+              )}
 
               {isOperator && (
                 <div className={tab === 'all' ? '' : 'hidden'}>

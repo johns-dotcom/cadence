@@ -256,7 +256,7 @@ router.get('/', async (req, res) => {
       push({
         type: 'task_overdue', group: 'smart', key: `team-task-${t.id}`,
         title: `${t.assignee_name || 'Someone'}'s task "${t.description}" is overdue`,
-        detail: 'Team task overdue', date: t.due_date, link: '/team-work', severity: 'danger',
+        detail: 'Team task overdue', date: t.due_date, link: '/my-work?tab=team', severity: 'danger',
       });
     }
 

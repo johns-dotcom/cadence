@@ -32,7 +32,7 @@ export const MANUAL_SECTIONS = [
       'Click a task to open it: notes, every field, and a live discussion thread with @mentions.',
       'The "Waiting on you" rail surfaces overdue tasks, pending approvals, and campaigns to review.',
     ] },
-  { path: '/team-work', group: 'Getting started', title: 'Team Work', depts: ['Operations', 'Executive'],
+  { path: '/my-work?tab=team', group: 'Getting started', title: 'Team Work', depts: ['Operations', 'Executive'],
     summary: 'The same views pointed at your team, plus a Workload rollup showing who is loaded and who is free.',
     steps: [
       'Workload lists everyone with a load bar, open count, and overdue / due-today / this-week breakdown.',

@@ -79,7 +79,7 @@ function teamFilter(req, params) {
  * department matches the task OWNER's department.
  *
  * This is a real widening of the old "assignee or admin" rule — a department lead
- * has to be able to rebalance their team's work or /team-work is read-only. The
+ * has to be able to rebalance their team's work or the Team tab is read-only. The
  * cost is that `department` is now a permission boundary, which is why it is
  * validated and session-invalidating in routes/team.js.
  *

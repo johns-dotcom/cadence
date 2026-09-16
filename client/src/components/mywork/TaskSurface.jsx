@@ -1,4 +1,5 @@
-// The shared shell behind BOTH /my-work and /team-work.
+// The shared shell behind every task surface: the My Tasks and Team tabs on
+// /my-work, which differ only by the `surface` prop.
 //
 // One `surface` prop ("mine" | "team") decides the fetch scope, the default view,
 // which views and group-by dimensions are offered, and which saved views are
