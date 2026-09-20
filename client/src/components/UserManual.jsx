@@ -2,12 +2,14 @@ import { useMemo, useState } from 'react'
 import { X, Search, ChevronDown, ChevronRight, Sparkles, Loader2, BookOpen, Compass, Printer } from 'lucide-react'
 import api from '../api'
 import { useAuth } from '../context/AuthContext'
+import { SHORTCUT_GROUPS } from '../constants/shortcuts'
 import { buildManual } from '../constants/manual'
+import useFocusRefetch from '../hooks/useFocusRefetch'
 
 const slug = (p) => 'man-' + p.replace(/\W+/g, '-')
 
 export default function UserManual({ open, onClose }) {
-  const { user, canView } = useAuth()
+  const { user, canView, refreshSession } = useAuth()
   const [expanded, setExpanded] = useState(() => new Set())
   const [q, setQ] = useState('')
 
@@ -21,6 +23,11 @@ export default function UserManual({ open, onClose }) {
     () => buildManual({ role: user?.role, department: user?.department, canView }),
     [user?.role, user?.department, canView]
   )
+
+  // A grant made while this page is open should show up when you come back to
+  // it — the manual claims to list what YOU can do, and a stale claim is worse
+  // here than anywhere else. Silent and throttled; it never bounces a session.
+  useFocusRefetch(() => { refreshSession?.() })
 
   const query = q.trim().toLowerCase()
   const matches = query
@@ -169,10 +176,40 @@ export default function UserManual({ open, onClose }) {
               ))}
             </>
           )}
+          {/* Keyboard shortcuts, read from the SAME registry the "?" modal uses.
+              A manual that lists keys of its own would drift from the ones that
+              actually work, and a printed manual is exactly where somebody looks
+              them up — which is why they belong on the page and not only behind
+              a modal you have to know about to press. */}
+          <section className="mt-8 pt-6 border-t border-divider">
+            <h2 className="text-base font-bold text-ink mb-1">Keyboard shortcuts</h2>
+            <p className="text-xs text-gray-400 mb-4">
+              Single keys work when you are not typing in a field. Press <kbd className="px-1 rounded bg-gray-100">?</kbd> anywhere to see this list in a dialog.
+            </p>
+            <div className="grid gap-5 sm:grid-cols-2">
+              {SHORTCUT_GROUPS.map(g => (
+                <div key={g.group}>
+                  <h3 className="text-[11px] font-bold text-ink uppercase tracking-wide mb-1.5">{g.group}</h3>
+                  <dl className="space-y-1">
+                    {g.items.map(it => (
+                      <div key={it.desc} className="flex items-baseline gap-2 text-xs">
+                        <dt className="flex items-center gap-1 flex-shrink-0">
+                          {it.keys.map(k => (
+                            <kbd key={k} className="px-1.5 py-0.5 rounded bg-gray-100 border border-rule text-[10px] font-semibold text-gray-600">{k}</kbd>
+                          ))}
+                        </dt>
+                        <dd className="text-gray-500 min-w-0">{it.desc}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              ))}
+            </div>
+          </section>
         </div>
 
         <div className="px-5 py-3 border-t border-divider text-[11px] text-gray-400">
-          Showing the {manual.accessible.length} area{manual.accessible.length === 1 ? '' : 's'} you can access. Press <kbd className="px-1 rounded bg-gray-100">?</kbd> for keyboard shortcuts.
+          Showing the {manual.accessible.length} area{manual.accessible.length === 1 ? '' : 's'} you can access, plus {SHORTCUT_GROUPS.reduce((n, g) => n + g.items.length, 0)} keyboard shortcuts.
         </div>
       </div>
     </div>

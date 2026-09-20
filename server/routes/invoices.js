@@ -8,18 +8,11 @@ const { TERMS, DEFAULT_TERMS, DEFAULT_BUSINESS_TZ, resolveDue, isDay, businessDa
 const router = express.Router();
 router.use(authMiddleware, withTenant, requireApprover);
 
-// The label's business timezone — the calendar its invoices are dated in.
-// Stored in labels.settings.business_tz; the default matches the reference app.
-// A lookup failure falls back rather than 500s: a missing setting must not take
-// down a page whose job here is only to show a date.
-async function labelTz(labelId) {
-  try {
-    const { rows } = await pool.query('SELECT settings FROM labels WHERE id = $1', [labelId]);
-    return rows[0]?.settings?.business_tz || DEFAULT_BUSINESS_TZ;
-  } catch {
-    return DEFAULT_BUSINESS_TZ;
-  }
-}
+// The label's business timezone now lives in lib/labelTz — payment-analytics
+// anchors its week boundaries on the same answer, and two readers of "the
+// workspace's timezone" is how a workspace ends up dating its invoices in one
+// zone and bucketing its weeks in another.
+const { labelTz } = require('../lib/labelTz');
 
 // The invoice's own date. An invoice created today is dated today; an edit
 // keeps the date the invoice was issued on, because re-saving a document must

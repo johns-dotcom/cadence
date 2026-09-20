@@ -33,6 +33,18 @@ const DASH_WIDGETS = [
   { key: 'activity', label: 'Recent activity' },
 ]
 
+// Offered as suggestions, not a closed list: the server validates against Intl,
+// so any real IANA zone is accepted. Read from the runtime where the browser
+// supports it, so the list cannot go stale.
+const TZ_SUGGESTIONS = (() => {
+  try {
+    const all = Intl.supportedValuesOf?.('timeZone')
+    if (all?.length) return all
+  } catch { /* older browser */ }
+  return ['America/Los_Angeles', 'America/Denver', 'America/Chicago', 'America/New_York',
+    'Europe/London', 'Europe/Berlin', 'Europe/Stockholm', 'Australia/Sydney', 'Asia/Tokyo', 'UTC']
+})()
+
 export default function Settings() {
   const { user, label, updateLabel, canView } = useAuth()
   const { theme, setTheme } = useTheme()
@@ -68,6 +80,11 @@ export default function Settings() {
   // Named by the server (EMAIL_FROM), never hardcoded here — a copy in the
   // client would go stale the first time that env var changes.
   const [platformSender, setPlatformSender] = useState('the Cadence address')
+  // The workspace's business calendar. It anchors invoice due dates AND the
+  // Mon–Sun week boundaries on Payments' analytics — one setting, because two
+  // would let the two disagree (see server/lib/labelTz.js).
+  const [bizTz, setBizTz] = useState('')
+  const [savingTz, setSavingTz] = useState(false)
   const [savingEmail, setSavingEmail] = useState(false)
   const [taskCapacity, setTaskCapacity] = useState('10')
   const [savingCapacity, setSavingCapacity] = useState(false)
@@ -81,6 +98,7 @@ export default function Settings() {
       setLogoUrl(d.logo_url || null)
       if (d.platform_from_address) setPlatformSender(d.platform_from_address)
       const s = d.settings || {}
+      setBizTz(s.business_tz || '')
       setTagline(s.tagline || '')
       setWelcome(s.welcome || '')
       setLogoInitials(s.logo_initials || '')
@@ -155,6 +173,17 @@ export default function Settings() {
       const d = err.response?.data
       toast([d?.error, d?.hint].filter(Boolean).join(' — ') || 'Could not verify that address', 'error')
     } finally { setVerifying(false) }
+  }
+
+  const saveTz = async (e) => {
+    e.preventDefault()
+    setSavingTz(true)
+    try {
+      const { data } = await api.patch('/label', { settings: { business_tz: bizTz.trim() } })
+      updateLabel({ settings: data.data.settings })
+      toast('Business timezone saved')
+    } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
+    finally { setSavingTz(false) }
   }
 
   const sendTestEmail = async () => {
@@ -538,6 +567,27 @@ export default function Settings() {
               )}
               <button type="button" onClick={sendTestEmail} disabled={testing} className="btn-secondary"><Send size={15} /> {testing ? 'Sending…' : 'Send test to me'}</button>
             </div>
+          </form>
+
+          <form onSubmit={saveTz} className="card p-5">
+            <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><Gauge size={15} /> Business timezone</h2>
+            <p className="text-xs text-gray-400 mb-4">
+              The calendar this workspace runs on. Invoice due dates are printed in it, and the
+              week boundaries on Payments' analytics are anchored to it — so a Sunday-evening
+              entry lands in the week you filed it, not the next one.
+            </p>
+            <div className="max-w-md">
+              <label className="label">Timezone</label>
+              <input className="input" list="tz-options" value={bizTz} onChange={e => setBizTz(e.target.value)}
+                placeholder="America/Los_Angeles" />
+              <datalist id="tz-options">
+                {TZ_SUGGESTIONS.map(t => <option key={t} value={t} />)}
+              </datalist>
+              <p className="text-[11px] text-gray-400 mt-1">
+                An IANA name. Leave blank for the default, America/Los_Angeles.
+              </p>
+            </div>
+            <button type="submit" disabled={savingTz} className="btn-primary mt-4">{savingTz ? 'Saving…' : 'Save timezone'}</button>
           </form>
 
           <div className="card p-5">

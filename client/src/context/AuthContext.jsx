@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react'
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import api from '../api'
 import { applyAccent, resetAccent } from '../utils/branding'
 import { resetCategoriesCache } from '../hooks/useCategories'
@@ -193,6 +193,24 @@ export const AuthProvider = ({ children }) => {
     }).catch(() => logout())
   }
 
+  // Re-read the session from the server — user, workspace and PAGE PERMISSIONS.
+  //
+  // The manual calls this on window focus: a permission granted in another tab
+  // (or by an admin while you are reading) otherwise does not appear until a
+  // re-login, and the manual's whole promise is that it shows what YOU can do.
+  // Silent by design — it must never bounce somebody out over a transient
+  // network blip, so a failure leaves the current session alone.
+  const refreshSession = useCallback(async () => {
+    try {
+      const { data } = await api.get('/auth/me')
+      const u = data.data
+      setUser(u)
+      setLabel(labelFrom(u))
+      setPagePermissions(u.pagePermissions ?? null)
+      return true
+    } catch { return false }
+  }, [])
+
   // Merge updates into the current workspace (used by Settings after a
   // branding change so the UI re-themes without a full reload).
   const updateLabel = (partial) => setLabel(l => ({ ...(l || {}), ...partial }))
@@ -214,7 +232,7 @@ export const AuthProvider = ({ children }) => {
       user, label, token, loading,
       login, googleLogin, logout, updateLabel,
       impersonate, enterWorkspace, exitImpersonation, impersonating, adminUser,
-      pagePermissions, canView, sessionEpoch,
+      pagePermissions, canView, sessionEpoch, refreshSession,
     }}>
       {children}
     </AuthContext.Provider>

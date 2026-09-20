@@ -6,6 +6,7 @@ const { withTenant, requireApprover, requireAdmin } = require('../middleware/ten
 const { logActivity } = require('../middleware/activityLogger');
 const { uploadFile, getSignedFileUrl, deleteFile, loadFileBuffer, loadFileBase64, isConfigured: r2Configured } = require('../lib/r2');
 const { computeDueDate, PAYMENT_TERMS } = require('../lib/payments');
+const { labelTz } = require('../lib/labelTz');
 const { upsertVendor } = require('../lib/vendors');
 const claude = require('../lib/claude');
 const { sendEmail, vendorDecisionEmail, paymentConfirmationEmail } = require('../lib/email');
@@ -4151,8 +4152,8 @@ router.get('/payment-stats', async (req, res) => {
 // locked rate) so the charts tie to the invoice list's family framing.
 router.get('/payment-analytics', async (req, res) => {
   try {
-    const tzRow = await pool.query(`SELECT COALESCE(settings->>'timezone','America/Los_Angeles') AS tz FROM labels WHERE id = $1`, [req.labelId]);
-    const tz = tzRow.rows[0]?.tz || 'America/Los_Angeles';
+    // Same answer invoice dates use — see lib/labelTz for why this is one key.
+    const tz = await labelTz(req.labelId);
     // Optional range. Garbage params fall back to the default window rather
     // than erroring — the charts should always render something.
     const isIso = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);

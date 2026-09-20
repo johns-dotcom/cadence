@@ -84,6 +84,16 @@ router.patch('/', requireAdmin, async (req, res) => {
     if (settings && settings.email_reply_to && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(settings.email_reply_to).trim())) {
       return res.status(400).json({ success: false, error: 'Reply-to must be a valid email address' });
     }
+    // The business timezone anchors invoice due dates AND analytics week
+    // boundaries (lib/labelTz). Validated against Intl rather than a list: a zone
+    // Intl cannot format would throw inside a date calculation later, far from
+    // the person who typed it.
+    if (settings && settings.business_tz !== undefined && String(settings.business_tz).trim() !== '') {
+      const { isValidTz } = require('../lib/labelTz');
+      if (!isValidTz(String(settings.business_tz).trim())) {
+        return res.status(400).json({ success: false, error: 'That is not a recognised timezone (e.g. America/Los_Angeles, Europe/London)' });
+      }
+    }
     if (settings && settings.email_from_address && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(settings.email_from_address).trim())) {
       return res.status(400).json({ success: false, error: 'Send-from must be a valid email address' });
     }

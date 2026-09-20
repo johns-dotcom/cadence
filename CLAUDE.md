@@ -6478,3 +6478,62 @@ the readable summary, and a second restore reports 0. Two seeded duplicate
 releases merged — the survivor kept its own UPC, absorbed the source's ISRC and
 genre, ORed both checklist flags, and the source row was deleted, which is what
 proves the COMMIT landed. All nine gates green; finance fixtures 288.
+
+---
+
+## M6 — the last milestone, audited: one real defect (2026-09-20)
+
+`BUILD_DIRECTIONS_2.md` items 14, 15, 16, 18, 19. Four of the five were already
+built, INCLUDING the specific traps each spec calls out — verified against the
+code rather than assumed:
+
+- **15 (frozen ledger columns)**: exactly ONE sticky `<td>` per row, painting its
+  own row background, with a right-edge shadow — and the code already carries the
+  "Do NOT split into multiple cells" comment the spec asks for, with the
+  sub-pixel-gap reason. The five-field frozen BLOCK is a documented cadence
+  divergence (one column, with the checkbox and flag moved into that cell).
+- **16 (notifications)**: the bug the spec names — clear-all swallowing mentions —
+  is explicitly avoided; the watermark applies only to computed alerts, and both
+  the code comment and the route say so.
+- **18 (shortcuts)**: `constants/shortcuts.js` is the single registry and
+  `KeyboardShortcutsHelp.jsx` reads it.
+- **14 (payment analytics)**: two week-bucketed series with the label-timezone
+  anchor, `week_end`, and the vendor/staff split.
+
+### The defect: one concept, two settings keys, neither settable
+
+`labels.settings.business_tz` anchored invoice due dates; payment-analytics read
+`labels.settings.timezone` for its Mon–Sun week boundaries. Both defaulted to
+America/Los_Angeles, so they agreed **by accident** — and the moment anybody set
+one, a workspace would date its invoices in one zone and bucket its weeks in
+another, silently. Neither had any UI, so "anchored in the label's timezone" was
+aspirational: it was a constant.
+
+New `server/lib/labelTz.js` is the one reader — `business_tz` first (the key with
+readers, documentation and a shipped meaning), falling back to `timezone` so a
+workspace that set it out-of-band is not moved, then the default. Both call sites
+use it. Validated on write against `Intl` rather than a hardcoded list, because a
+zone Intl cannot format would otherwise throw inside a date calculation far from
+whoever typed it. Settings → Finance gained the picker, suggestions read from
+`Intl.supportedValuesOf('timeZone')` at runtime so the list cannot go stale.
+
+Zero behavioural change on deploy: both keys were unset everywhere, so both
+readers were already returning the default.
+
+### Item 19's two unmet clauses
+
+- **The manual now renders the shortcuts**, read from item 18's registry rather
+  than a second list of its own. A printed manual is exactly where somebody looks
+  a key up, and they were only behind a modal you had to know to press.
+- **Permissions refetch on window focus.** `AuthContext` gained `refreshSession()`
+  (user + workspace + pagePermissions from `/auth/me`, silent on failure so a
+  network blip cannot bounce a session), and the manual calls it on focus. A grant
+  made while the page is open now shows up without a re-login — which is the whole
+  promise of a manual filtered to what YOU can do.
+
+### Verified
+Live: a junk timezone is refused by name, `Europe/London` saves, and both
+consumers then answer on it — analytics re-bucketed to 12 weeks from 2026-06-29
+and `/invoices/due-date` printed October 20 — then reset. All nine gates green;
+fixtures 288. check-tdz caught a read-before-declaration in the Settings loader
+during this work, which is the third time that gate has paid for itself.
