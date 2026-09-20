@@ -6619,6 +6619,16 @@ console page inherits it. Gating uses the OPERATOR allowlist
 (`/platform/my-access` + `ownerOnly`), not `canView` — an operator's tenant role
 is Superadmin, so canView would admit everything.
 
+**A step recognises its page through a REDIRECT** (2026-09-20, John: "the
+walkthrough skips messages"). `/messages` navigates to `/messages/<channelId>`
+the moment it picks a channel, so a strict `pathname === step.path` test never
+saw itself as on the page — and after the wait it took the "a guard redirected
+us" branch and dropped the whole page. `isOnPage` matches on a SEGMENT BOUNDARY
+now (never a bare `startsWith`, or `/ledger` would match `/ledger-matching` —
+the identical trap the sidebar's active-row test already had to fix), `/` stays
+exact, and `tour.match` remains for anything the rule cannot express. Held by
+fixture, including the `/messages/3` case that caused the report.
+
 **Auto-start rules**: the console welcome runs for an operator seeing the console
 for the first time; a page tour runs the first time a page is opened. An operator
 who has ENTERED a workspace gets page tours but NOT the tenant welcome walk —

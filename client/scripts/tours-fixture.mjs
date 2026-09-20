@@ -38,6 +38,7 @@ const vite = await createServer({
 
 const { buildNavGroups } = await vite.ssrLoadModule('/src/constants/navConfig.jsx');
 const { PAGE_TOURS, buildWelcome, CONSOLE_TOURS, buildConsoleWelcome, allTours, tourForPath } = await vite.ssrLoadModule('/src/tours/index.js');
+const { isOnPage } = await vite.ssrLoadModule('/src/components/Tour.jsx');
 const { CONSOLE_NAV } = await vite.ssrLoadModule('/src/constants/consoleNav.js');
 
 // The widest nav — every page anyone could reach.
@@ -148,6 +149,22 @@ for (const p of shared) {
 }
 if (wrong.length) fail(`shell resolution: ${wrong.join('; ')}`);
 else ok(`each shared path resolves to its own shell's tour`);
+
+// The on-page test. A step that cannot recognise its own page is DROPPED as
+// "a guard redirected us" — which is how the walk came to skip Messages, whose
+// /messages redirects to /messages/<channelId> the moment it picks a channel.
+const onPageCases = [
+  ['/messages', '/messages', true],
+  ['/messages/3', '/messages', true],          // the redirect that caused the skip
+  ['/recoupments/planning', '/recoupments', true],
+  ['/ledger', '/ledger', true],
+  ['/ledger-matching', '/ledger', false],      // segment boundary, not startsWith
+  ['/', '/', true],
+  ['/artists', '/', false],                    // '/' must not match everything
+];
+const onPageBad = onPageCases.filter(([p, w, want]) => isOnPage(p, w) !== want);
+if (onPageBad.length) fail(`isOnPage: ${onPageBad.map(([p, w, want]) => `${p} vs ${w} should be ${want}`).join('; ')}`);
+else ok('a step recognises its page through a redirect, and stops at a segment boundary');
 
 await vite.close();
 if (failures) { console.error(`tours-fixture: ${failures} failure(s)`); process.exit(1); }

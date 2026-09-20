@@ -41,6 +41,27 @@ const findTarget = (target) => {
 // How long a step waits for its page to render the anchor. Harnesses shorten it.
 const WAIT_MS = () => (typeof window !== 'undefined' && window.__TOUR_WAIT_MS__) || 4000
 
+/**
+ * Is the browser on the page this step is about?
+ *
+ * NOT a strict equality, which is what made the walk SKIP Messages: `/messages`
+ * redirects to `/messages/<channelId>` the moment it picks a channel, so the
+ * step never saw itself as "on the page", and after the wait it took the
+ * guard-redirected branch and dropped the page entirely. Ledger does the same
+ * with a `?focus=` deep link.
+ *
+ * Matched on a SEGMENT BOUNDARY, never a bare startsWith — `/ledger` must not
+ * match `/ledger-matching`, which is the identical trap the sidebar's
+ * active-row test already had to fix. `/` stays exact, since every path starts
+ * with it.
+ */
+export function isOnPage(pathname, want) {
+  if (!want) return true
+  if (pathname === want) return true
+  if (want === '/') return false
+  return pathname.startsWith(want + '/')
+}
+
 export function TourProvider({ children }) {
   const { user, canView, impersonating } = useAuth()
   const location = useLocation()
@@ -182,7 +203,8 @@ function TourOverlay({ tour, index, setIndex, onFinish, canView }) {
   const stepIdx = order[pos]
   const step = steps[stepIdx]
   const wantPath = step?.path || null
-  const onPage = !wantPath || location.pathname === wantPath
+  // `match` stays available for anything the segment rule cannot express.
+  const onPage = isOnPage(location.pathname, wantPath) || !!(tour.match && tour.match.test(location.pathname))
 
   const [rect, setRect] = useState(null)
   const [waiting, setWaiting] = useState(false)
