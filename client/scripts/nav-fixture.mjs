@@ -40,7 +40,12 @@ const SHAPES = [
 // the nav change that moves them: a silent drop back toward 47 means a family
 // was re-flattened, and a silent rise means a page was added to the rail
 // without anyone deciding where it belongs.
-const EXPECTED_ROWS = { User: 16, Approver: 29, Admin: 36 }
+// Pinned so a regroup cannot happen by accident. 2026-09-20: the Market Street
+// consolidation took the Admin rail from 36 rows to 16 — every path kept, folded
+// into `tabbed` families whose children live in the page's own tab bar
+// (components/PageTabs). The page COUNTS below are the real check that nothing
+// was lost: 52 distinct pages for an Admin, same as before.
+const EXPECTED_ROWS = { User: 8, Approver: 15, Admin: 16 }
 
 let failures = 0
 const fail = (msg) => { failures++; console.error(`  ✗ ${msg}`) }
