@@ -6,23 +6,12 @@ import { useSocket } from '../context/SocketContext'
 import { useTheme } from '../context/ThemeContext'
 import api from '../api'
 import ErrorBoundary from './ErrorBoundary'
+import { CONSOLE_NAV } from '../constants/consoleNav'
 import { useTour } from './Tour'
 
 // Neutral operator shell shown to platform admins who are NOT inside a
 // workspace. No label branding, no label-scoped nav — just platform tools.
 // Operators (managing other admins) is owner-only.
-export const CONSOLE_NAV = [
-  { path: '/', label: 'Overview', icon: LayoutDashboard },
-  { path: '/my-work', label: 'My Work', icon: CheckSquare },
-  { path: '/messages', label: 'Messages', icon: MessageSquare },
-  { path: '/workspaces', label: 'Workspaces', icon: Building2 },
-  { path: '/calendar', label: 'Calendar', icon: CalendarDays },
-  { path: '/activity', label: 'Activity', icon: ScrollText },
-  { path: '/analytics', label: 'Analytics', icon: BarChart3 },
-  { path: '/announcements', label: 'Announcements', icon: Megaphone },
-  { path: '/operators', label: 'Operators', icon: Users, ownerOnly: true },
-  { path: '/account', label: 'Account', icon: UserCog },
-]
 const META = {
   '/': { title: 'Overview', sub: 'Every workspace at a glance' },
   '/my-work': { title: 'My Work', sub: 'Your tasks across every workspace' },

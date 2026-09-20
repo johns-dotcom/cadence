@@ -38,7 +38,7 @@ const vite = await createServer({
 
 const { buildNavGroups } = await vite.ssrLoadModule('/src/constants/navConfig.jsx');
 const { PAGE_TOURS, buildWelcome, CONSOLE_TOURS, buildConsoleWelcome, allTours, tourForPath } = await vite.ssrLoadModule('/src/tours/index.js');
-const { CONSOLE_NAV } = await vite.ssrLoadModule('/src/components/PlatformLayout.jsx');
+const { CONSOLE_NAV } = await vite.ssrLoadModule('/src/constants/consoleNav.js');
 
 // The widest nav — every page anyone could reach.
 const groups = buildNavGroups({ isAdmin: true, isApprover: true, canView: () => true });

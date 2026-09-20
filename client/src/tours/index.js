@@ -17,7 +17,7 @@
 // `path` gates a tour with the same canView the sidebar uses: a User never sees
 // the Ledger walkthrough.
 import { buildNavGroups } from '../constants/navConfig'
-import { CONSOLE_NAV } from '../components/PlatformLayout'
+import { CONSOLE_NAV } from '../constants/consoleNav'
 
 const hdr = (slug) => `[data-tour="${slug}-header"], [data-page-header]`
 
