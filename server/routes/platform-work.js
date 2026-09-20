@@ -36,9 +36,18 @@ const { requirePlatformAdmin } = require('../middleware/tenant');
 const { accessibleLabelIds } = require('../lib/operatorAccess');
 const { ensureGhost, ghostIds } = require('../lib/operatorGhost');
 const { TASK_STATUSES, TASK_PRIORITIES } = require('../lib/constants');
+const { isValidDay } = require('../lib/calendarDay');
 const { buildAssignmentCtx, sendAssignment } = require('../lib/taskNotify');
 
 const router = express.Router();
+
+// A due date must be a REAL day before it reaches SQL — '2026-02-31' has the
+// right shape and Postgres answers 22008, which surfaced as a 500 on what is a
+// 400. Same guard the tenant task routes use.
+function badDueDate(v) {
+  if (v === undefined || v === null || v === '') return null;
+  return isValidDay(v) ? null : 'Invalid due date';
+}
 
 // No withTenant: cross-tenant by construction, so there is no single labelId to
 // pin this to. Every query derives its label from the task and re-checks it.
@@ -264,6 +273,9 @@ router.post('/tasks', async (req, res) => {
       ).catch(() => {});
     }
 
+    const dueErr = badDueDate(req.body.due_date);
+    if (dueErr) return res.status(400).json({ success: false, error: dueErr });
+
     // Optional assignee. Absent → the operator's own list, which is what this
     // page was for originally; present → a task in that person's queue, filed by
     // the operator's own identity so it comes back under "Waiting on them".
@@ -406,7 +418,11 @@ router.patch('/tasks/:id(\\d+)', async (req, res) => {
         if (!v) return res.status(400).json({ success: false, error: 'Description is required' });
       } else if (f === 'notes') v = text(v, NOTES_MAX);
       else if (f === 'category') v = text(v, CATEGORY_MAX);
-      else if (f === 'due_date') v = v || null;
+      else if (f === 'due_date') {
+        const dueErr = badDueDate(v);
+        if (dueErr) return res.status(400).json({ success: false, error: dueErr });
+        v = v || null;
+      }
       params.push(v);
       sets.push(`${f} = $${params.length}`);
     }

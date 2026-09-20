@@ -7,6 +7,7 @@ const { buildAssignmentCtx, sendAssignment } = require('../lib/taskNotify');
 // TASK_PRIORITIES, not PRIORITIES: tasks carry an 'Urgent' level that releases and
 // deals deliberately do not (lib/constants.js).
 const { TASK_STATUSES, TASK_PRIORITIES } = require('../lib/constants');
+const { isValidDay } = require('../lib/calendarDay');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -26,6 +27,23 @@ const text = (v, max) => {
 
 const isLead = (req) => ['Superadmin', 'Admin', 'Approver'].includes(req.user.role);
 
+// A due date has to be a REAL day before it reaches SQL. '2026-02-31' has the
+// right shape and is not a date; Postgres answers 22008 and the user sees a 500
+// on what is plainly a 400. Empty/null clears the field. Returns an error
+// string, or null when the value is fine.
+function badDueDate(v) {
+  if (v === undefined || v === null || v === '') return null;
+  return isValidDay(v) ? null : 'Invalid due date';
+}
+
+// Same for a foreign key arriving as text: a NaN reaches Postgres as 22P02.
+// Returns the integer, or null when the value is unusable.
+function intOrNull(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : undefined; // undefined = invalid
+}
+
 // The ONE task projection. Every route that returns a task must use it: the client
 // merges server rows over its local copies, and a spread that's missing a key leaves
 // the stale value behind — so a bare `RETURNING *` would make a newly created task
@@ -33,11 +51,16 @@ const isLead = (req) => ['Superadmin', 'Admin', 'Approver'].includes(req.user.ro
 // until the next full load.
 const TASK_SELECT = `
   SELECT t.*, u.name AS assignee_name, u.department AS assignee_department,
+         u.role AS assignee_role,
          b.name AS assigner_name, r.project_name AS release_name
     FROM tasks t
     LEFT JOIN users u ON u.id = t.user_id AND u.label_id = t.label_id
     LEFT JOIN users b ON b.id = t.assigned_by AND b.label_id = t.label_id
     LEFT JOIN releases r ON r.id = t.release_id AND r.label_id = t.label_id`;
+// `assignee_role` is here for the CLIENT's permission mirror, not for display:
+// canMutateTask refuses an Approver on an Admin/Superadmin's task even inside
+// their own department, and without the owner's role the client could not apply
+// that half of the rule — so it offered edits that were guaranteed to 403.
 
 async function selectTask(labelId, id) {
   const { rows } = await pool.query(`${TASK_SELECT} WHERE t.id = $1 AND t.label_id = $2`, [id, labelId]);
@@ -239,6 +262,10 @@ router.post('/', async (req, res) => {
     }
     const enumErr = badEnum(req.body); // hoisted; shared with PATCH
     if (enumErr) return res.status(400).json({ success: false, error: enumErr });
+    const dueErr = badDueDate(due_date);
+    if (dueErr) return res.status(400).json({ success: false, error: dueErr });
+    const relId = intOrNull(release_id);
+    if (relId === undefined) return res.status(400).json({ success: false, error: 'Invalid release' });
 
     // Leads may create work for their team (admins → anyone, Approver → own
     // department, via the same gate reassignment uses). A non-lead's user_id is
@@ -252,8 +279,8 @@ router.post('/', async (req, res) => {
       assigneeId = target;
     }
 
-    if (release_id) {
-      const { rows: r } = await pool.query('SELECT 1 FROM releases WHERE id = $1 AND label_id = $2', [release_id, req.labelId]);
+    if (relId) {
+      const { rows: r } = await pool.query('SELECT 1 FROM releases WHERE id = $1 AND label_id = $2', [relId, req.labelId]);
       if (!r.length) return res.status(400).json({ success: false, error: 'Release not found in this workspace' });
     }
 
@@ -267,7 +294,7 @@ router.post('/', async (req, res) => {
                NOW(),NOW())
        RETURNING *`,
       [req.labelId, assigneeId, req.user.id, description.trim(), priority || null, status || null,
-       due_date || null, release_id || null, text(req.body.notes, NOTES_MAX), text(req.body.category, CATEGORY_MAX)]
+       due_date || null, relId, text(req.body.notes, NOTES_MAX), text(req.body.category, CATEGORY_MAX)]
     );
     let pendingEmail = null;
     if (assigneeId !== req.user.id) {
@@ -429,6 +456,13 @@ router.patch('/bulk', async (req, res) => {
     }
 
     // $admin / $self / $dept mirror canMutateTask's three branches in SQL.
+    //
+    // The department branch MUST also refuse an Admin/Superadmin owner. It did
+    // not, and the single-task path did — so an Approver who was told "Not your
+    // task" one row at a time could edit the identical task through the bulk
+    // bar, and `user_id` is a bulk field, so they could also move an admin's
+    // task into their own queue. Verified before the fix: single PATCH 403,
+    // bulk PATCH 200 with the owner reassigned.
     params.push(isAdmin(req));
     const adminIdx = params.length;
     params.push(req.user.id);
@@ -443,7 +477,9 @@ router.patch('/bulk', async (req, res) => {
              OR t.user_id = $${selfIdx}
              OR ($${deptIdx}::text IS NOT NULL AND EXISTS (
                   SELECT 1 FROM users u
-                   WHERE u.id = t.user_id AND u.label_id = t.label_id AND u.department = $${deptIdx})) )
+                   WHERE u.id = t.user_id AND u.label_id = t.label_id
+                     AND u.department = $${deptIdx}
+                     AND u.role NOT IN ('Superadmin', 'Admin'))) )
         RETURNING *`,
       params
     );
@@ -584,12 +620,19 @@ router.patch('/:id', async (req, res) => {
 
     const enumErr = badEnum(req.body);
     if (enumErr) return res.status(400).json({ success: false, error: enumErr });
+    if ('due_date' in req.body) {
+      const dueErr = badDueDate(req.body.due_date);
+      if (dueErr) return res.status(400).json({ success: false, error: dueErr });
+    }
 
     // POST validates release_id in-tenant; PATCH did not, so a task could be
     // pointed at another workspace's release id.
     if (req.body.release_id) {
-      const { rows: r } = await pool.query('SELECT 1 FROM releases WHERE id = $1 AND label_id = $2', [req.body.release_id, req.labelId]);
+      const relId = intOrNull(req.body.release_id);
+      if (relId === undefined) return res.status(400).json({ success: false, error: 'Invalid release' });
+      const { rows: r } = await pool.query('SELECT 1 FROM releases WHERE id = $1 AND label_id = $2', [relId, req.labelId]);
       if (!r.length) return res.status(400).json({ success: false, error: 'Release not found in this workspace' });
+      req.body.release_id = relId;
     }
 
     // Reassignment is its own privileged branch — see UPDATABLE's note on why

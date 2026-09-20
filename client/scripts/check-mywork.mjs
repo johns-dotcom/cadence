@@ -20,6 +20,7 @@
  *
  * Usage: npm run check:mywork
  */
+import { readFileSync } from 'node:fs';
 import { createServer } from 'vite';
 import React from 'react';
 import { renderToString } from 'react-dom/server';
@@ -291,6 +292,41 @@ checks.push(
   ['delegated shows the holder', /<option[^>]*value="9"[^>]*selected/.test(detailAssigned) || detailAssigned.includes('waiting on them')],
   ['no picker without onAssign', !detailHtml.includes('Assigned to')],
 );
+
+// ── the client's permission mirror must match server/routes/tasks.js ──────
+// canMutateTask refuses an Approver on an Admin/Superadmin's task even inside
+// their own department (a privilege inversion). The client copy was missing
+// that half, so a lead was shown a full set of edit controls that all 403'd —
+// and the SQL behind PATCH /tasks/bulk was missing it too, which let the same
+// lead edit and even take ownership of an admin's task.
+{
+  const { canEditTaskFor, dayFromToday } = await vite.ssrLoadModule('/src/components/mywork/taskFields.js');
+  const lead = { id: 8, role: 'Approver', department: 'Marketing' };
+  const admin = { id: 1, role: 'Admin', department: 'Marketing' };
+  const inDept = (role, userId = 99) => ({ user_id: userId, assignee_department: 'Marketing', assignee_role: role });
+
+  checks.push(
+    ['lead cannot edit an Admin-owned task',        canEditTaskFor(inDept('Admin'), lead) === false],
+    ['lead cannot edit a Superadmin-owned task',    canEditTaskFor(inDept('Superadmin'), lead) === false],
+    ['lead CAN edit a member-owned task in dept',   canEditTaskFor(inDept('User'), lead) === true],
+    ['lead CAN edit their own task',                canEditTaskFor(inDept('Approver', 8), lead) === true],
+    ['lead cannot edit another department',         canEditTaskFor({ user_id: 99, assignee_department: 'Finance', assignee_role: 'User' }, lead) === false],
+    ['an Admin can edit anyone',                    canEditTaskFor(inDept('Superadmin'), admin) === true],
+    // The rule needs assignee_role, so TASK_SELECT has to carry it. Without the
+    // column the mirror silently falls open on exactly the case it guards.
+    ['the server projection carries assignee_role',
+      readFileSync(new URL('../../server/routes/tasks.js', import.meta.url), 'utf8').includes('u.role AS assignee_role')],
+    ['the bulk SQL refuses admin-owned rows too',
+      /u\.role NOT IN \('Superadmin', 'Admin'\)/.test(readFileSync(new URL('../../server/routes/tasks.js', import.meta.url), 'utf8'))],
+  );
+
+  // "Tomorrow" is a CALENDAR day, not +24h — the two differ across a DST shift.
+  const t = new Date();
+  const expected = new Date(t.getFullYear(), t.getMonth(), t.getDate() + 1);
+  const pad = (n) => String(n).padStart(2, '0');
+  checks.push(['dayFromToday(1) is the next calendar day',
+    dayFromToday(1) === `${expected.getFullYear()}-${pad(expected.getMonth() + 1)}-${pad(expected.getDate())}`]);
+}
 
 let bad = 0;
 for (const [name, ok] of checks) { if (!ok) bad++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`); }

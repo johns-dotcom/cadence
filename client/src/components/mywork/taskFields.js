@@ -12,6 +12,17 @@ import { formatDate, daysUntilLocal, localDateStr, dateOnly } from '../../utils/
 import { TASK_STATUSES, TASK_PRIORITIES, DEPARTMENTS } from '../../constants'
 
 // Sentinel group keys. Real values can't collide with these.
+// N calendar days from today, in the viewer's own calendar.
+//
+// NOT `Date.now() + n * 864e5`: that is n × 24 hours of absolute time, and a
+// DST shift makes the two disagree — asked late on the night the clocks go
+// forward, "tomorrow" resolved to the day AFTER tomorrow. The Date constructor
+// normalizes day overflow, so month and year ends need no special case.
+export function dayFromToday(n) {
+  const t = new Date()
+  return localDateStr(new Date(t.getFullYear(), t.getMonth(), t.getDate() + n))
+}
+
 export const UNASSIGNED = '__unassigned__'
 export const UNCATEGORIZED = '__uncategorized__'
 export const NO_DEPARTMENT = '__nodept__'
@@ -114,7 +125,14 @@ export function canEditTaskFor(task, user) {
   if (!task || !user) return false
   if (task.user_id === user.id) return true
   if (['Superadmin', 'Admin'].includes(user.role)) return true
-  return user.role === 'Approver' && !!user.department && task.assignee_department === user.department
+  // A lead may not reach UPWARD onto an Admin/Superadmin's task, even in their
+  // own department — canMutateTask refuses it as a privilege inversion. This
+  // half of the rule was missing, so an Approver was shown a full set of edit
+  // controls on an admin's task and every one of them 403'd. `assignee_role` is
+  // carried by TASK_SELECT for exactly this.
+  return user.role === 'Approver' && !!user.department
+    && task.assignee_department === user.department
+    && !['Superadmin', 'Admin'].includes(task.assignee_role)
 }
 
 // ── Group-by / sort options ────────────────────────────────────────────────
@@ -365,7 +383,7 @@ export function groupFieldFor(group, key) {
     case 'assignee': return key === UNASSIGNED ? null : { user_id: Number(key) }
     case 'due':
       if (key === 'today') return { due_date: localDateStr() }
-      if (key === 'tomorrow') return { due_date: localDateStr(new Date(Date.now() + 864e5)) }
+      if (key === 'tomorrow') return { due_date: dayFromToday(1) }
       if (key === 'none') return { due_date: null }
       return null
     default: return null
@@ -439,7 +457,7 @@ function trailingDate(tok, prev) {
   const w = tok.toLowerCase().replace(/[.,]$/, '')
   if (w === 'today' || w === 'tod') return { date: localDateStr(), consumePrev: false }
   if (w === 'tomorrow' || w === 'tmrw' || w === 'tmw') {
-    return { date: localDateStr(new Date(Date.now() + 864e5)), consumePrev: false }
+    return { date: dayFromToday(1), consumePrev: false }
   }
   const dow = WEEKDAY_INDEX[w]
   if (dow === undefined) return null
