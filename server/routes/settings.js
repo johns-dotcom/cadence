@@ -36,10 +36,14 @@ router.put('/me/tours', async (req, res) => {
     for (const t of list) {
       const id = String(t?.id || '').trim().slice(0, 60);
       if (!id) continue;
+      // `auto` marks a tour that was OFFERED automatically. It is written the
+      // moment the tour opens, so "shown automatically only once" survives a
+      // reload or a closed tab; finish() then overwrites it with the outcome.
       patch[id] = {
         version: String(t.version || '').slice(0, 20) || null,
         at: new Date().toISOString(),
         skipped: !!t.skipped,
+        ...(t.auto ? { auto: true } : {}),
       };
     }
     if (!Object.keys(patch).length) return res.status(400).json({ success: false, error: 'No tour given' });

@@ -6629,6 +6629,16 @@ the identical trap the sidebar's active-row test already had to fix), `/` stays
 exact, and `tour.match` remains for anything the rule cannot express. Held by
 fixture, including the `/messages/3` case that caused the report.
 
+**An auto-start is recorded the moment it OPENS, not when it is finished**
+(2026-09-20). Completion was only written by `finish()`, and the in-session ref
+was the only other guard — so anybody who auto-opened a tour and then reloaded,
+closed the tab or walked away was shown it again next time, on every device.
+`markOffered()` writes `{version, auto:true}` as the tour opens (local state
+first, so the effect cannot re-fire while the request is in flight, and a failed
+write still holds for the session); `finish()` then overwrites it with the real
+outcome. The Walkthrough button is unaffected — a manual replay never consults
+the record, and Settings can still reset every tour.
+
 **Auto-start rules**: the console welcome runs for an operator seeing the console
 for the first time; a page tour runs the first time a page is opened. An operator
 who has ENTERED a workspace gets page tours but NOT the tenant welcome walk —
