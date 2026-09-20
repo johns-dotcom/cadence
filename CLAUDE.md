@@ -1,3 +1,99 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+---
+
+## Start here
+
+**This file is a BUILD LOG, not a manual.** Below this section are ~40 dated
+entries, oldest first, each recording what a campaign built, what it deliberately
+skipped, and why. That history is the point: nearly every decision here was made
+against a specific defect, and the reasoning is what stops it being re-broken.
+But do not read it top to bottom to get oriented. Read this section, then jump:
+
+| If you need | Go to |
+|---|---|
+| Stack, deploy, and the verify-before-push gates | `## Stack & deploy` |
+| Rules that must keep holding | `## Standing invariants already honored` |
+| **Bugs that have already shipped once** | `## Known landmines` — read this before writing SQL or a migration |
+| What a specific surface does and why | the dated entry named after it |
+| What is still open | `_audit/97-remaining.md` (the register; this file is the record) |
+
+Reference app (the single-tenant original this was ported from) lives at
+`/Users/johnskead/Desktop/DevProjects/Dashboard/boom-dashboard` — read it when a
+behaviour is ambiguous.
+
+### Commands
+
+```bash
+# Run it (server serves the built client; client dev server proxies /api)
+cd server && node index.js          # :3001 locally, :8080 on Railway
+cd client && npm run dev            # Vite dev server
+
+cd client && npm run build          # bundles — proves almost nothing on its own
+
+# The six gates. `npm run build` catches NONE of what these catch.
+cd client
+npm run check:tdz                   # const/let read before declaration — legal syntax, runtime ReferenceError
+npm run check:render                # SSR-executes every route in App.jsx + the nav shell per role
+npm run check:mywork                # renders /my-work over a fixture and asserts what it SAYS
+npm run check:vendor-lab            # VendorSubmitLab.jsx is generated — fails if it drifted
+npm run check:ws-colors             # the console palette lives in two files; fails if they disagree
+node ../server/scripts/finance-fixtures.cjs   # 288 pure money/date assertions
+node --check server/<file>.js       # every changed server file
+
+# Three narrower fixtures, each written after a specific regression:
+npm run nav-fixture                 # nav rows resolve, no hollow containers, one active row
+npm run navpresets-fixture          # permission presets only name pages that exist
+npm run settings-fixture            # the permissions inverse-state ([] means grant-everything)
+```
+
+There is no test runner and no jsdom/vitest/jest — the gates above are the whole
+harness. `finance-fixtures.cjs` is one file of `assert(name, cond)` calls; to run
+a subset, comment out blocks or grep its output (`| grep -i recoup`).
+
+**Local database**: `server/.env` points at a THROWAWAY Neon project. `NODE_ENV=production`
+there only because `db.js` enables SSL solely in production. Never point it at real
+data. Production reads/writes go through `railway` (see `## Stack & deploy`).
+
+### Architecture in one page
+
+**Multi-tenant by `label_id`.** 52 route files under 58 `/api` mounts; 75 client
+pages across 88 routes. Every tenant query is scoped by `label_id`, and client-supplied
+foreign keys are re-validated in-tenant. `db.js` keeps `TENANT_TABLES` — add a
+tenant table there or it escapes the scoping audit.
+
+**Two shells, one app.** `App.jsx` branches on `is_platform_admin && !impersonating`:
+platform operators get `PlatformLayout` and the console pages; everyone else gets the
+tenant shell. Nav for both comes from `constants/navConfig.jsx` (`buildNavGroups`),
+which is also what Settings' hide-list and the ⌘K palette read — one definition.
+
+**Operator identity is a "ghost" per workspace** (`server/lib/operatorGhost.js`): one
+person, many user rows, all keyed by EMAIL, one per workspace they have entered.
+`lib/operatorAccess.js` is the single answer to "what may this operator see/do" —
+workspace allowlist plus a per-workspace ROLE. Ghosts are hidden from tenant rosters
+and from team task views.
+
+**Money conventions are load-bearing** and fixture-held: `lib/usd.js` rounds AT THE
+ROW and a locked `fx_rate_to_usd` ALWAYS wins (never a silent 1:1); splits are
+parent+child families where `parent_id IS NULL` filters DROP MONEY; P&L is
+LEDGER-mastered cash basis (`lib/reportRows.js` `buildPnl`), and `by_artist.ties_to_pnl`
+is a shipped contract the client refuses to render on when false.
+
+**Schema lives in `server/index.js` `runMigrations()`** — 95 `CREATE TABLE IF NOT
+EXISTS` plus `ADD COLUMN IF NOT EXISTS`, run at boot as ONE promise chain. A failure
+anywhere aborts every migration after it; this has already caused a two-week
+production outage (see `## Known landmines`).
+
+**Styling is tokens-only.** `styles/tokens.css` + semantic Tailwind aliases
+(`bg-card`, `text-ink`, `border-divider`, `text-brand-ink`). No `dark:` variants
+anywhere — the theme flips CSS vars. Alpha on a var-backed token routes through
+`color-mix` in `tailwind.config.js`; a new tint must be grepped for in the built CSS,
+because an invalid one emits nothing and fails silently.
+
+---
+
 # Cadence — What Exists (reality map)
 
 Companion to `BUILD_SPEC.md`. **BUILD_SPEC.md = what SHOULD exist. This file = what
@@ -139,6 +235,9 @@ upload. New deps: `jspdf` + `docx` (dynamically imported), `socket.io`(-client).
 ## Post-spec: task database views + Team Work (2026-08-11)
 
 `/my-work` became a **Notion-style database** and gained a sibling **`/team-work`**.
+> **Superseded 2026-09-16** — `/team-work` is a TAB on `/my-work` now, not a page;
+> the route is a redirect. The shared-shell design below is unchanged. See the
+> 2026-09-14 → 09-19 entry at the end of this file.
 Both render one shared shell — `components/mywork/TaskSurface.jsx` with a
 `surface="mine"|"team"` prop — so the two pages cannot drift. **Zero new deps.**
 
@@ -2407,7 +2506,7 @@ diverge from every other table.
      vendor form (or `routes/vendor.js`) and the lab silently drifts out of sync
      with the page it exists to preview; `--check` fails instead, and
      `npm run sync:vendor-lab` regenerates it.
-  7. `node server/scripts/finance-fixtures.cjs` (270 assertions) + `node --check`
+  7. `node server/scripts/finance-fixtures.cjs` (288 assertions) + `node --check`
      every changed server file
   `client/scripts/check-tdz.cjs` is a Babel scope analyzer that fails the build on a
   `const`/`let` READ before its own declaration in the same function scope — a
@@ -5565,3 +5664,684 @@ console task (the thread would live in the tenant). The delegated list has no
 nudge/reminder action. `/my-work` is not in `RESTRICTABLE_PAGES` — it is scoped
 by the operator's own identity, and adding a page silently revokes it from every
 operator who already has an allowlist.
+
+---
+
+## Deal pipeline — board legibility, a table view, days-in-stage (2026-09-19)
+
+Triggered by a screenshot: one deal, six stages, and a board that read as broken
+rather than empty. Three separate problems were tangled in that image — columns
+that reserved height they had not earned, a card that looked information-poor,
+and no way to see every deal at once. Each is addressed below.
+
+**One thing a later session must know first: the server half of this is written
+but NOT applied.** `DATABASE_URL` points at the remote Neon box, so restarting
+the server runs the new `ALTER TABLE` against it — that was left as John's call,
+not taken unilaterally. Until that restart, `stage_entered_at` does not exist and
+the Age column silently measures time in the PIPELINE (`added_date`) instead of
+time in the STAGE. The fallback is deliberate and documented in `daysInStage()`.
+
+### The board — empty stages recede, they do not shout
+
+`min-h-[16rem]` on every column was the dead space in the screenshot. Grid/flex
+stretch already levels the row to the tallest column, so a 16rem floor only ever
+showed up as emptiness on a board that had not filled up; it is now `7.5rem`, a
+floor for the drag target rather than a reserved block.
+
+An empty stage now renders **dashed rule, no fill** instead of a solid `bg-card`
+panel. Five filled white panels beside one holding a deal give the eye six equal
+things to check. This is the opposite tack from adding a "Drop here" to every
+empty column — it *removes* weight rather than adding copy, which is why it does
+not contradict the existing decision that a permanent drop label is decoration.
+**That decision stands: the dashed `Drop here` still appears only during a real
+drag.** The new dashed treatment is the column shell, not a label.
+
+The count chip is now **always rendered, including `0`**. Two reasons, and the
+second is a bug: a missing badge is ambiguous (empty stage, or a count that
+failed to load?), and the chip is taller than the bare heading — so showing it on
+only some columns knocked those headers a few px out of line with the rest of the
+row. Visible in the original screenshot as `SCOUTING` sitting ~3px below its five
+neighbours.
+
+### The card — the template was never the problem
+
+Worth recording because the first read was wrong: the card already rendered
+genre, A&R rep, offer, priority and follow-up. It looked bare because that deal
+record held only a name and a priority. So the work was hierarchy and one missing
+field, not new fields:
+
+- **Offer moved onto the title row**, right-aligned, semibold, tabular. It was
+  four rows down in the same grey as the genre — the least findable thing on a
+  card, while being the number a column gets scanned for.
+- **Genre and rep share one line** with a `·`. Two stacked greys of identical
+  size read as a wall; the separator keeps both legible in half the height.
+- **`spotify_monthly_listeners` reaches the card at last.** It has been in the
+  schema, in `UPDATABLE` and in the drawer since Phase 6 — it had simply never
+  been rendered on the board. For A&R it is the momentum number.
+- **`12d in stage`**, amber past a per-stage threshold (`STALE_AFTER_DAYS`:
+  Scouting 30 / Meeting 14 / Offer 10 / Negotiation 14). Per-stage because three
+  weeks in Scouting is research and three weeks in Offer is a problem; one global
+  number would nag about the first or stay silent on the second. Signed and
+  Passed are absent by design — a signed deal is not stale, it is finished.
+  Suppressed under a day: "0d" is noise on a deal added this morning.
+- **`Add detail`**, quietly, on a card carrying nothing but a name. A card you
+  must open to learn anything from is the one thing a board exists to avoid.
+
+### `stage_entered_at` — the only schema change
+
+`ALTER TABLE deals ADD COLUMN IF NOT EXISTS stage_entered_at TIMESTAMP DEFAULT
+CURRENT_TIMESTAMP`, in the `server/index.js` bootstrap beside `contact` / `links`
+/ `added_date`, following that same idempotent pattern.
+
+Distinct from both neighbours for a reason: `added_date` answers "how long have
+we known them", `updated_at` moves whenever anyone edits a note, and neither
+answers "how long has this sat in Negotiation". Written in `routes/deals.js`
+**only on a genuine stage change** — `stageMoved` compares against the `oldStage`
+the PATCH handler already fetches, so saving an unrelated field cannot reset the
+clock. Deliberately **absent from `UPDATABLE`** so a client cannot backdate it.
+Existing rows backfill from the DEFAULT, so every deal reads 0d until its first
+move — the same caveat `added_date` carried when it landed.
+
+### Table view — `components/DealsTable.jsx` (new)
+
+A Board/Table toggle, persisted per browser in `localStorage.deals_view`.
+
+**The switcher is My Work's, copied deliberately** — same segmented strip, same
+`bg-page` track, and crucially the **same keys: `1` Board, `2` Table**. Two pages
+offering the same choice in two different shapes, or under two different keys, is
+how shortcuts stop getting used. Both registered in `constants/shortcuts.js` in
+the same change, as that file asks. The loading skeleton now follows the restored
+view (`Skeleton.Table` vs `Skeleton.KanbanBoard`) instead of always flashing a
+kanban.
+
+Twelve columns, artist frozen left. **Stage and priority sort by pipeline order,
+not alphabetically** — an alphabetical stage sort gives Meeting, Offer, Passed,
+Scouting, which is meaningless for a funnel. **Blanks sort last in both
+directions**: a descending sort that opens with forty empty rows has buried the
+thing you sorted for. Totals row carries deal count and summed offers, under the
+column it sums.
+
+Click a cell to edit; Enter commits, Esc reverts, **Tab commits and opens the
+next field** — the one spreadsheet habit people actually miss. `CellEditor` owns
+its own draft (a keystroke does not re-render the grid) and commits exactly once
+behind a ref guard, because Enter and the blur it causes would otherwise fire two
+PATCHes and two toasts for one edit.
+
+Not a general `DataTable`, deliberately: the columns, editors and vocabularies
+are the deals schema, and a generic one needs a config object per page longer
+than the markup it replaces.
+
+### Corrections to earlier claims in this file
+
+- **"count chip hidden at 0"** (Phase 6 — Deals pipeline, stage colour system) is
+  no longer true, and was hiding an alignment bug. The chip always renders; `0`
+  is drawn in `text-ink-faint` without the `bg-elev` fill so it does not shout.
+- The same bullet's **"Drop here only appears during a real drag"** is
+  **unchanged and still correct** — noted only because empty columns are now
+  dashed too, and a future reader could otherwise take that for a regression.
+
+### Found while building
+
+- **A double-click that could never fire.** Cells were first given `onClick`
+  (edit) and `onDoubleClick` (open the drawer). The first click swaps the button
+  for an input, so the second click lands on the input and the open gesture never
+  happens. Fixed by making the artist column a dedicated open target — matching a
+  click on a board card — and dropping the double-click entirely. `artist_name`
+  is `NOT NULL`, so removing it from the editable set also removed the need to
+  guard against inline-clearing it.
+- **Postgres shapes the editor never produces.** Change detection compared raw
+  column values against editor output, but a `DATE` arrives as a full ISO
+  timestamp and `NUMERIC` as a string — `"2026-04-12T00:00:00.000Z"` vs
+  `"2026-04-12"`, `"250.00"` vs `"250"`. Both read as edits, so every cell opened
+  and closed untouched would have fired a PATCH. Both sides now pass through one
+  `norm()` before comparison.
+- JS line comments inside a JSX opening tag parse fine under Babel — checked
+  rather than assumed, since the column shell's explanation sits next to the
+  `className` it explains.
+
+### Verification
+`check:tdz` **204 files clean** · `check:render` shell clean for all roles,
+**88 routes** · `check:ws-colors` · `check:vendor-lab` · `npm run build` clean ·
+`node --check` on both changed server files. The emitted bundle was confirmed to
+be the one `index.html` references and to contain the new strings (`Click to
+edit`, `d in stage`, `Add detail`, the table subtitle).
+
+**Not verified: none of this has been exercised against live data.** The client
+half is live on :3001 because that server serves `client/dist` and the bundle was
+rebuilt, but no deal was actually dragged, sorted or edited through the new
+table by the author of this entry. The server half cannot be exercised at all
+until the restart described at the top.
+
+### Not done, deliberately
+No search or filter box on the table — sorting plus click-to-edit covers the
+common case, and filtering raises a design question this pass did not answer
+(does a filter apply to the board too, or only the table?). No arrow-key cell
+navigation: a real spreadsheet habit, but it needs an edit-vs-navigate mode and
+focus management that click-to-edit does not. No per-stage WIP limits, no column
+value totals in the board headers, and no artwork on cards. `PASSED` still sits
+inline as a sixth equal column rather than being separated or collapsed as a
+terminal state.
+
+---
+
+## Porting from Market Street — M1: nav families get their tab bar (2026-09-19)
+
+First milestone of a planned port from `marketst-dashboard/BOOM-DIFFERENCES.md`
+(§3). Agreed scope for the whole programme, in order: §3 nav, §4 departments +
+presets, §7 Settings rebuild, §6 flow polish, §5+§8 Home loop + signing, §11 all
+four integrations, §9 simpler artist budgets, §13 tours. Emails stay in
+**Cadence's own frame**, not the tenant's (§12 answered that way deliberately —
+Cadence is the product, labels are customers). Chartmetric stays behind a key.
+**§10 My Work is NOT being ported** — Cadence rebuilt it on 2026-09-14 and the
+Market Street version would overwrite working code.
+
+### What §3 actually turned out to be
+
+The guide describes collapsing 43 sidebar rows into 16 tabbed families. Cadence
+**already had the mechanism** — `{ tabbed, key, label, icon, children }`, used
+for Vendors and Recoupments, with `flattenNavGroups` keeping Settings and ⌘K
+one-row-per-page. What it did not have was the other half: `tabFamilyFor()` sat
+in navConfig with a comment calling it "one definition so a future in-page tab
+bar and the sidebar row can never disagree", and **zero consumers**. There was
+no tab bar.
+
+So this was not a port. Collapsing rows without a tab bar is a straight loss —
+once you are on `/bank-matching`, nothing tells you `/bank-statements` is its
+sibling or that "Bank" exists. Five new families were only worth adding because
+the bar landed with them.
+
+### Five new families, nothing hidden
+
+John's call was **regroup, hide nothing** — the `hidden: true` half of §3 is the
+part Boom reverted in Aug 2026, and it is not worth betting on which eight pages
+nobody wants. Every page the rail drew before, it still draws.
+
+- **Contracts** — `/contracts`, `/pending-contracts`, `/renewals`, `/contracts/create`
+- **Legal** — `/legal`, `/create-nda`, `/label-waivers`, `/clearances`
+- **Bank** — `/bank-statements`, `/bank-matching`
+- **Invoices** — `/invoices`, `/invoice-search`, `/bulk-upload`
+- **Artist Spend** — `/artist-budgets`, `/artist-campaigns`, `/bulk-deals`
+
+Two judgement calls worth recording. **`/add-invoice` deliberately stays a plain
+row** outside the Invoices family: it is the one bookkeeping page a plain User
+has business on, and burying the least-privileged role's most-used action inside
+a family they would see one tab of is a regression dressed as tidying.
+**`/bank-ledger` stays next to `/ledger`** rather than joining the Bank family —
+the comment above it explains it is the same register read the same way, just
+the rows nobody invoiced us for, and that reasoning still holds.
+
+Child labels stay close to the page names rather than being shortened to fit a
+tab, because ⌘K ranks against those strings; where a label did shorten
+(`Create`, `Waivers`, `Matching`), the old wording was appended to `synonyms` so
+search is unchanged.
+
+### `components/PageTabs.jsx` (new)
+
+Rendered once by Layout above the outlet, not imported per page — a family gains
+a member by editing navConfig and the bar follows. Placed **outside the
+ErrorBoundary on purpose**: if a page throws, the tabs are how you reach a
+sibling that still works.
+
+`canView` gates every tab. The viewer's own hidden-pages tidying deliberately
+does **not**: hiding a row is a statement about the rail, not a revocation, and
+those pages stay reachable by URL and ⌘K — so filtering them here would mean
+someone who hid `/renewals` and then opened it from search would land on a tab
+bar that did not contain the page they were standing on. Below two visible tabs
+the bar returns null rather than drawing a one-tab row.
+
+`isAdminRole` / `isApproverRole` moved into `constants.js` and Layout now uses
+them too. Both files build nav groups; a second copy of `['Superadmin','Admin']`
+is how one of them ends up a role behind.
+
+### `scripts/nav-fixture.mjs` (new) — `npm run nav-fixture`
+
+Cadence had no nav fixture; the guide is explicit that this regroup ships with
+one. `check-render` proves navConfig **executes** for three roles — this proves
+the result is **coherent**: no empty containers (the sidebar reads
+`children[0].path`), no row that is both a page and a container, no page in two
+groups, every page present in `PAGE_LABELS`, and `tabFamilyFor` agreeing with
+the tree in both directions — a family child must resolve to its own family, and
+a plain row must resolve to none, or a page grows a tab bar belonging to
+somebody else.
+
+Row counts are asserted, not just reported: **User 16 · Approver 29 · Admin 36**,
+down from 47 for an Admin. Proved the assertion has teeth by duplicating
+`/calendar` into a second group — caught as both a duplicate and a row-count
+drift, in all three role shapes — then reverting.
+
+### Verification
+`nav-fixture` clean · `check:tdz` **205 files** · `check:render` shell clean for
+all roles, **88 routes** · `check:ws-colors` · `check:vendor-lab` ·
+`check:mywork` **42/42** · `npm run build` clean.
+
+**Not verified: nothing here has been seen in a browser.** No Cadence server is
+running — `:3001` is `boom-dashboard`, not this app — and starting one runs the
+bootstrap migrations against the remote Neon box, which includes the still-unapplied
+`stage_entered_at` ALTER from the deals pass above. That restart is John's call,
+so M1 rests on the gates alone.
+
+### Not done, deliberately
+No `hidden: true` on any page. `/add-invoice` and `/bank-ledger` left as plain
+rows for the reasons above. Releases (Releases/Catalog/Brand/Marketing) and
+System (Admin Docs/Activity/Usage/Vendor Lab) were left ungrouped — the first
+four are genuinely distinct surfaces and the last four are unrelated subjects,
+so grouping either would be tidying that costs reach. `/vendor-lab` could not
+join a family regardless: it is `external: true` and opens in a new tab.
+
+---
+
+## Porting from Market Street — M2: departments, additive presets, the roles page (2026-09-19)
+
+§4 of `BOOM-DIFFERENCES.md`. Like §3, most of the mechanism was already here and
+the work was finishing it: `users.department` and `users.hierarchy_level` have
+existed since the first schema, `user_page_permissions` and a `PERMISSION_PRESETS`
+dropdown were already wired, and `DEPARTMENTS` shipped as a client constant of
+six. What changed is the three things that were wrong about it.
+
+### Presets now ADD instead of replacing
+
+The old dropdown called `applySet`, which did `setPages(new Set(list))`. So a
+person who needed A&R plus a look at Marketing could not be built from presets
+at all: picking the second silently discarded the first, and that looks exactly
+like a mis-click until somebody notices a page missing weeks later.
+
+`client/src/lib/navPresets.js` (new) owns the definitions now — seven presets,
+each carrying its page list, the sentence describing it, and the department that
+seeds it. `addPreset()` unions; `Clear` is the only thing that removes.
+Templates and Copy-from still **replace**, deliberately: those say "make this
+person like that one", which is a different sentence and the only way to take
+pages away without unticking by hand.
+
+The chips show coverage rather than just a name, because "A&R" tells you nothing
+about what clicking does when six of its eight pages are already ticked — a
+preset reads `+3`, or ticks green and disables when fully granted.
+`presetCoverage()` deliberately does **not** count the floor (`/`, `/my-work`)
+as partial coverage: every grant set has those, so counting them would light up
+all seven presets on an empty selection.
+
+`PRESET_NOTES` in PermissionsManager was left orphaned by this and is gone —
+each note lives on its preset now, so the list and its description cannot drift.
+
+### Departments are per-workspace
+
+`label_departments (label_id, name, sort_order, default_hierarchy)`, seeded with
+the six the constant always shipped plus whatever each workspace's people are
+actually in.
+
+**`users.department` stays a plain VARCHAR and is still the source of truth for
+who is in what.** This table is the workspace's *vocabulary*, not a foreign key,
+and that is deliberate: the app already treats the department list as a
+suggestion rather than a closed set — `taskFields.orderGroups` and `Salary` both
+append unknown values instead of dropping them, and Salary says so in a comment
+— so a rename or a delete can never orphan a person the way an FK would. A
+rename carries its people with it in one transaction; a delete refuses while
+anyone is still in it and asks where they should go (`?reassign=`), because
+deleting the vocabulary entry would not remove anyone from the department, it
+would just stop the app naming it.
+
+`GET /api/departments` also returns `unlisted` — values people carry that the
+list has lost. Surfaced in the manager rather than hidden, so the roster and the
+vocabulary can be reconciled instead of quietly disagreeing.
+
+`useDepartments()` reads the workspace itself rather than making four call sites
+thread a label id through, caches per label at module scope so five mounted
+pickers make one request, and **falls back to the shipped constant while loading
+or on failure** — an add-member form with an empty department dropdown is worse
+than one showing the defaults. An empty *response*, though, is honoured: a
+workspace that deleted every department gets an empty list, because falling back
+there would resurrect six names somebody had deliberately removed.
+
+`taskFields.js` was deliberately left on the constant. It is a pure module, not
+a component, and its `orderGroups` already appends unknown departments sorted
+after the known ones — so a custom department still appears, and `check:mywork`
+(42/42) stays untouched.
+
+### The bug found while writing the seed
+
+The default seed runs in the bootstrap, which runs on **every boot**.
+`ON CONFLICT DO NOTHING` makes that safe against duplicates but not against
+intent: an unconditional insert would quietly resurrect a default department an
+admin had deleted, the next time the server restarted. They would delete it
+again, and it would come back again, with nothing on screen explaining why. It
+is now gated on `NOT EXISTS (… WHERE x.label_id = l.id)`, which makes seeding a
+first-run act rather than a standing instruction. The second seed — from
+`users.department` — is safe to re-run, because a department can only be deleted
+once nobody is in it.
+
+### The roles page — `lib/roles.js` + `components/RolesGuide.jsx`
+
+Written from the code that enforces the model, not from intent: the gates are
+`requireRole`/`requireAdmin`/`requireApprover` in `middleware/tenant.js`, the
+page rule is `canView` in `AuthContext.jsx`. Can / Cannot / Pages per role.
+
+The part worth having is the four axes, because four different things get called
+"permissions" and only two of them decide anything:
+
+- **Role** — what the server gates on. Changing it signs the person out.
+- **Page permissions** — which pages a *User* can open. **Ignored for
+  Superadmin, Admin and Approver**, who already reach every page, so ticking
+  boxes for them changes nothing.
+- **Department** — grants nothing. It groups people and seeds a preset.
+- **Hierarchy level** — grants nothing at all. Every place it is read is an
+  `ORDER BY`; a level 1 User can do strictly less than a level 99 Admin.
+
+Collapsed by default and placed directly above the permissions editor, because
+it answers the questions that editor provokes. It also states plainly that there
+is no Bookkeeper *role* — that is a preset.
+
+### `scripts/navpresets-fixture.mjs` (new) — `npm run navpresets-fixture`
+
+A preset is a list of path strings and nothing checked them: `/bank-statement`
+for `/bank-statements` grants nothing, silently, and the same happens the day a
+path is renamed and the presets are not. Asserts every preset path is in
+`ALL_PAGES` **and** in `PAGE_LABELS`, no duplicates, the floor is present, and —
+the seam that matters — that every granted page is reachable under the real
+`canView` prefix rule, restated in the fixture. Then that presets actually
+union, that coverage reports full/partial/none honestly, and that no two presets
+claim the same department (the second would never seed).
+
+### Verification
+`nav-fixture` clean · `navpresets-fixture` clean (7 presets + Full access;
+A&R 8 + Marketing 8 unions to 10) · `check:tdz` **210 files** · `check:render`
+88 routes · `check:ws-colors` · `check:vendor-lab` · `check:mywork` **42/42** ·
+build clean · `node --check` on both changed server files.
+
+**Not verified: no SQL in this milestone has ever been executed.** The table,
+the two seeds, and all four `/api/departments` handlers are unrun — no Cadence
+server is up, and starting one applies this schema plus the still-pending
+`stage_entered_at` to the remote Neon box. Everything above rests on
+`node --check` and reading. The first boot is the real test of M2, and the seed
+is the part to watch.
+
+### Not done, deliberately
+No new Settings tab — `RolesGuide` and `DepartmentsManager` went into the
+existing Team tab, because §7 (M3) rebuilds Settings into My/Label halves and a
+tab added now would be churn. Department is still free text on the server: the
+team route does not validate it against `label_departments`, so the vocabulary
+can still fall behind the roster — which is exactly what `unlisted` reports. No
+reordering UI (sort_order is settable by API only). Presets do not yet seed
+automatically on account creation; `presetForDepartment()` exists and is tested,
+but wiring it into the invite/create flow belongs with §7's People + invites.
+
+## Porting from Market Street — M3: Settings in two halves, the label record, hashed invites (2026-09-19)
+
+Third milestone of the BOOM-DIFFERENCES port (§7). Two of the four pieces were
+"finish what's there" again; the other two were real gaps, and one of those
+turned out to be a security fix.
+
+### Settings: two halves and a URL
+
+`components/SettingsShell.jsx` replaces the flat five-tab strip with a left rail
+split into **My settings** (Profile, Sign-in, Appearance, My navigation) and
+**Label settings** (People, Roles & access, Label record, Identity & branding,
+Email & forms, Data). The split is the point: one half changes what *you* see,
+the other changes what *everybody* sees, and the old tab bar put "Workspace"
+beside "Account" as if they were the same kind of decision.
+
+Every panel now has a URL (`?tab=roles`). Settings is somewhere people get
+*sent* — "the departments list is in Settings" — and without a per-panel link
+the only way to send somebody was prose directions.
+
+The section list lives in `lib/settingsSections.js`, not inline in the page, so
+one list answers "what panels exist": the rail renders from it, `?tab=`
+validates against it, and `settings-fixture` cross-checks it against the
+`{tab === '…'}` branches actually implemented. That pairing is the failure
+nothing else catches — a rail item without a panel renders a blank page and the
+console says nothing. The fixture was verified to fail on both drift
+directions and on a dropped `isAdmin` guard before being kept.
+
+Old tab keys (`account`, `workspace`, `finance`, `team`) are aliased, not
+dropped: they are in bookmarks and in this app's own cross-links, and landing
+somebody on Profile reads as a broken link.
+
+### Per-person access on /team/:id
+
+`PermissionsManager` now takes an optional `member` prop. With no props it is
+the workspace-wide matrix on Settings → Roles & access; given a member it is
+that person's **Access** tab on `/team/:id`, picker and roster overview
+dropped. One component deliberately, not two — they write the same endpoint,
+and a second implementation of the empty-list-means-unrestricted rule is
+exactly the kind of divergence that grants somebody everything by accident.
+
+`components/AccessEditor.jsx` wraps it with a summary of the four axes for that
+person. The strip is the reason the component exists: an admin looking at
+somebody who "cannot see Recoupments" needs to know first that their *role*
+already decides it, or the page list is the only lever visible and they reach
+for it.
+
+### The label record — and why it is NOT encrypted
+
+`label_records` (one row per label) replaces `labels.invoice_settings` as the
+home for the remittance block, and adds signatory and payment terms. The legacy
+column is left in place, unread, as the only copy of the pre-cutover values;
+`GET /label` and `/auth/me` now PROJECT the record back into the old
+`invoice_settings` shape, so the invoice PDF, the create-invoice preview and
+the sidebar footer did not change. A `PATCH /label {invoice_settings}` from an
+old caller writes THROUGH to the record rather than to a column nothing reads —
+a save that appears to work but never shows up on an invoice is worse than one
+that fails.
+
+**Deliberate divergence from §7**, which specified the EIN and bank numbers
+encrypted with last-four shown and a Superadmin-only audited reveal. That does
+not survive contact with how Cadence uses them: `CreateInvoice.jsx` prints
+every one of these fields — EIN (:97, :385) and account number (:107, :405)
+included — into both the preview and the PDF. Invoices are issued by Admins and
+Approvers, so a Superadmin reveal gate would empty the "Funds payable to" block
+for exactly the people whose job is to send them, and making a core document
+depend on `PAYMENT_DETAILS_KEY` trades real availability for very little when
+the numbers go to every client the label bills anyway.
+
+So the record is plain columns, and `LabelRecordForm` says so above the first
+field — people filling in a settings form assume it is internal. The vendor
+vault stays encrypted for the opposite reason: those are *other people's*
+account numbers, given in confidence and printed on nothing.
+
+**If this call is wrong, the fix is narrow**: encrypt `ein` and
+`account_number` via `lib/paymentCrypto`, and have the label read paths decrypt
+for any role that can issue an invoice rather than gating on Superadmin.
+
+### Invites: the token was a plaintext bearer credential
+
+`users.invite_token` held the raw token. Anyone who could read the row — a
+support query, a logged statement, a snapshot, a backup outliving the invite —
+could accept it and become that person at whatever role the admin picked.
+
+`lib/invites.js` now mints `{token, stored}`; only the SHA-256 is persisted.
+Unsalted and unstretched is correct *here* and would be wrong for a password:
+the input is 32 bytes of `randomBytes`, so there is no dictionary to run.
+
+**The `s256:` prefix is load-bearing.** A raw token and its SHA-256 are both 64
+hex characters, so a stored value gives no way to tell whether it has already
+been hashed — without a marker the backfill could not be idempotent, and a
+second boot would hash the hash and silently void every outstanding invite. The
+prefix is what lets the migration carry a `NOT LIKE 's256:%'` guard.
+
+Login also stopped saying "Invalid credentials" to an invited account that has
+no password yet — it names the invite, and says so differently if it expired.
+That branch can never have succeeded: the bcrypt compare is guarded on
+`password_hash` being present.
+
+Verified end-to-end against the live database: the stored value differs from
+the emailed token, the emailed link still resolves, the stored hash does *not*
+work as a token, a resend voids the previous link, acceptance clears the token,
+and a replay with a valid-length password returns 404 while the first password
+still works. (A first pass "proved" the replay with a 7-character password,
+which fails length validation before the token lookup — that assertion was
+inert and was redone.)
+
+### Verified
+
+All eight harnesses clean (`check:tdz` 214 files, `check:render` 88 routes,
+`check:ws-colors`, `check:mywork` 42/42, `check:vendor-lab`, `nav-fixture`,
+`navpresets-fixture`, and the new `settings-fixture`). Against the live Neon
+database: 4 labels → 4 records, the one workspace with legacy remittance data
+carried across exactly its 2 keys, re-running the seed inserted 0 and an edited
+record survived it, `GET /label` still returns all 14 remittance keys, the
+legacy write-through lands in the record, and the audit row names the fields
+changed without their values.
+
+### Known gaps
+
+Signatory and payment terms are stored but nothing consumes them yet — the
+contract and waiver surfaces that will are a later milestone, and the form says
+so rather than implying a document is already stamped with them. §7's
+Integrations tab is deliberately not here; it belongs with §11 (M6). The
+Activity page still logs and shows reads. Presets still do not auto-seed on
+account creation — `presetForDepartment()` remains tested but unwired, now
+waiting on the invite/create flow rather than on §7 generally.
+
+---
+
+## My Work, operator control, and one production outage (2026-09-14 → 09-19)
+
+Fourteen commits the log had not recorded. Grouped by what they changed, not by
+the order they shipped.
+
+### The production outage, and why it was invisible
+
+Chat was 500ing on every read and send. The deploy log named it:
+`Migration error: column "ts" does not exist`, then
+`column m.is_operator does not exist` on every chat query.
+
+`page_views` shipped in M5 with `created_at`; Phase 8 rewrote the CREATE to use
+`ts` — but **`CREATE TABLE IF NOT EXISTS` is a no-op on an existing table**, so
+every database that had run M5 kept `created_at`, and the next `CREATE INDEX …
+(ts DESC)` raised 42703. `runMigrations()` is ONE promise chain, so that single
+error aborted **every migration after it**: production had been booting a
+half-built schema since Phase 8. Audited against the live database, exactly three
+objects had never been created — `chat_messages.is_operator`,
+`operator_chat_audit`, `salary_payment_history`.
+
+Fixed with a guarded rename before the index (keyed on `created_at` present AND
+`ts` absent, so it is a no-op on a fresh database and runs once anywhere else).
+Reproduced on the dev box first by inducing the production shape.
+
+**Two client defects made it undiagnosable, and both are now fixed**: `loadBoards`
+swallowed its error into "No workspace boards to show" (identical to an operator
+with no workspaces), and the chat history fetch fell through to "This is the
+beginning of your conversation" — telling somebody their messages were gone while
+20 rows sat in the database. Both are real error states now, and the conversation
+one says explicitly that nothing was deleted.
+
+**The durable fix is still not done**: `runMigrations()` remains a single chain, so
+the next bad statement truncates the schema the same way. A per-statement error
+boundary is the fix; it touches ~500 `await pool.query` calls, several of which
+read `.rows` from their result, so it was deliberately not bundled into a hotfix.
+
+### /my-work is now the only task page
+
+**Split view** (`view.type === 'split'`, the personal default, grouped by urgency):
+a list on the left, the task you are reading beside it. It is a new VIEW TYPE in
+the existing switcher — Board/Table/Calendar/List are one click away and saved
+views keep working. The pane is `TaskDrawer variant="pane"`: the same body, a
+different shell, because a second detail component would be a second place for the
+notes autosave, the lead-gated assignee rule and the release picker to drift. The
+overlay does NOT render in the split view (two containers over one row = two notes
+drafts, two autosaves), and both take one `detailProps()` object.
+
+**Tabs on /my-work**, widening scope left to right: To Do Today · My Tasks · My
+Releases · Team (leads) · All workspaces (operators). Every tab stays MOUNTED and
+hides with a class, so view config, search text and selection survive a switch —
+except the Team tab, whose `?scope=team` query is the heaviest, which mounts on
+first open and stays mounted after. `TaskSurface` gained `data` / `chrome` /
+`active` for this: the page owns one `useTaskData`, so the tab badges, the pills,
+the Today triage and the board are four reductions over ONE array.
+
+**`/team-work` is gone as a page** — folded into the Team tab, with the route kept
+as a redirect to `/my-work?tab=team` (the bell, the manual and Settings all pointed
+at it). `teamFilter` still decides who may see it; the tab only mirrors that rule.
+
+**Task notes** are the field whose value is the reason to open a task, and were a
+10px icon. `noteLine()` in `taskFields.js` is the one definition of what a row shows
+(first non-empty line, capped) — read by the task card, the Table view's optional
+Note column, and the operator console. The note is the drawer's BODY, under the
+title, autosaving at 600ms and on blur.
+
+**`npm run check:mywork`** (new gate, in the verify list) renders the page over a
+fixed five-task fixture and asserts what the first paint SAYS — `check:render`
+stubs no data, so it only ever sees that page's loading branch, and a wrong count
+is not a crash. It caught a `key` spread into `TaskCard` on its first run. Its own
+date fixture was built on `toISOString()` and would have failed every evening west
+of Greenwich; it uses local calendar parts now.
+
+### The operator console
+
+**Cross-workspace My Work** (`/my-work` in the console, `routes/platform-work.js`).
+A platform operator is one person with many ghost rows keyed by email, so "my tasks
+everywhere" needs no new table. Two lists, never summed: mine, and what I delegated.
+`lib/operatorGhost.js` (extracted from the enter flow, which now calls it) owns the
+identity rule. Also available INSIDE a workspace as the "All workspaces" tab —
+`/api/platform/work` authorises on `is_platform_admin`, which an entered operator's
+ghost carries, so no server change was needed.
+
+**Cross-tenant assignment**: `GET /workspaces/:id/members` (ghosts excluded, using
+`routes/team.js`'s own predicate) and `POST /tasks/:id/assign`, which acts on a
+WIDER set than the field PATCH — tasks the operator owns *or* delegated, so work can
+be handed on and taken back, while the content of a task a tenant member now owns
+stays out of reach. Assigning emails the assignee and is recorded in THAT
+workspace's activity log; creating a task for yourself is not, because it is
+invisible to them.
+
+**Per-workspace operator authority** — new `operator_workspace_roles` (one default
+row per operator with `label_id IS NULL`, plus per-workspace overrides, enforced by
+two PARTIAL unique indexes). Deliberately NOT a column on
+`operator_workspace_access`: any row there means "confined to this list", so a role
+override would silently restrict which workspaces they reach.
+
+The mechanism is a tenant ROLE, not a page list, and that is the whole point: the
+page matrix is a NAV filter the server never consults, and `canView()`
+short-circuits to true for Superadmin/Admin/Approver — which is what an operator
+enters as. Role is what all routes already gate on. Resolution (`workspaceRoleFor`):
+override → default → `Admin` (exactly what they had before, so deploying it changed
+nobody's access). **Owners are never restricted** — a guaranteed break-glass path
+into every tenant. A demotion binds immediately because `auth.js` overlays the live
+role from the users row on every request; `token_version` is bumped alongside so the
+client cannot render authority it no longer has, and only the ghost's session ends.
+
+**Also**: workspace message boards + cross-tenant search; the console Overview and
+Calendar, which closed an access leak (the allowlist gated only `/enter`, so a
+restricted operator still read counts and audit lines for blocked workspaces);
+workspace identity is TWO encodings, a validated colour AND a two-letter tag,
+because past three workspaces no ordering of eight hues clears the CVD/ΔE gate.
+
+### Elsewhere
+
+**Per-workspace outbound sender** — Settings → Finance takes a sender name, a
+send-from address and reply-to. The address cannot be trusted on sight: providers
+refuse unverified domains and `sendEmail()` swallows failures, so a typed address
+would have silently stopped all of a workspace's email. A custom address is used
+only after a test send FROM it succeeds (`POST /label/email-sender/verify`), the
+stamp records WHICH address earned it, and any stamp in a PATCH body is stripped.
+Found while wiring it: **8 of 12 send sites were not carrying a workspace identity
+at all** — team invites, chat mentions, internal requests and task assignments all
+went out as the bare platform address. Now wired; `platform.js`'s operator and
+owner invites stay global on purpose.
+
+**Vendor lab** gained a "skip the client-side checks" toggle, built through the
+GENERATOR (four deltas) rather than by hand-editing the generated file. None of
+them touches a validation rule — only the places that CALL the gates — because a
+refusal in the lab must stay the refusal a vendor gets. Two new post-conditions
+refuse to generate if `VendorSubmit.jsx` ever references `skipGates`, or if the lab
+lacks the state.
+
+**`/ad-allocation` was removed** from workspaces — nav, route, page and
+`components/adalloc/`. The SERVER routes stay: `/reports/label-level-rules` is also
+called by Artist Campaigns' Unattributed modal. Allocations already made are real
+ledger split families and are unaffected; what went with the page is the per-slice
+undo, so reversing one now means editing the split on `/ledger`.
+
+### Landmines this fortnight confirmed or added
+- **`CREATE TABLE IF NOT EXISTS` never reshapes an existing table**, and the failure
+  lands on the NEXT statement. Rename/repair explicitly, before the index.
+- **A missing import is a runtime ReferenceError on the success path.** Three this
+  fortnight, all on freshly-added code, none catchable by `npm run build` — and in
+  one case the verification grep showed the USAGE and was read as the import.
+- **An effect's DEPENDENCY ARRAY is evaluated during render.** Moving state below a
+  `useEffect` that lists it is a guaranteed TDZ crash; `check-tdz` and `check-render`
+  both caught it.
+- **`git checkout <file>` discards uncommitted work.** Used to undo a test edit, it
+  reverted an hour of changes to that file. Copy the file instead.
+- **A gate can assert the wrong thing and pass.** Two here did: one counted a title
+  across a page where two tabs legitimately render it, another asserted a "member"
+  lacks the Team tab while the stub was a Superadmin, who IS a lead. Induce the
+  defect and watch the check fail before believing it.
