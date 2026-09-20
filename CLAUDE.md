@@ -6537,3 +6537,56 @@ consumers then answer on it — analytics re-bucketed to 12 weeks from 2026-06-2
 and `/invoices/due-date` printed October 20 — then reset. All nine gates green;
 fixtures 288. check-tdz caught a read-before-declaration in the Settings loader
 during this work, which is the third time that gate has paid for itself.
+
+---
+
+## Walkthroughs — the click-through tours, ported from Market Street (2026-09-20)
+
+A spotlight tour per page, plus a welcome walk that covers the whole nav. Ported
+from `marketst-dashboard`, which documents the design in its own navConfig; the
+engine, the persistence model and the "a missing anchor is SHOWN, not skipped"
+rule are its decisions, re-implemented on cadence's tokens and nav.
+
+**`client/src/tours/index.js`** — 52 tours, one per nav destination, 78 steps.
+Each carries a dated `version`: completion is stored per user per version, so
+editing a page's tour offers it again instead of silently never showing the new
+steps. **THE RULE: a change to a page changes its tour in the same commit and
+bumps that tour's version.**
+
+**The welcome walk is BUILT FROM THE NAV**, not hand-kept: `buildWelcome(groups)`
+walks `buildNavGroups` in sidebar order and takes each page's own steps, stamping
+them with the page and its tab family. A page added to the nav joins the walk
+automatically — the only way "the walkthrough covers everything" stays true.
+
+**`components/Tour.jsx`** — the engine. Auto-starts welcome on first sign-in,
+then a page's own tour the first time that page is opened, one at a time, only
+for pages `canView` admits. Targets are comma-separated **in preference order**
+and the first VISIBLE match wins, so a control hidden by a responsive class is
+never spotlighted. Arrow keys always work (Enter is suppressed on a focused
+button, because it would also click it). Skip tour / Skip this page / Skip
+family.
+
+**A step whose anchor never renders is SHOWN centred with a note, never skipped.**
+Silent auto-advance is what reads as a broken walkthrough; a step whose PAGE
+never loads (a guard redirected) still drops that page rather than limping
+through it one step at a time.
+
+**Anchoring cost nothing per page.** `PageHeader` now always emits
+`data-page-header`, and 51 pages render it — so every tour has a real target
+without editing those pages. `tour="ledger"` additionally emits
+`data-tour="ledger-header"` for steps that want to name one page. Six pages
+build their own header (Dashboard, My Work, Messages, Approvals, Bank Matching,
+Reports) and were given a hand-placed anchor on their `<h1>`.
+
+**Server**: `users.tours_done JSONB` + `PUT/DELETE /api/settings/me/tours`. The
+PUT MERGES (`||`) rather than replaces — two tabs finishing different tours must
+not erase each other — and `/settings/me` returns it.
+
+**New gate `npm run check:tours`** (add it to the verify list): every tour is on
+a real nav page, every nav page has a tour, ids are unique, versions are dated,
+every step has a target/title/body, and the welcome walk matches the nav in
+order. Verified to bite in both directions — repointing a tour at a dead path
+fails it, and adding a nav page without a tour fails it.
+
+What it cannot check is whether the words are TRUE; that is what the standing
+rule above is for.

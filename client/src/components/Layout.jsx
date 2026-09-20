@@ -1,8 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
-import {
-  Settings, LogOut, LogIn, Eye, ChevronDown, ChevronRight, Menu, X, Moon, Sun, Disc3, BookOpen, Link2, Check, Search, Megaphone, MessageSquarePlus, Keyboard, Building2,
-} from 'lucide-react'
+import { BookOpen, Building2, Check, ChevronDown, ChevronRight, Compass, Disc3, Eye, Keyboard, Link2, LogIn, LogOut, Megaphone, Menu, MessageSquarePlus, Moon, Search, Settings, Sun, X } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { getHiddenPages, onNavPrefsChange } from '../utils/navPrefs'
 import { useSocket } from '../context/SocketContext'
@@ -18,6 +16,7 @@ import ErrorBoundary from './ErrorBoundary'
 import { PAGE_LABELS, buildNavGroups, navPageGroups } from '../constants/navConfig'
 import { isAdminRole, isApproverRole } from '../constants'
 import PageTabs from './PageTabs'
+import { useTour } from './Tour'
 
 // Re-exported so existing importers (`from '../components/Layout'`) keep working.
 export { PAGE_LABELS, buildNavGroups, navPageGroups }
@@ -112,6 +111,27 @@ function ViewAsDropdown() {
         </div>
       )}
     </div>
+  )
+}
+
+// Starts the walkthrough for the page you are on, or the whole-app walk if the
+// page has none. Placed next to the manual and the shortcuts, which is where
+// somebody looks when they do not know what a page is for.
+function WalkthroughButton() {
+  const { startTour, pageTour } = useTour()
+  const id = pageTour?.id || 'welcome'
+  const label = pageTour ? `Walk me through ${pageTour.title}` : 'Take the tour'
+  return (
+    <button
+      onClick={() => startTour(id)}
+      title={label}
+      aria-label={label}
+      data-tour="walkthrough"
+      className="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1.5 rounded-lg border border-rule text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-all"
+    >
+      <Compass size={15} />
+      <span className="hidden lg:inline">Walkthrough</span>
+    </button>
   )
 }
 
@@ -576,6 +596,10 @@ export default function Layout() {
               <MessageSquarePlus size={15} />
             </button>
           )}
+          {/* Renders at EVERY width, unlike the shortcuts button beside it: a
+              walkthrough is most useful to the person who has never seen the
+              app, and they are as likely to be on a phone. */}
+          <WalkthroughButton />
           <button
             onClick={() => setHelpOpen(true)}
             title="Keyboard shortcuts (?)"

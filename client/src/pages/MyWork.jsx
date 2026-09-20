@@ -254,7 +254,7 @@ export default function MyWork() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl sm:text-3xl font-black text-ink tracking-tight">{greeting()}, {first}.</h1>
+        <h1 data-tour="my-work-header" className="text-2xl sm:text-3xl font-black text-ink tracking-tight">{greeting()}, {first}.</h1>
         {loading ? (
           <p className="text-sm text-ink-muted mt-1">Loading your day…</p>
         ) : openCount || releases.length ? (

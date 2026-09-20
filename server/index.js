@@ -424,6 +424,11 @@ const runMigrations = async () => {
   await pool.query(`UPDATE users SET platform_role = 'owner' WHERE is_platform_admin = TRUE AND platform_role IS NULL`);
   // Invite flow: a newly-added member has no password yet — they activate via
   // an emailed invite link and set their own password.
+  // Which walkthroughs this person has finished, and at which VERSION:
+  // { [tourId]: { version, at, skipped } }. Per user rather than per device, so
+  // it follows them — and versioned, so editing a page's tour offers it again
+  // instead of silently never showing the new steps.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS tours_done JSONB`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_token TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_expires TIMESTAMP`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invited_at TIMESTAMP`);

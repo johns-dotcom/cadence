@@ -10,7 +10,8 @@ router.use(authMiddleware, withTenant);
 router.get('/me', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id, name, email, role, department, hierarchy_level, theme
+      `SELECT id, name, email, role, department, hierarchy_level, theme,
+              COALESCE(tours_done, '{}'::jsonb) AS tours_done
        FROM users WHERE id = $1 AND label_id = $2`,
       [req.user.id, req.labelId]
     );
@@ -18,6 +19,50 @@ router.get('/me', async (req, res) => {
     res.json({ success: true, data: rows[0] });
   } catch (error) {
     console.error('Get settings error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PUT /api/settings/me/tours — record a finished (or skipped) walkthrough.
+//
+// Merged, never replaced: two tabs finishing different tours must not erase
+// each other's record. Stored per user so it follows them across devices, and
+// stamped with the tour's VERSION so editing a page's walkthrough offers it
+// again rather than silently never showing the new steps.
+router.put('/me/tours', async (req, res) => {
+  try {
+    const list = Array.isArray(req.body?.tours) ? req.body.tours : [req.body];
+    const patch = {};
+    for (const t of list) {
+      const id = String(t?.id || '').trim().slice(0, 60);
+      if (!id) continue;
+      patch[id] = {
+        version: String(t.version || '').slice(0, 20) || null,
+        at: new Date().toISOString(),
+        skipped: !!t.skipped,
+      };
+    }
+    if (!Object.keys(patch).length) return res.status(400).json({ success: false, error: 'No tour given' });
+    const { rows } = await pool.query(
+      `UPDATE users SET tours_done = COALESCE(tours_done, '{}'::jsonb) || $2::jsonb
+        WHERE id = $1 RETURNING COALESCE(tours_done, '{}'::jsonb) AS tours_done`,
+      [req.user.id, JSON.stringify(patch)]
+    );
+    res.json({ success: true, data: rows[0]?.tours_done || {} });
+  } catch (error) {
+    console.error('Record tour error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/settings/me/tours — replay everything from the start.
+router.delete('/me/tours', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE users SET tours_done = '{}'::jsonb WHERE id = $1 RETURNING tours_done`, [req.user.id]);
+    res.json({ success: true, data: rows[0]?.tours_done || {} });
+  } catch (error) {
+    console.error('Reset tours error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

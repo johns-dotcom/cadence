@@ -283,7 +283,7 @@ export default function Approvals() {
     <div>
       {/* Header */}
       <div className="flex items-start justify-between gap-4 mb-1">
-        <h1 className="text-2xl font-bold text-ink tracking-tight inline-flex items-center gap-2">
+        <h1 data-tour="approvals-header" className="text-2xl font-bold text-ink tracking-tight inline-flex items-center gap-2">
           Pending Approvals
           {list.length > 0 && <span className="text-sm font-bold bg-emerald-500/15 text-emerald-700 rounded-full px-2 py-0.5">{list.length}</span>}
         </h1>

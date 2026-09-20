@@ -297,7 +297,7 @@ export default function Dashboard() {
     <div className="space-y-8">
       {/* Personalized greeting */}
       <div>
-        <h1 className="text-3xl font-black text-ink tracking-tight">{greeting(user?.name)}</h1>
+        <h1 data-tour="dashboard-header" className="text-3xl font-black text-ink tracking-tight">{greeting(user?.name)}</h1>
         <div className="flex flex-wrap items-center gap-2 mt-1">
           <p className="text-sm text-ink-faint">Here's what's happening at {label?.name || 'your label'}.</p>
           {/* Books-closed watermark. Self-hiding for anyone who can't see

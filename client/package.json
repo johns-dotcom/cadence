@@ -15,7 +15,8 @@
     "check:mywork": "node scripts/check-mywork.mjs",
     "nav-fixture": "node scripts/nav-fixture.mjs",
     "navpresets-fixture": "node scripts/navpresets-fixture.mjs",
-    "settings-fixture": "node scripts/settings-fixture.mjs"
+    "settings-fixture": "node scripts/settings-fixture.mjs",
+    "check:tours": "node scripts/tours-fixture.mjs"
   },
   "dependencies": {
     "@react-oauth/google": "^0.13.4",

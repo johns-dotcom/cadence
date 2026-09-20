@@ -571,7 +571,7 @@ export default function Messages() {
       <aside className={`w-64 border-r border-rule flex flex-col bg-page/40 ${active && 'hidden md:flex'}`}>
         <div className="p-3 border-b border-rule">
           <div className="flex items-center justify-between mb-2">
-            <h2 className="font-bold text-ink">Messages</h2>
+            <h2 className="font-bold text-ink" data-tour="messages-header">Messages</h2>
             <div className="flex gap-1">
               <button onClick={() => setNewModal('browse')} className="p-1.5 text-gray-500 hover:text-brand-600" title="Browse channels to join"><Hash size={16} /></button>
               <button onClick={() => setNewModal('channel')} className="p-1.5 text-gray-500 hover:text-brand-600" title="New channel"><Plus size={18} /></button>

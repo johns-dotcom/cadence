@@ -107,7 +107,7 @@ export default function Reports() {
     <div>
       <div className="flex flex-wrap items-end justify-between gap-3 mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-ink tracking-tight flex items-center gap-3">Reports <ReconciledBadge /></h1>
+          <h1 data-tour="reports-header" className="text-2xl font-bold text-ink tracking-tight flex items-center gap-3">Reports <ReconciledBadge /></h1>
           <p className="text-sm text-ink-muted">
             Cash basis — paid ledger rows, bank coverage disclosed per month{pnl?.reassigned?.count ? ` · ${pnl.reassigned.count} recorded period adjustment${pnl.reassigned.count === 1 ? '' : 's'}` : ''}
           </p>

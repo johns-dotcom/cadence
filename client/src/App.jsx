@@ -4,6 +4,7 @@ import { SocketProvider } from './context/SocketContext'
 import Messages from './pages/Messages'
 import Layout from './components/Layout'
 import UpdateBanner from './components/UpdateBanner'
+import { TourProvider } from './components/Tour'
 import PlatformLayout from './components/PlatformLayout'
 import PlatformOverview from './pages/PlatformOverview'
 import PlatformActivity from './pages/PlatformActivity'
@@ -143,7 +144,7 @@ function AppContent() {
   const platformMode = !!user?.is_platform_admin && !impersonating
 
   return (
-    <>
+    <TourProvider>
     <UpdateBanner />
     {/* `key` = the acting identity. Entering or leaving a workspace only ever
         swapped the token in state, so React reconciled the mounted pages and
@@ -278,7 +279,7 @@ function AppContent() {
 
       <Route path="*" element={<Navigate to={token ? '/' : '/login'} replace />} />
     </Routes>
-    </>
+    </TourProvider>
   )
 }
 
@@ -286,6 +287,9 @@ export default function App() {
   return (
     <AuthProvider>
       <SocketProvider>
+        {/* Inside the router (AppContent renders it) is where the tour needs to
+            be — it navigates between pages — so the provider goes there, not
+            here. See AppContent. */}
         <AppContent />
       </SocketProvider>
     </AuthProvider>

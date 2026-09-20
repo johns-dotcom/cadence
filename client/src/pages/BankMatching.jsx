@@ -419,7 +419,7 @@ export default function BankMatching() {
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-end justify-between gap-3 mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-ink tracking-tight flex items-center gap-2"><GitMerge size={20} /> Bank Matching</h1>
+          <h1 data-tour="bank-matching-header" className="text-2xl font-bold text-ink tracking-tight flex items-center gap-2"><GitMerge size={20} /> Bank Matching</h1>
           {completion ? (
             <p className="text-sm text-ink-muted">
               <span className="font-semibold text-ink">{completion.left_all} left to answer · {money(completion.left_all_value)}</span>
