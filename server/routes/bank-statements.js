@@ -6,6 +6,7 @@
 const express = require('express');
 const multer = require('multer');
 const pool = require('../db');
+const { optionalStatement } = require('../lib/txn');
 const authMiddleware = require('../middleware/auth');
 const { withTenant, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
@@ -1402,7 +1403,8 @@ router.post('/:id(\\d+)/misfiled/repair', async (req, res) => {
             [r.row.matched_expense_id, req.user.name, req.labelId]);
           unbooked += del.rowCount ? 1 : 0;
         }
-        await client.query(`DELETE FROM bank_txn_invoice_links WHERE txn_id = $1 AND label_id = $2`, [r.row.id, req.labelId]).catch(() => {});
+        // SAVEPOINT, not a swallowed catch — see lib/txn.js.
+        await optionalStatement(client, `DELETE FROM bank_txn_invoice_links WHERE txn_id = $1 AND label_id = $2`, [r.row.id, req.labelId]);
         await client.query(
           `UPDATE bank_transactions SET matched_expense_id = NULL, matched_income_id = NULL,
                   match_method = NULL, match_score = NULL, matched_by = NULL, matched_at = NULL, booked = FALSE

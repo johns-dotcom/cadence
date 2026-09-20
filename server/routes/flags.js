@@ -34,6 +34,7 @@
 
 const express = require('express');
 const pool = require('../db');
+const { optionalStatement } = require('../lib/txn');
 const authMiddleware = require('../middleware/auth');
 const { withTenant, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
@@ -880,6 +881,12 @@ router.post('/dismiss', async (req, res) => {
       [req.labelId, flag_key, req.body.kind || null, req.body.note || null,
         req.body.summary ? String(req.body.summary).slice(0, 300) : null, req.user.name]
     );
+    // Saying "this one is fine" permanently hides a data-quality problem from
+    // everyone else, so it belongs in the activity feed like every other
+    // consequential act. The stored `summary` is what makes the line readable:
+    // flag_key is an id signature, and the rows behind it can be merged away.
+    await logActivity(req, 'Dismissed data-quality flag',
+      [req.body.summary, req.body.note, flag_key].filter(Boolean)[0]);
     res.json({ success: true });
   } catch (error) {
     console.error('Dismiss error:', error);
@@ -888,10 +895,24 @@ router.post('/dismiss', async (req, res) => {
 });
 router.post('/restore', async (req, res) => {
   try {
-    await pool.query('DELETE FROM data_quality_dismissals WHERE label_id = $1 AND flag_key = $2',
-      [req.labelId, String(req.body.flag_key || '')]);
-    res.json({ success: true });
-  } catch { res.status(500).json({ success: false, error: 'Internal server error' }); }
+    const flag_key = String(req.body.flag_key || '');
+    // Read the summary BEFORE the delete — afterwards the only record of what
+    // was dismissed is gone, and "restored <id signature>" tells nobody anything.
+    const { rows } = await pool.query(
+      'SELECT summary, note FROM data_quality_dismissals WHERE label_id = $1 AND flag_key = $2',
+      [req.labelId, flag_key]
+    );
+    const { rowCount } = await pool.query(
+      'DELETE FROM data_quality_dismissals WHERE label_id = $1 AND flag_key = $2', [req.labelId, flag_key]);
+    if (rowCount) {
+      await logActivity(req, 'Restored data-quality flag',
+        [rows[0]?.summary, rows[0]?.note, flag_key].filter(Boolean)[0]);
+    }
+    res.json({ success: true, data: { restored: rowCount } });
+  } catch (error) {
+    console.error('Restore flag error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
 });
 
 // ── Normalization map (collab string → base artist) ─────────────────────────
@@ -1070,7 +1091,10 @@ router.post('/merge-releases', requireAdmin, async (req, res) => {
       // destroys the source's discussion, budget and history.
       await client.query('UPDATE release_comments SET release_id = $1 WHERE release_id = $2 AND label_id = $3', [targetId, source.id, req.labelId]);
       await client.query('UPDATE release_budget_items SET release_id = $1 WHERE release_id = $2 AND label_id = $3', [targetId, source.id, req.labelId]);
-      await client.query('UPDATE release_audit_log SET release_id = $1 WHERE release_id = $2 AND label_id = $3', [targetId, source.id, req.labelId]).catch(() => {});
+      // Optional via SAVEPOINT, not a swallowed catch: release_audit_log may be
+      // absent on an older database, and a bare .catch() here aborts the whole
+      // transaction — the merge would report success having written nothing.
+      await optionalStatement(client, 'UPDATE release_audit_log SET release_id = $1 WHERE release_id = $2 AND label_id = $3', [targetId, source.id, req.labelId]);
       await client.query('DELETE FROM releases WHERE id = $1 AND label_id = $2', [source.id, req.labelId]);
     }
     await client.query('COMMIT');

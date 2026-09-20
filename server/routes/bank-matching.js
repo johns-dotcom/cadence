@@ -13,6 +13,7 @@
 
 const express = require('express');
 const pool = require('../db');
+const { optionalStatement } = require('../lib/txn');
 const authMiddleware = require('../middleware/auth');
 const { withTenant, requireAdmin } = require('../middleware/tenant');
 const { logActivity } = require('../middleware/activityLogger');
@@ -856,7 +857,9 @@ router.post('/duplicate-pairs/merge', async (req, res) => {
         error: `Entry #${twinId} no longer holds a bank line, so there is nothing to move onto #${orphanId}. Re-run the check — the pair may already be resolved.`,
       });
     }
-    await client.query(`UPDATE bank_txn_invoice_links SET expense_id = $1 WHERE label_id = $2 AND expense_id = $3`, [orphanId, req.labelId, twinId]).catch(() => {});
+    // SAVEPOINT, not a swallowed catch — see lib/txn.js. bank_txn_invoice_links
+    // is probed for at boot precisely because it may not exist yet.
+    await optionalStatement(client, `UPDATE bank_txn_invoice_links SET expense_id = $1 WHERE label_id = $2 AND expense_id = $3`, [orphanId, req.labelId, twinId]);
     // Carry documents the orphan lacks — server-side, never through Node.
     const carry = ['invoice_r2_key', 'invoice_filename', 'w9_r2_key', 'w9_filename', 'proof_r2_key', 'proof_filename', 'artist', 'song', 'invoice_number'];
     for (const col of carry) {

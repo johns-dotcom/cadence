@@ -6414,3 +6414,67 @@ fixtures, vendor-lab, ws-colors, finance fixtures 288. Built CSS re-checked: 0
 **Not done, and not part of Item 9**: add-expense's release dropdown and receipt
 upload (noted as open since Phase 5), and comment threads on recoupment rows —
 still the ledger drawer's job, still deliberate.
+
+---
+
+## M5 — Duplicates & data quality: audited, two real defects (2026-09-20)
+
+`BUILD_DIRECTIONS_2.md` Item 10. The Phase 4 data-quality campaign had already
+built all seven bullets, so this pass verified each against the code and fixed
+what was wrong rather than rebuilding. **Verified present and NOT rebuilt**:
+release dupes keyed on artist+title / UPC / ISRC / Spotify URI (all four);
+artist dupes by folded-key collision + Levenshtein with a length-scaled
+threshold; vendor dupes on `LOWER(TRIM())` plus the W9-name-vs-payee check;
+invoice dupes in four severity tiers over `normalizeInvoiceNum`; all seven ledger
+artist flags including `artist_song_mismatch`; dismissals at flag AND group grain
+with restore; and the normalization map, which both renames in bulk
+transactionally and is read by `routes/ledger.js` at create so future ingests
+auto-collapse.
+
+`artist_income` is deliberately absent from the normalization cascade, contrary
+to the spec bullet: it has no artist NAME column (id, label_id, artist_id,
+source, description, amount, currency, income_date, created_by, created_at), so
+there is nothing on it to rename. Confirmed against the live schema.
+
+### The defect Item 10 warned about, present in three places
+
+Item 10 says: *never swallow mid-transaction errors with `.catch(() => {})`,
+that no-ops the COMMIT.* Three `await client.query(...).catch(() => {})` calls
+sat inside open transactions — the release merge (`flags.js`), the duplicate-pair
+merge (`bank-matching.js`) and the misfiled repair (`bank-statements.js`).
+
+**Demonstrated, not argued**: INSERT 1 → a swallowed failing statement → INSERT 2
+→ COMMIT leaves **zero** rows. Postgres marks the transaction aborted on the
+first error, every later statement returns 25P02 "current transaction is aborted,
+commands ignored", and COMMIT silently becomes a rollback. The route returns
+success having written nothing — the worst available outcome, because the
+operator believes the merge happened and the duplicates are still on screen.
+
+New `server/lib/txn.js` `optionalStatement(client, sql, params)` wraps a genuinely
+optional statement in a SAVEPOINT: on failure it rolls back to the savepoint,
+which clears the aborted state and leaves everything before it committable.
+Proven with the same probe — 2 rows instead of 0. Use it ONLY where failure is
+acceptable (a table that may not exist on an older database); anything whose
+failure should abort the write stays a bare `client.query`.
+
+Zero in-transaction swallowed catches remain. The ~35 `ROLLBACK').catch(() => {})`
+calls are the error path and are correct — there is nothing left to poison.
+
+### Dismissals were not audited
+
+Item 10 asks for "per-flag AND per-group dismiss **with audit** + restore".
+Dismissing hides a data-quality problem from everyone else permanently, and
+neither route wrote to the activity log; `restore` recorded nothing at all, so
+who un-dismissed something was unrecoverable.
+
+Both are logged now. `restore` reads the stored `summary` BEFORE the delete —
+afterwards the only human-readable record of what was dismissed is gone, and
+"restored reldupe:12,15" tells nobody anything — and returns `{restored: n}` so
+restoring something already gone reports 0 rather than a false success.
+
+### Verified
+Live on the dev box: a dismiss and a restore both land in the activity feed with
+the readable summary, and a second restore reports 0. Two seeded duplicate
+releases merged — the survivor kept its own UPC, absorbed the source's ISRC and
+genre, ORed both checklist flags, and the source row was deleted, which is what
+proves the COMMIT landed. All nine gates green; finance fixtures 288.
