@@ -328,6 +328,57 @@ checks.push(
     dayFromToday(1) === `${expected.getFullYear()}-${pad(expected.getMonth() + 1)}-${pad(expected.getDate())}`]);
 }
 
+// ── document-style notes: renderer + editing helpers (pure) ────────────────
+// Notes became markdown. These hold the three chosen capabilities and the one
+// security property that must never regress: markdown renders to React nodes,
+// so a crafted link can't become a live javascript: click.
+{
+  const md = await vite.ssrLoadModule('/src/lib/markdownNote.jsx');
+  const ed = await vite.ssrLoadModule('/src/lib/noteEditing.js');
+  const draw = (src, opts) => renderToString(md.renderMarkdownNote(src, opts));
+
+  // renderer output shape
+  const heading = draw('## Launch');
+  checks.push(['note: heading renders its text', heading.includes('Launch') && !heading.includes('##')]);
+  const list = draw('- one\n- two');
+  checks.push(['note: bullets render both items', list.includes('one') && list.includes('two')]);
+  const ol = draw('1. a\n1. b');
+  checks.push(['note: ordered list numbers by position', ol.includes('1.') && ol.includes('2.')]);
+  const chk = draw('- [x] done\n- [ ] todo', { onToggleCheck: () => {} });
+  checks.push(['note: checklist renders a checkbox role', (chk.match(/role="checkbox"/g) || []).length === 2]);
+  checks.push(['note: a checked item is struck through', /line-through/.test(chk)]);
+
+  // THE security property — a crafted link is inert, not a live script href.
+  const evil = draw('[click](javascript:alert(1))');
+  checks.push(['note: javascript: link is neutralized (no live href)', !/href="javascript/i.test(evil)]);
+  const good = draw('[site](https://example.com)');
+  checks.push(['note: https link renders as a real, safe anchor', /href="https:\/\/example.com"/.test(good) && /rel="noopener/.test(good)]);
+  checks.push(['note: bold renders <strong>', /<strong/.test(draw('**hi**'))]);
+
+  // preview stripping (the card/table/console previews)
+  checks.push(['noteLine strips a heading marker', md.stripMarkdownMarkers('## Launch checklist') === 'Launch checklist']);
+  checks.push(['noteLine strips a checkbox + bold', md.stripMarkdownMarkers('- [x] **Draft** the brief') === 'Draft the brief']);
+  checks.push(['noteLine shows a link as its text', md.stripMarkdownMarkers('see [asset](https://x)') === 'see asset']);
+
+  // editing helpers
+  const cont = ed.continueList('- one', 5, 5);
+  checks.push(['Enter in a list inserts the next marker', cont && cont.value === '- one\n- '] );
+  const end = ed.continueList('- one\n- ', 8, 8);
+  checks.push(['Enter on an empty item ends the list', end && end.value === '- one\n']);
+  const num = ed.continueList('1. a', 4, 4);
+  checks.push(['Enter in an ordered list increments', num && num.value === '1. a\n2. ']);
+  const tog = ed.toggleCheckAt('- [ ] a\n- [x] b', 0);
+  checks.push(['checkbox toggle flips the RIGHT line', tog === '- [x] a\n- [x] b']);
+  const bold = ed.toggleWrap('word', 0, 4, '**');
+  checks.push(['toolbar bold wraps the selection', bold.value === '**word**']);
+  const bullet = ed.toggleLinePrefix('a\nb', 0, 3, 'bullet');
+  checks.push(['toolbar bullet prefixes every selected line', bullet.value === '- a\n- b']);
+  const indent = ed.indentLines('- a', 0, 3, false);
+  checks.push(['Tab indents by two spaces', indent.value === '  - a']);
+  const link = ed.insertLink('', 0, 0, 'https://x');
+  checks.push(['insertLink builds a markdown link', link.value === '[link](https://x)']);
+}
+
 let bad = 0;
 for (const [name, ok] of checks) { if (!ok) bad++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`); }
 console.log(`\n${checks.length - bad}/${checks.length} checks passed`);

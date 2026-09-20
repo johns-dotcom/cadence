@@ -35,6 +35,7 @@ import { TASK_PRIORITIES } from '../constants'
 // than re-typed so a priority means the same thing, and looks the same, on both
 // sides of the platform boundary.
 import { PRIORITY_DOT, PRIORITY_RANK, noteLine } from '../components/mywork/taskFields'
+import NoteEditor from '../components/mywork/NoteEditor'
 
 // The urgency buckets. Fixed order, because scanning top-down IS the answer to
 // "what do I do next" — and `order` lives with the label so a new bucket can
@@ -274,19 +275,16 @@ export function TaskDetail({
 
       {/* The note. Borderless and full-height on purpose: it is the body of the
           document, not one more labelled field. */}
-      {editable ? (
-        <textarea
-          value={draft}
-          onChange={e => onDraft(e.target.value)}
-          onBlur={onDraftBlur}
-          placeholder="Write a note… saves as you type"
-          className="mt-3 w-full flex-1 min-h-[14rem] bg-transparent border-0 p-0 text-sm text-ink
-                     placeholder:text-ink-faint resize-none outline-none focus:ring-0"
-          aria-label="Note"
-        />
-      ) : (
-        <p className="mt-3 text-sm text-ink whitespace-pre-wrap">{task.notes || <span className="text-ink-faint italic">No note</span>}</p>
-      )}
+      <NoteEditor
+        key={task.id}
+        value={editable ? draft : (task.notes || '')}
+        disabled={!editable}
+        variant="pane"
+        placeholder="Write a note… bullets, checklists, headings"
+        onChange={editable ? onDraft : undefined}
+        onBlur={editable ? onDraftBlur : undefined}
+        className="mt-3 flex-1"
+      />
     </div>
   )
 }

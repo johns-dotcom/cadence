@@ -16,6 +16,7 @@ import useFocusTrap from '../../hooks/useFocusTrap'
 import { TASK_STATUSES, TASK_PRIORITIES } from '../../constants'
 import { formatDate } from '../../utils/dates'
 import { categoriesIn, dueLabel } from './taskFields'
+import NoteEditor from './NoteEditor'
 
 const NOTES_DEBOUNCE_MS = 600
 
@@ -194,16 +195,14 @@ export default function TaskDrawer({ task, tasks, members, releases = [], canEdi
                 than eight so Status/Priority/Due stay above the fold — it is still
                 resizable, and the drawer keeps its labelled box. */}
             {!pane && <label className="label">Note</label>}
-            <textarea
-              className={pane
-                ? 'w-full bg-transparent border-0 p-0 text-sm text-ink placeholder:text-ink-faint resize-y outline-none focus:ring-0 min-h-[5rem]'
-                : `${field} resize-y`}
-              rows={pane ? 4 : 6}
+            <NoteEditor
+              key={task.id}
               value={notes}
               disabled={!canEdit}
-              onChange={e => { setNotes(e.target.value); setNotesDirty(true); scheduleNotesSave(e.target.value) }}
+              variant={pane ? 'pane' : 'drawer'}
+              placeholder={pane ? 'Write a note…' : 'Longer detail, links, checklists…'}
+              onChange={v => { setNotes(v); setNotesDirty(true); scheduleNotesSave(v) }}
               onBlur={saveNotes}
-              placeholder={pane ? 'Write a note…' : 'Longer detail, links, context…'}
             />
             {notesDirty && (
               <div className="flex items-center gap-2 mt-1">

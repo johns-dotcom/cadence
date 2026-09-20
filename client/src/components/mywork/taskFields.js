@@ -9,6 +9,7 @@
 // (see hide_old_done below), never bucketed into calendar days.
 
 import { formatDate, daysUntilLocal, localDateStr, dateOnly } from '../../utils/dates'
+import { stripMarkdownMarkers } from '../../lib/markdownNote.jsx'
 import { TASK_STATUSES, TASK_PRIORITIES, DEPARTMENTS } from '../../constants'
 
 // Sentinel group keys. Real values can't collide with these.
@@ -106,7 +107,10 @@ export function dueLabel(task) {
  */
 export function noteLine(notes, max = 120) {
   if (!notes) return ''
-  const line = String(notes).split('\n').map(x => x.trim()).find(Boolean) || ''
+  const raw = String(notes).split('\n').map(x => x.trim()).find(Boolean) || ''
+  // Notes are markdown now — show the first line's TEXT, not its markers, so a
+  // card reads "Launch checklist", not "## Launch checklist" or "- [x] Draft".
+  const line = stripMarkdownMarkers(raw)
   return line.length > max ? `${line.slice(0, max)}…` : line
 }
 
