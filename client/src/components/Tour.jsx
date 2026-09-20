@@ -42,18 +42,46 @@ const findTarget = (target) => {
 const WAIT_MS = () => (typeof window !== 'undefined' && window.__TOUR_WAIT_MS__) || 4000
 
 export function TourProvider({ children }) {
-  const { user, canView } = useAuth()
+  const { user, canView, impersonating } = useAuth()
   const location = useLocation()
   const [done, setDone] = useState(null)       // null until loaded
   const [active, setActive] = useState(null)   // { tour, index }
+  const [consolePages, setConsolePages] = useState(null) // null = unrestricted
   const started = useRef(new Set())
+
+  // WHICH SHELL. App.jsx routes a platform operator to the console unless they
+  // have entered a workspace, and the two shells share four paths that are
+  // different pages in each. Everything below keys off this rather than the
+  // path, or an operator would be told about the workspace Dashboard while
+  // looking at the console Overview.
+  const shell = user?.is_platform_admin && !impersonating ? 'console' : 'tenant'
 
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const isApprover = isAdmin || user?.role === 'Approver'
-  const tours = useMemo(
-    () => allTours({ isAdmin, isApprover, canView }).filter(t => t.id === 'welcome' || canView(t.path)),
-    [isAdmin, isApprover, canView]
-  )
+
+  // A restricted operator's console pages come from their allowlist, not from
+  // canView — which returns true for everything, because their tenant role is
+  // Superadmin. Offering a tour for a page they are blocked from would be the
+  // same defect as drawing a nav row for it.
+  useEffect(() => {
+    if (shell !== 'console' || !user) { setConsolePages(null); return }
+    api.get('/platform/my-access')
+      .then(r => setConsolePages(r.data?.data?.pages ?? null))
+      .catch(() => setConsolePages(null))
+  }, [shell, user?.id])
+
+  const tours = useMemo(() => {
+    const all = allTours({ shell, isAdmin, isApprover, canView })
+    if (shell === 'console') {
+      const owner = user?.platform_role === 'owner'
+      return all.filter(t => {
+        if (t.id === 'console-welcome') return true
+        if (t.path === '/operators' && !owner) return false
+        return !consolePages || t.path === '/' || t.path === '/account' || consolePages.includes(t.path)
+      })
+    }
+    return all.filter(t => t.id === 'welcome' || canView(t.path))
+  }, [shell, isAdmin, isApprover, canView, consolePages, user?.platform_role])
 
   useEffect(() => {
     if (!user) return
@@ -76,7 +104,7 @@ export function TourProvider({ children }) {
     if (!t || completed === null) return
     // Finishing the walk holds back the page it ended on for this session, so a
     // second tour does not pounce the moment the walk closes.
-    if (t.id === 'welcome') {
+    if (t.id === 'welcome' || t.id === 'console-welcome') {
       const here = tourForPath(tours, location.pathname)
       if (here) started.current.add(here.id)
     }
@@ -95,12 +123,18 @@ export function TourProvider({ children }) {
     started.current.clear()
   }, [])
 
-  // Auto-start: welcome first, then the page's own tour once per session.
+  // Auto-start. The welcome walk runs for somebody seeing a shell for the first
+  // time — but NOT for an operator who has entered a workspace: they are a
+  // visitor, usually there to fix one thing, and a 78-step walk through a tenant
+  // they do not belong to is an ambush. Their page tours still offer themselves,
+  // and the whole walk stays one click away on the Walkthrough button.
+  const welcomeId = shell === 'console' ? 'console-welcome' : 'welcome'
+  const wantsWelcome = shell === 'console' || !user?.is_platform_admin
   useEffect(() => {
     if (!user || done === null || active) return undefined
-    const welcome = tourById(tours, 'welcome')
-    if (welcome?.steps.length && !isDone(welcome) && !started.current.has('welcome')) {
-      const t = setTimeout(() => { started.current.add('welcome'); setActive({ tour: welcome, index: 0 }) }, 700)
+    const welcome = wantsWelcome ? tourById(tours, welcomeId) : null
+    if (welcome?.steps.length && !isDone(welcome) && !started.current.has(welcomeId)) {
+      const t = setTimeout(() => { started.current.add(welcomeId); setActive({ tour: welcome, index: 0 }) }, 700)
       return () => clearTimeout(t)
     }
     if (welcome?.steps.length && !isDone(welcome)) return undefined
@@ -110,7 +144,7 @@ export function TourProvider({ children }) {
       return () => clearTimeout(t)
     }
     return undefined
-  }, [user?.id, done, location.pathname, active, isDone, tours])
+  }, [user?.id, done, location.pathname, active, isDone, tours, welcomeId, wantsWelcome])
 
   const value = useMemo(() => ({
     startTour, tours, done: done || {}, active, isDone, replayAll,

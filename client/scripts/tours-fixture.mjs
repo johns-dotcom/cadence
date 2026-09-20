@@ -37,7 +37,8 @@ const vite = await createServer({
 });
 
 const { buildNavGroups } = await vite.ssrLoadModule('/src/constants/navConfig.jsx');
-const { PAGE_TOURS, buildWelcome } = await vite.ssrLoadModule('/src/tours/index.js');
+const { PAGE_TOURS, buildWelcome, CONSOLE_TOURS, buildConsoleWelcome, allTours, tourForPath } = await vite.ssrLoadModule('/src/tours/index.js');
+const { CONSOLE_NAV } = await vite.ssrLoadModule('/src/components/PlatformLayout.jsx');
 
 // The widest nav — every page anyone could reach.
 const groups = buildNavGroups({ isAdmin: true, isApprover: true, canView: () => true });
@@ -93,6 +94,60 @@ if (walkPaths.join('|') !== expected.join('|')) {
 } else {
   ok(`welcome walk covers ${walkPaths.length} pages in nav order (${welcome.steps.length} steps)`);
 }
+
+// ── The operator console ───────────────────────────────────────────────────
+console.log('console:');
+const consolePaths = CONSOLE_NAV.map((n) => n.path);
+const consoleTourPaths = CONSOLE_TOURS.map((t) => t.path);
+
+const cOrphans = CONSOLE_TOURS.filter((t) => !consolePaths.includes(t.path));
+if (cOrphans.length) fail(`console tour(s) on a page not in CONSOLE_NAV: ${cOrphans.map((t) => t.id).join(', ')}`);
+else ok(`${CONSOLE_TOURS.length} console tours, every one on a real console page`);
+
+const cUncovered = consolePaths.filter((p) => !consoleTourPaths.includes(p));
+if (cUncovered.length) fail(`console page(s) with no tour: ${cUncovered.join(', ')}`);
+else ok(`all ${consolePaths.length} console pages have a tour`);
+
+// THE COLLISION. Both shells route `/`, `/my-work`, `/messages` and
+// `/calendar` to DIFFERENT pages. Choosing a tour by path alone would describe
+// the wrong one, so the two sets must never share an id — that is what proves
+// the engine is picking by shell and not by path.
+const shared = consolePaths.filter((p) => PAGE_TOURS.some((t) => t.path === p));
+const idClash = CONSOLE_TOURS.filter((c) => PAGE_TOURS.some((t) => t.id === c.id));
+if (idClash.length) fail(`a tour id exists in BOTH shells: ${idClash.map((t) => t.id).join(', ')} — completion is stored per id, so finishing one would mark the other done`);
+else ok(`${shared.length} paths exist in both shells (${shared.join(', ')}) and no tour id is shared`);
+
+const cWelcome = buildConsoleWelcome(CONSOLE_NAV);
+const cWalk = [...new Set(cWelcome.steps.map((s) => s.path))];
+if (cWalk.join('|') !== consolePaths.filter((p) => consoleTourPaths.includes(p)).join('|')) {
+  fail('the console welcome walk does not follow CONSOLE_NAV');
+} else {
+  ok(`console welcome covers ${cWalk.length} pages in nav order (${cWelcome.steps.length} steps)`);
+}
+
+// A tenant tour must never be reachable from the console walk, or it would
+// navigate an operator to a route that does not exist in their shell.
+const tenantOnly = PAGE_TOURS.map((t) => t.path).filter((p) => !consolePaths.includes(p));
+const leaked = cWelcome.steps.filter((s) => tenantOnly.includes(s.path));
+if (leaked.length) fail(`the console walk visits ${leaked.length} page(s) that are not console routes`);
+else ok('the console walk never leaves the console');
+
+// Every shared path must resolve to ITS OWN shell's tour, and a multipage walk
+// must never be returned as a page tour — both welcome walks carry path '/',
+// and an id-based exclusion missed the console one, making the Overview's page
+// tour the whole walk (which then auto-started itself on every visit to '/').
+const conSet = allTours({ shell: 'console' });
+const tenSet = allTours({ shell: 'tenant', isAdmin: true, isApprover: true, canView: () => true });
+const wrong = [];
+for (const p of shared) {
+  const c = tourForPath(conSet, p);
+  const t = tourForPath(tenSet, p);
+  if (!c || !t) { wrong.push(`${p}: missing a tour in one shell`); continue; }
+  if (c.id === t.id) wrong.push(`${p}: both shells resolve to ${c.id}`);
+  if (c.multipage || t.multipage) wrong.push(`${p}: a multipage walk was returned as a page tour`);
+}
+if (wrong.length) fail(`shell resolution: ${wrong.join('; ')}`);
+else ok(`each shared path resolves to its own shell's tour`);
 
 await vite.close();
 if (failures) { console.error(`tours-fixture: ${failures} failure(s)`); process.exit(1); }

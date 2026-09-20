@@ -6590,3 +6590,38 @@ fails it, and adding a nav page without a tour fails it.
 
 What it cannot check is whether the words are TRUE; that is what the standing
 rule above is for.
+
+### The operator console has its own, and the shells must not mix (2026-09-20)
+
+**A bug shipped with the tenant walkthrough and is fixed here.** `TourProvider`
+wraps BOTH shells but knew nothing about `platformMode`, and `allTours` built
+from the TENANT nav — so an operator in the console got the 78-step tenant
+welcome walk, which navigates to `/artists`, `/ledger`, `/releases`… none of
+which are routes in the console shell. Each rendered NotFound and the step
+showed its "appears once there is something to show" note on a 404.
+
+**Five paths exist in BOTH shells** — `/`, `/my-work`, `/messages`, `/calendar`,
+`/activity` — and are different pages in each. Tours are therefore chosen by
+SHELL, never by path: `allTours({ shell })` returns one set or the other, and
+the fixture asserts every shared path resolves to its own shell's tour and that
+no id is shared (completion is stored per id, so finishing one would mark the
+other done).
+
+A second bug the same mechanism exposed: `tourForPath` excluded the welcome walk
+BY ID, but both walks carry `path: '/'` — so the console Overview's "page tour"
+was the whole 17-step walk, which then auto-started itself on every visit to
+`/`. Multipage walks are now excluded as a CLASS.
+
+10 console tours + a console welcome built from `CONSOLE_NAV` (exported from
+PlatformLayout, so the walk cannot drift from the rail). Anchoring cost nothing
+again: the console topbar's `<h1>` carries `data-tour="console-header"` and every
+console page inherits it. Gating uses the OPERATOR allowlist
+(`/platform/my-access` + `ownerOnly`), not `canView` — an operator's tenant role
+is Superadmin, so canView would admit everything.
+
+**Auto-start rules**: the console welcome runs for an operator seeing the console
+for the first time; a page tour runs the first time a page is opened. An operator
+who has ENTERED a workspace gets page tours but NOT the tenant welcome walk —
+they are a visitor, usually there to fix one thing, and a 78-step walk through a
+tenant they do not belong to is an ambush. The whole walk stays on the
+Walkthrough button, which the console header now carries too.

@@ -1,16 +1,17 @@
 import { useState, useEffect } from 'react'
 import { Outlet, Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Building2, ScrollText, UserCog, LogOut, Disc3, Menu, X, Moon, Sun, Users, ShieldCheck, Megaphone, MessageSquare, BarChart3, CalendarDays, CheckSquare } from 'lucide-react'
+import { BarChart3, Building2, CalendarDays, CheckSquare, Compass, Disc3, LayoutDashboard, LogOut, Megaphone, Menu, MessageSquare, Moon, ScrollText, ShieldCheck, Sun, UserCog, Users, X } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useSocket } from '../context/SocketContext'
 import { useTheme } from '../context/ThemeContext'
 import api from '../api'
 import ErrorBoundary from './ErrorBoundary'
+import { useTour } from './Tour'
 
 // Neutral operator shell shown to platform admins who are NOT inside a
 // workspace. No label branding, no label-scoped nav — just platform tools.
 // Operators (managing other admins) is owner-only.
-const NAV = [
+export const CONSOLE_NAV = [
   { path: '/', label: 'Overview', icon: LayoutDashboard },
   { path: '/my-work', label: 'My Work', icon: CheckSquare },
   { path: '/messages', label: 'Messages', icon: MessageSquare },
@@ -33,6 +34,21 @@ const META = {
   '/announcements': { title: 'Announcements', sub: 'Broadcast banners to workspaces' },
   '/operators': { title: 'Operators', sub: 'Platform administrators' },
   '/account': { title: 'Account', sub: 'Your operator profile' },
+}
+
+// Starts the console walkthrough — the tour for the page you are on, or the
+// console welcome walk. The tenant shell has the same control in its header.
+function ConsoleWalkthroughButton() {
+  const { startTour, pageTour } = useTour()
+  const id = pageTour?.id || 'console-welcome'
+  const label = pageTour ? `Walk me through ${pageTour.title}` : 'Take the console tour'
+  return (
+    <button onClick={() => startTour(id)} title={label} aria-label={label} data-tour="walkthrough"
+      className="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1.5 rounded-lg border border-rule text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-all">
+      <Compass size={15} />
+      <span className="hidden lg:inline">Walkthrough</span>
+    </button>
+  )
 }
 
 export default function PlatformLayout() {
@@ -89,7 +105,7 @@ export default function PlatformLayout() {
         </div>
 
         <nav className="flex-1 px-3 py-4 overflow-y-auto space-y-0.5">
-          {NAV.filter(n => (!n.ownerOnly || user?.platform_role === 'owner') && canSee(n.path)).map(({ path, label, icon: Icon }) => {
+          {CONSOLE_NAV.filter(n => (!n.ownerOnly || user?.platform_role === 'owner') && canSee(n.path)).map(({ path, label, icon: Icon }) => {
             const active = isActive(path)
             return (
               <Link key={path} to={path}
@@ -122,10 +138,13 @@ export default function PlatformLayout() {
         <div className="h-14 flex items-center gap-3 px-4 lg:px-6 border-b border-divider bg-header flex-shrink-0">
           {isMobile && <button onClick={() => setSidebarOpen(true)} className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-lg lg:hidden"><Menu size={20} /></button>}
           <div className="min-w-0">
-            <h1 className="text-sm font-semibold text-ink leading-none">{meta.title}</h1>
+            {/* Every console page inherits this as its walkthrough anchor —
+                the pages themselves render no header. */}
+            <h1 className="text-sm font-semibold text-ink leading-none" data-tour="console-header" data-page-header="">{meta.title}</h1>
             {meta.sub && <p className="text-[11px] text-gray-400 mt-1 truncate hidden sm:block">{meta.sub}</p>}
           </div>
           <div className="flex-1" />
+          <ConsoleWalkthroughButton />
           <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 bg-gray-100 rounded-full px-2.5 py-1">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Platform console
           </span>

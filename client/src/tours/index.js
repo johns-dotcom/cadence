@@ -17,6 +17,7 @@
 // `path` gates a tour with the same canView the sidebar uses: a User never sees
 // the Ledger walkthrough.
 import { buildNavGroups } from '../constants/navConfig'
+import { CONSOLE_NAV } from '../components/PlatformLayout'
 
 const hdr = (slug) => `[data-tour="${slug}-header"], [data-page-header]`
 
@@ -238,10 +239,89 @@ export function buildWelcome(groups) {
   }
 }
 
-export function allTours(navOpts) {
+
+// ── The operator console ───────────────────────────────────────────────────
+// A DIFFERENT SHELL with its own nav, and — the trap — four paths in common
+// with the tenant app: `/`, `/my-work`, `/messages` and `/calendar` are
+// different pages in each. Tours are therefore chosen by SHELL, never by path
+// alone, or an operator reading the console Overview would be told about the
+// workspace Dashboard.
+//
+// Every console page inherits `[data-tour="console-header"]` from
+// PlatformLayout's topbar, so these anchor without touching the pages.
+const chdr = '[data-tour="console-header"], [data-page-header]'
+
+export const CONSOLE_TOURS = [
+  { id: 'console-overview', title: 'Overview', path: '/', version: '2026-09-20', steps: [
+    { target: chdr, title: 'Every workspace at once', body: 'Counts, this month\'s money and the backlog for each tenant you can reach — each figure is the sum of the cards below it, never a separate query that could disagree.' },
+    { target: chdr, title: 'Needs attention', body: 'Only conditions you can act on: suspended, no members, an approval backlog, idle for a month. A suspended workspace is not also reported as idle — it is idle by design.' },
+  ]},
+  { id: 'console-my-work', title: 'My Work', path: '/my-work', version: '2026-09-20', steps: [
+    { target: chdr, title: 'Your tasks, everywhere', body: 'One to-do list across every workspace you can reach, including Platform HQ. Each row carries its workspace\'s colour and two-letter tag.' },
+    { target: chdr, title: 'Two lists, never summed', body: 'What is waiting on you, and what you handed to somebody inside a workspace. They need opposite actions, so they are never added together.' },
+    { target: chdr, title: 'Filing and assigning', body: 'New task picks a workspace — filing into one you have never opened creates your membership there, which is logged in that workspace. Assigning to their people emails them and is recorded in their activity log.' },
+  ]},
+  { id: 'console-messages', title: 'Messages', path: '/messages', version: '2026-09-20', steps: [
+    { target: chdr, title: 'Operator chat and workspace boards', body: 'Your own channels in Platform HQ, plus every tenant\'s PUBLIC channels. Private channels, DMs and record threads are deliberately never served here.' },
+    { target: chdr, title: 'Reading is recorded', body: 'Posting shows up in their channel badged "Cadence team". Reading does not, which is exactly why every view and search is written to an access log the other operators can see.' },
+  ]},
+  { id: 'console-workspaces', title: 'Workspaces', path: '/workspaces', version: '2026-09-20', steps: [
+    { target: chdr, title: 'The tenants', body: 'Every workspace with its members, artists, releases and ledger size. Open one for the full drawer: owner, roster, recent activity and branding.' },
+    { target: chdr, title: 'Enter one', body: 'Entering drops you inside that workspace as yourself, with the role its owner decided — Superadmin if you are the platform owner. Everything you do there is attributed to you and logged in their feed.' },
+    { target: chdr, title: 'Colour and tag', body: 'Each workspace has a colour and a two-letter tag used everywhere in the console. Colours default to the tenant\'s own brand; when two are too close to tell apart the console measures it and offers a fix.' },
+  ]},
+  { id: 'console-calendar', title: 'Calendar', path: '/calendar', version: '2026-09-20', steps: [
+    { target: chdr, title: 'Every tenant\'s month', body: 'Releases, events, contract dates and DSP submissions across all the workspaces you can reach, colour-and-tag coded. DSP is off by default — it outnumbers everything else combined.' },
+  ]},
+  { id: 'console-activity', title: 'Activity', path: '/activity', version: '2026-09-20', steps: [
+    { target: chdr, title: 'Cross-tenant audit', body: 'What happened in every workspace you can see, filterable by workspace and person. Scoped to your access — a workspace you are blocked from does not appear here either.' },
+  ]},
+  { id: 'console-analytics', title: 'Analytics', path: '/analytics', version: '2026-09-20', steps: [
+    { target: chdr, title: 'Platform growth', body: 'Signups by month, busiest workspaces, largest catalogues. A different question from a workspace\'s own Usage page, which is about people rather than tenants.' },
+  ]},
+  { id: 'console-announcements', title: 'Announcements', path: '/announcements', version: '2026-09-20', steps: [
+    { target: chdr, title: 'Broadcast a banner', body: 'A message shown inside workspaces, at three severities. Each person can dismiss it for themselves.' },
+  ]},
+  { id: 'console-operators', title: 'Operators', path: '/operators', version: '2026-09-20', steps: [
+    { target: chdr, title: 'Who else has the console', body: 'Platform owners and workspace admins. Owners are never restricted — that is the guaranteed way back into any tenant.' },
+    { target: chdr, title: 'What each one may reach', body: 'The sliders set which workspaces an admin-tier operator can see AND what they may do inside each: Superadmin, Admin, Approver or User, as a default with per-workspace overrides. It is a real limit, enforced on every request, and a demotion takes effect immediately.' },
+  ]},
+  { id: 'console-account', title: 'Account', path: '/account', version: '2026-09-20', steps: [
+    { target: chdr, title: 'Your operator profile', body: 'Your name, password and theme for the console itself.' },
+  ]},
+]
+
+// The console welcome, built from CONSOLE_NAV in sidebar order — same rule as
+// the tenant walk, so a console page added to the nav joins it automatically.
+export function buildConsoleWelcome(navItems = CONSOLE_NAV) {
+  const byPath = new Map(CONSOLE_TOURS.map(t => [t.path, t]))
+  const steps = []
+  for (const it of navItems) {
+    const t = byPath.get(it.path)
+    if (!t) continue
+    for (const st of t.steps) steps.push({ ...st, path: it.path, page: it.label })
+  }
+  return { id: 'console-welcome', title: 'The operator console', path: '/', multipage: true, version: '2026-09-20', steps }
+}
+
+/**
+ * The tours for ONE shell.
+ *
+ * `shell` is the whole point: the operator console and the tenant app share
+ * four paths (`/`, `/my-work`, `/messages`, `/calendar`) that are different
+ * pages in each. Choosing a tour by path alone would describe the wrong page —
+ * and the tenant welcome walk, loose in the console, would march an operator
+ * through /artists and /ledger, which are not even routes there.
+ */
+export function allTours({ shell = 'tenant', consoleNav, ...navOpts } = {}) {
+  if (shell === 'console') return [buildConsoleWelcome(consoleNav), ...CONSOLE_TOURS]
   const groups = buildNavGroups(navOpts)
   return [buildWelcome(groups), ...PAGE_TOURS]
 }
 
 export const tourById = (tours, id) => tours.find(t => t.id === id) || null
-export const tourForPath = (tours, path) => tours.find(t => t.id !== 'welcome' && t.path === path) || null
+// The page tour for a path. `multipage` walks are excluded as a CLASS, not by
+// id: both welcome walks carry path '/', so an id test missed the console one
+// and made the Overview's "page tour" the whole 17-step walk — which then
+// auto-started itself again every time somebody landed on '/'.
+export const tourForPath = (tours, path) => tours.find(t => !t.multipage && t.path === path) || null
