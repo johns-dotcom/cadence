@@ -11,6 +11,7 @@ const { loadLabelIdentity } = require('../lib/emailDispatch');
 const { sendFileSafely } = require('../lib/safeFiles');
 const { uploadFile, getSignedFileUrl, loadFileBuffer, deleteFile, isConfigured } = require('../lib/r2');
 const { attachmentUrl, verifyAttachmentSig } = require('../lib/mediaToken');
+const { likeContains, LIKE_ESCAPE } = require('../lib/likePattern');
 
 const router = express.Router();
 
@@ -19,7 +20,7 @@ const router = express.Router();
 // leaking a full session in logs/Referer. Defined BEFORE the auth gate: the
 // signature is the capability (only issued for messages the requester could
 // see). Membership was enforced when the signed URL was minted.
-router.get('/attachments/:id', async (req, res) => {
+router.get('/attachments/:id(\\d+)', async (req, res) => {
   try {
     if (!verifyAttachmentSig(req.params.id, req.query.exp, req.query.sig)) {
       return res.status(403).send('Forbidden');
@@ -46,7 +47,37 @@ router.get('/attachments/:id', async (req, res) => {
 
 router.use(authMiddleware, withTenant);
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+const MAX_FILE_MB = 25, MAX_FILES = 10;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_MB * 1024 * 1024, files: MAX_FILES } });
+
+// Multer rejects by THROWING, and an unhandled throw from middleware reaches
+// Express's default handler as a 500 HTML page — so the client could only say
+// "Send failed" with no reason, and nothing on screen mentioned the 25 MB
+// limit. Same shim vendor.js and deals.js already carry.
+function receiveFiles(req, res, next) {
+  upload.array('files', MAX_FILES)(req, res, (err) => {
+    if (!err) return next();
+    const msg = err.code === 'LIMIT_FILE_SIZE' ? `Attachments must be under ${MAX_FILE_MB} MB each`
+      : err.code === 'LIMIT_FILE_COUNT' ? `Up to ${MAX_FILES} files per message`
+      : err.code === 'LIMIT_UNEXPECTED_FILE' ? 'Unexpected file field'
+      : 'Upload failed';
+    res.status(400).json({ success: false, error: msg });
+  });
+}
+
+// Membership gate that runs BEFORE the upload, so a non-member cannot make the
+// server buffer 250 MB into memory on its way to a 403.
+async function requireMembership(req, res, next) {
+  try {
+    const mem = await membership(req.params.id, req.user.id, req.labelId);
+    if (!mem) return res.status(403).json({ success: false, error: 'Not a member' });
+    req.membership = mem;
+    next();
+  } catch (err) {
+    console.error('membership:', err.message);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+}
 const INLINE_MAX = 2 * 1024 * 1024; // 2 MB cap for the DB fallback when R2 is off
 
 // Anti email-bomb throttle for @mention emails: recipientId -> last-sent ms.
@@ -256,7 +287,7 @@ router.post('/channels', async (req, res) => {
 });
 
 // POST /api/chat/channels/:id/join — join a public channel.
-router.post('/channels/:id/join', async (req, res) => {
+router.post('/channels/:id(\\d+)/join', async (req, res) => {
   try {
     const ch = await pool.query(
       `SELECT * FROM chat_channels WHERE id = $1 AND label_id = $2 AND type = 'channel' AND is_private = false`,
@@ -377,7 +408,7 @@ router.post('/dm', async (req, res) => {
 // ── messages ────────────────────────────────────────────────────────────────
 
 // GET /api/chat/channels/:id/messages?before=<id>&limit=&thread=<rootId>
-router.get('/channels/:id/messages', async (req, res) => {
+router.get('/channels/:id(\\d+)/messages', async (req, res) => {
   try {
     const mem = await membership(req.params.id, req.user.id, req.labelId);
     if (!mem) return res.status(403).json({ success: false, error: 'Not a member' });
@@ -406,10 +437,9 @@ router.get('/channels/:id/messages', async (req, res) => {
 
 // POST /api/chat/channels/:id/messages — { body, thread_root_id } + optional
 // multipart file uploads (field 'files'). A message may be attachment-only.
-router.post('/channels/:id/messages', upload.array('files', 10), async (req, res) => {
+router.post('/channels/:id(\\d+)/messages', requireMembership, receiveFiles, async (req, res) => {
   try {
-    const mem = await membership(req.params.id, req.user.id, req.labelId);
-    if (!mem) return res.status(403).json({ success: false, error: 'Not a member' });
+    const mem = req.membership;
     const body = String(req.body.body || '').trim();
     const files = req.files || [];
     if (!body && !files.length) return res.status(400).json({ success: false, error: 'Empty message' });
@@ -429,6 +459,7 @@ router.post('/channels/:id/messages', upload.array('files', 10), async (req, res
     const messageId = ins.rows[0].id;
 
     // Persist each attachment — R2 when configured, raw-base64 inline otherwise.
+    const skipped = [];
     for (const f of files) {
       let r2Key = null, data = null;
       if (isConfigured()) {
@@ -440,7 +471,9 @@ router.post('/channels/:id/messages', upload.array('files', 10), async (req, res
         } catch (e) { console.error('R2 chat upload failed, inlining:', e.message); }
       }
       if (!r2Key) {
-        if (f.buffer.length > INLINE_MAX) continue; // skip oversized when no object storage
+        // No object storage and too big to inline. This used to `continue`,
+        // so the attachment vanished and the sender was told it sent.
+        if (f.buffer.length > INLINE_MAX) { skipped.push(f.originalname || 'file'); continue; }
         data = f.buffer.toString('base64');
       }
       await pool.query(
@@ -510,7 +543,7 @@ router.post('/channels/:id/messages', upload.array('files', 10), async (req, res
       } catch (e) { console.error('chat mentions:', e.message); }
     }
 
-    res.json({ success: true, data: msg });
+    res.json({ success: true, data: msg, skipped_attachments: skipped });
   } catch (err) {
     console.error('send message:', err.message);
     res.status(500).json({ success: false, error: 'Internal server error' });
@@ -518,7 +551,7 @@ router.post('/channels/:id/messages', upload.array('files', 10), async (req, res
 });
 
 // PATCH /api/chat/messages/:id — edit (author only). { body }
-router.patch('/messages/:id', async (req, res) => {
+router.patch('/messages/:id(\\d+)', async (req, res) => {
   try {
     const body = String(req.body.body || '').trim();
     if (!body) return res.status(400).json({ success: false, error: 'Empty message' });
@@ -535,7 +568,7 @@ router.patch('/messages/:id', async (req, res) => {
 });
 
 // DELETE /api/chat/messages/:id — soft delete (author, or Admin/Superadmin).
-router.delete('/messages/:id', async (req, res) => {
+router.delete('/messages/:id(\\d+)', async (req, res) => {
   try {
     const isAdmin = ['Superadmin', 'Admin'].includes(req.user.role);
     const upd = await pool.query(
@@ -554,7 +587,7 @@ router.delete('/messages/:id', async (req, res) => {
 });
 
 // POST /api/chat/messages/:id/react — toggle an emoji reaction. { emoji }
-router.post('/messages/:id/react', async (req, res) => {
+router.post('/messages/:id(\\d+)/react', async (req, res) => {
   try {
     const emoji = String(req.body.emoji || '').slice(0, 16);
     if (!emoji) return res.status(400).json({ success: false, error: 'No emoji' });
@@ -584,7 +617,7 @@ router.post('/messages/:id/react', async (req, res) => {
 });
 
 // POST /api/chat/channels/:id/read — mark the channel read up to now.
-router.post('/channels/:id/read', async (req, res) => {
+router.post('/channels/:id(\\d+)/read', async (req, res) => {
   try {
     await pool.query(
       `UPDATE chat_members SET last_read_at = CURRENT_TIMESTAMP WHERE channel_id = $1 AND user_id = $2 AND label_id = $3`,
@@ -596,7 +629,7 @@ router.post('/channels/:id/read', async (req, res) => {
 
 // POST /api/chat/channels/:id/mute — mute/unmute (muted channels don't count
 // toward the nav unread badge). { muted }
-router.post('/channels/:id/mute', async (req, res) => {
+router.post('/channels/:id(\\d+)/mute', async (req, res) => {
   try {
     await pool.query(
       `UPDATE chat_members SET muted = $1 WHERE channel_id = $2 AND user_id = $3 AND label_id = $4`,
@@ -613,6 +646,7 @@ router.get('/search', async (req, res) => {
   try {
     const q = String(req.query.q || '').trim();
     if (q.length < 2) return res.json({ success: true, data: [] });
+    const pattern = likeContains(q); // see lib/likePattern — `_` and `%` are wildcards
     const { rows } = await pool.query(
       `SELECT m.id, m.channel_id, m.body, m.created_at, m.is_system,
               u.name AS author_name,
@@ -623,9 +657,9 @@ router.get('/search', async (req, res) => {
          JOIN chat_members cm ON cm.channel_id = m.channel_id AND cm.user_id = $2
          JOIN chat_channels c ON c.id = m.channel_id
          LEFT JOIN users u ON u.id = m.user_id
-        WHERE m.label_id = $1 AND m.deleted = false AND m.body ILIKE $3
+        WHERE m.label_id = $1 AND m.deleted = false AND m.body ILIKE $3 ${LIKE_ESCAPE}
         ORDER BY m.id DESC LIMIT 40`,
-      [req.labelId, req.user.id, `%${q}%`]
+      [req.labelId, req.user.id, pattern]
     );
     res.json({ success: true, data: rows });
   } catch (err) {

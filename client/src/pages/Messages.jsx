@@ -21,19 +21,30 @@ export async function postMessage(channelId, body, files, threadRootId) {
     if (threadRootId) fd.append('thread_root_id', threadRootId)
     files.forEach(f => fd.append('files', f))
     const { data } = await api.post(`/chat/channels/${channelId}/messages`, fd)
-    return data.data
+    // The server reports anything it accepted but could not store (no object
+    // storage and too large to inline) — silence there loses a file.
+    return data.skipped_attachments?.length ? { ...data.data, __skipped: data.skipped_attachments } : data.data
   }
   const { data } = await api.post(`/chat/channels/${channelId}/messages`, { body, thread_root_id: threadRootId })
   return data.data
 }
 
 export function FileChips({ files, onRemove }) {
+  // One object URL per FILE, revoked when the file leaves the tray.
+  //
+  // This used to be `src={URL.createObjectURL(f)}` inline: it runs on every
+  // render, and this component sits beside the composer's text state, so every
+  // keystroke minted a fresh blob URL for each staged image and none was ever
+  // revoked — each one pins the file in memory for the life of the tab.
+  const previews = useMemo(() => files.map(f => (f.type?.startsWith('image/') ? URL.createObjectURL(f) : null)), [files])
+  useEffect(() => () => previews.forEach(u => u && URL.revokeObjectURL(u)), [previews])
+
   if (!files.length) return null
   return (
     <div className="flex flex-wrap gap-2 mb-2">
       {files.map((f, i) => (
         <div key={i} className="flex items-center gap-1.5 pl-1.5 pr-2 py-1 rounded-lg bg-page border border-rule text-xs">
-          {f.type?.startsWith('image/') ? <img src={URL.createObjectURL(f)} alt="" className="w-6 h-6 rounded object-cover" /> : <FileText size={14} className="text-brand-600" />}
+          {previews[i] ? <img src={previews[i]} alt="" className="w-6 h-6 rounded object-cover" /> : <FileText size={14} className="text-brand-600" />}
           <span className="max-w-[140px] truncate text-ink">{f.name}</span>
           <button onClick={() => onRemove(i)} className="text-gray-400 hover:text-danger"><X size={13} /></button>
         </div>
@@ -273,6 +284,7 @@ export default function Messages() {
 
   const activeIdRef = useRef(activeId)
   activeIdRef.current = activeId
+  const isWsRef = useRef(false)   // read by the socket handler, which is registered once
   const scrollRef = useRef(null)
   const typingTimers = useRef({})
 
@@ -292,6 +304,7 @@ export default function Messages() {
   // than re-tested at each call site.
   const active = channels.find(c => c.id === activeId) || wsChannels.find(c => c.id === activeId) || null
   const isWs = active?.scope === 'ws'
+  isWsRef.current = isWs
   const chatBase = isWs ? '/platform/chat' : '/chat'
   const activeWorkspace = isWs ? boards.find(w => w.id === active.label_id) : null
 
@@ -416,7 +429,11 @@ export default function Messages() {
         }
         if (m.channel_id === activeIdRef.current) {
           setMessages(ms => ms.some(x => x.id === m.id) ? ms : [...ms, m])
-          api.post(`/chat/channels/${m.channel_id}/read`).catch(() => {})
+          // Same rule as the load effect: no read pointer on a workspace board.
+          // The operator is not a member of it, so this only ever updated zero
+          // rows — but it stated the opposite of the invariant, and would have
+          // become a real cross-tenant write the day that WHERE lost its label.
+          if (!isWsRef.current) api.post(`/chat/channels/${m.channel_id}/read`).catch(() => {})
         } else {
           setChannels(cs => cs.map(c => c.id === m.channel_id
             ? { ...c, unread: (c.unread || 0) + 1, last_message: { body: m.body, created_at: m.created_at, author_name: m.author_name } }
@@ -520,8 +537,11 @@ export default function Messages() {
     }
     const files = mainFiles
     setText(''); setMainFiles([])
-    try { const msg = await postMessage(activeId, body, files); setMessages(ms => ms.some(x => x.id === msg.id) ? ms : [...ms, msg]) }
-    catch { toast('Send failed', 'error'); setText(body); setMainFiles(files) }
+    try {
+      const msg = await postMessage(activeId, body, files)
+      setMessages(ms => ms.some(x => x.id === msg.id) ? ms : [...ms, msg])
+      if (msg?.__skipped?.length) toast(`Sent, but could not store ${msg.__skipped.join(', ')}`, 'error', { duration: 8000 })
+    } catch (e) { toast(e.response?.data?.error || 'Send failed', 'error'); setText(body); setMainFiles(files) }
   }
 
   const sendThread = async () => {
@@ -542,7 +562,21 @@ export default function Messages() {
     catch { toast('Reply failed', 'error'); setThreadText(body); setThreadFiles(files) }
   }
 
-  const addFiles = (setter) => (list) => { const arr = Array.from(list || []).slice(0, 10); if (arr.length) setter(prev => [...prev, ...arr].slice(0, 10)) }
+  // Say what was dropped. Both limits used to apply silently, so a file simply
+  // was not there — and the 25 MB one only surfaced as a bare "Send failed".
+  const MAX_FILES = 10, MAX_FILE_MB = 25
+  const addFiles = (setter) => (list) => {
+    const all = Array.from(list || [])
+    const tooBig = all.filter(f => f.size > MAX_FILE_MB * 1024 * 1024)
+    const ok = all.filter(f => f.size <= MAX_FILE_MB * 1024 * 1024)
+    if (tooBig.length) toast(`${tooBig.length === 1 ? `"${tooBig[0].name}" is` : `${tooBig.length} files are`} over ${MAX_FILE_MB} MB`, 'error')
+    if (!ok.length) return
+    setter(prev => {
+      const next = [...prev, ...ok]
+      if (next.length > MAX_FILES) toast(`Up to ${MAX_FILES} files per message — ${next.length - MAX_FILES} not added`, 'info')
+      return next.slice(0, MAX_FILES)
+    })
+  }
 
   const react = async (id, emoji) => {
     try { await api.post(`/chat/messages/${id}/react`, { emoji }) } catch { toast('Failed', 'error') }

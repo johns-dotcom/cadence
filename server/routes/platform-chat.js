@@ -28,6 +28,7 @@ const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { requirePlatformAdmin } = require('../middleware/tenant');
 const { accessibleLabelIds, scopeClause } = require('../lib/operatorAccess');
+const { likeContains, LIKE_ESCAPE } = require('../lib/likePattern');
 const rt = require('../lib/realtime');
 const { recordMentions } = require('../lib/mentions');
 
@@ -336,7 +337,7 @@ router.get('/search', async (req, res) => {
   try {
     const q = String(req.query.q || '').trim();
     if (q.length < 2) return res.json({ success: true, data: [] });
-    const params = [`%${q}%`];
+    const params = [likeContains(q)]; // see lib/likePattern
     const scope = scopeClause(await accessibleLabelIds(req), 'c.label_id', params);
     const { rows } = await pool.query(
       `SELECT m.id, m.channel_id, m.body, m.created_at, m.is_system, m.is_operator,
@@ -347,7 +348,7 @@ router.get('/search', async (req, res) => {
          JOIN chat_channels c ON c.id = m.channel_id
          JOIN labels l ON l.id = c.label_id
          LEFT JOIN users u ON u.id = m.user_id
-        WHERE m.deleted = false AND m.body ILIKE $1 AND ${BOARD_WHERE}${scope}
+        WHERE m.deleted = false AND m.body ILIKE $1 ${LIKE_ESCAPE} AND ${BOARD_WHERE}${scope}
         ORDER BY m.id DESC LIMIT 40`,
       params
     );
