@@ -15,6 +15,7 @@ const { stampFxRateAsync } = require('../lib/fxStamp');
 const { familyRoot, cascadePaymentFieldsToFamily, recomputeFamilyPaymentStatus } = require('../lib/paymentFamily');
 const { toUSD } = require('../lib/fx');
 const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
+const { breakdownBalances, breakdownSum } = require('../lib/breakdownBalance');
 const paymentCrypto = require('../lib/paymentCrypto');
 const aiScan = require('../lib/aiScan');
 const bankEvidence = require('../lib/bankEvidence');
@@ -1444,6 +1445,18 @@ async function applyBreakdownSplits(labelId, parent, actorName) {
   if (parent.parent_id) return 0;
   const children = breakdownChildLines(parent.artist_breakdown);
   if (children.length < 2) return 0;
+  // This function is where a breakdown becomes MONEY: the parent keeps slice 1
+  // and the children hold the rest, so the family total is the sum of the
+  // slices. Splitting on lines that do not add up to the parent's amount does
+  // not mis-attribute the invoice, it invents money — and three paths reach
+  // here (create-approved, approve, and an approver's staged breakdown), one of
+  // them originating on the PUBLIC vendor form. Refuse and leave the entry
+  // whole: an approved-but-unsplit row is merely unallocated, a corrupt family
+  // is wrong on every money surface that reads slices.
+  if (!breakdownBalances(children, parent.amount)) {
+    console.error(`[splits] refused to split entry ${parent.id}: lines total ${breakdownSum(children).toFixed(2)} vs amount ${Number(parent.amount).toFixed(2)}`);
+    return 0;
+  }
   const existing = await pool.query('SELECT 1 FROM expenses WHERE parent_id = $1 LIMIT 1', [parent.id]);
   if (existing.rows.length) return 0; // already split
   const client = await pool.connect();

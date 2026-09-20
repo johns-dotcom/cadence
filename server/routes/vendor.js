@@ -5,6 +5,7 @@ const pool = require('../db');
 const { uploadFile, getSignedFileUrl } = require('../lib/r2');
 const { upsertVendor } = require('../lib/vendors');
 const { normalizeInvoiceNum } = require('../lib/normalizeInvoiceNum');
+const { breakdownBalances, breakdownSum } = require('../lib/breakdownBalance');
 const { validatePaymentFields, comparePaymentDetails, last4: payLast4 } = require('../lib/paymentFields');
 const paymentCrypto = require('../lib/paymentCrypto');
 const aiScan = require('../lib/aiScan');
@@ -62,13 +63,35 @@ const sandboxAuth = (req, res, next) => {
   return authMiddleware(req, res, next);
 };
 
-const submitLimiter = rateLimit({
+// Two budgets, not one.
+//
+// A single 15/hour cap covered /submit AND the three AI endpoints, and every
+// 400 spent a unit — so a vendor who mistyped a field a few times, or
+// re-uploaded a document, was locked out of the whole form for an hour by a
+// message that said "too many submissions" to somebody who had submitted none.
+// Measured: one careful attempt costs 3-4 units, so the real allowance was
+// three or four tries an hour, shared by everyone behind one office IP.
+const limiter = (max, message, opts = {}) => rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 15,
+  max,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many submissions. Please try again later.' },
+  message: { error: message },
+  ...opts,
 });
+
+// The AI calls are the ones that cost money, so they keep the tight cap.
+const aiLimiter = limiter(20, 'Too many document checks. Please wait a little and try again.');
+
+// Submitting is a database write behind an unguessable token. A REFUSED submit
+// does no expensive work (the AI gate runs only after validation passes), so a
+// rejected attempt no longer counts — otherwise the form punishes the vendor
+// for the form's own validation.
+const submitLimiter = limiter(15, 'Too many submissions. Please try again later.', { skipFailedRequests: true });
+
+// An outer bound that still applies to everything, so refusing to count 400s
+// cannot turn the endpoint into an unbounded upload sink.
+const formLimiter = limiter(80, 'Too many requests. Please wait a little and try again.');
 
 const isValidEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 
@@ -136,7 +159,7 @@ router.get('/:slug/roster', async (req, res) => {
 // uploaded invoice so the vendor form can auto-fill. Rate-limited; no
 // persistence. Prompt carries the label's live category vocabulary + roster so
 // the prefill lands on names that exist.
-router.post('/:slug/parse-invoice', submitLimiter, singleInvoice, async (req, res) => {
+router.post('/:slug/parse-invoice', formLimiter, aiLimiter, singleInvoice, async (req, res) => {
   try {
     if (!claude.isEnabled()) return res.status(400).json({ success: false, error: 'Auto-fill is not available' });
     const label = await labelBySlug(req.params.slug);
@@ -162,7 +185,7 @@ router.post('/:slug/parse-invoice', submitLimiter, singleInvoice, async (req, re
 // POST /api/vendor/:slug/validate-w9 — pre-submit W9 sanity gate: is the form
 // signed, and does the legal name match? Blocks only on a DEFINITE unsigned
 // form; AI unavailable/uncertain falls open (checked:false).
-router.post('/:slug/validate-w9', submitLimiter, singleW9, async (req, res) => {
+router.post('/:slug/validate-w9', formLimiter, aiLimiter, singleW9, async (req, res) => {
   try {
     const label = await labelBySlug(req.params.slug);
     if (!label) return res.status(404).json({ success: false, error: 'Workspace not found' });
@@ -285,12 +308,21 @@ router.get('/:slug/check-dup', async (req, res) => {
     const key = normalizeInvoiceNum(req.query.invoice_number);
     const amount = parseFloat(req.query.amount) || null;
     const currency = String(req.query.currency || 'USD').trim().toUpperCase().slice(0, 6);
-    if (!email && !name) return res.json({ success: true, data: { duplicate: false, similar: null } });
+    // The EMAIL is required, exactly as /lookup and /payment-on-file require it.
+    // This used to answer on a bare business name, which is not a secret — so
+    // anyone holding the form link (every vendor a label has ever invited, and
+    // anyone they forwarded it to) could ask "does this label pay Acme, and for
+    // how much" by name, and enumerate invoice numbers against it. The name now
+    // only WIDENS the match within a vendor who already proved their address.
+    if (!email || !isValidEmail(email)) return res.json({ success: true, data: { duplicate: false, similar: null } });
+    // Each identity term is compared only when it is non-empty: a bare `= ''`
+    // would match any row whose payee or vendor_name happened to be blank.
     const { rows } = await pool.query(
       `SELECT invoice_number, amount, currency, COALESCE(invoice_date, created_at::date) AS date, created_at
          FROM expenses
         WHERE label_id = $1 AND status != 'rejected' AND (deleted = false OR deleted IS NULL)
-          AND (LOWER(vendor_email) = $2 OR LOWER(vendor_name) = $3 OR LOWER(payee) = $3)`,
+          AND ( LOWER(vendor_email) = $2
+             OR ($3 <> '' AND (LOWER(vendor_name) = $3 OR LOWER(payee) = $3)) )`,
       [label.id, email, name]
     );
     const duplicate = key ? rows.some(r => normalizeInvoiceNum(r.invoice_number) === key) : false;
@@ -313,7 +345,7 @@ router.get('/:slug/check-dup', async (req, res) => {
 // entered. FAILS OPEN (matches:true) if AI is unavailable or errors. A document
 // carrying NO number is reported (document_missing_number) so the client can
 // tell the vendor to fix the document rather than guess.
-router.post('/:slug/check-invoice-number', submitLimiter, singleInvoice, async (req, res) => {
+router.post('/:slug/check-invoice-number', formLimiter, aiLimiter, singleInvoice, async (req, res) => {
   try {
     const label = await labelBySlug(req.params.slug);
     if (!label) return res.status(404).json({ success: false, error: 'Workspace not found' });
@@ -328,7 +360,7 @@ router.post('/:slug/check-invoice-number', submitLimiter, singleInvoice, async (
 });
 
 // POST /api/vendor/:slug/submit — create a pending ledger entry for the label.
-router.post('/:slug/submit', sandboxAuth, submitLimiter, filesSafe, async (req, res) => {
+router.post('/:slug/submit', sandboxAuth, formLimiter, submitLimiter, filesSafe, async (req, res) => {
   try {
     const label = await labelBySlug(req.params.slug);
     if (!label) return res.status(404).json({ success: false, error: 'Workspace not found' });
@@ -383,6 +415,13 @@ router.post('/:slug/submit', sandboxAuth, submitLimiter, filesSafe, async (req, 
     if (!invoiceNum) errors.push('Please enter your invoice number.');
     if (!splits.length) errors.push('Please enter at least one artist or project.');
     if (splits.some(l => !l.song)) errors.push('Please enter a song / track for every artist row.');
+    // The browser checks this too — and a check only the browser performs is a
+    // request, not a requirement. An unbalanced breakdown becomes a split FAMILY
+    // on approval, and the family total is the sum of its slices, so a $250
+    // invoice with $10,000 of lines books $10,000 against named artists.
+    if (splits.length && amount && !breakdownBalances(splits, amount)) {
+      errors.push(`Your artist amounts add up to ${breakdownSum(splits).toFixed(2)}, but the invoice total is ${amount.toFixed(2)}. Please make them match.`);
+    }
     if (!category) errors.push('Please select a category.');
     if (repsExist && !rep) errors.push('Please select your contact at the label.');
     if (!amount || amount <= 0) errors.push('Please enter a valid invoice amount.');

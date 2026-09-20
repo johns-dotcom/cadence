@@ -1053,4 +1053,30 @@ const PR = require('../lib/platformRollup');
     identityFor({ name: 'The Nest', email_reply_to: 'ap@thenest.co' }).replyTo === 'ap@thenest.co');
 }
 
+// ── artist-breakdown balance (lib/breakdownBalance) ────────────────────────
+// The public vendor form enforced this in the browser only, and the function
+// that turns a breakdown into a split FAMILY trusted whatever it was handed —
+// so a $250 invoice submitted with $200 + $9,800 of lines approved into a
+// $10,000 family attributed to two named artists. Proved live before the fix.
+{
+  const { breakdownBalances, breakdownSum, toleranceFor } = require('../lib/breakdownBalance');
+  const lines = (...a) => a.map((amount) => ({ artist: 'x', song: 'y', amount }));
+
+  assert('breakdown: balanced lines pass', breakdownBalances(lines(100, 150), 250));
+  assert('breakdown: the vendor-form attack is refused', !breakdownBalances(lines(200, 9800), 250));
+  assert('breakdown: under-claiming is refused too', !breakdownBalances(lines(10, 10), 250));
+  assert('breakdown: an empty breakdown is balanced (nothing to split)', breakdownBalances([], 250));
+  assert('breakdown: a single line still has to match', !breakdownBalances(lines(999), 250));
+  assert('breakdown: string amounts are read as numbers', breakdownBalances([{ amount: '100' }, { amount: '150.00' }], 250));
+  assert('breakdown: a non-numeric line counts as zero, so it fails', !breakdownBalances([{ amount: 'abc' }, { amount: 10 }], 250));
+  assert('breakdown: a non-finite total is never balanced', !breakdownBalances(lines(1), Infinity));
+  // breakdownChildLines may drop a sub-cent remainder per input line, so the
+  // tolerance is per line — tight enough that $9,800 can never pass.
+  assert('breakdown: tolerates one dropped cent per line', breakdownBalances(lines(99.99, 149.99), 250));
+  assert('breakdown: does not tolerate a dollar', !breakdownBalances(lines(99, 150), 250));
+  assert('breakdown: tolerance grows with the line count', toleranceFor(lines(1, 2, 3)) > toleranceFor(lines(1)));
+  assert('breakdown: sum rounds at the line, like every other money path',
+    breakdownSum([{ amount: 0.005 }, { amount: 0.005 }]) === 0.02);
+}
+
 console.log(process.exitCode ? '\nFIXTURES FAILED' : '\nAll fixtures pass.');
