@@ -3,6 +3,13 @@
 
 export const ROLES = ['Superadmin', 'Admin', 'Approver', 'User']
 
+// The two coarse role cuts the nav and its tab bar filter by. Defined once:
+// Layout and PageTabs both build nav groups, and a second copy of these arrays
+// is how one of them ends up a role behind after the next role is added.
+// Neither replaces canView(), which stays the actual permission gate.
+export const isAdminRole = (role) => ['Superadmin', 'Admin'].includes(role)
+export const isApproverRole = (role) => ['Superadmin', 'Admin', 'Approver'].includes(role)
+
 export const ROLE_DESCRIPTIONS = {
   Superadmin: 'Workspace owner — full control, including impersonation and team management.',
   Admin: 'Manage team, contracts, and all operational data.',

@@ -101,6 +101,8 @@ export const SHORTCUT_GROUPS = [
     group: 'Deal pipeline',
     items: [
       { keys: ['N'], desc: 'New deal' },
+      { keys: ['1'], desc: 'Board view' },
+      { keys: ['2'], desc: 'Table view' },
       { keys: ['Esc'], desc: 'Close the card drawer' },
     ],
   },

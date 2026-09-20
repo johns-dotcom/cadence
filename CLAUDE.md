@@ -6345,3 +6345,72 @@ undo, so reversing one now means editing the split on `/ledger`.
   across a page where two tabs legitimately render it, another asserted a "member"
   lacks the Team tab while the stub was a Superadmin, who IS a lead. Induce the
   defect and watch the check fail before believing it.
+
+---
+
+## M4 — Recoupments depth, the three parts that were missing (2026-09-20)
+
+`BUILD_DIRECTIONS_2.md` Item 9. **Audited before building**: the Phase 5
+recoupments campaigns had already delivered most of Item 9, so this pass closed
+only what was genuinely absent. Verified present and NOT rebuilt —
+`statementMonthFor` (one implementation, UTC getters, day ≥ 21 rolls; the only
+copy in the tree), artist→song/category grouping, per-item UFR stamping, the
+Pending/Uploaded/Total/per-month tabs, priority as a TAG with subtabs,
+ready-for-planning markers, page + per-artist notes, add-expense with
+`entry_source='recoupments'`, the socials editor, `?focus=` ledger deep links,
+and the whole Planning page including mass-UFR commit with its partial-failure
+rule.
+
+### The prior-year subpage did not exist, and that was a dead end
+
+`POST /recoupments/prior-year` tags rows, `GET /recoupments` filters
+`prior_year_tag IS NULL`, and the button's own copy said "Move to the prior-year
+subpage" — so tagging really did move recoupable money off the surface that
+accounts for it, **into nothing**. `GET /financials/recoupments-prior-year` had
+been written and had no client caller.
+
+New `pages/RecoupmentPriorYear.jsx` at `/recoupments/prior-year` (AdminRoute, Reports →
+Recoupments → Prior year): per-artist cards with per-currency totals and a ≈USD
+figure, a year filter built from the tags present, search, four summary tiles,
+and untagging at row / artist / multi-select grain behind a ConfirmDialog that
+states the consequence. Selection is re-intersected with the filtered set, so a
+filter change cannot leave an id selected that the next action would act on.
+
+It is deliberately an ARCHIVE, not a second Recoupments — no claiming, no
+splitting, no editing. Anything you want to act on, you untag, and it reappears
+where the claiming happens.
+
+### The year was a `window.prompt`
+
+Three call sites, replaced with one `ui/Modal` picker: digits-only input capped
+at four, a disabled action until it matches `^\d{4}$`, defaulted to last year,
+and copy that names what the tag DOES rather than only asking for a number. `ids`
+is captured when the modal opens, so a filter change behind it cannot redirect
+the write. (The remaining `window.prompt` on that page is the flag-reason
+field — a different feature, out of scope here.)
+
+### Planning buckets are renameable, and Cancel cannot wipe a label
+
+Item 9's hard requirement. Batch labels are the vocabulary Planning commits with
+(`set-label … mark_ufr`), and they were only settable one item at a time through
+the label menu. The group header now carries a pencil on real batches —
+"Unlabeled" is the absence of a label, not a name.
+
+The rule is enforced by keeping the in-progress text in its own `renaming`
+state and **not touching the plan until Save**: boom's version wrote through as
+you typed, so Cancel — and anything that unmounted the input — wiped the label
+off every item in the bucket. Escape and Cancel discard a string and nothing
+else. A no-op rename closes without writing, so a stray click cannot re-stamp the
+bucket.
+
+### Verified
+Live round trip on the dev box: tagging entry 14 moved it out of the artist's
+`entries` into its `prior_year` bucket and onto the new page (2 rows, 2 artists,
+2 years, correct USD); untagging put it back in `entries`. All nine gates green —
+check-tdz 215 files, check-render 89 routes, mywork 42/42, nav/navpresets/settings
+fixtures, vendor-lab, ws-colors, finance fixtures 288. Built CSS re-checked: 0
+`NaN`, and `bg-selected` / `bg-page/50` / `bottom-20` all emit real rules.
+
+**Not done, and not part of Item 9**: add-expense's release dropdown and receipt
+upload (noted as open since Phase 5), and comment threads on recoupment rows —
+still the ledger drawer's job, still deliberate.

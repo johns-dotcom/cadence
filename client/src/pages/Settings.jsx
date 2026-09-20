@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Check, Copy, Eye, EyeOff, Gauge, LayoutDashboard, Link2, Mail, Moon, PanelLeft, Plus, RefreshCw, Send, ShieldCheck, Sun, Trash2, Upload, X } from 'lucide-react'
+import { Check, Copy, Eye, EyeOff, Gauge, LayoutDashboard, Link2, Mail, Moon, PanelLeft, Plus, RefreshCw, Send, ShieldCheck, Sun, Trash2, Upload, Users, X } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
@@ -12,7 +12,12 @@ import { applyAccent, resetAccent, isValidHex, ACCENT_PRESETS } from '../utils/b
 import RepsManager from '../components/RepsManager'
 import VisibleRepsManager from '../components/VisibleRepsManager'
 import PermissionsManager from '../components/PermissionsManager'
+import RolesGuide from '../components/RolesGuide'
+import DepartmentsManager from '../components/DepartmentsManager'
 import DataTools from '../components/DataTools'
+import SettingsShell from '../components/SettingsShell'
+import LabelRecordForm from '../components/LabelRecordForm'
+import { buildSettingsSections, LEGACY_TABS } from '../lib/settingsSections'
 import BankAccountsManager from '../components/BankAccountsManager'
 import { dropTarget } from '../utils/drop'
 
@@ -34,23 +39,16 @@ export default function Settings() {
   const { toast } = useToast()
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
-  const [tab, setTab] = useState('account')
-  const TABS = [
-    { key: 'account', label: 'Account' },
-    ...(isAdmin ? [
-      { key: 'workspace', label: 'Workspace' },
-      { key: 'finance', label: 'Finance' },
-      { key: 'team', label: 'Team' },
-      { key: 'data', label: 'Data' },
-    ] : []),
-  ]
+  const [tab, setTab] = useState('profile')
+
+  // Memoised: the shell watches this list, and a fresh array every render
+  // would re-run its URL-sync effect on every keystroke in any panel.
+  const SECTIONS = useMemo(() => buildSettingsSections(isAdmin), [isAdmin])
 
   const [name, setName] = useState(user?.name || '')
   const [labelName, setLabelName] = useState('')
   const [accent, setAccent] = useState(label?.accent_color || '')
   const [logoUrl, setLogoUrl] = useState(label?.logo_url || null)
-  const [inv, setInv] = useState({})
-  const [savingInv, setSavingInv] = useState(false)
   const [pw, setPw] = useState({ current_password: '', new_password: '' })
 
   // Identity + home-dashboard customization
@@ -81,7 +79,6 @@ export default function Settings() {
       setLabelName(d.name || '')
       setAccent(d.accent_color || '')
       setLogoUrl(d.logo_url || null)
-      setInv(d.invoice_settings || {})
       if (d.platform_from_address) setPlatformSender(d.platform_from_address)
       const s = d.settings || {}
       setTagline(s.tagline || '')
@@ -107,14 +104,6 @@ export default function Settings() {
     catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
 
-  const setInvField = (k) => (e) => setInv(s => ({ ...s, [k]: e.target.value }))
-  const saveInvoiceSettings = async (e) => {
-    e.preventDefault()
-    setSavingInv(true)
-    try { await api.patch('/label', { invoice_settings: inv }); toast('Invoice details saved') }
-    catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
-    finally { setSavingInv(false) }
-  }
 
   const saveProfile = async (e) => {
     e.preventDefault()
@@ -267,22 +256,12 @@ export default function Settings() {
   }
 
   return (
-    <div className="max-w-2xl">
-      <PageHeader title="Settings" subtitle="Your profile and workspace" />
+    <div>
+      <PageHeader title="Settings" subtitle="Your preferences, and how this workspace is set up" />
 
-      {/* Section tabs */}
-      <div className="flex flex-wrap gap-1 border-b border-rule mb-6">
-        {TABS.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            className={`px-3.5 py-2 text-sm font-medium border-b-2 -mb-px transition ${tab === t.key ? 'border-brand-600 text-brand-700' : 'border-transparent text-gray-500 hover:text-gray-800'}`}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="space-y-6">
-        {/* ── Account ── */}
-        {tab === 'account' && (<>
+      <SettingsShell sections={SECTIONS} tab={tab} onTab={setTab} aliases={LEGACY_TABS}>
+        {/* ── My settings · Profile ── */}
+        {tab === 'profile' && (<>
         {/* Profile */}
         <form onSubmit={saveProfile} className="card p-5">
           <h2 className="text-sm font-bold text-ink mb-4">Profile</h2>
@@ -300,8 +279,10 @@ export default function Settings() {
             <button className="btn-primary">Save profile</button>
           </div>
         </form>
+        </>)}
 
-        {/* Change password */}
+        {/* ── My settings · Sign-in ── */}
+        {tab === 'signin' && (<>
         <form onSubmit={changePassword} className="card p-5">
           <h2 className="text-sm font-bold text-ink mb-4">Change password</h2>
           <div className="space-y-3">
@@ -310,8 +291,10 @@ export default function Settings() {
             <button className="btn-primary">Change password</button>
           </div>
         </form>
+        </>)}
 
-        {/* Appearance */}
+        {/* ── My settings · Appearance ── */}
+        {tab === 'appearance' && (<>
         <div className="card p-5">
           <h2 className="text-sm font-bold text-ink mb-1">Appearance</h2>
           <p className="text-xs text-ink-muted mb-4">Applies to your account on every device you sign in from.</p>
@@ -339,7 +322,10 @@ export default function Settings() {
           </div>
         </div>
 
-        {/* Sidebar (My Nav) */}
+        </>)}
+
+        {/* ── My settings · My navigation ── */}
+        {tab === 'nav' && (<>
         <div className="card p-5">
           <div className="flex flex-wrap items-baseline gap-2 mb-1">
             <h2 className="text-sm font-bold text-ink inline-flex items-center gap-1.5"><PanelLeft size={15} /> Sidebar</h2>
@@ -380,7 +366,8 @@ export default function Settings() {
         </>)}
 
         {/* ── Workspace ── */}
-        {tab === 'workspace' && isAdmin && (<>
+        {/* ── Label settings · Identity & branding ── */}
+        {tab === 'branding' && isAdmin && (<>
           <form onSubmit={saveLabel} className="card p-5">
             <h2 className="text-sm font-bold text-ink mb-1">Workspace identity &amp; branding</h2>
             <p className="text-xs text-gray-400 mb-4">Make this workspace feel like your team's own.</p>
@@ -504,7 +491,8 @@ export default function Settings() {
         </>)}
 
         {/* ── Finance ── */}
-        {tab === 'finance' && isAdmin && (<>
+        {/* ── Label settings · Email & forms ── */}
+        {tab === 'email' && isAdmin && (<>
           {/* Outbound email identity */}
           <form onSubmit={saveEmail} className="card p-5">
             <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><Mail size={15} /> Outbound email</h2>
@@ -562,45 +550,34 @@ export default function Settings() {
             </div>
           </div>
 
-          {/* Invoice details */}
-          <form onSubmit={saveInvoiceSettings} className="card p-5">
-            <h2 className="text-sm font-bold text-ink mb-1">Invoice details</h2>
-            <p className="text-xs text-gray-400 mb-4">Your company &amp; remittance info. Shown as the “Funds payable to” block on every invoice you issue.</p>
-            <div className="space-y-5">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-2">Company</p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="sm:col-span-2"><label className="label">Company legal name</label><input className="input" value={inv.company_name || ''} onChange={setInvField('company_name')} placeholder="BOOM.RECORDS LLC" /></div>
-                  <div className="sm:col-span-2"><label className="label">Address</label><textarea className="input min-h-[64px]" value={inv.address || ''} onChange={setInvField('address')} placeholder={'1119 POINSETTIA DRIVE\nUNIT 01\nLOS ANGELES CA 90046-5794 USA'} /></div>
-                  <div><label className="label">Contact name</label><input className="input" value={inv.contact || ''} onChange={setInvField('contact')} placeholder="JOHN SKEAD" /></div>
-                  <div><label className="label">EIN / Tax ID</label><input className="input" value={inv.ein || ''} onChange={setInvField('ein')} placeholder="87-1095996" /></div>
-                  <div><label className="label">Phone</label><input className="input" value={inv.phone || ''} onChange={setInvField('phone')} placeholder="201-912-3991" /></div>
-                  <div><label className="label">Email</label><input className="input" value={inv.email || ''} onChange={setInvField('email')} placeholder="johns@boomrecords.co" /></div>
-                </div>
-              </div>
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-2">Bank</p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div><label className="label">Bank name</label><input className="input" value={inv.bank_name || ''} onChange={setInvField('bank_name')} placeholder="BANK OF AMERICA" /></div>
-                  <div><label className="label">Bank address</label><input className="input" value={inv.bank_address || ''} onChange={setInvField('bank_address')} placeholder="PO BOX 25118, TAMPA FL 33622-5118" /></div>
-                  <div><label className="label">Account name</label><input className="input" value={inv.account_name || ''} onChange={setInvField('account_name')} placeholder="BOOM.RECORDS LLC" /></div>
-                  <div><label className="label">Account type</label><input className="input" value={inv.account_type || ''} onChange={setInvField('account_type')} placeholder="CHECKING" /></div>
-                  <div><label className="label">SWIFT</label><input className="input" value={inv.swift || ''} onChange={setInvField('swift')} placeholder="BOFAUS3N (for funds sent in USD)" /></div>
-                  <div><label className="label">Routing (wire)</label><input className="input" value={inv.routing || ''} onChange={setInvField('routing')} placeholder="026009593 (WIRE)" /></div>
-                  <div><label className="label">Routing (ACH)</label><input className="input" value={inv.routing_ach || ''} onChange={setInvField('routing_ach')} placeholder="122000661 (ACH)" /></div>
-                  <div className="sm:col-span-2"><label className="label">Account number</label><input className="input" value={inv.account_number || ''} onChange={setInvField('account_number')} placeholder="325146889268" /></div>
-                </div>
-              </div>
-              <button disabled={savingInv} className="btn-primary">{savingInv ? 'Saving…' : 'Save invoice details'}</button>
-            </div>
-          </form>
+        </>)}
+
+        {/* ── Label settings · Label record ── */}
+        {tab === 'label' && isAdmin && (<>
+          <LabelRecordForm />
 
           {/* Feeds lib/bankEvidence.js — see the component for why this is not cosmetic. */}
           <BankAccountsManager />
         </>)}
 
-        {/* ── Team ── */}
-        {tab === 'team' && isAdmin && (<>
+        {/* ── Label settings · People ── */}
+        {tab === 'people' && isAdmin && (<>
+          {/* The roster itself is a page, not a panel — it has per-person
+              detail, workload and an Access tab that no settings card could
+              hold. This points at it rather than reproducing a worse copy. */}
+          <div className="card flex flex-wrap items-center justify-between gap-3 p-5">
+            <div className="min-w-0">
+              <h2 className="inline-flex items-center gap-1.5 text-sm font-bold text-ink">
+                <Users size={15} /> The people directory
+              </h2>
+              <p className="mt-1 text-xs text-ink-muted">
+                Add and remove members, set roles and departments, resend invites — and open anyone to edit
+                the pages they can see.
+              </p>
+            </div>
+            <Link to="/team" className="btn-secondary whitespace-nowrap">Open directory</Link>
+          </div>
+
           <form onSubmit={saveCapacity} className="card p-5">
             <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><Gauge size={15} /> Workload target</h2>
             <p className="text-xs text-ink-muted mb-4">
@@ -624,16 +601,35 @@ export default function Settings() {
               {savingCapacity ? 'Saving…' : 'Save workload target'}
             </button>
           </form>
-          <PermissionsManager />
           <RepsManager />
           {/* After RepsManager: you pick reps for a member FROM the roster it manages,
               so the roster has to be the thing above it. */}
           <VisibleRepsManager />
         </>)}
 
+        {/* ── Label settings · Roles & access ── */}
+        {tab === 'roles' && isAdmin && (<>
+          {/* Reference first, tools after — the guide answers the questions the
+              editor below it provokes (why ticking pages for an Admin does
+              nothing, why moving somebody to Finance granted them nothing).
+              Collapsed by default so it costs the people who already know it
+              one line. */}
+          <RolesGuide />
+          {/* The workspace-wide matrix. One person's pages are also editable on
+              their own page (/team/:id → Access), which is where you land coming
+              from the directory; this is the view for "who has what" across
+              everybody. Both mount the same component and write the same
+              endpoint — see components/PermissionsManager.jsx. */}
+          <PermissionsManager />
+          {/* Below the permissions editor, because a department's only job here
+              is seeding the preset that editor applies. */}
+          <DepartmentsManager />
+        </>)}
+
         {/* ── Data ── */}
+        {/* ── Label settings · Data ── */}
         {tab === 'data' && isAdmin && <DataTools />}
-      </div>
+      </SettingsShell>
     </div>
   )
 }

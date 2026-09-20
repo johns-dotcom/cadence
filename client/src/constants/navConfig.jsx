@@ -1,12 +1,5 @@
 import {
-  AlertTriangle, Banknote, BarChart3, BookOpen, Briefcase, Building2,
-  CalendarDays, CheckSquare, Coins, CreditCard, Disc3, FileBarChart, FileClock,
-  FilePlus2, FileSearch, FileSignature, FileSpreadsheet, FileText, FlaskConical,
-  FolderOpen, GitMerge, Image as ImageIcon, Landmark, Layers, LayoutDashboard,
-  Lock, Megaphone, MessageSquare, MessageSquarePlus, Music, PackageCheck,
-  PieChart, PiggyBank, PlusCircle, Receipt, RefreshCw, Scale, ScrollText,
-  Settings, Shield, ShieldCheck, TrendingUp, UploadCloud, UserCheck,
-  UserPlus, Users, Users2, Wallet,
+  AlertTriangle, Banknote, BarChart3, BookOpen, Briefcase, Building2, CalendarClock, CalendarDays, CheckSquare, Coins, CreditCard, Disc3, FileBarChart, FileClock, FilePlus2, FileSearch, FileSignature, FileSpreadsheet, FileText, FlaskConical, FolderOpen, GitMerge, Image as ImageIcon, Landmark, Layers, LayoutDashboard, Lock, Megaphone, MessageSquare, MessageSquarePlus, Music, PackageCheck, PieChart, PiggyBank, PlusCircle, Receipt, RefreshCw, Scale, ScrollText, Settings, Shield, ShieldCheck, TrendingUp, UploadCloud, UserCheck, UserPlus, Users, Users2, Wallet,
 } from 'lucide-react'
 
 // THE nav definition — one module, four consumers (sidebar, Settings' "hide
@@ -47,6 +40,7 @@ export const PAGE_LABELS = {
   '/recoupments':'Recoupments',
   '/recoupments/planning': 'Recoupment Planning',
   '/recoupments/audit': 'Recoupment Audit',
+  '/recoupments/prior-year': 'Prior-year Recoupments',
   '/salary':     'Salary',
   '/marketing':  'Marketing',
   '/artist-campaigns': 'Artist Campaigns',
@@ -162,14 +156,35 @@ export function buildNavGroups({ isAdmin, isApprover, chatUnread = 0, pendingApp
   {
     label: 'Contracts & Legal',
     items: [
-      ...(isApprover ? [{ path: '/contracts', label: 'Contracts', icon: FileText, synonyms: 'agreements deals paperwork terms signed' }] : []),
-      ...(isApprover ? [{ path: '/pending-contracts', label: 'Pending', icon: FileClock, synonyms: 'unsigned awaiting signature drafts' }] : []),
-      ...(isApprover ? [{ path: '/renewals', label: 'Renewals', icon: RefreshCw, synonyms: 'expiring contracts renew expiry option' }] : []),
-      ...(isApprover ? [{ path: '/legal', label: 'NDAs', icon: Shield, synonyms: 'nda non-disclosure confidentiality' }] : []),
-      ...(isApprover ? [{ path: '/contracts/create', label: 'Create Contract', icon: FilePlus2, synonyms: 'new contract draft agreement generate' }] : []),
-      ...(isApprover ? [{ path: '/create-nda', label: 'Create NDA', icon: FilePlus2, synonyms: 'new nda generate non-disclosure' }] : []),
-      ...(isApprover ? [{ path: '/label-waivers', label: 'Label Waivers', icon: FileSignature, synonyms: 'waiver release form permission' }] : []),
-      ...(isApprover ? [{ path: '/clearances', label: 'Clearances', icon: FileSpreadsheet, synonyms: 'sample clearance rights permission feature' }] : []),
+      // Two families rather than eight rows. Each is a lifecycle people already
+      // walk in order, and every member already links to its siblings in-page —
+      // which is the shape a tab bar is for. Child labels stay close to the page
+      // names on purpose: ⌘K ranks against these strings, so shortening them to
+      // fit a tab would quietly make pages harder to find.
+      ...(isApprover ? [{
+        tabbed: true,
+        key: 'contracts',
+        label: 'Contracts',
+        icon: FileText,
+        children: [
+          { path: '/contracts', label: 'Contracts', icon: FileText, synonyms: 'agreements deals paperwork terms signed' },
+          { path: '/pending-contracts', label: 'Pending', icon: FileClock, synonyms: 'unsigned awaiting signature drafts' },
+          { path: '/renewals', label: 'Renewals', icon: RefreshCw, synonyms: 'expiring contracts renew expiry option' },
+          { path: '/contracts/create', label: 'Create', icon: FilePlus2, synonyms: 'new contract draft agreement generate create contract' },
+        ],
+      }] : []),
+      ...(isApprover ? [{
+        tabbed: true,
+        key: 'legal',
+        label: 'Legal',
+        icon: Shield,
+        children: [
+          { path: '/legal', label: 'NDAs', icon: Shield, synonyms: 'nda non-disclosure confidentiality legal' },
+          { path: '/create-nda', label: 'Create NDA', icon: FilePlus2, synonyms: 'new nda generate non-disclosure' },
+          { path: '/label-waivers', label: 'Waivers', icon: FileSignature, synonyms: 'waiver release form permission label waivers' },
+          { path: '/clearances', label: 'Clearances', icon: FileSpreadsheet, synonyms: 'sample clearance rights permission feature' },
+        ],
+      }] : []),
     ],
   },
   {
@@ -183,7 +198,6 @@ export function buildNavGroups({ isAdmin, isApprover, chatUnread = 0, pendingApp
       // way — it just holds the rows nobody invoiced us for.
       ...(isAdmin ? [{ path: '/bank-ledger', label: 'Bank Ledger', icon: Coins, synonyms: 'bank booked spend no invoice statement entries' }] : []),
       { path: '/add-invoice', label: 'Add Invoice', icon: PlusCircle, synonyms: 'new invoice bill submit expense ap payable' },
-      ...(isApprover ? [{ path: '/invoices', label: 'Create Invoice', icon: Receipt, synonyms: 'outbound invoice bill client ar receivable charge' }] : []),
       // Vendors and the payees that arrived without one, behind a single row.
       // Same subject from two angles, and the directory page already links
       // across to the added-expense list, so this costs no reach.
@@ -198,10 +212,33 @@ export function buildNavGroups({ isAdmin, isApprover, chatUnread = 0, pendingApp
         ],
       }] : []),
       ...(isApprover ? [{ path: '/creators', label: 'Creator Payments', icon: Users, synonyms: 'influencers ugc paypal creator payments socials no invoice' }] : []),
-      ...(isAdmin ? [{ path: '/bank-statements', label: 'Bank Statements', icon: Landmark, synonyms: 'statement csv pdf reconcile bank upload month paypal' }] : []),
-      ...(isAdmin ? [{ path: '/bank-matching', label: 'Bank Matching', icon: GitMerge, synonyms: 'reconcile match bank transactions unmatched book' }] : []),
-      ...(isApprover ? [{ path: '/invoice-search', label: 'Invoice Search', icon: FileSearch, synonyms: 'find invoice lookup expense search documents files' }] : []),
-      ...(isApprover ? [{ path: '/bulk-upload', label: 'Bulk Upload', icon: UploadCloud, synonyms: 'import batch upload spreadsheet many invoices at once' }] : []),
+      // Upload a statement, then match it: one workflow, walked in that order.
+      ...(isAdmin ? [{
+        tabbed: true,
+        key: 'bank',
+        label: 'Bank',
+        icon: Landmark,
+        children: [
+          { path: '/bank-statements', label: 'Statements', icon: Landmark, synonyms: 'statement csv pdf reconcile bank upload month paypal bank statements' },
+          { path: '/bank-matching', label: 'Matching', icon: GitMerge, synonyms: 'reconcile match bank transactions unmatched book bank matching' },
+        ],
+      }] : []),
+      // Outbound invoicing and the tools for finding what came in. `/add-invoice`
+      // deliberately stays a plain row ABOVE this: it is the one bookkeeping page
+      // a plain User has business on, and burying the most-used action of the
+      // least-privileged role inside a family they'd see one tab of is a
+      // regression dressed as tidying.
+      ...(isApprover ? [{
+        tabbed: true,
+        key: 'invoices',
+        label: 'Invoices',
+        icon: Receipt,
+        children: [
+          { path: '/invoices', label: 'Create', icon: Receipt, synonyms: 'outbound invoice bill client ar receivable charge create invoice' },
+          { path: '/invoice-search', label: 'Search', icon: FileSearch, synonyms: 'find invoice lookup expense search documents files invoice search' },
+          { path: '/bulk-upload', label: 'Bulk Upload', icon: UploadCloud, synonyms: 'import batch upload spreadsheet many invoices at once' },
+        ],
+      }] : []),
       // Less-frequent actions behind one disclosure. Add Reimbursement is the
       // most-used of them so it leads — and it is the ONE bookkeeping page a
       // plain User has business on, which is why the sub-group opens by
@@ -238,12 +275,22 @@ export function buildNavGroups({ isAdmin, isApprover, chatUnread = 0, pendingApp
           { path: '/recoupments', label: 'Overview', icon: Wallet, synonyms: 'recoup ufr artist advance claim statements balance' },
           { path: '/recoupments/planning', label: 'Planning', icon: Layers, synonyms: 'recoup plan forecast projection stage batch' },
           { path: '/recoupments/audit', label: 'Audit', icon: ShieldCheck, synonyms: 'advances over-claim guard integrity check audit' },
+          { path: '/recoupments/prior-year', label: 'Prior year', icon: CalendarClock, synonyms: 'prior year archive tagged historic recoupments' },
         ],
       }] : []),
-      ...(isApprover ? [{ path: '/artist-budgets', label: 'Artist Budgets', icon: Scale, synonyms: 'budget per artist spend limit variance committed' }] : []),
-      ...(isApprover ? [{ path: '/artist-campaigns', label: 'Artist Campaigns', icon: Megaphone, synonyms: 'campaign spend cobrand promo per artist per song marketing' }] : []),
+      // Three views of the same question — what has this artist cost us.
+      ...(isApprover ? [{
+        tabbed: true,
+        key: 'artist-spend',
+        label: 'Artist Spend',
+        icon: Scale,
+        children: [
+          { path: '/artist-budgets', label: 'Budgets', icon: Scale, synonyms: 'budget per artist spend limit variance committed artist budgets' },
+          { path: '/artist-campaigns', label: 'Campaigns', icon: Megaphone, synonyms: 'campaign spend cobrand promo per artist per song marketing artist campaigns' },
+          { path: '/bulk-deals', label: 'Bulk Deals', icon: PackageCheck, synonyms: 'bulk units delivery quantity mark deals batch recoupable' },
+        ],
+      }] : []),
       ...(isAdmin ? [{ path: '/salary', label: 'Salary', icon: Banknote, synonyms: 'payroll wages staff pay compensation' }] : []),
-      ...(isApprover ? [{ path: '/bulk-deals', label: 'Bulk Deals', icon: PackageCheck, synonyms: 'bulk units delivery quantity mark deals batch recoupable' }] : []),
     ],
   },
   {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Plus, Trash2, TrendingUp, X, ExternalLink, ChevronRight, GripVertical, Check, Paperclip, Download, Loader2 } from 'lucide-react'
+import { Plus, Trash2, TrendingUp, X, ExternalLink, ChevronRight, GripVertical, Check, Paperclip, Download, Loader2, LayoutGrid, Table as TableIcon } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
@@ -10,6 +10,7 @@ import { DEAL_STAGES, DEAL_TYPES, PRIORITIES } from '../constants'
 import { formatDate, isPastLocal } from '../utils/dates'
 import { dropTarget } from '../utils/drop'
 import useHotkeys from '../hooks/useHotkeys'
+import DealsTable from '../components/DealsTable'
 
 // The stage colour system. A kanban whose columns are all one colour makes the
 // reader parse six identical headers to find where a card is; the dot and the
@@ -40,6 +41,14 @@ const PRIORITY_SELECT = {
   Low:    '',
 }
 
+// Board or table, remembered per browser. The choice is a working preference —
+// mid-week triage on the board, a Friday review in the table — so making it
+// survive a reload matters more than it sounds.
+const VIEW_KEY = 'deals_view'
+const readView = () => {
+  try { return localStorage.getItem(VIEW_KEY) === 'table' ? 'table' : 'board' } catch { return 'board' }
+}
+
 const BLANK = {
   artist_name: '', genre: '', stage: 'Scouting', ar_rep: '', source: '', deal_type: '',
   offer_amount: '', priority: 'Medium', next_followup_date: '', contact: '', links: '', notes: '',
@@ -54,6 +63,43 @@ function shortDate(dateStr) {
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
   return `${months[parseInt(m[2], 10) - 1]} ${parseInt(m[3], 10)}`
 }
+
+// How long a deal may sit in a stage before the card says so. Per-stage because
+// three weeks in Scouting is research and three weeks in Offer is a problem —
+// one global number would either nag about the first or stay silent on the
+// second. Terminal stages are absent by design: a signed deal is not stale, it
+// is finished, and a passed one is closed.
+const STALE_AFTER_DAYS = { Scouting: 30, Meeting: 14, Offer: 10, Negotiation: 14 }
+
+// Whole days since the deal entered its current stage. Falls back to added_date
+// for rows written before stage_entered_at existed, and returns null rather
+// than 0 when neither is usable — "0d" is a claim, absence is not.
+function daysInStage(deal) {
+  const raw = deal.stage_entered_at || deal.added_date
+  if (!raw) return null
+  const then = new Date(raw)
+  if (Number.isNaN(then.getTime())) return null
+  const days = Math.floor((Date.now() - then.getTime()) / 86400000)
+  return days >= 0 ? days : null
+}
+
+// "1.2M" / "340k". A monthly-listener count is read as a magnitude, and the
+// full digits cost more width than they earn on a 240px card.
+function compactCount(n) {
+  const v = Number(n)
+  if (!Number.isFinite(v) || v <= 0) return null
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1)}M`
+  if (v >= 1_000) return `${(v / 1_000).toFixed(v >= 10_000 ? 0 : 1)}k`
+  return String(v)
+}
+
+const hasOffer = (d) => d.offer_amount != null && d.offer_amount !== '' && Number(d.offer_amount) > 0
+
+// A card holding nothing but a name can't be triaged — you have to open it to
+// learn anything, which is the one thing a board exists to avoid. Detecting it
+// lets the card ask for the missing detail instead of just looking empty.
+const isBareDeal = (d) => !d.genre && !d.ar_rep && !hasOffer(d)
+  && !d.spotify_monthly_listeners && !d.next_followup_date
 
 // A stored value that predates a vocabulary change must still render. Without
 // this the <select> shows blank and the next save silently deletes the field.
@@ -72,6 +118,7 @@ export default function Deals() {
   const [active, setActive] = useState(null) // deal open in the detail drawer
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [fileCounts, setFileCounts] = useState({})
+  const [view, setView] = useState(readView)
   // HTML5 dragenter/dragleave fire for every child element the pointer crosses,
   // so a bare "leave → clear" flickers the highlight off every time the cursor
   // passes over a card inside the column. A per-column enter/leave counter is
@@ -88,8 +135,17 @@ export default function Deals() {
   useEffect(() => { load() }, [])
 
   // "n" opens the new-deal form; Esc closes the drawer / form.
+  // 1/2 for the views, the same keys My Work binds to Board/Table — a second
+  // vocabulary for the same action on a sibling page is how shortcuts stop
+  // getting used. Registered in constants/shortcuts.js alongside these.
+  const chooseView = (v) => {
+    setView(v)
+    try { localStorage.setItem(VIEW_KEY, v) } catch { /* private mode / quota */ }
+  }
   useHotkeys({
     n: () => { if (!active) setShowForm(true) },
+    1: () => chooseView('board'),
+    2: () => chooseView('table'),
     Escape: () => { setActive(null); setShowForm(false) },
   }, [active])
 
@@ -155,8 +211,37 @@ export default function Deals() {
     <div className="space-y-5">
       <PageHeader
         title="Deal Pipeline"
-        subtitle={`${deals.length} deal${deals.length === 1 ? '' : 's'} across ${DEAL_STAGES.length} stages · drag to move · press n to add`}
-        action={<button onClick={() => (showForm ? closeForm() : setShowForm(true))} className="btn-primary"><Plus size={16} /> Add deal</button>}
+        subtitle={view === 'board'
+          ? `${deals.length} deal${deals.length === 1 ? '' : 's'} across ${DEAL_STAGES.length} stages · drag to move · press n to add`
+          : `${deals.length} deal${deals.length === 1 ? '' : 's'} · click a cell to edit · press n to add`}
+        action={
+          <div className="flex items-center gap-2">
+            {/* Same strip as My Work's view switcher, down to the bg-page track:
+                two pages offering the same choice should not offer it in two
+                different shapes. */}
+            <div className="flex items-center gap-0.5 bg-page rounded-xl p-0.5" role="tablist" aria-label="View">
+              {[{ key: 'board', label: 'Board', icon: LayoutGrid }, { key: 'table', label: 'Table', icon: TableIcon }].map(t => {
+                const Icon = t.icon
+                return (
+                  <button
+                    key={t.key}
+                    onClick={() => chooseView(t.key)}
+                    role="tab"
+                    aria-selected={view === t.key}
+                    aria-label={t.label}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition
+                      focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 ${
+                      view === t.key ? 'bg-card text-ink shadow-sm ring-1 ring-rule' : 'text-ink-muted hover:text-ink'
+                    }`}
+                  >
+                    <Icon size={13} aria-hidden="true" /> <span className="hidden sm:inline">{t.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+            <button onClick={() => (showForm ? closeForm() : setShowForm(true))} className="btn-primary"><Plus size={16} /> Add deal</button>
+          </div>
+        }
       />
 
       {showForm && (
@@ -185,7 +270,7 @@ export default function Deals() {
       )}
 
       {loading ? (
-        <Skeleton.KanbanBoard cols={6} cards={2} />
+        view === 'table' ? <Skeleton.Table rows={8} cols={8} /> : <Skeleton.KanbanBoard cols={6} cards={2} />
       ) : error ? (
         <div className="card p-10 text-center">
           <p className="text-sm text-ink-muted mb-3">{error}</p>
@@ -193,6 +278,16 @@ export default function Deals() {
         </div>
       ) : deals.length === 0 ? (
         <div className="card p-10 text-center"><TrendingUp size={28} className="text-ink-faint mx-auto mb-3" /><p className="text-sm text-ink-muted">No deals yet. Press <kbd className="px-1 rounded bg-elev text-xs">n</kbd> to add one.</p></div>
+      ) : view === 'table' ? (
+        <DealsTable
+          deals={deals}
+          fileCounts={fileCounts}
+          onOpen={setActive}
+          onSave={patchDeal}
+          onDelete={setConfirmDelete}
+          daysInStage={daysInStage}
+          staleAfter={STALE_AFTER_DAYS}
+        />
       ) : (
         // Six stages, six columns. A funnel capped at three columns is two
         // half-funnels stacked, which is the one shape a pipeline must not have.
@@ -226,19 +321,44 @@ export default function Deals() {
                 }}
                 onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
                 onDrop={e => { e.preventDefault(); if (dragId != null) moveToStage(dragId, stage); endDrag() }}
-                className={`snap-start shrink-0 w-[240px] md:w-auto rounded-xl border p-3 min-h-[16rem] transition-colors duration-150 ${
-                  isTarget ? 'border-brand-400 bg-brand-500/10 ring-1 ring-brand-300' : 'border-rule bg-card'
+                // An empty stage recedes instead of announcing itself: dashed
+                // rule, no fill. Five filled white panels next to one that holds
+                // a deal give the eye six equal things to check; this way the
+                // columns with work in them are the only ones that read as
+                // solid. It costs nothing to render and needs no copy — the
+                // opposite tack from a permanent "Drop here", which would put a
+                // call to action on every empty stage for no reason.
+                //
+                // min-h is a floor for the drag target, not a reserved block:
+                // grid/flex stretch already levels the row to the tallest
+                // column, so 16rem only ever showed up as dead space on a
+                // board that hadn't filled up yet.
+                className={`snap-start shrink-0 w-[240px] md:w-auto rounded-xl border p-3 min-h-[7.5rem] transition-colors duration-150 ${
+                  isTarget ? 'border-brand-400 bg-brand-500/10 ring-1 ring-brand-300'
+                    : count === 0 ? 'border-dashed border-rule bg-transparent'
+                      : 'border-rule bg-card'
                 }`}
               >
                 <div className="flex items-center gap-2 mb-3 pb-2 border-b border-divider">
                   <div className={`w-2 h-2 rounded-full flex-shrink-0 ${tone.dot}`} />
                   <h3 className={`text-xs font-bold uppercase tracking-wider flex-1 truncate ${tone.text}`}>{stage}</h3>
-                  {count > 0 && <span className="text-xs font-bold text-ink-muted bg-elev rounded px-1.5 py-0.5 tabular-nums">{count}</span>}
+                  {/* Always rendered, including 0. Two reasons: a missing badge
+                      is ambiguous (is the stage empty, or did the count fail to
+                      load?), and the badge is taller than the bare heading — so
+                      showing it on only some columns knocked those headers a
+                      few px out of line with the rest of the row. */}
+                  <span className={`text-xs font-bold rounded px-1.5 py-0.5 tabular-nums ${
+                    count > 0 ? 'text-ink-muted bg-elev' : 'text-ink-faint'
+                  }`}>{count}</span>
                 </div>
 
                 <div className="space-y-2">
                   {grouped[stage].map(deal => {
                     const overdue = isPastLocal(deal.next_followup_date)
+                    const age = daysInStage(deal)
+                    const staleAfter = STALE_AFTER_DAYS[deal.stage]
+                    const stale = age != null && staleAfter != null && age > staleAfter
+                    const listeners = compactCount(deal.spotify_monthly_listeners)
                     return (
                       <div
                         key={deal.id}
@@ -250,11 +370,30 @@ export default function Deals() {
                         <div className="flex items-start gap-1.5">
                           <GripVertical size={12} className="text-ink-faint mt-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
                           <button onClick={() => setActive(deal)} className="flex-1 min-w-0 text-left">
-                            <p className="text-[13px] font-semibold text-ink truncate leading-tight">{deal.artist_name}</p>
-                            {deal.genre && <p className="text-xs text-ink-muted mt-0.5 truncate">{deal.genre}</p>}
-                            {deal.ar_rep && <p className="text-xs text-ink-muted truncate">{deal.ar_rep}</p>}
-                            {deal.offer_amount != null && deal.offer_amount !== '' && (
-                              <p className="text-xs text-ink-muted mt-0.5 tabular-nums">{money(deal.offer_amount)}</p>
+                            {/* Name and offer share the top line. The offer is the
+                                number a column gets scanned for, and as its own grey
+                                row four lines down it was the least findable field on
+                                the card — same size and colour as the genre. */}
+                            <div className="flex items-baseline justify-between gap-2">
+                              <p className="text-[13px] font-semibold text-ink truncate leading-tight">{deal.artist_name}</p>
+                              {hasOffer(deal) && (
+                                <span className="text-[12px] font-semibold text-ink tabular-nums flex-shrink-0">{money(deal.offer_amount)}</span>
+                              )}
+                            </div>
+                            {/* Genre and rep on one line rather than two. Stacked
+                                greys of identical size read as a wall of text; a
+                                separator keeps both legible in half the height. */}
+                            {(deal.genre || deal.ar_rep) && (
+                              <p className="text-xs text-ink-muted truncate mt-0.5">
+                                {[deal.genre, deal.ar_rep].filter(Boolean).join(' · ')}
+                              </p>
+                            )}
+                            {/* Monthly listeners: the momentum number an A&R
+                                decision actually turns on. It was already in the
+                                schema and already editable in the drawer — it just
+                                never reached the card. */}
+                            {listeners && (
+                              <p className="text-xs text-ink-muted truncate mt-0.5 tabular-nums">{listeners} monthly</p>
                             )}
                             {(deal.priority || deal.next_followup_date) && (
                               <div className="flex items-center gap-1.5 mt-1 flex-wrap">
@@ -272,10 +411,34 @@ export default function Deals() {
                                 )}
                               </div>
                             )}
-                            {fileCounts[deal.id] > 0 && (
-                              <span className="inline-flex items-center gap-0.5 mt-1 text-[10px] font-medium text-ink-faint">
-                                <Paperclip size={9} /> {fileCounts[deal.id]}
-                              </span>
+                            {/* Age and attachments share a quiet footer row. Under a
+                                day is suppressed: "0d in stage" is noise on a deal
+                                added this morning, and absence already says it. */}
+                            {((age != null && age >= 1) || fileCounts[deal.id] > 0) && (
+                              <div className="flex items-center gap-2 mt-1">
+                                {age != null && age >= 1 && (
+                                  // Amber only past the stage's own threshold, on the
+                                  // same rule the follow-up date follows: colour every
+                                  // age and "stale" stops meaning anything.
+                                  <span
+                                    className={`text-[10px] font-medium tabular-nums ${stale ? 'text-warning' : 'text-ink-faint'}`}
+                                    title={stale
+                                      ? `${age} days in ${deal.stage} — past the ${staleAfter}-day mark for this stage`
+                                      : `${age} days in ${deal.stage}`}
+                                  >{age}d in stage</span>
+                                )}
+                                {fileCounts[deal.id] > 0 && (
+                                  <span className="inline-flex items-center gap-0.5 text-[10px] font-medium text-ink-faint">
+                                    <Paperclip size={9} /> {fileCounts[deal.id]}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            {/* A card with only a name can't be triaged without
+                                opening it — the one thing a board exists to avoid.
+                                Say so, quietly, instead of just looking empty. */}
+                            {isBareDeal(deal) && (
+                              <p className="text-[11px] text-ink-faint mt-1">Add detail</p>
                             )}
                           </button>
                           <button

@@ -16,6 +16,8 @@ import Fab from './Fab'
 import KeyboardShortcutsHelp from './KeyboardShortcutsHelp'
 import ErrorBoundary from './ErrorBoundary'
 import { PAGE_LABELS, buildNavGroups, navPageGroups } from '../constants/navConfig'
+import { isAdminRole, isApproverRole } from '../constants'
+import PageTabs from './PageTabs'
 
 // Re-exported so existing importers (`from '../components/Layout'`) keep working.
 export { PAGE_LABELS, buildNavGroups, navPageGroups }
@@ -202,8 +204,8 @@ export default function Layout() {
   }, [user?.id])
   const dismissAnnouncement = (id) => { setAnnouncements(a => a.filter(x => x.id !== id)); api.post(`/announcements/${id}/dismiss`).catch(() => {}) }
 
-  const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
-  const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
+  const isAdmin = isAdminRole(user?.role)
+  const isApprover = isApproverRole(user?.role)
 
   // Public vendor submission form — unique per workspace via an unguessable
   // `vendor_form_token`. Kept behind isApprover, which is a DIVERGENCE from the
@@ -621,6 +623,9 @@ export default function Layout() {
             </div>
           )}
           <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 sm:py-8 pb-20 lg:pb-8">
+            {/* Outside the ErrorBoundary on purpose: if a page throws, the tabs
+                are how you get to a sibling that still works. */}
+            <PageTabs />
             <ErrorBoundary key={location.pathname}>
               <Outlet />
             </ErrorBoundary>

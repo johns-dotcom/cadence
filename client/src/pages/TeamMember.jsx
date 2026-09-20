@@ -10,13 +10,15 @@
 
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Activity, AlertTriangle, ArrowLeft, CheckSquare, Disc3, EyeOff, RefreshCw } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowLeft, CheckSquare, Disc3, EyeOff, RefreshCw, ShieldCheck } from 'lucide-react'
 import api from '../api'
 import Button from '../components/ui/Button'
 import Skeleton from '../components/Skeleton'
 import { useAuth } from '../context/AuthContext'
 import { daysUntilLocal, formatDate, isPastLocal } from '../utils/dates'
 import { PRIORITY_DOT, categoryTint } from '../components/mywork/taskFields'
+import AccessEditor from '../components/AccessEditor'
+import { isAdminRole } from '../constants'
 
 const ROLE_STYLES = {
   Superadmin: 'bg-violet-500/15 text-violet-600',
@@ -92,10 +94,14 @@ export default function TeamMember() {
     return d !== null && d >= 0 && d <= 14 && Number(r.completion) < 100
   })
 
+  // Access is admin-only and last: it is the tab you open to CHANGE something,
+  // where the other three are the ones you open to find something out.
+  const canEditAccess = isAdminRole(user?.role)
   const TABS = [
     ['releases', 'Releases', releases.length, Disc3],
     ['tasks', 'Tasks', openTasks.length, CheckSquare],
     ['activity', 'Activity', (data.activity || []).length, Activity],
+    ...(canEditAccess ? [['access', 'Access', '', ShieldCheck]] : []),
   ]
 
   return (
@@ -253,6 +259,13 @@ export default function TeamMember() {
             </div>
           )
       )}
+      {tab === 'access' && canEditAccess && (
+        <AccessEditor member={{
+          id: data.id, name: data.name, role: data.role,
+          department: data.department, hierarchy_level: data.hierarchy_level,
+        }} />
+      )}
+
     </div>
   )
 }

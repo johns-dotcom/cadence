@@ -22,10 +22,32 @@ async function logoUrl(r2Key) {
 router.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id, name, slug, accent_color, logo_r2_key, logo_data, invoice_settings, vendor_form_token, created_at,
-              COALESCE(settings, '{}'::jsonb) AS settings,
-              (SELECT COUNT(*) FROM users WHERE label_id = labels.id) AS member_count
-       FROM labels WHERE id = $1`,
+      // `invoice_settings` is DERIVED from label_records, which owns the
+      // remittance block since §7. The key keeps its old shape so the invoice
+      // PDF, the sidebar footer and the create-invoice preview did not have to
+      // change — but there is now one place it can be edited.
+      `SELECT l.id, l.name, l.slug, l.accent_color, l.logo_r2_key, l.logo_data, l.vendor_form_token, l.created_at,
+              COALESCE(l.settings, '{}'::jsonb) AS settings,
+              jsonb_build_object(
+                'company_name',   COALESCE(NULLIF(r.company_name, ''), NULLIF(r.display_name, ''), l.name),
+                'address',        r.address,
+                'contact',        r.contact,
+                'phone',          r.phone,
+                'email',          r.email,
+                'ein',            r.ein,
+                'bank_name',      r.bank_name,
+                'bank_address',   r.bank_address,
+                'account_name',   r.account_name,
+                'account_type',   r.account_type,
+                'swift',          r.swift,
+                'routing',        r.routing,
+                'routing_ach',    r.routing_ach,
+                'account_number', r.account_number
+              ) AS invoice_settings,
+              (SELECT COUNT(*) FROM users WHERE label_id = l.id) AS member_count
+       FROM labels l
+       LEFT JOIN label_records r ON r.label_id = l.id
+       WHERE l.id = $1`,
       [req.labelId]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Workspace not found' });
@@ -85,15 +107,32 @@ router.patch('/', requireAdmin, async (req, res) => {
       `UPDATE labels SET
          name = COALESCE($1, name),
          accent_color = CASE WHEN $2::boolean THEN $3 ELSE accent_color END,
-         invoice_settings = CASE WHEN $4::boolean THEN $5::jsonb ELSE invoice_settings END,
-         settings = CASE WHEN $6::boolean THEN COALESCE(settings, '{}'::jsonb) || $7::jsonb ELSE settings END
-       WHERE id = $8
-       RETURNING id, name, slug, accent_color, invoice_settings, COALESCE(settings, '{}'::jsonb) AS settings`,
+         settings = CASE WHEN $4::boolean THEN COALESCE(settings, '{}'::jsonb) || $5::jsonb ELSE settings END
+       WHERE id = $6
+       RETURNING id, name, slug, accent_color, COALESCE(settings, '{}'::jsonb) AS settings`,
       [name ?? null, accent_color !== undefined, accentValue,
-       invoice_settings !== undefined, invoice_settings ? JSON.stringify(invoice_settings) : null,
        settings !== undefined, settings ? JSON.stringify(settings) : '{}',
        req.labelId]
     );
+
+    // A caller still sending the old `invoice_settings` key is writing the
+    // remittance block, which now lives in label_records. Write it THERE
+    // rather than to a column nothing reads — a silently ignored save is a
+    // worse failure than a rejected one, and an address that appears to save
+    // but never shows up on an invoice is exactly that.
+    if (invoice_settings !== undefined && invoice_settings) {
+      const F = require('./label-record').REMITTANCE_FIELDS;
+      const cols = F.join(', ');
+      const ph = F.map((_, i) => `$${i + 2}`).join(', ');
+      const upd = F.map(f => `${f} = EXCLUDED.${f}`).join(', ');
+      await pool.query(
+        `INSERT INTO label_records (label_id, ${cols}, updated_by, updated_at)
+         VALUES ($1, ${ph}, $${F.length + 2}, NOW())
+         ON CONFLICT (label_id) DO UPDATE SET
+           ${upd}, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+        [req.labelId, ...F.map(f => (invoice_settings[f] ? String(invoice_settings[f]).trim() : null)), req.user.id]
+      );
+    }
     await logActivity(req, 'Updated workspace branding', rows[0].name);
     res.json({ success: true, data: rows[0] });
   } catch (error) {

@@ -47,6 +47,7 @@ import ArtistBudgetSheet from './pages/ArtistBudgetSheet'
 import Recoupments from './pages/Recoupments'
 import RecoupmentPlanning from './pages/RecoupmentPlanning'
 import RecoupmentArtist from './pages/RecoupmentArtist'
+import RecoupmentPriorYear from './pages/RecoupmentPriorYear'
 import RecoupmentAudit from './pages/RecoupmentAudit'
 import Salary from './pages/Salary'
 import BankStatements from './pages/BankStatements'
@@ -213,6 +214,7 @@ function AppContent() {
         <Route path="/recoupments"  element={<AdminRoute><Recoupments /></AdminRoute>} />
         <Route path="/recoupments/planning" element={<AdminRoute><RecoupmentPlanning /></AdminRoute>} />
         <Route path="/recoupments/artist/:key" element={<AdminRoute><RecoupmentArtist /></AdminRoute>} />
+        <Route path="/recoupments/prior-year" element={<AdminRoute><RecoupmentPriorYear /></AdminRoute>} />
         <Route path="/recoupments/audit" element={<AdminRoute><RecoupmentAudit /></AdminRoute>} />
         <Route path="/salary"       element={<AdminRoute><Salary /></AdminRoute>} />
         <Route path="/bank-statements" element={<AdminRoute><BankStatements /></AdminRoute>} />

@@ -142,7 +142,14 @@ router.patch('/:id(\\d+)', async (req, res) => {
       oldStage = cur.rows[0]?.stage;
     }
 
+    // A genuine stage move restarts the days-in-stage clock. Set here rather
+    // than exposed in UPDATABLE so the timestamp cannot be backdated by a
+    // client, and skipped when the PATCH re-sends the stage it already has —
+    // otherwise saving an unrelated field would silently reset the age.
+    const stageMoved = keys.includes('stage') && oldStage != null && req.body.stage !== oldStage;
+
     const setClauses = keys.map((k, i) => `${k} = $${i + 1}`);
+    if (stageMoved) setClauses.push('stage_entered_at = NOW()');
     const values = keys.map(k => (
       k === 'offer_amount' || k === 'spotify_monthly_listeners' ? numOrNull(req.body[k]) : req.body[k]
     ));

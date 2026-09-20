@@ -1,5 +1,4 @@
 const express = require('express');
-const crypto = require('crypto');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant, requireAdmin } = require('../middleware/tenant');
@@ -8,10 +7,10 @@ const { sendEmail, inviteEmail } = require('../lib/email');
 const { loadLabelIdentity } = require('../lib/emailDispatch');
 const { checkUserDeletable, deleteUserWithSweep } = require('../lib/userDelete');
 const { ROLES, DEPARTMENTS, RELEASE_CHECKLIST_COLUMNS } = require('../lib/constants');
+const { INVITE_DAYS, newInviteToken } = require('../lib/invites');
 
 const router = express.Router();
 
-const INVITE_DAYS = 7;
 const isValidEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 
 const ADMIN_TIER = ['Superadmin', 'Admin'];
@@ -254,13 +253,14 @@ router.post('/', requireAdmin, async (req, res) => {
     const esc = checkEscalation(req.user, { newRole: role || 'User' });
     if (!esc.ok) return res.status(esc.status).json({ success: false, error: esc.error });
 
-    const token = crypto.randomBytes(32).toString('hex');
+    // `token` goes in the link; only its hash is stored. See lib/invites.js.
+    const { token, stored } = newInviteToken();
     const { rows } = await pool.query(
       `INSERT INTO users (label_id, name, email, role, department, hierarchy_level,
          invite_token, invite_expires, invited_at, created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7, NOW() + ($8 || ' days')::interval, NOW(), NOW())
        RETURNING id, name, email, role, department, hierarchy_level`,
-      [req.labelId, name.trim(), email.trim().toLowerCase(), role || 'User', department || 'Operations', hierarchy_level || 99, token, String(INVITE_DAYS)]
+      [req.labelId, name.trim(), email.trim().toLowerCase(), role || 'User', department || 'Operations', hierarchy_level || 99, stored, String(INVITE_DAYS)]
     );
 
     // Resolve workspace name for the email body, then send (best-effort).
@@ -298,12 +298,14 @@ router.post('/', requireAdmin, async (req, res) => {
 router.post('/:id/resend', requireAdmin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const token = crypto.randomBytes(32).toString('hex');
+    // A resend VOIDS the previous link: the column holds one hash, and this
+    // overwrites it, so the earlier token stops resolving the moment this runs.
+    const { token, stored } = newInviteToken();
     const { rows } = await pool.query(
       `UPDATE users SET invite_token = $1, invite_expires = NOW() + ($2 || ' days')::interval, invited_at = NOW()
        WHERE id = $3 AND label_id = $4 AND password_hash IS NULL
        RETURNING id, name, email`,
-      [token, String(INVITE_DAYS), id, req.labelId]
+      [stored, String(INVITE_DAYS), id, req.labelId]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Pending invite not found (member may have already activated)' });
     const link = inviteLink(req, token);

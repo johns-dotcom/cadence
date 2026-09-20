@@ -30,6 +30,8 @@ const dashboardRoutes = require('./routes/dashboard');
 const activityRoutes = require('./routes/activity');
 const analyticsRoutes = require('./routes/analytics');
 const settingsRoutes = require('./routes/settings');
+const departmentsRoutes = require('./routes/departments');
+const labelRecordRoutes = require('./routes/label-record');
 const searchRoutes = require('./routes/search');
 const notificationsRoutes = require('./routes/notifications');
 const calendarRoutes = require('./routes/calendar');
@@ -227,6 +229,8 @@ app.use('/api/platform/work', platformWorkRoutes);
 app.use('/api/platform', platformRoutes);
 app.use('/api/label', labelsRoutes);
 app.use('/api/team', teamRoutes);
+app.use('/api/departments', departmentsRoutes);
+app.use('/api/label-record', labelRecordRoutes);
 app.use('/api/email', emailRoutes);
 app.use('/api/artist-campaigns', artistCampaignsRoutes);
 app.use('/api/recording-budgets', recordingBudgetsRoutes);
@@ -425,10 +429,175 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invited_at TIMESTAMP`);
   // "Clear all" watermark for computed notifications (mentions are excluded).
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS notifications_cleared_at TIMESTAMP`);
+
+  // ── Departments, per workspace ────────────────────────────────────────
+  // `users.department` stays a VARCHAR and remains the source of truth for who
+  // is in what: this table is the workspace's VOCABULARY, not a foreign key.
+  // That is deliberate. The app already treats the department list as a
+  // suggestion rather than a closed set — taskFields.orderGroups and Salary
+  // both append unknown values instead of dropping them, and Salary says so in
+  // a comment — so a workspace renaming or removing a department can never
+  // orphan a person the way an FK with ON DELETE would.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS label_departments (
+      id SERIAL PRIMARY KEY,
+      label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+      name VARCHAR(100) NOT NULL,
+      sort_order INT DEFAULT 100,
+      -- Seeds the hierarchy_level on a new account in this department.
+      -- Executive defaults to 1; everyone else to the users-table default of 99.
+      default_hierarchy INT DEFAULT 99,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (label_id, name)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_label_departments_label ON label_departments (label_id)`);
+
+  // ── The label's own record (§7) ───────────────────────────────────────
+  // One row per workspace: who this label IS on paper. The remittance block
+  // (company, contact, bank), who signs, and how it gets paid.
+  //
+  // CANONICAL. This replaces `labels.invoice_settings`, which held the same
+  // block as loose JSON; the seed below carries every key across and the read
+  // paths project this row back into that shape, so the invoice PDF, the
+  // create-invoice preview and the sidebar footer did not have to change.
+  //
+  // ── Why none of this is encrypted, unlike the vendor vault ──
+  // The reference spec kept the EIN and bank numbers encrypted behind a
+  // Superadmin-only audited reveal. That model does not survive contact with
+  // how Cadence uses them: every field here is PRINTED on the invoice, EIN and
+  // account number included (CreateInvoice.jsx renders them into both the
+  // preview and the PDF). Invoices are issued by Admins and Approvers, so
+  // gating these behind a Superadmin reveal would empty the "Funds payable to"
+  // block for the people whose job is to send them — and making a core
+  // document depend on PAYMENT_DETAILS_KEY being present trades a real
+  // availability risk for very little, since the numbers go out to every
+  // client the label bills anyway.
+  //
+  // The vendor vault stays encrypted for the opposite reason: those are OTHER
+  // people's account numbers, disclosed to us in confidence and printed on
+  // nothing. See lib/paymentCrypto.js.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS label_records (
+      label_id INT PRIMARY KEY REFERENCES labels(id) ON DELETE CASCADE,
+      company_name TEXT,
+      display_name TEXT,
+      address TEXT,
+      contact TEXT,
+      phone TEXT,
+      email TEXT,
+      website TEXT,
+      ein TEXT,
+      bank_name TEXT,
+      bank_address TEXT,
+      account_name TEXT,
+      account_type TEXT,
+      swift TEXT,
+      routing TEXT,
+      routing_ach TEXT,
+      account_number TEXT,
+      signatory_name TEXT,
+      signatory_title TEXT,
+      signatory_email TEXT,
+      payment_terms TEXT,
+      updated_at TIMESTAMP DEFAULT NOW(),
+      updated_by INT REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  // Seed one row per label, carrying every remittance key that already exists
+  // so no invoice loses its payable-to block on the first boot after this
+  // ships. Guarded by NOT EXISTS rather than ON CONFLICT DO NOTHING so a label
+  // whose record has since been EDITED is never quietly reverted to the old
+  // JSON it was seeded from.
+  await pool.query(`
+    INSERT INTO label_records (
+      label_id, company_name, display_name, address, contact, phone, email, ein,
+      bank_name, bank_address, account_name, account_type, swift, routing,
+      routing_ach, account_number
+    )
+    SELECT l.id,
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'company_name', '')), ''),
+           l.name,
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'address', '')), ''),
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'contact', '')), ''),
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'phone', '')), ''),
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'email', '')), ''),
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'ein', '')), ''),
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'bank_name', '')), ''),
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'bank_address', '')), ''),
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'account_name', '')), ''),
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'account_type', '')), ''),
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'swift', '')), ''),
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'routing', '')), ''),
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'routing_ach', '')), ''),
+           NULLIF(btrim(COALESCE(l.invoice_settings->>'account_number', '')), '')
+    FROM labels l
+    WHERE NOT EXISTS (SELECT 1 FROM label_records r WHERE r.label_id = l.id)
+  `);
+
+  // Seed the six the client constant has always shipped — but ONLY into a
+  // workspace that has none yet.
+  //
+  // `ON CONFLICT DO NOTHING` alone is not enough here, and the difference is a
+  // real bug: this runs on every boot, so an unconditional insert would quietly
+  // resurrect a default department an admin had deliberately deleted, the next
+  // time the server restarted. They would delete it again, and it would come
+  // back again, with nothing on screen explaining why. The NOT EXISTS makes
+  // seeding a first-run act rather than a standing instruction.
+  await pool.query(`
+    INSERT INTO label_departments (label_id, name, sort_order, default_hierarchy)
+    SELECT l.id, d.name, d.ord, d.hier
+    FROM labels l
+    CROSS JOIN (VALUES
+      ('Executive', 10, 1),
+      ('A&R', 20, 99),
+      ('Marketing', 30, 99),
+      ('Operations', 40, 99),
+      ('Finance', 50, 99),
+      ('Legal', 60, 99)
+    ) AS d(name, ord, hier)
+    WHERE NOT EXISTS (SELECT 1 FROM label_departments x WHERE x.label_id = l.id)
+    ON CONFLICT (label_id, name) DO NOTHING
+  `);
+
+  // Then whatever this workspace's people are ACTUALLY in — a label that typed
+  // "Publishing" into the Salary datalist keeps it, rather than the vocabulary
+  // silently contradicting the roster. Safe to run every boot: a department can
+  // only be deleted once nobody is in it (the route reassigns first), so this
+  // cannot resurrect one either.
+  await pool.query(`
+    INSERT INTO label_departments (label_id, name, sort_order, default_hierarchy)
+    SELECT DISTINCT u.label_id, u.department, 100, 99
+    FROM users u
+    WHERE u.department IS NOT NULL AND btrim(u.department) <> ''
+    ON CONFLICT (label_id, name) DO NOTHING
+  `);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMP`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_invite_token ON users (invite_token)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_reset_token ON users (reset_token)`);
+
+  // ── Invite tokens: hash the ones already on disk ──────────────────────
+  // Historic rows hold the raw bearer token. Hash them in place so the column
+  // stops being a credential — outstanding invite links keep working, because
+  // the link carries the plaintext and the lookup now hashes what it is given.
+  //
+  // Done in Node rather than SQL to avoid requiring pgcrypto, and guarded by
+  // the `s256:` prefix so a second boot re-hashes nothing. Without that guard
+  // this would hash the hash and void every pending invite.
+  {
+    const { hashInviteToken, PREFIX } = require('./lib/invites');
+    const { rows: pending } = await pool.query(
+      `SELECT id, invite_token FROM users
+       WHERE invite_token IS NOT NULL AND invite_token NOT LIKE $1`,
+      [PREFIX + '%']
+    );
+    for (const r of pending) {
+      await pool.query('UPDATE users SET invite_token = $1 WHERE id = $2', [hashInviteToken(r.invite_token), r.id]);
+    }
+    if (pending.length) console.log(`  · hashed ${pending.length} stored invite token(s)`);
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS artists (
@@ -563,6 +732,15 @@ const runMigrations = async () => {
   // one. Postgres backfills existing rows from the DEFAULT, so old deals sort
   // by the day the column landed rather than sorting last.
   await pool.query(`ALTER TABLE deals ADD COLUMN IF NOT EXISTS added_date DATE DEFAULT CURRENT_DATE`);
+  // When the deal entered its CURRENT stage — what "12d in stage" on the board
+  // counts from. Distinct from both neighbours for a reason: added_date answers
+  // "how long have we known them", updated_at moves whenever anyone edits a
+  // note, and neither answers "how long has this been sitting in Negotiation",
+  // which is the question a pipeline review actually opens the board to ask.
+  // Written server-side on a genuine stage change only (routes/deals.js); it is
+  // deliberately absent from UPDATABLE so a client cannot backdate it. Existing
+  // rows backfill from the DEFAULT, so every deal reads 0d until its first move.
+  await pool.query(`ALTER TABLE deals ADD COLUMN IF NOT EXISTS stage_entered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
 
   // Contracts (per-artist agreements; files stored in R2 via entity_files).
   await pool.query(`

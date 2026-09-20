@@ -8,7 +8,7 @@ import api from '../api'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import useHotkeys from '../hooks/useHotkeys'
-import { DEPARTMENTS } from '../constants'
+import useDepartments from '../hooks/useDepartments'
 
 // ─── Time helpers ───────────────────────────────────────────────────────────
 
@@ -203,6 +203,7 @@ function localDayStr(d) {
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export default function Activity() {
+  const { departments: DEPARTMENTS } = useDepartments()
   const [rows, setRows] = useState([])
   const [total, setTotal] = useState(0)
   const [users, setUsers] = useState([])

@@ -12,7 +12,10 @@
     "sync:vendor-lab": "node scripts/sync-vendor-lab.mjs",
     "check:vendor-lab": "node scripts/sync-vendor-lab.mjs --check",
     "check:ws-colors": "node scripts/check-workspace-colors.mjs",
-    "check:mywork": "node scripts/check-mywork.mjs"
+    "check:mywork": "node scripts/check-mywork.mjs",
+    "nav-fixture": "node scripts/nav-fixture.mjs",
+    "navpresets-fixture": "node scripts/navpresets-fixture.mjs",
+    "settings-fixture": "node scripts/settings-fixture.mjs"
   },
   "dependencies": {
     "@react-oauth/google": "^0.13.4",

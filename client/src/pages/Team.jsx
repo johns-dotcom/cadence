@@ -20,7 +20,8 @@ import Skeleton from '../components/Skeleton'
 import TeamVelocity from '../components/TeamVelocity'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
-import { ROLES, DEPARTMENTS } from '../constants'
+import { ROLES, isAdminRole } from '../constants'
+import useDepartments from '../hooks/useDepartments'
 import EmailPreviewModal from '../components/EmailPreviewModal'
 
 // boom's tones, restored: Superadmin is violet (the "above admin" colour), Admin
@@ -86,7 +87,11 @@ function TaskRollup({ m }) {
 export default function Team() {
   const { user } = useAuth()
   const { toast } = useToast()
-  const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
+  // The workspace's own department list, falling back to the shipped constant
+  // while it loads — an add-member form with an empty department dropdown is
+  // worse than one showing the defaults.
+  const { departments: DEPARTMENTS } = useDepartments()
+  const isAdmin = isAdminRole(user?.role)
   const isSuper = user?.role === 'Superadmin'
   const [members, setMembers] = useState([])
   const [loading, setLoading] = useState(true)

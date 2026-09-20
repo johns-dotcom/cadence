@@ -44,6 +44,12 @@ const socialsList = (raw) => (Array.isArray(raw) ? raw : [])
 export default function RecoupmentArtist() {
   const { key: routeKey } = useParams()
   const { toast } = useToast()
+  // The prior-year picker. A window.prompt here accepted "twenty twenty four",
+  // could not say what the tag DOES, and is the dialog this repo has been
+  // replacing everywhere else. `ids` is captured when it opens, so a filter
+  // change behind the modal cannot redirect the write.
+  const [yearAsk, setYearAsk] = useState(null)   // { ids, label }
+  const [yearVal, setYearVal] = useState('')
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
@@ -439,7 +445,7 @@ export default function RecoupmentArtist() {
                         songStatus={data.song_status?.[g.key]} songNote={data.song_notes?.[g.key]}
                         onSongStatus={(patch) => setSongStatus(g.name, patch)}
                         onSongNote={(note) => setSongNote(g.name, note)}
-                        onTagYear={(ids) => { const y = window.prompt('Move to the prior-year subpage — enter the year (e.g. 2024):'); if (y && y.trim()) tagPriorYear(ids, y.trim()) }}
+                        onTagYear={(ids) => { setYearVal(String(new Date().getFullYear() - 1)); setYearAsk({ ids, label: `${ids.length} ${ids.length === 1 ? 'entry' : 'entries'}` }) }}
                         sel={sel} setSel={setSel}
                         row={(e) => (
                           <Row key={e.id} e={e} selected={sel.has(e.id)}
@@ -451,7 +457,7 @@ export default function RecoupmentArtist() {
                             onPatch={(patch, label) => patchEntry(e.id, patch, label)}
                             onFlag={() => flagEntry(e)}
                             onFile={(type) => openFile(e.id, type)}
-                            onTagYear={() => { const y = window.prompt('Move to the prior-year subpage — enter the year (e.g. 2024):'); if (y && y.trim()) tagPriorYear([e.id], y.trim()) }}
+                            onTagYear={() => { setYearVal(String(new Date().getFullYear() - 1)); setYearAsk({ ids: [e.id], label: e.payee || 'this entry' }) }}
                             onDelete={() => setConfirm({
                               title: 'Delete this entry?', message: `${e.payee || 'Entry'} — ${moneyOrig(e.amount, e.currency)}. It moves to the ledger archive and can be restored.`,
                               onConfirm: () => { removeEntry(e); setConfirm(null) },
@@ -510,7 +516,7 @@ export default function RecoupmentArtist() {
           onUnmarkUfr={() => bulk(ids => api.post('/financials/recoupments/ufr-bulk', { ids, ufr: false }).then(({ data: r }) => toast(`${r.data.changed} un-claimed`)))}
           onSetLabel={(label, markUfr) => bulk(ids => setLabelBulk(ids, label, markUfr))}
           onMove={(m) => bulk(ids => moveToMonth(ids, m))}
-          onTagYear={() => { const y = window.prompt('Move to the prior-year subpage — enter the year (e.g. 2024):'); if (y && y.trim()) bulk(ids => tagPriorYear(ids, y.trim())) }} />
+          onTagYear={() => { setYearVal(String(new Date().getFullYear() - 1)); setYearAsk({ ids: [...sel], label: `${sel.size} selected` }) }} />
       )}
 
       {undo && (
@@ -527,6 +533,33 @@ export default function RecoupmentArtist() {
         onClose={() => setSplitting(null)} onDone={() => { setSplitting(null); load(true) }} />}
       <ConfirmDialog open={!!confirm} onClose={() => setConfirm(null)} onConfirm={confirm?.onConfirm}
         title={confirm?.title} message={confirm?.message} />
+
+      {/* Prior-year tag. Says what the tag DOES — this money leaves Recoupments —
+          because the row does not come back on its own. */}
+      <Modal open={!!yearAsk} onClose={() => setYearAsk(null)} title="Move to prior year" size="sm"
+        footer={<>
+          <button onClick={() => setYearAsk(null)} className="btn-secondary">Cancel</button>
+          <button
+            className="btn-primary"
+            disabled={!/^\d{4}$/.test(yearVal.trim())}
+            onClick={() => { const ids = yearAsk.ids; setYearAsk(null); tagPriorYear(ids, yearVal.trim()) }}
+          >Move {yearAsk?.label}</button>
+        </>}>
+        <label className="label">Year</label>
+        <input
+          className="input"
+          value={yearVal}
+          onChange={e => setYearVal(e.target.value.replace(/[^\d]/g, '').slice(0, 4))}
+          inputMode="numeric"
+          placeholder="2024"
+          autoFocus
+        />
+        <p className="text-[11px] text-ink-muted mt-2">
+          {yearAsk?.label} will leave this artist's Recoupments and move to{' '}
+          <span className="font-medium text-ink">Prior-year recoupments</span>, where they can be untagged
+          and brought back. Four digits.
+        </p>
+      </Modal>
     </div>
   )
 }

@@ -20,9 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  ArrowLeft, Check, ChevronDown, ChevronRight, ExternalLink, Flag, Layers,
-  Bookmark, Music2, Plus, RotateCcw, Scissors, Star, Tag, Trash2, Undo2, Upload,
-  X, AtSign, Paperclip, ClipboardList, MoveRight,
+  ArrowLeft, AtSign, Bookmark, Check, ChevronDown, ChevronRight, ClipboardList, ExternalLink, Flag, Layers, MoveRight, Music2, Paperclip, Pencil, Plus, RotateCcw, Scissors, Star, Tag, Trash2, Undo2, Upload, X,
 } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
@@ -99,6 +97,12 @@ export default function RecoupmentPlanning() {
   const [confirm, setConfirm] = useState(null)
   const [splitting, setSplitting] = useState(null)
   const [labelMenu, setLabelMenu] = useState(null)       // { ids, current, top, left }
+  // Renaming a batch bucket. `renaming` holds ONLY the in-progress text; the plan
+  // is not touched until Save. That separation is the whole requirement: boom's
+  // version wrote through as you typed, so Cancel — and anything that unmounted
+  // the input — wiped the label off every item in the bucket. Cancel here
+  // discards a string and nothing else.
+  const [renaming, setRenaming] = useState(null)         // { key, value }
   const [preview, setPreview] = useState(null)           // { url, name }
   const [undo, setUndo] = useState(null)
   const [copied, setCopied] = useState(false)
@@ -319,6 +323,17 @@ export default function RecoupmentPlanning() {
     setSel(s => { const n = new Set(s); ids.forEach(id => n.delete(id)); return n })
   }
   const applyLabel = (ids, label) => { setPlan(setLabelForItems(ids, label)); setLabelMenu(null) }
+
+  // Rename a whole bucket: every staged item carrying the old label takes the
+  // new one. A no-op name change closes without writing, so an accidental
+  // click cannot re-stamp the bucket.
+  const commitRename = (section) => {
+    const next = (renaming?.value || '').trim()
+    if (!next || next === section.name) { setRenaming(null); return }
+    applyLabel(section.items.map(i => i.id), next)
+    setRenaming(null)
+    toast(`Batch renamed to "${next}"`, 'success')
+  }
 
   const toggleDefer = (key) => {
     const next = new Set(deferred)
@@ -685,6 +700,40 @@ export default function RecoupmentPlanning() {
                       {s.ready && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-success/10 text-success inline-flex items-center gap-1"><Star size={9} /> Ready</span>}
                       <span className="text-[11px] text-ink-faint tabular-nums">{s.items.length}</span>
                     </button>
+
+                    {/* Rename the bucket — batch labels are the vocabulary this
+                        page commits with, and they were only settable one item at
+                        a time through the label menu. Offered on real batches
+                        only: "Unlabeled" is the absence of a label, not a name. */}
+                    {groupMode === 'label' && !s.unlabeled && renaming?.key !== s.key && (
+                      <button
+                        onClick={() => setRenaming({ key: s.key, value: s.name })}
+                        title={`Rename "${s.name}" across ${s.items.length} staged ${s.items.length === 1 ? 'item' : 'items'}`}
+                        className="text-ink-faint hover:text-brand-ink flex-shrink-0 rounded p-0.5
+                                   focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+                      ><Pencil size={12} aria-hidden="true" /></button>
+                    )}
+                    {groupMode === 'label' && renaming?.key === s.key && (
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <input
+                          autoFocus
+                          value={renaming.value}
+                          onChange={e => setRenaming(r => ({ ...r, value: e.target.value.slice(0, 60) }))}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') { e.preventDefault(); commitRename(s) }
+                            // Escape discards the TEXT. The plan is untouched —
+                            // see the comment on `renaming`.
+                            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setRenaming(null) }
+                          }}
+                          className="input !h-7 !py-0 text-xs w-44"
+                          aria-label={`Rename batch ${s.name}`}
+                        />
+                        <button onClick={() => commitRename(s)} disabled={!renaming.value.trim()}
+                          className="text-[11px] font-semibold text-brand-ink hover:underline disabled:opacity-40">Save</button>
+                        <button onClick={() => setRenaming(null)}
+                          className="text-[11px] font-semibold text-ink-muted hover:text-ink">Cancel</button>
+                      </div>
+                    )}
                     <span className="text-xs font-semibold text-ink tabular-nums">{totalsLine(s.items)}</span>
                   </div>
                   {open && s.categories.map(c => {

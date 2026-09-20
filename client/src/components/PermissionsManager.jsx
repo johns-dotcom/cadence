@@ -4,7 +4,8 @@ import api from '../api'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import ConfirmDialog from './ui/ConfirmDialog'
-import { PAGE_GROUPS, ALL_PAGES, PERMISSION_PRESETS } from '../constants/pages'
+import { PAGE_GROUPS, ALL_PAGES } from '../constants/pages'
+import { NAV_PRESETS, FULL_ACCESS, addPreset, presetCoverage, pagesAddedBy } from '../lib/navPresets'
 
 // Admin tool: edit a User's page allow-list, apply presets/templates, save the
 // current set as a reusable template, and copy another user's set.
@@ -21,21 +22,23 @@ const UNRESTRICTED_ROLES = ['Superadmin', 'Admin', 'Approver']
 // canView terms only if granted, so it has to be written explicitly.
 const FLOOR = ['/']
 
-const PRESET_NOTES = {
-  'Full access': 'Every page in the workspace — equivalent to leaving them unrestricted.',
-  'Bookkeeping / AP': 'Invoice intake, payments and vendors, plus the finance reports.',
-  'Finance exec': 'Reporting and money surfaces without the day-to-day AP queues.',
-  Marketing: 'Campaigns, roster and releases — no financial pages.',
-  'A&R': 'Pipeline, roster, releases and the contract trackers.',
-  Legal: 'Contracts, NDAs, waivers and clearances only.',
-}
-
-export default function PermissionsManager() {
+//
+// ── Two mountings, one editor ──
+// With no props this is the workspace-wide matrix on Settings: pick anyone,
+// see where everybody stands. Given a `member`, it becomes that one person's
+// Access tab on /team/:id — same presets, same save, same server rule — with
+// the roster overview and the member picker dropped, because the page it is
+// embedded in has already answered "who".
+//
+// Deliberately one component rather than two: they write the same endpoint,
+// and a second implementation of the empty-list rule below is exactly the kind
+// of divergence that grants somebody everything by accident.
+export default function PermissionsManager({ member = null }) {
   const { toast } = useToast()
   const { user: me } = useAuth()
   const [users, setUsers] = useState([])
   const [templates, setTemplates] = useState([])
-  const [selId, setSelId] = useState('')
+  const [selId, setSelId] = useState(member ? String(member.id) : '')
   const [pages, setPages] = useState(new Set())
   const [restricted, setRestricted] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -48,6 +51,13 @@ export default function PermissionsManager() {
   const loadUsers = () => api.get('/team').then(r => setUsers(r.data.data || [])).catch(() => {})
   const loadTemplates = () => api.get('/settings/permission-templates').then(r => setTemplates(r.data.data || [])).catch(() => {})
   useEffect(() => { loadUsers(); loadTemplates() }, [])
+
+  // Embedded: load the member's list straight away rather than waiting for a
+  // selection that will never happen.
+  useEffect(() => {
+    if (member) pickUser(String(member.id))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [member?.id])
 
   // Overview counts: one small request per member, fired once. Sequential on
   // purpose — a workspace roster is tens of people, and a burst of parallel
@@ -65,11 +75,13 @@ export default function PermissionsManager() {
       }
       if (!cancelled) setCounts(out)
     }
-    if (users.length) run()
+    if (users.length && !member) run()
     return () => { cancelled = true }
-  }, [users])
+  }, [users, member])
 
-  const selected = users.find(u => String(u.id) === String(selId))
+  // When embedded, the member is given; the roster is still fetched, but only
+  // so "Copy from" has somebody to copy.
+  const selected = member || users.find(u => String(u.id) === String(selId))
   const roleIsUnrestricted = selected && UNRESTRICTED_ROLES.includes(selected.role)
   // Only a Superadmin may write an admin-tier account's list (server enforces
   // the same rule) — hide the controls rather than let the save 403.
@@ -91,6 +103,21 @@ export default function PermissionsManager() {
   const toggle = (path) => setPages(s => { const n = new Set(s); n.has(path) ? n.delete(path) : n.add(path); return n })
   const setGroup = (paths, on) => setPages(s => { const n = new Set(s); paths.forEach(p => on ? n.add(p) : n.delete(p)); return n })
   const applySet = (list) => { setPages(new Set(list)); setRestricted(list.length < ALL_PAGES.length) }
+
+  // Presets ADD. Two people who each need one department's pages plus a look at
+  // another used to be impossible to build from presets: picking the second
+  // threw the first away, which reads exactly like a mis-click until someone
+  // notices a page is missing weeks later. Templates and Copy-from still
+  // replace — those say "make this person like that one", which is a different
+  // sentence and the only way to take pages away without unticking by hand.
+  const addPresetPages = (presetId) => {
+    setPages(cur => {
+      const next = addPreset(cur, presetId)
+      setRestricted(next.size < ALL_PAGES.length)
+      return next
+    })
+  }
+  const clearPages = () => { setPages(new Set()); setRestricted(true) }
 
   const save = async () => {
     if (!selId) return
@@ -153,15 +180,18 @@ export default function PermissionsManager() {
 
   return (
     <div className="card p-5">
-      <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><ShieldCheck size={15} /> Permissions</h2>
+      <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5">
+        <ShieldCheck size={15} /> {member ? 'Pages' : 'Permissions'}
+      </h2>
       <p className="text-xs text-ink-muted mb-4">
-        Control which pages a team member can see. Applies to <strong>User</strong> accounts — Admins, Superadmins and
-        Approvers are unrestricted by role.
+        {member
+          ? <>Which pages {member.name.split(' ')[0]} can open. Applies to <strong>User</strong> accounts — Admins, Superadmins and Approvers are unrestricted by role.</>
+          : <>Control which pages a team member can see. Applies to <strong>User</strong> accounts — Admins, Superadmins and Approvers are unrestricted by role.</>}
       </p>
 
       {/* Overview — every member and where they stand, so the panel says
           something before anyone is selected. */}
-      {!selId && (
+      {!selId && !member && (
         <div className="overflow-x-auto -mx-1">
           <table className="w-full min-w-[420px] text-sm">
             <thead>
@@ -193,21 +223,65 @@ export default function PermissionsManager() {
       )}
 
       <div className="flex flex-wrap items-end gap-3 mb-4 mt-4">
-        <div>
-          <label className="label" htmlFor="perm-member">Member</label>
-          <select id="perm-member" className="input !w-56" value={selId} onChange={e => pickUser(e.target.value)}>
-            <option value="">— select member —</option>
-            {users.map(u => <option key={u.id} value={u.id}>{u.name} · {u.role}</option>)}
-          </select>
-        </div>
+        {!member && (
+          <div>
+            <label className="label" htmlFor="perm-member">Member</label>
+            <select id="perm-member" className="input !w-56" value={selId} onChange={e => pickUser(e.target.value)}>
+              <option value="">— select member —</option>
+              {users.map(u => <option key={u.id} value={u.id}>{u.name} · {u.role}</option>)}
+            </select>
+          </div>
+        )}
         {selId && !blockedByRole && (
           <>
-            <div>
-              <label className="label" htmlFor="perm-preset">Apply preset</label>
-              <select id="perm-preset" className="input !w-48" value="" onChange={e => { const p = PERMISSION_PRESETS.find(x => x.name === e.target.value); if (p) applySet(p.pages) }}>
-                <option value="">— preset —</option>
-                {PERMISSION_PRESETS.map(p => <option key={p.name} value={p.name} title={PRESET_NOTES[p.name] || ''}>{p.name}</option>)}
-              </select>
+            <div className="w-full">
+              <label className="label">Add preset</label>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {NAV_PRESETS.map(preset => {
+                  const { state } = presetCoverage(pages, preset.id)
+                  const adds = pagesAddedBy(pages, preset.id).length
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => addPresetPages(preset.id)}
+                      disabled={state === 'full'}
+                      // The count is the honest label: "A&R" tells you nothing
+                      // about what clicking does when six of its eight pages
+                      // are already ticked.
+                      title={state === 'full'
+                        ? `${preset.name} — every page already granted`
+                        : `${preset.note} Adds ${adds} page${adds === 1 ? '' : 's'}.`}
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition
+                        focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 ${
+                        state === 'full'
+                          ? 'border-success/40 bg-success/10 text-success cursor-default'
+                          : state === 'partial'
+                            ? 'border-brand-300 text-brand-ink hover:bg-brand-500/10'
+                            : 'border-rule text-ink-muted hover:text-ink hover:bg-elev'
+                      }`}
+                    >
+                      {preset.name}
+                      {state === 'full'
+                        ? <Check size={12} />
+                        : <span className="tabular-nums opacity-70">+{adds}</span>}
+                    </button>
+                  )
+                })}
+                <button
+                  type="button"
+                  onClick={() => applySet(FULL_ACCESS.pages)}
+                  className="inline-flex items-center rounded-lg border border-rule px-2.5 py-1.5 text-xs font-semibold text-ink-muted hover:text-ink hover:bg-elev"
+                  title="Grant every page"
+                >Full access</button>
+                <button
+                  type="button"
+                  onClick={clearPages}
+                  disabled={pages.size === 0}
+                  className="inline-flex items-center rounded-lg px-2.5 py-1.5 text-xs font-semibold text-ink-faint hover:text-danger disabled:opacity-40"
+                  title="Untick everything and start over"
+                >Clear</button>
+              </div>
             </div>
             {templates.length > 0 && (
               <div>

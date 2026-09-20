@@ -17,7 +17,8 @@ import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import { useToast } from '../context/ToastContext'
-import { DEPARTMENTS, CURRENCIES } from '../constants'
+import { CURRENCIES } from '../constants'
+import useDepartments from '../hooks/useDepartments'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
@@ -60,6 +61,7 @@ function MoneyLines({ byCurrency, tone }) {
 }
 
 export default function Salary() {
+  const { departments: DEPARTMENTS } = useDepartments()
   const { toast } = useToast()
   const now = new Date()
   const [month, setMonth] = useState(now.getMonth() + 1)

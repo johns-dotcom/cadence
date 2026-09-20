@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { OAuth2Client } = require('google-auth-library');
 const pool = require('../db');
+const { hashInviteToken } = require('../lib/invites');
 const authMiddleware = require('../middleware/auth');
 const { signToken, publicUser } = require('../lib/token');
 const { getSignedFileUrl } = require('../lib/r2');
@@ -87,6 +88,22 @@ router.post('/login', async (req, res) => {
     }
 
     const user = result.rows[0];
+
+    // An invited account has no password yet, so the compare below can never
+    // succeed and "Invalid credentials" sends them to reset a password they
+    // have never set. Name the real situation instead. This leaks nothing the
+    // caller could not already infer: they had to know the address, and the
+    // generic branch still covers every account that does have a password.
+    if (!user.password_hash && user.invite_token) {
+      const expired = user.invite_expires && new Date(user.invite_expires) < new Date();
+      return res.status(403).json({
+        success: false,
+        error: expired
+          ? 'Your invite has expired. Ask an admin to resend it, then set your password from the new link.'
+          : 'This account has not been set up yet. Open the invite link we emailed you to choose a password.',
+      });
+    }
+
     const passwordMatch = user.password_hash && await bcrypt.compare(password, user.password_hash);
     if (!passwordMatch) {
       return res.status(401).json({ success: false, error: 'Invalid credentials' });
@@ -208,17 +225,20 @@ router.get('/me', authMiddleware, async (req, res) => {
               l.accent_color AS label_accent_color, l.logo_r2_key, l.logo_data AS label_logo_data,
               l.vendor_form_token AS label_vendor_form_token,
               COALESCE(l.settings, '{}'::jsonb) AS label_settings,
-              -- For the shell's one-click "copy our billing address". TWO KEYS,
-              -- picked out by name rather than shipping invoice_settings whole:
-              -- that column also holds the bank account number, routing/SWIFT
-              -- and EIN, and /auth/me is fetched by every role on every load.
-              -- The company name and postal address are already printed on
-              -- every invoice this workspace issues; the banking half is not.
+              -- For the shell's one-click "copy our billing address". Sourced
+              -- from label_records, which owns the remittance block since §7.
+              -- Still TWO NAMED KEYS rather than the row whole: that table also
+              -- holds the tax ID and bank numbers, and /auth/me is fetched by
+              -- every role on every load. The invoice pages fetch the full
+              -- block from /api/label when they actually need it; the shell
+              -- only needs an address to copy, so that is all this carries.
               jsonb_build_object(
-                'company_name', l.invoice_settings->>'company_name',
-                'address',      l.invoice_settings->>'address'
+                'company_name', COALESCE(NULLIF(lr.company_name, ''), NULLIF(lr.display_name, ''), l.name),
+                'address',      lr.address
               ) AS label_invoice_settings
-       FROM users u JOIN labels l ON l.id = u.label_id
+       FROM users u
+       JOIN labels l ON l.id = u.label_id
+       LEFT JOIN label_records lr ON lr.label_id = l.id
        WHERE u.id = $1 ${isOp ? '' : 'AND u.label_id = $2'}`,
       isOp ? [req.user.id] : [req.user.id, req.user.label_id]
     );
@@ -288,7 +308,8 @@ router.get('/invite/:token', async (req, res) => {
       `SELECT u.name, u.email, u.invite_expires, l.name AS workspace
        FROM users u JOIN labels l ON l.id = u.label_id
        WHERE u.invite_token = $1`,
-      [req.params.token]
+      // The row stores a hash, so the presented token is hashed to look it up.
+      [hashInviteToken(req.params.token)]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'This invite is invalid or has already been used.' });
     if (rows[0].invite_expires && new Date(rows[0].invite_expires) < new Date()) {
@@ -309,7 +330,7 @@ router.post('/accept-invite', async (req, res) => {
     if (!token) return res.status(400).json({ success: false, error: 'Missing invite token' });
     if (!password || password.length < 8) return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' });
 
-    const { rows } = await pool.query('SELECT * FROM users WHERE invite_token = $1', [token]);
+    const { rows } = await pool.query('SELECT * FROM users WHERE invite_token = $1', [hashInviteToken(token)]);
     if (!rows.length) return res.status(404).json({ success: false, error: 'This invite is invalid or has already been used.' });
     const user = rows[0];
     if (user.invite_expires && new Date(user.invite_expires) < new Date()) {
