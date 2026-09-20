@@ -7,6 +7,7 @@ import { useTheme } from '../context/ThemeContext'
 import api from '../api'
 import ErrorBoundary from './ErrorBoundary'
 import { CONSOLE_NAV } from '../constants/consoleNav'
+import { consoleCanSee } from '../lib/consoleAccess'
 import { useTour } from './Tour'
 
 // Neutral operator shell shown to platform admins who are NOT inside a
@@ -46,13 +47,15 @@ export default function PlatformLayout() {
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
-  const [pageAccess, setPageAccess] = useState(null) // null = unrestricted (owner or no rows)
+  const [access, setAccess] = useState(null) // null = unrestricted (owner or no rows)
 
   useEffect(() => {
-    api.get('/platform/my-access').then(r => setPageAccess(r.data.data?.pages ?? null)).catch(() => setPageAccess(null))
+    api.get('/platform/my-access').then(r => setAccess(r.data.data || null)).catch(() => setAccess(null))
   }, [])
   // Overview + Account + Messages are always reachable so an operator is never locked out.
-  const canSee = (path) => path === '/' || path === '/account' || path === '/messages' || !pageAccess || pageAccess.includes(path)
+  // lib/consoleAccess owns this rule — see the comment there for what the old
+  // membership test hid.
+  const canSee = (path) => consoleCanSee(path, access)
 
   // Live operator-chat unread badge.
   const { on: onSocket } = useSocket()

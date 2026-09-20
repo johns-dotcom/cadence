@@ -22,6 +22,7 @@
  *
  * Usage: npm run check:tours
  */
+import { readFileSync } from 'node:fs';
 import { createServer } from 'vite';
 
 const ROOT = '/Users/johnskead/Desktop/DevProjects/cadence/client';
@@ -168,4 +169,31 @@ else ok('a step recognises its page through a redirect, and stops at a segment b
 
 await vite.close();
 if (failures) { console.error(`tours-fixture: ${failures} failure(s)`); process.exit(1); }
+// ── console page visibility: ONE rule, shared with the rail ────────────────
+// There were three copies of this and two were wrong: both tested "is the path
+// in the allowlist", but the allowlist only ever holds RESTRICTABLE pages, so
+// every non-restrictable page vanished for a restricted operator (My Work and
+// Analytics off the rail; Messages out of the walkthrough).
+{
+  const { consoleCanSee } = await import('../src/lib/consoleAccess.js');
+  const RESTRICTABLE = ['/workspaces', '/calendar', '/activity', '/announcements'];
+  const access = { pages: ['/workspaces'], restrictablePages: RESTRICTABLE };
+  const is = (cond, msg) => (cond ? ok(msg) : fail(msg));
+
+  is(consoleCanSee('/my-work', access), 'a non-restrictable page stays visible to a restricted operator');
+  is(consoleCanSee('/analytics', access), 'analytics is not restrictable, so it is always visible');
+  is(consoleCanSee('/messages', access), 'messages is not restrictable, so it is always visible');
+  is(consoleCanSee('/workspaces', access), 'a GRANTED restrictable page is visible');
+  is(!consoleCanSee('/calendar', access), 'an UNGRANTED restrictable page is hidden');
+  is(['/'].concat(RESTRICTABLE).every((p) => consoleCanSee(p, { pages: null })), 'an unrestricted operator sees everything');
+
+  // Tour.jsx and PlatformLayout.jsx must both go through the helper — a private
+  // copy is how they disagreed in the first place.
+  for (const f of ['../src/components/Tour.jsx', '../src/components/PlatformLayout.jsx']) {
+    const src = readFileSync(new URL(f, import.meta.url), 'utf8');
+    is(src.includes('consoleCanSee'), `${f.split('/').pop()} uses the shared console-visibility rule`);
+    is(!/pages\.includes\(|pageAccess\.includes\(/.test(src), `${f.split('/').pop()} keeps no private copy of the allowlist test`);
+  }
+}
+
 console.log('tours-fixture: clean');

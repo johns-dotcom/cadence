@@ -11,7 +11,9 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { ChevronLeft, ChevronRight, Loader2, SkipForward, X } from 'lucide-react'
 import api from '../api'
 import { useAuth } from '../context/AuthContext'
+import useEscapeStack from '../hooks/useEscapeStack'
 import { allTours, tourById, tourForPath } from '../tours'
+import { consoleCanSee } from '../lib/consoleAccess'
 
 const TourContext = createContext(null)
 const NOOP = { startTour: () => false, tours: [], done: {}, active: null, isDone: () => false, pageTour: null, replayAll: () => {} }
@@ -63,11 +65,11 @@ export function isOnPage(pathname, want) {
 }
 
 export function TourProvider({ children }) {
-  const { user, canView, impersonating } = useAuth()
+  const { user, canView, impersonating, pagePermissions } = useAuth()
   const location = useLocation()
   const [done, setDone] = useState(null)       // null until loaded
   const [active, setActive] = useState(null)   // { tour, index }
-  const [consolePages, setConsolePages] = useState(null) // null = unrestricted
+  const [consoleAccess, setConsoleAccess] = useState(null) // null = unrestricted
   const started = useRef(new Set())
 
   // WHICH SHELL. App.jsx routes a platform operator to the console unless they
@@ -77,6 +79,8 @@ export function TourProvider({ children }) {
   // looking at the console Overview.
   const shell = user?.is_platform_admin && !impersonating ? 'console' : 'tenant'
 
+  // A stable signature for canView's inputs (see the tours memo below).
+  const permKey = pagePermissions === null ? 'all' : (pagePermissions || []).join('|')
   const isAdmin = ['Superadmin', 'Admin'].includes(user?.role)
   const isApprover = isAdmin || user?.role === 'Approver'
 
@@ -85,10 +89,10 @@ export function TourProvider({ children }) {
   // Superadmin. Offering a tour for a page they are blocked from would be the
   // same defect as drawing a nav row for it.
   useEffect(() => {
-    if (shell !== 'console' || !user) { setConsolePages(null); return }
+    if (shell !== 'console' || !user) { setConsoleAccess(null); return }
     api.get('/platform/my-access')
-      .then(r => setConsolePages(r.data?.data?.pages ?? null))
-      .catch(() => setConsolePages(null))
+      .then(r => setConsoleAccess(r.data?.data || null))
+      .catch(() => setConsoleAccess(null))
   }, [shell, user?.id])
 
   const tours = useMemo(() => {
@@ -98,11 +102,19 @@ export function TourProvider({ children }) {
       return all.filter(t => {
         if (t.id === 'console-welcome') return true
         if (t.path === '/operators' && !owner) return false
-        return !consolePages || t.path === '/' || t.path === '/account' || consolePages.includes(t.path)
+        // The SAME rule the console rail uses — a third copy is what dropped
+        // the Messages tour for a restricted operator.
+        return consoleCanSee(t.path, consoleAccess)
       })
     }
     return all.filter(t => t.id === 'welcome' || canView(t.path))
-  }, [shell, isAdmin, isApprover, canView, consolePages, user?.platform_role])
+    // Deliberately NOT keyed on `canView`: AuthContext rebuilds it every render,
+    // so depending on its identity recomputed `tours` constantly — which reran
+    // the auto-start effect and CLEARED its pending timer, so a tour could fail
+    // to open at all. canView is a pure function of role + pagePermissions, so
+    // those are the honest dependencies.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shell, isAdmin, isApprover, permKey, consoleAccess, user?.platform_role])
 
   useEffect(() => {
     if (!user) return
@@ -309,15 +321,24 @@ function TourOverlay({ tour, index, setIndex, onFinish, canView }) {
     const onKey = (e) => {
       const el = e.target
       if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
       const onControl = !!(el && /^(BUTTON|A)$/.test(el.tagName))
-      if (e.key === 'Escape') onFinish(false)
-      else if (e.key === 'ArrowRight') { e.preventDefault(); if (!waiting) next() }
-      else if (e.key === 'ArrowLeft') { e.preventDefault(); back() }
-      else if (e.key === 'Enter' && !onControl && !waiting) next()
+      // CAPTURE + stopPropagation, the same ownership rule useEscapeStack
+      // documents. Both this and useHotkeys used to listen on the window
+      // bubble end, so on /calendar (and the console calendar) an arrow key
+      // advanced the tour AND flipped the month underneath it — the spotlight
+      // then pointed at a grid that had just re-rendered.
+      if (e.key === 'ArrowRight') { e.preventDefault(); e.stopPropagation(); if (!waiting) next() }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); e.stopPropagation(); back() }
+      else if (e.key === 'Enter' && !onControl && !waiting) { e.preventDefault(); e.stopPropagation(); next() }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
   }) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Escape goes through the shared LIFO stack rather than a raw listener, so a
+  // dialog opened on top of a tour closes itself first instead of both firing.
+  useEscapeStack(true, useCallback(() => { onFinish(false) }, [onFinish]))
 
   if (!step) return null
 

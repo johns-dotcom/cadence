@@ -561,8 +561,13 @@ async function requireWorkspaceAccess(req, res, next) {
 // are unrestricted. Used by the console shell to filter nav + guard routes.
 router.get('/my-access', async (req, res) => {
   try {
-    if (req.user.platform_role === 'owner') return res.json({ success: true, data: { workspaces: null, pages: null } });
-    res.json({ success: true, data: await operatorAccess(req.user.email) });
+    // `restrictablePages` rides along so the client does not need its own copy
+    // of the list: a page that is NOT restrictable is always visible, and a
+    // client that hardcoded the four would silently hide new console pages.
+    if (req.user.platform_role === 'owner') {
+      return res.json({ success: true, data: { workspaces: null, pages: null, restrictablePages: RESTRICTABLE_PAGES } });
+    }
+    res.json({ success: true, data: { ...(await operatorAccess(req.user.email)), restrictablePages: RESTRICTABLE_PAGES } });
   } catch (error) {
     console.error('My-access error:', error);
     res.json({ success: true, data: { workspaces: null, pages: null } }); // fail open
