@@ -434,6 +434,9 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invited_at TIMESTAMP`);
   // "Clear all" watermark for computed notifications (mentions are excluded).
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS notifications_cleared_at TIMESTAMP`);
+  // Per-ACCOUNT notification preferences. Were per-DEVICE in localStorage, so a
+  // toggle set on a laptop did nothing on a phone; this is the synced home.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_prefs JSONB DEFAULT '{}'::jsonb`);
 
   // ── Departments, per workspace ────────────────────────────────────────
   // `users.department` stays a VARCHAR and remains the source of truth for who

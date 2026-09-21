@@ -17,6 +17,8 @@ import DepartmentsManager from '../components/DepartmentsManager'
 import DataTools from '../components/DataTools'
 import SettingsShell from '../components/SettingsShell'
 import LabelRecordForm from '../components/LabelRecordForm'
+import NotificationPrefsPanel from '../components/settings/NotificationPrefsPanel'
+import SecurityPanel from '../components/settings/SecurityPanel'
 import { buildSettingsSections, LEGACY_TABS } from '../lib/settingsSections'
 import BankAccountsManager from '../components/BankAccountsManager'
 import { dropTarget } from '../utils/drop'
@@ -320,7 +322,11 @@ export default function Settings() {
             <button className="btn-primary">Change password</button>
           </div>
         </form>
+        <SecurityPanel />
         </>)}
+
+        {/* ── My settings · Notifications ── */}
+        {tab === 'notifications' && <NotificationPrefsPanel />}
 
         {/* ── My settings · Appearance ── */}
         {tab === 'appearance' && (<>

@@ -1,5 +1,5 @@
 import {
-  Building2, Database, KeyRound, Mail, Palette, PanelLeft, ShieldCheck, Sun, User, Users,
+  Bell, Building2, Database, KeyRound, Mail, Palette, PanelLeft, ShieldCheck, Sun, User, Users,
 } from 'lucide-react'
 
 // The shape of the Settings page: two halves, and what lives in each.
@@ -23,6 +23,7 @@ export function buildSettingsSections(isAdmin) {
         { key: 'profile', label: 'Profile', icon: User },
         { key: 'signin', label: 'Sign-in', icon: KeyRound },
         { key: 'appearance', label: 'Appearance', icon: Sun },
+        { key: 'notifications', label: 'Notifications', icon: Bell },
         { key: 'nav', label: 'My navigation', icon: PanelLeft },
       ],
     },

@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../db');
 const authMiddleware = require('../middleware/auth');
 const { withTenant, requireAdmin } = require('../middleware/tenant');
+const { signToken } = require('../lib/token');
 
 const router = express.Router();
 router.use(authMiddleware, withTenant);
@@ -11,7 +12,8 @@ router.get('/me', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT id, name, email, role, department, hierarchy_level, theme,
-              COALESCE(tours_done, '{}'::jsonb) AS tours_done
+              COALESCE(tours_done, '{}'::jsonb) AS tours_done,
+              COALESCE(notification_prefs, '{}'::jsonb) AS notification_prefs
        FROM users WHERE id = $1 AND label_id = $2`,
       [req.user.id, req.labelId]
     );
@@ -67,6 +69,70 @@ router.delete('/me/tours', async (req, res) => {
     res.json({ success: true, data: rows[0]?.tours_done || {} });
   } catch (error) {
     console.error('Reset tours error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// PUT /api/settings/me/notifications — the account's notification preferences.
+// Was per-device localStorage; this is per-account and syncs everywhere. Merge
+// semantics: only the toggled keys are stored, so a new alert type defaults ON
+// until explicitly turned off (the client merges over its own defaults).
+router.put('/me/notifications', async (req, res) => {
+  try {
+    const prefs = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : null;
+    if (!prefs) return res.status(400).json({ success: false, error: 'Invalid preferences' });
+    // Booleans only, capped at a sane number of keys — this is a preference map,
+    // not arbitrary storage.
+    const clean = {};
+    for (const [k, v] of Object.entries(prefs).slice(0, 40)) {
+      if (/^[a-z_]{1,40}$/.test(k) && typeof v === 'boolean') clean[k] = v;
+    }
+    const { rows } = await pool.query(
+      `UPDATE users SET notification_prefs = COALESCE(notification_prefs, '{}'::jsonb) || $2::jsonb
+        WHERE id = $1 RETURNING COALESCE(notification_prefs, '{}'::jsonb) AS notification_prefs`,
+      [req.user.id, JSON.stringify(clean)]
+    );
+    res.json({ success: true, data: rows[0]?.notification_prefs || {} });
+  } catch (err) {
+    console.error('notification prefs:', err.message);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /api/settings/me/logins — this account's recent sign-ins, so somebody can
+// spot a session they don't recognise. Reads user_login_logs, which the login
+// endpoints already write and nothing user-facing has ever read.
+router.get('/me/logins', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT logged_in_at, ip_address, user_agent
+         FROM user_login_logs WHERE user_id = $1 AND label_id = $2
+        ORDER BY logged_in_at DESC LIMIT 10`,
+      [req.user.id, req.labelId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('login history:', err.message);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// POST /api/settings/me/sessions/revoke — "sign out everywhere". Bumping
+// token_version invalidates every issued token (auth middleware re-reads it per
+// request), which would also drop THIS session — so we mint a fresh token for
+// the current device and hand it back, the same move the password-reset flow
+// makes. Other devices are signed out on their next request.
+router.post('/me/sessions/revoke', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE users SET token_version = COALESCE(token_version, 0) + 1
+        WHERE id = $1 AND label_id = $2 RETURNING *`,
+      [req.user.id, req.labelId]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'User not found' });
+    res.json({ success: true, data: { token: signToken(rows[0]) } });
+  } catch (err) {
+    console.error('revoke sessions:', err.message);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

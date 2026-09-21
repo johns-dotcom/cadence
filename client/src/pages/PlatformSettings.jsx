@@ -4,6 +4,8 @@ import PageHeader from '../components/PageHeader'
 import SettingsShell from '../components/SettingsShell'
 import { buildConsoleSettingsSections, LEGACY_CONSOLE_TABS } from '../lib/consoleSettingsSections'
 import PlatformOperators from './PlatformOperators'
+import NotificationPrefsPanel from '../components/settings/NotificationPrefsPanel'
+import SecurityPanel from '../components/settings/SecurityPanel'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
 import { useTheme } from '../context/ThemeContext'
@@ -79,8 +81,12 @@ export default function PlatformSettings() {
                 <button className="btn-primary">Change password</button>
               </div>
             </form>
+
+            <SecurityPanel />
           </>
         )}
+
+        {tab === 'notifications' && <NotificationPrefsPanel />}
 
         {tab === 'appearance' && (
           <div className="card p-5">

@@ -82,6 +82,11 @@ export const AuthProvider = ({ children }) => {
     }
   }
 
+  // Swap ONLY the session token — used after "sign out everywhere", where the
+  // server bumped token_version (invalidating every token incl. this one) and
+  // handed back a fresh one for this device so the current session survives.
+  const updateToken = (newToken) => { localStorage.setItem('token', newToken); setToken(newToken) }
+
   const applySession = (newToken, userData, labelData) => {
     // A second login in the same tab (logout → sign in as someone else) reuses
     // this module instance, so the per-workspace caches have to go.
@@ -232,7 +237,7 @@ export const AuthProvider = ({ children }) => {
       user, label, token, loading,
       login, googleLogin, logout, updateLabel,
       impersonate, enterWorkspace, exitImpersonation, impersonating, adminUser,
-      pagePermissions, canView, sessionEpoch, refreshSession,
+      pagePermissions, canView, sessionEpoch, refreshSession, updateToken,
     }}>
       {children}
     </AuthContext.Provider>

@@ -1,4 +1,4 @@
-import { ShieldCheck, Sun, User } from 'lucide-react'
+import { Bell, ShieldCheck, Sun, User } from 'lucide-react'
 
 // The shape of the CONSOLE Settings page — the operator-side mirror of
 // lib/settingsSections.js. Module scope for the same reason: one list is the
@@ -21,6 +21,7 @@ export function buildConsoleSettingsSections(isOwner) {
       half: 'My account',
       items: [
         { key: 'profile', label: 'Profile & sign-in', icon: User },
+        { key: 'notifications', label: 'Notifications', icon: Bell },
         { key: 'appearance', label: 'Appearance', icon: Sun },
       ],
     },

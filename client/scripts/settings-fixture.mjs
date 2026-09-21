@@ -58,6 +58,21 @@ try {
   }
   if (!failures) ok(`${ALL_SETTINGS_TABS.length} rail items, ${implemented.size} panels, one-to-one`)
 
+  // ── CONSOLE settings: same rail↔panel bijection ─────────────────────────
+  // The console reuses SettingsShell, so the same drift (a rail button opening
+  // a blank page) is possible there. Owner sees the most panels, so check that.
+  const cmod = await server.ssrLoadModule('/src/lib/consoleSettingsSections.js')
+  const csrc = readFileSync(path.join(ROOT, 'src/pages/PlatformSettings.jsx'), 'utf8')
+  const cKeys = cmod.buildConsoleSettingsSections(true).flatMap(sec => sec.items.map(i => i.key))
+  const cImpl = new Set([...csrc.matchAll(/\{tab === '([a-z-]+)'/g)].map(m => m[1]))
+  for (const key of cKeys) {
+    if (!cImpl.has(key)) fail(`console rail item "${key}" has no {tab === '${key}'} panel`)
+  }
+  for (const key of cImpl) {
+    if (!cKeys.includes(key)) fail(`console panel "${key}" has no rail item — unreachable`)
+  }
+  if (!failures) ok(`console: ${cKeys.length} rail items, ${cImpl.size} panels, one-to-one`)
+
   // ── admin panels are guarded ──────────────────────────────────────────
   // The rail already hides these from a User, but the panel is what actually
   // renders — a deep link is not a click, and `?tab=data` must not open the

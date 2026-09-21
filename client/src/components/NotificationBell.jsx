@@ -5,6 +5,7 @@ import {
   Inbox, Wallet, Settings2, Check, AlarmClock, CheckCheck,
 } from 'lucide-react'
 import api from '../api'
+import { PREF_KEY, PREF_DEFAULTS, PREF_LABELS } from '../lib/notificationPrefs'
 import { useSocket } from '../context/SocketContext'
 
 // Smart-alert bell. Polls /api/notifications (computed live, label-scoped) and
@@ -46,13 +47,6 @@ const SECTIONS = [
 // Per-type preferences. Stored per browser and MERGED over defaults, so a type
 // added later defaults ON instead of silently inheriting a stale `false` from
 // whatever was saved months ago.
-const PREF_KEY = 'cadence_notif_prefs'
-const PREF_DEFAULTS = { smart: true, tasks: true, releases: true, contracts: true, vendor: true, budget: true, reminders: true }
-const PREF_LABELS = {
-  smart: 'Smart alerts', tasks: 'Your tasks', releases: 'Upcoming releases',
-  contracts: 'Expiring contracts', vendor: 'Vendor submissions & approvals',
-  budget: 'Budget alerts', reminders: 'Reminders',
-}
 function loadPrefs() {
   try { return { ...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem(PREF_KEY) || '{}') } }
   catch { return { ...PREF_DEFAULTS } }
@@ -79,6 +73,25 @@ export default function NotificationBell() {
     return () => clearInterval(t)
   }, [])
 
+  // Notification prefs are per-ACCOUNT now (they used to be per-device in
+  // localStorage, so a toggle set on a laptop did nothing on a phone).
+  // localStorage stays only as a fast-paint cache; the server is authoritative
+  // on load and reconciled here.
+  useEffect(() => {
+    api.get('/settings/me')
+      .then(r => {
+        const server = r.data?.data?.notification_prefs
+        if (server && typeof server === 'object') {
+          setPrefs(p => {
+            const merged = { ...PREF_DEFAULTS, ...server }
+            try { localStorage.setItem(PREF_KEY, JSON.stringify(merged)) } catch { /* private mode */ }
+            return merged
+          })
+        }
+      })
+      .catch(() => { /* keep the localStorage cache */ })
+  }, [])
+
   // A chat @mention lands instantly — refresh the bell without waiting for the poll.
   useEffect(() => onSocket('mention', () => load()), [onSocket])
 
@@ -92,6 +105,7 @@ export default function NotificationBell() {
     const next = { ...prefs, [k]: v }
     setPrefs(next)
     try { localStorage.setItem(PREF_KEY, JSON.stringify(next)) } catch { /* private mode */ }
+    api.put('/settings/me/notifications', { [k]: v }).catch(() => { /* cache still holds it */ })
   }
 
   // Preferences filter what is COUNTED as well as what is shown — a badge that
