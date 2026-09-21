@@ -3,6 +3,7 @@ import api from '../api'
 import { applyAccent, resetAccent } from '../utils/branding'
 import { resetCategoriesCache } from '../hooks/useCategories'
 import { resetReconciledCache } from '../hooks/useReconciledThrough'
+import { resetFundingSourcesCache } from '../hooks/useFundingSources'
 
 const AuthContext = createContext()
 
@@ -34,6 +35,7 @@ export const AuthProvider = ({ children }) => {
     // Module-level caches live outside React and a remount does not clear them.
     resetCategoriesCache()
     resetReconciledCache()
+    resetFundingSourcesCache()
     setSessionEpoch(n => n + 1)
   }
 
@@ -92,6 +94,7 @@ export const AuthProvider = ({ children }) => {
     // this module instance, so the per-workspace caches have to go.
     resetCategoriesCache()
     resetReconciledCache()
+    resetFundingSourcesCache()
     localStorage.setItem('token', newToken)
     setToken(newToken)
     setUser(userData)
@@ -132,6 +135,7 @@ export const AuthProvider = ({ children }) => {
   const logout = () => {
     resetCategoriesCache()
     resetReconciledCache()
+    resetFundingSourcesCache()
     localStorage.removeItem('token')
     localStorage.removeItem('admin_token')
     setToken(null)

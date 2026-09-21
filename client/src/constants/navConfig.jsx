@@ -1,6 +1,5 @@
 import {
-  AlertTriangle, Banknote, BarChart3, BookOpen, Briefcase, Building2, CalendarClock, CalendarDays, CheckSquare, ClipboardList, Coins, CreditCard, Disc3, FileBarChart, FileClock, FilePlus2, FileSearch, FileSignature, FileSpreadsheet, FileText, FlaskConical, FolderOpen, GitMerge, Image as ImageIcon, Landmark, Layers, LayoutDashboard, Link2, Lock, Megaphone, MessageSquare, MessageSquarePlus, Music, PackageCheck, PieChart, PiggyBank, PlusCircle, Receipt, RefreshCw, Scale, ScrollText, SearchCheck, Send, Settings, Shield, ShieldCheck, TrendingUp, UploadCloud, UserCheck, UserPlus, Users, Users2, Wallet,
-} from 'lucide-react'
+  AlertTriangle, Banknote, BarChart3, BookOpen, Briefcase, Building2, CalendarClock, CalendarDays, CheckSquare, ClipboardList, Coins, CreditCard, Disc3, FileBarChart, FileClock, FilePlus2, FileSearch, FileSignature, FileSpreadsheet, FileText, FlaskConical, FolderOpen, GitMerge, Image as ImageIcon, Landmark, Layers, LayoutDashboard, Link2, Lock, Megaphone, MessageSquare, MessageSquarePlus, Music, PackageCheck, PieChart, PiggyBank, PlusCircle, Receipt, RefreshCw, Scale, ScrollText, SearchCheck, Send, Settings, Shield, ShieldCheck, TrendingUp, UploadCloud, UserCheck, UserPlus, Users, Users2, Wallet } from 'lucide-react'
 
 // THE nav definition — one module, four consumers (sidebar, Settings' "hide
 // items" editor, the ⌘K palette, and check-render's shell pre-flight).
@@ -64,6 +63,7 @@ export const PAGE_LABELS = {
   '/ledger/new-invoice': 'Add invoice',
   '/ledger/new-reimbursement': 'Add reimbursement',
   '/payments':   'Payments',
+  '/reimbursements': 'Reimbursements',
   '/vendors':    'Vendors',
   '/vendors/added-expenses': 'Added-expense vendors',
   '/vendor-lab': 'Vendor Form (sandbox)',
@@ -190,6 +190,7 @@ export function buildNavGroups({ isAdmin, isApprover, chatUnread = 0, pendingApp
         children: [
           { path: '/approvals',               label: 'Approvals',   icon: CheckSquare, badge: pendingApprovals, synonyms: 'review pending submitted vendor queue approve' },
           { path: '/payments',                label: 'Payments',    icon: CreditCard, synonyms: 'pay due outgoing wire ach rush unpaid' },
+          { path: '/reimbursements',          label: 'Reimbursements', icon: Coins, synonyms: 'out of pocket owed paid personally front money reimburse fund source who paid' },
           { path: '/ledger',                  label: 'Ledger',      icon: BookOpen, synonyms: 'expenses master register search spend' },
           { path: '/creators',                label: 'Creators',    icon: Users, synonyms: 'creator influencer paypal no invoice small payments 1099' },
           { path: '/add-invoice',             label: 'Add',         icon: PlusCircle, synonyms: 'add invoice expense payable new bill manual entry' },

@@ -22,6 +22,7 @@ const bankEvidence = require('../lib/bankEvidence');
 const { excludeBankRows, excludeCreatorRows, BANK_SOURCE, reportingThresholdFor } = require('../lib/ledgerSource');
 const w9NameMatch = require('../lib/w9NameMatch');
 const { usdOf, rowUsd2, round2 } = require('../lib/usd');
+const { isOwed, groupBySource } = require('../lib/reimbursements');
 const { namesAnArtist } = require('../lib/artistKey');
 const { ADDED_SOURCES, addedExpenseRollup, unifiedRows } = require('../lib/vendorSurfaces');
 const { pairKey, ackKey, vendorDupePairs } = require('../lib/vendorDupes');
@@ -116,6 +117,17 @@ router.get('/vendor-w9-status', vendorW9StatusRoute);
 // Everything else on the ledger handles money out — finance surface, Approver+.
 router.use(requireApprover);
 
+// Resolve a client-supplied funding source to a validated in-tenant id, or null
+// (the label account — nothing owed). Used by every pay flow so the picker's
+// choice is trusted only after it's confirmed to belong to this workspace.
+async function resolveFundingSource(labelId, raw) {
+  if (raw == null || raw === '') return { ok: true, id: null };
+  const sid = parseInt(raw, 10);
+  if (!Number.isFinite(sid)) return { ok: false };
+  const fs = await pool.query('SELECT id FROM funding_sources WHERE id = $1 AND label_id = $2', [sid, labelId]);
+  return fs.rows.length ? { ok: true, id: sid } : { ok: false };
+}
+
 // Map a multipart file → R2 and return { filename, r2_key }. Tenant-namespaced.
 async function storeFile(labelId, file, kind) {
   const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -140,7 +152,7 @@ const EDITABLE = [
   // Boom-parity vocabulary (LED-6): who paid, UFR + campaign markers, tone
   // labels, catalog link, QuickBooks reconciliation.
   'paid_by', 'ufr', 'artist_campaign', 'recoupment_label', 'release_id',
-  'in_quickbooks', 'qb_entry_date',
+  'in_quickbooks', 'qb_entry_date', 'paid_source_id',
 ];
 
 // Auto-link an expense to the catalog by exact artist + song match (boom's
@@ -368,7 +380,7 @@ const LEDGER_VIEW_COLS = `e.id, e.label_id, e.parent_id, e.invoice_date, e.payee
   e.rush, e.on_hold, e.flagged, e.flag_reason, e.flagged_by, e.flagged_at, e.approved_by, e.created_at,
   e.rejected_reason, e.in_quickbooks, e.qb_entry_date, e.no_auto_split, e.settlement_group_id,
   e.invoice_r2_key, e.invoice_filename, e.w9_r2_key, e.w9_filename, e.receipt_r2_key, e.receipt_filename,
-  e.proof_r2_key, e.proof_filename, e.deleted`;
+  e.proof_r2_key, e.proof_filename, e.paid_source_id, e.reimbursed, e.reimbursed_at, e.deleted`;
 
 // GET /api/ledger/entries/:id — one full row (incl. the scan JSONB the list
 // omits). The drawer's detail fetch, and the ?focus fallback for split
@@ -943,6 +955,19 @@ router.patch('/entries/:id', async (req, res) => {
       const rel = await pool.query('SELECT 1 FROM releases WHERE id = $1 AND label_id = $2', [rid, req.labelId]);
       if (!rel.rows.length) return res.status(400).json({ success: false, error: 'Release not found' });
       req.body.release_id = rid;
+    }
+    // A funding source must belong to this workspace. Empty/null clears it back
+    // to the label account (nothing owed).
+    if (keys.includes('paid_source_id')) {
+      if (req.body.paid_source_id == null || req.body.paid_source_id === '') {
+        req.body.paid_source_id = null;
+      } else {
+        const sid = parseInt(req.body.paid_source_id, 10);
+        if (!Number.isFinite(sid)) return res.status(400).json({ success: false, error: 'Bad paid_source_id' });
+        const fs = await pool.query('SELECT 1 FROM funding_sources WHERE id = $1 AND label_id = $2', [sid, req.labelId]);
+        if (!fs.rows.length) return res.status(400).json({ success: false, error: 'Funding source not found' });
+        req.body.paid_source_id = sid;
+      }
     }
     // Cobrand spend is Marketing by definition (boom rule, APR-7/LED-7): turning
     // cobrand ON forces the category. The client mirrors this locally.
@@ -1828,12 +1853,16 @@ router.get('/entries/:id/bk-audit', async (req, res) => {
 // POST /api/ledger/entries/:id/mark-paid
 router.post('/entries/:id/mark-paid', async (req, res) => {
   try {
+    const fs = await resolveFundingSource(req.labelId, req.body.paid_source_id);
+    if (!fs.ok) return res.status(400).json({ success: false, error: 'Funding source not found' });
     // Split-family cascade: paying any row in a split family pays the whole
     // family in one transactional write (never a half-paid family).
     const { rows } = await pool.query(
       `UPDATE expenses SET payment_status = 'Paid', payment_date = COALESCE($1, CURRENT_DATE),
          payment_method = COALESCE($2, payment_method), payment_ref = COALESCE($3, payment_ref),
          paid_by = $4,
+         -- who FRONTED the money (NULL = label account); a fresh pay resets the debt
+         paid_source_id = $7, reimbursed = false, reimbursed_at = NULL, reimbursed_by = NULL,
          -- Edge-only: re-marking an already-Paid row must not move its
          -- paid_marked_at (that timestamp anchors the linger window + audits).
          paid_marked_at = CASE WHEN payment_status = 'Paid' THEN paid_marked_at ELSE NOW() END,
@@ -1845,7 +1874,7 @@ router.post('/entries/:id/mark-paid', async (req, res) => {
          AND COALESCE(parent_id, id) = (SELECT COALESCE(parent_id, id) FROM expenses WHERE id = $5 AND label_id = $6)
        RETURNING *`,
       [req.body.payment_date || null, req.body.payment_method || null, req.body.payment_ref || null,
-       req.user.name, parseInt(req.params.id, 10), req.labelId]
+       req.user.name, parseInt(req.params.id, 10), req.labelId, fs.id]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: 'Entry not found or not approved' });
     rows.forEach(r => stampFxRateAsync(r.id));
@@ -1965,6 +1994,8 @@ router.post('/batch-pay', upload.single('proof'), async (req, res) => {
     const ids = Array.isArray(rawIds) ? rawIds.map(n => parseInt(n, 10)).filter(Boolean) : [];
     if (!ids.length) return res.status(400).json({ success: false, error: 'No entries selected' });
 
+    const fs = await resolveFundingSource(req.labelId, req.body.paid_source_id);
+    if (!fs.ok) return res.status(400).json({ success: false, error: 'Funding source not found' });
     // Expand each selected id to its whole split family, then pay all in one go.
     // paid_marked_at edge-only + rush/hold cleared — same rules as mark-paid.
     const { rows } = await pool.query(
@@ -1973,6 +2004,7 @@ router.post('/batch-pay', upload.single('proof'), async (req, res) => {
          payment_method = COALESCE($2, payment_method),
          payment_ref = COALESCE($6, payment_ref),
          paid_by = $3,
+         paid_source_id = $7, reimbursed = false, reimbursed_at = NULL, reimbursed_by = NULL,
          paid_marked_at = CASE WHEN payment_status = 'Paid' THEN paid_marked_at ELSE NOW() END,
          rush = false, rush_reason = NULL, rush_needed_by = NULL, rush_by = NULL, rush_at = NULL,
          on_hold = false, hold_reason = NULL, hold_by = NULL, hold_at = NULL
@@ -1980,7 +2012,7 @@ router.post('/batch-pay', upload.single('proof'), async (req, res) => {
          AND COALESCE(parent_id, id) IN (SELECT COALESCE(parent_id, id) FROM expenses WHERE label_id = $4 AND id = ANY($5::int[]))
        RETURNING id, parent_id`,
       [req.body.payment_date || null, req.body.payment_method || null, req.user.name, req.labelId, ids,
-       String(req.body.payment_ref || '').trim() || null]
+       String(req.body.payment_ref || '').trim() || null, fs.id]
     );
     // One proof for the whole batch → stored once, linked on each family head.
     if (req.file && rows.length) {
@@ -2016,6 +2048,8 @@ router.post('/entries/:id/pay-with-proof', upload.single('proof'), async (req, r
     const id = parseInt(req.params.id, 10);
     const exp = await pool.query('SELECT amount, currency FROM expenses WHERE id = $1 AND label_id = $2 AND status = $3', [id, req.labelId, 'approved']);
     if (!exp.rows.length) return res.status(404).json({ success: false, error: 'Approved entry not found' });
+    const fs = await resolveFundingSource(req.labelId, req.body.paid_source_id);
+    if (!fs.ok) return res.status(400).json({ success: false, error: 'Funding source not found' });
 
     let date = req.body.payment_date || null, ref = req.body.payment_ref || null, method = req.body.payment_method || null;
     if (req.file && claude.isEnabled()) {
@@ -2042,13 +2076,14 @@ router.post('/entries/:id/pay-with-proof', upload.single('proof'), async (req, r
       `UPDATE expenses SET payment_status = 'Paid', payment_date = COALESCE($1, CURRENT_DATE),
          payment_method = COALESCE($2, payment_method), payment_ref = COALESCE($3, payment_ref),
          paid_by = $4,
+         paid_source_id = $7, reimbursed = false, reimbursed_at = NULL, reimbursed_by = NULL,
          paid_marked_at = CASE WHEN payment_status = 'Paid' THEN paid_marked_at ELSE NOW() END,
          rush = false, rush_reason = NULL, rush_needed_by = NULL, rush_by = NULL, rush_at = NULL,
          on_hold = false, hold_reason = NULL, hold_by = NULL, hold_at = NULL
        WHERE label_id = $5 AND status = 'approved'
          AND COALESCE(parent_id, id) = (SELECT COALESCE(parent_id, id) FROM expenses WHERE id = $6 AND label_id = $5)
        RETURNING *`,
-      [date, method, ref, req.user.name, req.labelId, id]
+      [date, method, ref, req.user.name, req.labelId, id, fs.id]
     );
     // Surface the proof on the ENTRY too, not just the installment row above —
     // otherwise paying with proof leaves the Payments row's Proof link grey, the
@@ -4971,6 +5006,144 @@ router.delete('/bulk-items/:itemId', async (req, res) => {
 });
 
 // ── Payment installments ─────────────────────────────────────────────────
+
+// ── Funding sources + out-of-pocket reimbursement ───────────────────────────
+// The label account is the implicit default (paid_source_id NULL); this table
+// holds the people/entities who front money. All Approver+ (the whole router).
+
+// GET /api/ledger/funding-sources?all=1 — active sources (all incl. inactive with ?all=1)
+router.get('/funding-sources', async (req, res) => {
+  try {
+    const all = req.query.all === '1';
+    const { rows } = await pool.query(
+      `SELECT id, name, kind, reimbursable, active FROM funding_sources
+        WHERE label_id = $1 ${all ? '' : 'AND active = TRUE'} ORDER BY active DESC, LOWER(name)`,
+      [req.labelId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) { console.error('funding-sources list:', err.message); res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// POST /api/ledger/funding-sources { name, kind, reimbursable } — add a payer,
+// reactivating a deactivated one of the same name rather than duplicating it.
+router.post('/funding-sources', async (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim().slice(0, 120);
+    if (!name) return res.status(400).json({ success: false, error: 'A name is required' });
+    const kind = ['person', 'entity', 'account'].includes(req.body.kind) ? req.body.kind : 'person';
+    const reimbursable = req.body.reimbursable === false ? false : true;
+    const existing = await pool.query('SELECT id FROM funding_sources WHERE label_id = $1 AND LOWER(name) = LOWER($2)', [req.labelId, name]);
+    if (existing.rows.length) {
+      const { rows } = await pool.query(
+        'UPDATE funding_sources SET active = TRUE, kind = $3, reimbursable = $4 WHERE id = $1 AND label_id = $2 RETURNING id, name, kind, reimbursable, active',
+        [existing.rows[0].id, req.labelId, kind, reimbursable]
+      );
+      return res.json({ success: true, data: rows[0], reactivated: true });
+    }
+    const { rows } = await pool.query(
+      'INSERT INTO funding_sources (label_id, name, kind, reimbursable, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id, name, kind, reimbursable, active',
+      [req.labelId, name, kind, reimbursable, req.user.id]
+    );
+    res.status(201).json({ success: true, data: rows[0] });
+  } catch (err) { console.error('funding-sources create:', err.message); res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// PATCH /api/ledger/funding-sources/:id(\d+) — rename / activate / reimbursable
+router.patch('/funding-sources/:id(\\d+)', async (req, res) => {
+  try {
+    const sets = [], vals = [];
+    if (typeof req.body.name === 'string' && req.body.name.trim()) { vals.push(req.body.name.trim().slice(0, 120)); sets.push(`name = $${vals.length}`); }
+    if (typeof req.body.active === 'boolean') { vals.push(req.body.active); sets.push(`active = $${vals.length}`); }
+    if (typeof req.body.reimbursable === 'boolean') { vals.push(req.body.reimbursable); sets.push(`reimbursable = $${vals.length}`); }
+    if (['person', 'entity', 'account'].includes(req.body.kind)) { vals.push(req.body.kind); sets.push(`kind = $${vals.length}`); }
+    if (!sets.length) return res.status(400).json({ success: false, error: 'Nothing to update' });
+    vals.push(parseInt(req.params.id, 10), req.labelId);
+    const { rows } = await pool.query(
+      `UPDATE funding_sources SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND label_id = $${vals.length} RETURNING id, name, kind, reimbursable, active`,
+      vals
+    );
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data: rows[0] });
+  } catch (err) { console.error('funding-sources patch:', err.message); res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// Mark a paid family reimbursed (or reopen). Family cascade, like paying.
+async function setReimbursed(labelId, rootIds, reimbursed, userId) {
+  if (!rootIds.length) return 0;
+  const { rowCount } = await pool.query(
+    `UPDATE expenses
+        SET reimbursed = $3,
+            reimbursed_at = ${reimbursed ? 'NOW()' : 'NULL'},
+            reimbursed_by = ${reimbursed ? '$4' : 'NULL'}
+      WHERE label_id = $1
+        AND COALESCE(parent_id, id) IN (
+          SELECT COALESCE(parent_id, id) FROM expenses WHERE label_id = $1 AND id = ANY($2::int[])
+        )
+        AND paid_source_id IS NOT NULL AND payment_status = 'Paid'`,
+    reimbursed ? [labelId, rootIds, reimbursed, userId] : [labelId, rootIds, reimbursed]
+  );
+  return rowCount;
+}
+
+// POST /api/ledger/entries/:id(\d+)/reimburse { reimbursed: true|false }
+router.post('/entries/:id(\\d+)/reimburse', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const reimbursed = req.body.reimbursed !== false;
+    const n = await setReimbursed(req.labelId, [id], reimbursed, req.user.id);
+    if (!n) return res.status(404).json({ success: false, error: 'No out-of-pocket payment to reimburse here' });
+    await logActivity(req, reimbursed ? 'Marked reimbursed' : 'Reopened reimbursement');
+    res.json({ success: true, data: { reimbursed, rows: n } });
+  } catch (err) { console.error('reimburse:', err.message); res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// POST /api/ledger/reimburse-bulk { ids:[], reimbursed } — reimburse many at once.
+router.post('/reimburse-bulk', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Number.isInteger) : [];
+    if (!ids.length) return res.status(400).json({ success: false, error: 'No entries given' });
+    const reimbursed = req.body.reimbursed !== false;
+    const n = await setReimbursed(req.labelId, ids, reimbursed, req.user.id);
+    await logActivity(req, reimbursed ? 'Bulk reimbursed' : 'Bulk reopened reimbursement', `${n} rows`);
+    res.json({ success: true, data: { reimbursed, rows: n } });
+  } catch (err) { console.error('reimburse-bulk:', err.message); res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
+
+// GET /api/ledger/reimbursements?status=owed|reimbursed|all&source_id= — the
+// out-of-pocket rollup: paid families funded by a reimbursable source, grouped
+// by who fronted the money. One family per row (children folded into the total),
+// so the list matches what a person would be paid back.
+router.get('/reimbursements', async (req, res) => {
+  try {
+    const params = [req.labelId];
+    let where = `e.label_id = $1 AND e.parent_id IS NULL AND e.payment_status = 'Paid'
+      AND (e.voided IS NOT TRUE) AND (e.deleted IS NOT TRUE)
+      AND fs.reimbursable = TRUE`;
+    const status = req.query.status || 'owed';
+    if (status === 'owed') where += ' AND e.reimbursed = FALSE';
+    else if (status === 'reimbursed') where += ' AND e.reimbursed = TRUE';
+    if (req.query.source_id) {
+      const sid = parseInt(req.query.source_id, 10);
+      if (!Number.isInteger(sid)) return res.status(400).json({ success: false, error: 'Bad source_id' });
+      params.push(sid); where += ` AND e.paid_source_id = $${params.length}`;
+    }
+    const { rows } = await pool.query(
+      `SELECT e.id, e.payee, e.invoice_number, e.currency, e.fx_rate_to_usd, e.payment_date,
+              e.category, e.paid_source_id, e.reimbursed, e.reimbursed_at,
+              fs.name AS source_name, fs.reimbursable,
+              (COALESCE(e.amount,0) + COALESCE((SELECT SUM(c.amount) FROM expenses c WHERE c.parent_id = e.id AND c.voided IS NOT TRUE),0)) AS amount
+         FROM expenses e
+         JOIN funding_sources fs ON fs.id = e.paid_source_id AND fs.label_id = e.label_id
+        WHERE ${where}
+        ORDER BY e.payment_date DESC NULLS LAST, e.id DESC
+        LIMIT 1000`,
+      params
+    );
+    // Rollup and item list come from the SAME rows, so they tie by construction.
+    const bySource = groupBySource(rows);
+    res.json({ success: true, data: { sources: bySource, items: rows } });
+  } catch (err) { console.error('reimbursements:', err.message); res.status(500).json({ success: false, error: 'Internal server error' }); }
+});
 
 // GET /api/ledger/entries/:id/installments
 router.get('/entries/:id/installments', async (req, res) => {

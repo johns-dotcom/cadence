@@ -18,6 +18,7 @@ pool.on('error', (err) => {
 // explicit opt-outs (a `/* no-tenant */` marker) are ignored.
 if (process.env.NODE_ENV !== 'production' && process.env.DISABLE_TENANT_ASSERT !== '1') {
   const TENANT_TABLES = [
+    'funding_sources',
     'users', 'artists', 'releases', 'expenses', 'contracts', 'pending_contracts',
     'deals', 'tasks', 'calendar_events', 'activity_log', 'vendors', 'vendor_aliases',
     'invoices', 'campaigns', 'clearances', 'ndas', 'nda_documents', 'label_waivers', 'admin_docs',

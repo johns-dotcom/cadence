@@ -1079,4 +1079,36 @@ const PR = require('../lib/platformRollup');
     breakdownSum([{ amount: 0.005 }, { amount: 0.005 }]) === 0.02);
 }
 
+// ── out-of-pocket reimbursement rollup (lib/reimbursements) ─────────────────
+{
+  const { isOwed, groupBySource } = require('../lib/reimbursements');
+
+  assert('reimb: a paid, reimbursable, un-reimbursed row is owed',
+    isOwed({ payment_status: 'Paid', paid_source_id: 3, reimbursable: true, reimbursed: false }) === true);
+  assert('reimb: the label account (null source) is never owed',
+    isOwed({ payment_status: 'Paid', paid_source_id: null, reimbursable: true, reimbursed: false }) === false);
+  assert('reimb: an unpaid row is not owed',
+    isOwed({ payment_status: 'Unpaid', paid_source_id: 3, reimbursable: true, reimbursed: false }) === false);
+  assert('reimb: an already-reimbursed row is not owed',
+    isOwed({ payment_status: 'Paid', paid_source_id: 3, reimbursable: true, reimbursed: true }) === false);
+  assert('reimb: a non-reimbursable source is not owed',
+    isOwed({ payment_status: 'Paid', paid_source_id: 3, reimbursable: false, reimbursed: false }) === false);
+
+  // Grouping: per source, per-currency native totals + a rounded USD headline.
+  const rows = [
+    { paid_source_id: 1, source_name: 'Alice', amount: 100, currency: 'USD', fx_rate_to_usd: null },
+    { paid_source_id: 1, source_name: 'Alice', amount: 50.5, currency: 'USD', fx_rate_to_usd: null },
+    { paid_source_id: 1, source_name: 'Alice', amount: 90, currency: 'EUR', fx_rate_to_usd: 0.9 }, // 90/0.9 = 100 USD
+    { paid_source_id: 2, source_name: 'Bob', amount: 200, currency: 'USD', fx_rate_to_usd: null },
+    { paid_source_id: null, source_name: null, amount: 999, currency: 'USD', fx_rate_to_usd: null }, // label account: ignored
+  ];
+  const g = groupBySource(rows);
+  assert('reimb: null-source rows are excluded from the rollup', g.length === 2);
+  const alice = g.find(x => x.source_id === 1);
+  assert('reimb: per-currency native totals are kept separate', alice.by_currency.USD === 150.5 && alice.by_currency.EUR === 90);
+  assert('reimb: USD headline honours the locked FX rate', alice.usd_total === 250.5);
+  assert('reimb: rows counted per source', alice.count === 3);
+  assert('reimb: sources sorted by USD owed, largest first', g[0].source_id === 1 && g[1].source_id === 2);
+}
+
 console.log(process.exitCode ? '\nFIXTURES FAILED' : '\nAll fixtures pass.');

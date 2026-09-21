@@ -103,6 +103,10 @@ export const PAGE_TOURS = [
     { target: hdr('payments'), title: 'What is owed', body: 'Approved invoices waiting to be paid, with quick filters, per-vendor chips and an amount grammar in the search box: 500, 500-1000, >500.' },
     { target: hdr('payments'), title: 'Paying', body: 'Mark paid, pay with proof, or batch-pay a selection with one reference and one proof file. Rush and hold are mutually exclusive, and paying clears both across the whole split family.' },
   ]},
+  { id: 'reimbursements', title: 'Reimbursements', path: '/reimbursements', version: '2026-09-21', steps: [
+    { target: hdr('reimbursements'), title: 'Who fronted the money', body: 'When the label has no bank account, people pay vendors out of pocket. Every invoice paid from a person (not the label account) shows here as owed to them, grouped by who paid.' },
+    { target: hdr('reimbursements'), title: 'Close the loop', body: 'Mark a single payment reimbursed, or a whole person at once. Set the payer at pay time on the Payments page — pick "Paid from" when marking an invoice paid.' },
+  ]},
   { id: 'ledger', title: 'Ledger', path: '/ledger', version: '2026-09-20', steps: [
     { target: hdr('ledger'), title: 'Every expense', body: 'The register: filter, sort, edit inline, and undo up to twenty steps with z. The first column is frozen so the date and payee stay with the row as you scroll.' },
     { target: hdr('ledger'), title: 'Splits are families', body: 'An invoice split across artists is a parent plus children. Totals count the family once; the row you see is the parent holding the first slice.' },

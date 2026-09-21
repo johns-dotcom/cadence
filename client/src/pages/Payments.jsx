@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CreditCard, CalendarClock, Check, X, Zap, Send, MailCheck, Pause, Download, Upload, Eye, Pencil, Trash2, ChevronRight, ChevronDown, Receipt, FileSpreadsheet, Undo2, SlidersHorizontal, CalendarDays, List, AlertTriangle } from 'lucide-react'
 import api from '../api'
+import FundingSourcePicker from '../components/FundingSourcePicker'
 import PageHeader from '../components/PageHeader'
+import { useNavigate } from 'react-router-dom'
 import Skeleton from '../components/Skeleton'
 import EmailPreviewModal from '../components/EmailPreviewModal'
 import BankEvidenceDot from '../components/BankEvidenceDot'
@@ -297,14 +299,16 @@ export default function Payments() {
     load()
   }
 
-  const doPay = async ({ payment_date, payment_method, payment_ref, proof }) => {
+  const doPay = async ({ payment_date, payment_method, payment_ref, proof, paid_source_id }) => {
     const ids = payModal.ids
+    const src = paid_source_id || undefined // '' (label account) → omit
     try {
       if (proof && ids.length === 1) {
         const fd = new FormData(); fd.append('proof', proof)
         if (payment_date) fd.append('payment_date', payment_date)
         if (payment_method) fd.append('payment_method', payment_method)
         if (payment_ref) fd.append('payment_ref', payment_ref)
+        if (src) fd.append('paid_source_id', src)
         const { data } = await api.post(`/ledger/entries/${ids[0]}/pay-with-proof`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
         toast(`Paid${data.data.reference ? ` · ref ${data.data.reference}` : ''}`)
       } else if (proof) {
@@ -314,9 +318,10 @@ export default function Payments() {
         if (payment_date) fd.append('payment_date', payment_date)
         if (payment_method) fd.append('payment_method', payment_method)
         if (payment_ref) fd.append('payment_ref', payment_ref)
+        if (src) fd.append('paid_source_id', src)
         await api.post('/ledger/batch-pay', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
-      } else if (ids.length === 1) await api.post(`/ledger/entries/${ids[0]}/mark-paid`, { payment_date, payment_method, payment_ref })
-      else await api.post('/ledger/batch-pay', { ids, payment_date, payment_method, payment_ref })
+      } else if (ids.length === 1) await api.post(`/ledger/entries/${ids[0]}/mark-paid`, { payment_date, payment_method, payment_ref, paid_source_id: src })
+      else await api.post('/ledger/batch-pay', { ids, payment_date, payment_method, payment_ref, paid_source_id: src })
       afterPay(ids)
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
@@ -508,6 +513,7 @@ export default function Payments() {
   return (
     <div className={isMobile ? 'pb-24' : 'pb-16'}>
       <PageHeader title="Payment Dashboard" subtitle="Unpaid invoices and anything paid in the last 14 days. Older payments live in the ledger." />
+      <OwedBanner />
 
       {/* Quick filters + view + export */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -1092,22 +1098,51 @@ function Modal({ title, onClose, children, wide }) {
   )
 }
 
+// A quiet nudge when individuals are owed money they fronted out of pocket —
+// the entry point to the full Reimbursements tracker. Renders nothing when
+// there's nothing owed, so a workspace with a bank account never sees it.
+function OwedBanner() {
+  const navigate = useNavigate()
+  const [owed, setOwed] = useState(null)
+  useEffect(() => {
+    api.get('/ledger/reimbursements', { params: { status: 'owed' } })
+      .then(r => {
+        const s = r.data.data?.sources || []
+        if (s.length) setOwed({ count: s.reduce((a, x) => a + x.count, 0), usd: s.reduce((a, x) => a + (x.usd_total || 0), 0), people: s.length })
+      }).catch(() => {})
+  }, [])
+  if (!owed) return null
+  return (
+    <button onClick={() => navigate('/reimbursements')}
+      className="w-full flex items-center gap-2 mb-4 px-4 py-2.5 rounded-lg border border-warning/40 bg-warning/10 text-left hover:bg-warning/15 transition">
+      <Coins size={16} className="text-warning flex-shrink-0" />
+      <span className="text-sm text-ink">
+        <span className="font-semibold">{usd(owed.usd)}</span> owed to {owed.people} {owed.people === 1 ? 'person' : 'people'} who paid out of pocket
+        <span className="text-ink-muted"> ({owed.count} payment{owed.count === 1 ? '' : 's'})</span>
+      </span>
+      <span className="ml-auto text-xs font-semibold text-brand-ink whitespace-nowrap">Reimbursements →</span>
+    </button>
+  )
+}
+
 function PayModal({ count, onClose, onConfirm }) {
   const [date, setDate] = useState(today())
   const [method, setMethod] = useState('')
   const [ref, setRef] = useState('')
   const [proof, setProof] = useState(null)
+  const [source, setSource] = useState('') // '' = label account
   return (
     <Modal title={`Mark ${count} paid`} onClose={onClose}>
       <div className="space-y-3">
         <div><label className="label">Payment date</label><input type="date" className="input" value={date} onChange={e => setDate(e.target.value)} /></div>
         <div><label className="label">Method</label><select className="input" value={method} onChange={e => setMethod(e.target.value)}><option value="">— Same as invoice —</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
         <div><label className="label">Reference</label><input className="input" value={ref} onChange={e => setRef(e.target.value)} placeholder="confirmation / wire ref" /></div>
+        <FundingSourcePicker value={source} onChange={setSource} help={source ? 'This will show as owed until you mark it reimbursed.' : 'Who fronted the money? Only needed when someone paid out of pocket.'} />
         <div>
           <label className="label">Proof of payment (optional{count > 1 ? ' — applied to every entry' : ' — AI reads date & ref'})</label>
           <input type="file" className="input py-1.5" onChange={e => setProof(e.target.files?.[0] || null)} />
         </div>
-        <button onClick={() => onConfirm({ payment_date: date, payment_method: method || undefined, payment_ref: ref || undefined, proof })} className="btn-primary w-full">{proof ? 'Pay with proof' : 'Confirm payment'}</button>
+        <button onClick={() => onConfirm({ payment_date: date, payment_method: method || undefined, payment_ref: ref || undefined, proof, paid_source_id: source })} className="btn-primary w-full">{proof ? 'Pay with proof' : 'Confirm payment'}</button>
       </div>
     </Modal>
   )

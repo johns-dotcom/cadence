@@ -1062,6 +1062,32 @@ const runMigrations = async () => {
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS recoup_reviewed_at TIMESTAMP`);
   await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS recoup_reviewed_by TEXT`);
 
+  // ── Funding sources + out-of-pocket reimbursement tracking ──────────────
+  // A workspace with no bank account has individuals fronting money for
+  // vendors. `funding_sources` is that per-workspace list (people / entities /
+  // a second account); the label's own account is the implicit default, so a
+  // NULL paid_source_id means "paid from the label account, nothing owed".
+  // Only a reimbursable source (an individual who fronted cash) creates a debt,
+  // tracked to `reimbursed`. paid_source_id is a plain INT re-validated
+  // in-tenant at write time (the app's FK convention), not a hard constraint,
+  // so a deactivated source never cascades a paid expense away.
+  await pool.query(`CREATE TABLE IF NOT EXISTS funding_sources (
+    id SERIAL PRIMARY KEY,
+    label_id INT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    name VARCHAR(120) NOT NULL,
+    kind VARCHAR(20) DEFAULT 'person',        -- 'person' | 'entity' | 'account'
+    reimbursable BOOLEAN DEFAULT TRUE,          -- an individual fronting cash → owed
+    active BOOLEAN DEFAULT TRUE,
+    created_by INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_funding_sources_label ON funding_sources (label_id, active)`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS paid_source_id INT`); // NULL = label account
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reimbursed BOOLEAN DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reimbursed_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS reimbursed_by INT`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_expenses_paid_source ON expenses (label_id, paid_source_id) WHERE paid_source_id IS NOT NULL`);
+
   // Per-artist metadata (keyed by a normalized artist key).
   await pool.query(`
     CREATE TABLE IF NOT EXISTS artist_meta (

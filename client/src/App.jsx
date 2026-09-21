@@ -67,6 +67,7 @@ import Approvals from './pages/Approvals'
 import AddLedgerEntry from './pages/AddLedgerEntry'
 import BulkUpload from './pages/BulkUpload'
 import Payments from './pages/Payments'
+import Reimbursements from './pages/Reimbursements'
 import Vendors from './pages/Vendors'
 import VendorsAdded from './pages/VendorsAdded'
 import VendorSubmitLab from './pages/VendorSubmitLab'
@@ -254,6 +255,7 @@ function AppContent() {
         <Route path="/ledger/new-invoice"       element={<AdminRoute><AddLedgerEntry mode="invoice" /></AdminRoute>} />
         <Route path="/ledger/new-reimbursement" element={<AdminRoute><AddLedgerEntry mode="reimbursement" /></AdminRoute>} />
         <Route path="/payments"     element={<AdminRoute><Payments /></AdminRoute>} />
+        <Route path="/reimbursements" element={<AdminRoute><Reimbursements /></AdminRoute>} />
         <Route path="/vendors"      element={<AdminRoute><Vendors /></AdminRoute>} />
         <Route path="/vendors/added-expenses" element={<AdminRoute><VendorsAdded /></AdminRoute>} />
         <Route path="/vendor-lab" element={<AdminRoute><VendorSubmitLab /></AdminRoute>} />
