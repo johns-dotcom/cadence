@@ -282,12 +282,10 @@ export const CONSOLE_TOURS = [
   { id: 'console-announcements', title: 'Announcements', path: '/announcements', version: '2026-09-20', steps: [
     { target: chdr, title: 'Broadcast a banner', body: 'A message shown inside workspaces, at three severities. Each person can dismiss it for themselves.' },
   ]},
-  { id: 'console-operators', title: 'Operators', path: '/operators', version: '2026-09-20', steps: [
-    { target: chdr, title: 'Who else has the console', body: 'Platform owners and workspace admins. Owners are never restricted — that is the guaranteed way back into any tenant.' },
-    { target: chdr, title: 'What each one may reach', body: 'The sliders set which workspaces an admin-tier operator can see AND what they may do inside each: Superadmin, Admin, Approver or User, as a default with per-workspace overrides. It is a real limit, enforced on every request, and a demotion takes effect immediately.' },
-  ]},
-  { id: 'console-account', title: 'Account', path: '/account', version: '2026-09-20', steps: [
-    { target: chdr, title: 'Your operator profile', body: 'Your name, password and theme for the console itself.' },
+  { id: 'console-settings', title: 'Settings', path: '/settings', version: '2026-09-21', steps: [
+    { target: chdr, title: 'Your account and the platform', body: 'Two halves: your own profile, password and theme, and — if you are the owner — who the platform\'s operators are.' },
+    { target: chdr, title: 'Operators, at a glance', body: 'Each admin-tier operator\'s row shows what they can actually reach — how many workspaces and at what tier — so you can audit access without opening anything. Owners are never restricted: the guaranteed way back into any tenant.' },
+    { target: chdr, title: 'Set what an operator may reach', body: 'Access opens the workspaces they can enter AND their tier inside each — Superadmin, Admin, Approver or User, a default with per-workspace overrides. A real limit, enforced on every request; a demotion takes effect immediately.' },
   ]},
 ]
 

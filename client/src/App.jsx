@@ -13,7 +13,7 @@ import PlatformCalendar from './pages/PlatformCalendar'
 import PlatformAnalytics from './pages/PlatformAnalytics'
 import PlatformAnnouncements from './pages/PlatformAnnouncements'
 import PlatformOperators from './pages/PlatformOperators'
-import PlatformAccount from './pages/PlatformAccount'
+import PlatformSettings from './pages/PlatformSettings'
 import Login from './pages/Login'
 import ResetPassword from './pages/ResetPassword'
 import Dashboard from './pages/Dashboard'
@@ -174,8 +174,10 @@ function AppContent() {
           <Route path="/activity"   element={<PlatformActivity />} />
           <Route path="/analytics"  element={<PlatformAnalytics />} />
           <Route path="/announcements" element={<PlatformAnnouncements />} />
-          {user?.platform_role === 'owner' && <Route path="/operators" element={<PlatformOperators />} />}
-          <Route path="/account"    element={<PlatformAccount />} />
+          <Route path="/settings"   element={<PlatformSettings />} />
+          {/* Folded into Settings; old links redirect so bookmarks survive. */}
+          <Route path="/operators"  element={<Navigate to="/settings?tab=operators" replace />} />
+          <Route path="/account"    element={<Navigate to="/settings?tab=profile" replace />} />
           <Route path="*"           element={<NotFound />} />
         </Route>
       ) : (

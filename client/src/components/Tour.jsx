@@ -98,12 +98,12 @@ export function TourProvider({ children }) {
   const tours = useMemo(() => {
     const all = allTours({ shell, isAdmin, isApprover, canView })
     if (shell === 'console') {
-      const owner = user?.platform_role === 'owner'
       return all.filter(t => {
         if (t.id === 'console-welcome') return true
-        if (t.path === '/operators' && !owner) return false
         // The SAME rule the console rail uses — a third copy is what dropped
-        // the Messages tour for a restricted operator.
+        // the Messages tour for a restricted operator. (The Settings tour shows
+        // for all; its owner-only content is self-hedged with "if you are the
+        // owner", and the page itself gates the Operators panel.)
         return consoleCanSee(t.path, consoleAccess)
       })
     }

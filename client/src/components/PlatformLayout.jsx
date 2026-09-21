@@ -22,8 +22,7 @@ const META = {
   '/activity': { title: 'Activity', sub: 'Cross-tenant audit feed' },
   '/analytics': { title: 'Analytics', sub: 'Platform growth and tenant rankings' },
   '/announcements': { title: 'Announcements', sub: 'Broadcast banners to workspaces' },
-  '/operators': { title: 'Operators', sub: 'Platform administrators' },
-  '/account': { title: 'Account', sub: 'Your operator profile' },
+  '/settings': { title: 'Settings', sub: 'Your account, and platform administration' },
 }
 
 // Starts the console walkthrough — the tour for the page you are on, or the

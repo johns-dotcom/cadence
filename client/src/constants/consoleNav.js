@@ -6,7 +6,7 @@
 // scope would have hit a TDZ that the build cannot see.
 import {
   BarChart3, Building2, CalendarDays, CheckSquare, LayoutDashboard, Megaphone,
-  MessageSquare, ScrollText, UserCog, Users,
+  MessageSquare, ScrollText, Settings,
 } from 'lucide-react'
 
 export const CONSOLE_NAV = [
@@ -18,6 +18,5 @@ export const CONSOLE_NAV = [
   { path: '/activity', label: 'Activity', icon: ScrollText },
   { path: '/analytics', label: 'Analytics', icon: BarChart3 },
   { path: '/announcements', label: 'Announcements', icon: Megaphone },
-  { path: '/operators', label: 'Operators', icon: Users, ownerOnly: true },
-  { path: '/account', label: 'Account', icon: UserCog },
+  { path: '/settings', label: 'Settings', icon: Settings },
 ]

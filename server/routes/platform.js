@@ -1359,11 +1359,20 @@ router.delete('/workspaces/:id', requirePlatformOwner, async (req, res) => {
 router.get('/operators', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT DISTINCT ON (LOWER(email)) id, email, name, platform_role,
-              (password_hash IS NULL AND invite_token IS NOT NULL) AS pending
-       FROM users
-       WHERE is_platform_admin = TRUE
-       ORDER BY LOWER(email), (platform_role = 'owner') DESC, id ASC`
+      // Per-operator access summary rides along so the roster is AUDITABLE at a
+      // glance: today every admin reads "Workspace Admin" and you must open the
+      // modal to learn one reaches 8 workspaces and another just 1. ws_scoped=0
+      // means the allowlist is empty = ALL workspaces (the inverse-state rule);
+      // default_role is the tier their identity takes on entry; page_scoped>0
+      // means some console pages are hidden from them.
+      `SELECT DISTINCT ON (LOWER(u.email)) u.id, u.email, u.name, u.platform_role,
+              (u.password_hash IS NULL AND u.invite_token IS NOT NULL) AS pending,
+              (SELECT COUNT(*)::int FROM operator_workspace_access a WHERE LOWER(a.operator_email) = LOWER(u.email)) AS ws_scoped,
+              (SELECT COUNT(*)::int FROM operator_page_access pg WHERE LOWER(pg.operator_email) = LOWER(u.email)) AS page_scoped,
+              (SELECT r.role FROM operator_workspace_roles r WHERE LOWER(r.operator_email) = LOWER(u.email) AND r.label_id IS NULL LIMIT 1) AS default_role
+       FROM users u
+       WHERE u.is_platform_admin = TRUE
+       ORDER BY LOWER(u.email), (u.platform_role = 'owner') DESC, u.id ASC`
     );
     res.json({ success: true, data: rows });
   } catch (error) {

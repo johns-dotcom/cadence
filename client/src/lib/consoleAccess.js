@@ -13,7 +13,7 @@ export function consoleCanSee(path, access) {
   const restrictable = access?.restrictablePages
   // Without the server's list, fall back to "granted or always-on" rather than
   // hiding things we cannot classify.
-  if (!Array.isArray(restrictable)) return path === '/' || path === '/account' || pages.includes(path)
+  if (!Array.isArray(restrictable)) return path === '/' || path === '/settings' || pages.includes(path)
   if (!restrictable.includes(path)) return true             // not restrictable → always visible
   return pages.includes(path)
 }

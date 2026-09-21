@@ -11,7 +11,7 @@ const PAGE_NAMES = { '/workspaces': 'Workspaces', '/calendar': 'Calendar', '/act
 // Owner-only: manage platform operators. Owners have full powers; Workspace
 // Admins can enter/manage any workspace but not provision/suspend/delete or
 // manage operators.
-export default function PlatformOperators() {
+export default function PlatformOperators({ embedded = false } = {}) {
   const { toast } = useToast()
   const { user } = useAuth()
   const [operators, setOperators] = useState([])
@@ -67,27 +67,46 @@ export default function PlatformOperators() {
     catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
   }
 
+  // What this operator can actually reach — surfaced inline so the roster is
+  // auditable without opening the modal. ws_scoped=0 means the allowlist is
+  // empty = ALL workspaces (the inverse-state rule the server documents).
+  const accessLine = (op) => {
+    if (op.platform_role === 'owner') return 'Full access — every workspace'
+    const scope = op.ws_scoped > 0 ? `${op.ws_scoped} workspace${op.ws_scoped === 1 ? '' : 's'}` : 'All workspaces'
+    return `${scope} · ${op.default_role || 'Admin'}${op.page_scoped > 0 ? ' · some pages hidden' : ''}`
+  }
+
   return (
     <div>
+      {embedded ? (
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-sm font-bold text-ink">Operators</h2>
+            <p className="text-xs text-ink-muted">Platform owners and Workspace Admins</p>
+          </div>
+          <button onClick={() => setShowForm(v => !v)} className="btn-primary"><Plus size={16} /> Add Workspace Admin</button>
+        </div>
+      ) : (
       <PageHeader
         title="Operators"
         subtitle="Platform owners and Workspace Admins"
         action={<button onClick={() => setShowForm(v => !v)} className="btn-primary"><Plus size={16} /> Add Workspace Admin</button>}
       />
+      )}
 
       {invite && (
-        <div className="card p-4 mb-6 border-brand-200 bg-brand-500/10/40">
+        <div className="card p-4 mb-6 border-brand-500/30 bg-brand-500/10">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-ink flex items-center gap-1.5">
-                {invite.email_sent ? <><Mail size={14} className="text-emerald-600" /> Invite emailed to {invite.email}</> : 'Workspace Admin created — share this link'}
+                {invite.email_sent ? <><Mail size={14} className="text-success" /> Invite emailed to {invite.email}</> : 'Workspace Admin created — share this link'}
               </p>
-              {!invite.email_sent && invite.email_error && <p className="text-[11px] text-amber-700 mt-1">Email not sent: {invite.email_error}</p>}
-              <p className="text-xs text-brand-700 font-mono break-all mt-1">{invite.invite_link}</p>
+              {!invite.email_sent && invite.email_error && <p className="text-[11px] text-warning mt-1">Email not sent: {invite.email_error}</p>}
+              <p className="text-xs text-brand-ink font-mono break-all mt-1">{invite.invite_link}</p>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
               <button onClick={() => copyInvite(invite.invite_link)} className="btn-secondary !py-1.5 text-xs">{copied ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy</>}</button>
-              <button onClick={() => setInvite(null)} className="text-gray-400 hover:text-gray-600 text-xs">Dismiss</button>
+              <button onClick={() => setInvite(null)} className="text-ink-faint hover:text-ink text-xs">Dismiss</button>
             </div>
           </div>
         </div>
@@ -107,51 +126,56 @@ export default function PlatformOperators() {
         <div className="card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-divider text-left text-[10px] text-gray-400 uppercase tracking-wide">
+              <tr className="border-b border-divider text-left text-[10px] text-ink-faint uppercase tracking-wide">
                 <th className="px-4 py-3 font-semibold">Operator</th>
                 <th className="px-4 py-3 font-semibold">Tier</th>
+                <th className="px-4 py-3 font-semibold">Access</th>
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-divider">
               {operators.map(op => (
-                <tr key={op.email} className="hover:bg-gray-50">
+                <tr key={op.email} className="hover:bg-elev">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: op.platform_role === 'owner' ? 'linear-gradient(135deg,#111827,rgb(var(--color-brand-600)))' : 'rgb(var(--color-gray-200))' }}>
-                        <span className={`text-xs font-bold ${op.platform_role === 'owner' ? 'text-white' : 'text-gray-500'}`}>{(op.name || op.email)?.charAt(0)?.toUpperCase()}</span>
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${op.platform_role === 'owner' ? '' : 'bg-elev'}`}
+                           style={op.platform_role === 'owner' ? { background: 'linear-gradient(135deg,#111827,rgb(var(--color-brand-600)))' } : undefined}>
+                        <span className={`text-xs font-bold ${op.platform_role === 'owner' ? 'text-white' : 'text-ink-muted'}`}>{(op.name || op.email)?.charAt(0)?.toUpperCase()}</span>
                       </div>
                       <div className="min-w-0">
                         {renameEmail === op.email ? (
                           <div className="flex items-center gap-1.5">
                             <input autoFocus value={renameVal} onChange={e => setRenameVal(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') saveRename(); if (e.key === 'Escape') setRenameEmail(null) }} className="input !py-1 text-sm !w-48" />
                             <button onClick={saveRename} className="text-emerald-600 hover:text-emerald-700" title="Save"><Check size={15} /></button>
-                            <button onClick={() => setRenameEmail(null)} className="text-gray-300 hover:text-gray-500" title="Cancel"><X size={15} /></button>
+                            <button onClick={() => setRenameEmail(null)} className="text-ink-faint hover:text-ink" title="Cancel"><X size={15} /></button>
                           </div>
                         ) : (
                           <p className="font-medium text-ink flex items-center gap-2 group">
                             {op.name}
-                            <button onClick={() => startRename(op)} className="text-gray-300 hover:text-brand-600 opacity-0 group-hover:opacity-100 transition" title="Rename"><Pencil size={12} /></button>
-                            {op.pending && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">Invite pending</span>}
-                            {op.email === user?.email && <span className="text-[10px] text-gray-400">(you)</span>}
+                            <button onClick={() => startRename(op)} className="text-ink-faint hover:text-brand-ink opacity-0 group-hover:opacity-100 transition" title="Rename"><Pencil size={12} /></button>
+                            {op.pending && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-warning/15 text-warning">Invite pending</span>}
+                            {op.email === user?.email && <span className="text-[10px] text-ink-faint">(you)</span>}
                           </p>
                         )}
-                        <p className="text-xs text-gray-400">{op.email}</p>
+                        <p className="text-xs text-ink-faint">{op.email}</p>
                       </div>
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${op.platform_role === 'owner' ? 'bg-brand-500/15 text-brand-700' : 'bg-indigo-100 text-indigo-700'}`}>
+                    <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${op.platform_role === 'owner' ? 'bg-brand-500/15 text-brand-ink' : 'bg-brand-500/10 text-brand-ink'}`}>
                       <ShieldCheck size={12} /> {op.platform_role === 'owner' ? 'Owner' : 'Workspace Admin'}
                     </span>
                   </td>
+                  <td className="px-4 py-3">
+                    <span className="text-xs text-ink-muted">{accessLine(op)}</span>
+                  </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
                     {op.platform_role === 'admin' && (
-                      <>
-                        {op.pending && <button onClick={() => resend(op)} className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700 mr-3"><Send size={13} /> Resend</button>}
-                        <button onClick={() => setAccessOp(op)} className="text-gray-400 hover:text-brand-600 mr-2" title="Manage access"><SlidersHorizontal size={15} /></button>
-                        <button onClick={() => revoke(op)} className="text-gray-400 hover:text-danger" title="Revoke"><Trash2 size={15} /></button>
-                      </>
+                      <div className="inline-flex items-center gap-1.5">
+                        {op.pending && <button onClick={() => resend(op)} className="inline-flex items-center gap-1 text-xs font-semibold text-brand-ink hover:opacity-80 mr-1"><Send size={13} /> Resend</button>}
+                        <button onClick={() => setAccessOp(op)} className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg border border-rule text-ink-muted hover:text-ink hover:bg-elev transition" title="Which workspaces and pages this operator can reach"><SlidersHorizontal size={13} /> Access</button>
+                        <button onClick={() => revoke(op)} className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg text-ink-muted hover:text-danger hover:bg-danger/10 transition" title="Revoke all access"><Trash2 size={13} /> Revoke</button>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -222,8 +246,8 @@ function AccessModal({ op, onClose, onSaved }) {
     <div className="fixed inset-0 z-[70] flex items-center justify-center px-4 py-8 bg-overlay overflow-y-auto" onClick={onClose}>
       <div className="w-full max-w-lg bg-card rounded-2xl border border-rule shadow-modal my-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-3 border-b border-divider">
-          <div><h2 className="text-base font-semibold text-ink">Access · {op.name}</h2><p className="text-[11px] text-gray-400">{op.email}</p></div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+          <div><h2 className="text-base font-semibold text-ink">Access · {op.name}</h2><p className="text-[11px] text-ink-faint">{op.email}</p></div>
+          <button onClick={onClose} className="text-ink-faint hover:text-ink"><X size={18} /></button>
         </div>
         {loading ? <div className="p-6"><Skeleton.TaskList count={4} /></div> : (
           <div className="p-5 space-y-5 max-h-[65vh] overflow-y-auto">
@@ -232,17 +256,17 @@ function AccessModal({ op, onClose, onSaved }) {
               <h3 className="text-sm font-bold text-ink mb-2">Workspaces they can enter</h3>
               <div className="flex gap-2 mb-2">
                 {['all', 'specific'].map(m => (
-                  <button key={m} onClick={() => setWsMode(m)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${wsMode === m ? 'bg-brand-500/10 border-brand-300 text-brand-700' : 'border-rule text-gray-500'}`}>{m === 'all' ? 'All workspaces' : 'Specific'}</button>
+                  <button key={m} onClick={() => setWsMode(m)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${wsMode === m ? 'bg-brand-500/10 border-brand-300 text-brand-ink' : 'border-rule text-ink-muted'}`}>{m === 'all' ? 'All workspaces' : 'Specific'}</button>
                 ))}
               </div>
               {wsMode === 'specific' && (
                 <div className="border border-rule rounded-lg p-2 max-h-40 overflow-y-auto space-y-0.5">
                   {workspaces.map(w => (
-                    <label key={w.id} className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer px-1 py-0.5 rounded hover:bg-gray-50">
+                    <label key={w.id} className="flex items-center gap-2 text-sm text-ink-muted cursor-pointer px-1 py-0.5 rounded hover:bg-elev">
                       <input type="checkbox" checked={wsSel.includes(w.id)} onChange={() => toggle(wsSel, setWsSel, w.id)} /> {w.name}
                     </label>
                   ))}
-                  {!workspaces.length && <p className="text-xs text-gray-400">No workspaces.</p>}
+                  {!workspaces.length && <p className="text-xs text-ink-faint">No workspaces.</p>}
                 </div>
               )}
             </div>
@@ -251,13 +275,13 @@ function AccessModal({ op, onClose, onSaved }) {
                 here is a real limit, not a hidden menu item. */}
             <div>
               <h3 className="text-sm font-bold text-ink mb-2">What they can do inside a workspace</h3>
-              <p className="text-[11px] text-gray-400 mb-2">
+              <p className="text-[11px] text-ink-faint mb-2">
                 The role their identity takes when they enter. Enforced on every request — an Approver
                 cannot reach admin-only finance routes, a User cannot read the ledger. Changing it ends
                 their current session in that workspace; their console session is untouched.
               </p>
-              <label className="flex items-center gap-2 text-sm text-gray-600 mb-2">
-                <span className="w-28 flex-shrink-0 text-xs font-semibold text-gray-500">Default</span>
+              <label className="flex items-center gap-2 text-sm text-ink-muted mb-2">
+                <span className="w-28 flex-shrink-0 text-xs font-semibold text-ink-muted">Default</span>
                 <select
                   className="input !h-8 text-sm"
                   value={defaultRole}
@@ -269,9 +293,9 @@ function AccessModal({ op, onClose, onSaved }) {
               </label>
               {(wsMode === 'specific' ? workspaces.filter(w => wsSel.includes(w.id)) : workspaces).length > 0 && (
                 <div className="border border-rule rounded-lg p-2 max-h-48 overflow-y-auto space-y-1">
-                  <p className="text-[11px] text-gray-400 px-1">Override per workspace — blank inherits the default.</p>
+                  <p className="text-[11px] text-ink-faint px-1">Override per workspace — blank inherits the default.</p>
                   {(wsMode === 'specific' ? workspaces.filter(w => wsSel.includes(w.id)) : workspaces).map(w => (
-                    <label key={w.id} className="flex items-center gap-2 text-sm text-gray-600 px-1">
+                    <label key={w.id} className="flex items-center gap-2 text-sm text-ink-muted px-1">
                       <span className="flex-1 min-w-0 truncate">{w.name}</span>
                       <select
                         className="input !h-7 !w-auto text-xs"
@@ -295,16 +319,16 @@ function AccessModal({ op, onClose, onSaved }) {
             {/* Pages */}
             <div>
               <h3 className="text-sm font-bold text-ink mb-2">Console pages they can view</h3>
-              <p className="text-[11px] text-gray-400 mb-2">Overview and Account are always available.</p>
+              <p className="text-[11px] text-ink-faint mb-2">Overview and Settings are always available.</p>
               <div className="flex gap-2 mb-2">
                 {['all', 'specific'].map(m => (
-                  <button key={m} onClick={() => setPageMode(m)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${pageMode === m ? 'bg-brand-500/10 border-brand-300 text-brand-700' : 'border-rule text-gray-500'}`}>{m === 'all' ? 'All pages' : 'Specific'}</button>
+                  <button key={m} onClick={() => setPageMode(m)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${pageMode === m ? 'bg-brand-500/10 border-brand-300 text-brand-ink' : 'border-rule text-ink-muted'}`}>{m === 'all' ? 'All pages' : 'Specific'}</button>
                 ))}
               </div>
               {pageMode === 'specific' && (
                 <div className="border border-rule rounded-lg p-2 space-y-0.5">
                   {restrictablePages.map(p => (
-                    <label key={p} className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer px-1 py-0.5 rounded hover:bg-gray-50">
+                    <label key={p} className="flex items-center gap-2 text-sm text-ink-muted cursor-pointer px-1 py-0.5 rounded hover:bg-elev">
                       <input type="checkbox" checked={pageSel.includes(p)} onChange={() => toggle(pageSel, setPageSel, p)} /> {PAGE_NAMES[p] || p}
                     </label>
                   ))}
