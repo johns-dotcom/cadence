@@ -1861,8 +1861,15 @@ router.post('/entries/:id/mark-paid', async (req, res) => {
       `UPDATE expenses SET payment_status = 'Paid', payment_date = COALESCE($1, CURRENT_DATE),
          payment_method = COALESCE($2, payment_method), payment_ref = COALESCE($3, payment_ref),
          paid_by = $4,
-         -- who FRONTED the money (NULL = label account); a fresh pay resets the debt
-         paid_source_id = $7, reimbursed = false, reimbursed_at = NULL, reimbursed_by = NULL,
+         -- who FRONTED the money + the reimbursement state are EDGE-ONLY, like
+         -- paid_marked_at: a fresh pay sets the source and resets the debt, but
+         -- RE-marking an already-Paid row (correcting a date/method) must not
+         -- wipe a source or an already-recorded reimbursement. The CASE reads
+         -- the OLD payment_status (SET sees the pre-update row).
+         paid_source_id = CASE WHEN payment_status = 'Paid' THEN paid_source_id ELSE $7 END,
+         reimbursed = CASE WHEN payment_status = 'Paid' THEN reimbursed ELSE false END,
+         reimbursed_at = CASE WHEN payment_status = 'Paid' THEN reimbursed_at ELSE NULL END,
+         reimbursed_by = CASE WHEN payment_status = 'Paid' THEN reimbursed_by ELSE NULL END,
          -- Edge-only: re-marking an already-Paid row must not move its
          -- paid_marked_at (that timestamp anchors the linger window + audits).
          paid_marked_at = CASE WHEN payment_status = 'Paid' THEN paid_marked_at ELSE NOW() END,
@@ -2004,7 +2011,10 @@ router.post('/batch-pay', upload.single('proof'), async (req, res) => {
          payment_method = COALESCE($2, payment_method),
          payment_ref = COALESCE($6, payment_ref),
          paid_by = $3,
-         paid_source_id = $7, reimbursed = false, reimbursed_at = NULL, reimbursed_by = NULL,
+         paid_source_id = CASE WHEN payment_status = 'Paid' THEN paid_source_id ELSE $7 END,
+         reimbursed = CASE WHEN payment_status = 'Paid' THEN reimbursed ELSE false END,
+         reimbursed_at = CASE WHEN payment_status = 'Paid' THEN reimbursed_at ELSE NULL END,
+         reimbursed_by = CASE WHEN payment_status = 'Paid' THEN reimbursed_by ELSE NULL END,
          paid_marked_at = CASE WHEN payment_status = 'Paid' THEN paid_marked_at ELSE NOW() END,
          rush = false, rush_reason = NULL, rush_needed_by = NULL, rush_by = NULL, rush_at = NULL,
          on_hold = false, hold_reason = NULL, hold_by = NULL, hold_at = NULL
@@ -2076,7 +2086,10 @@ router.post('/entries/:id/pay-with-proof', upload.single('proof'), async (req, r
       `UPDATE expenses SET payment_status = 'Paid', payment_date = COALESCE($1, CURRENT_DATE),
          payment_method = COALESCE($2, payment_method), payment_ref = COALESCE($3, payment_ref),
          paid_by = $4,
-         paid_source_id = $7, reimbursed = false, reimbursed_at = NULL, reimbursed_by = NULL,
+         paid_source_id = CASE WHEN payment_status = 'Paid' THEN paid_source_id ELSE $7 END,
+         reimbursed = CASE WHEN payment_status = 'Paid' THEN reimbursed ELSE false END,
+         reimbursed_at = CASE WHEN payment_status = 'Paid' THEN reimbursed_at ELSE NULL END,
+         reimbursed_by = CASE WHEN payment_status = 'Paid' THEN reimbursed_by ELSE NULL END,
          paid_marked_at = CASE WHEN payment_status = 'Paid' THEN paid_marked_at ELSE NOW() END,
          rush = false, rush_reason = NULL, rush_needed_by = NULL, rush_by = NULL, rush_at = NULL,
          on_hold = false, hold_reason = NULL, hold_by = NULL, hold_at = NULL
