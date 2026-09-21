@@ -13,6 +13,7 @@ const { deleteUserWithSweep } = require('../lib/userDelete');
 const aiUsage = require('../lib/aiUsage');
 const activityBot = require('../lib/activityBot');
 const { operatorAccess, accessibleLabelIds, scopeClause, operatorRoles, OPERATOR_ROLES, DEFAULT_OPERATOR_ROLE } = require('../lib/operatorAccess');
+const { likeContains, LIKE_ESCAPE } = require('../lib/likePattern');
 const { ensureGhost } = require('../lib/operatorGhost');
 const { toUSD, warmRates } = require('../lib/fx');
 const { dayString, isValidDay } = require('../lib/calendarDay');
@@ -521,6 +522,91 @@ router.get('/activity', async (req, res) => {
     res.json({ success: true, data: rows });
   } catch (error) {
     console.error('Platform activity error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ── Tenant support inbox ─────────────────────────────────────────────────────
+// internal_requests is written by tenants ("report a bug / request a feature")
+// and, until now, read by nothing on the operator side — every request went
+// into a void. These give the console the receiving end. Every query is scoped
+// to the workspaces this operator may enter (accessibleLabelIds), the same rule
+// activity + overview use: a request from a workspace you're blocked from is not
+// yours to read.
+const REQUEST_KINDS = ['feature', 'bug', 'question'];
+
+// GET /platform/requests?status=&kind=&label_id=&q= — the inbox list.
+router.get('/requests', async (req, res) => {
+  try {
+    const params = [];
+    let where = "ir.subject IS NOT NULL";
+    where += scopeClause(await accessibleLabelIds(req), 'ir.label_id', params);
+    const status = req.query.status;
+    if (status === 'open' || status === 'resolved') { params.push(status); where += ` AND ir.status = $${params.length}`; }
+    if (REQUEST_KINDS.includes(req.query.kind)) { params.push(req.query.kind); where += ` AND ir.kind = $${params.length}`; }
+    if (req.query.label_id) {
+      const id = parseInt(req.query.label_id, 10);
+      if (!Number.isInteger(id)) return res.status(400).json({ success: false, error: 'Invalid workspace' });
+      params.push(id); where += ` AND ir.label_id = $${params.length}`;
+    }
+    if (req.query.q) { params.push(likeContains(req.query.q)); where += ` AND (ir.subject ILIKE $${params.length} ${LIKE_ESCAPE} OR ir.body ILIKE $${params.length} ${LIKE_ESCAPE})`; }
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 300);
+    params.push(limit);
+    const { rows } = await pool.query(
+      `SELECT ir.id, ir.kind, ir.subject, ir.body, ir.page_context, ir.status, ir.created_at,
+              ir.resolved_at, ir.label_id, l.name AS workspace,
+              u.name AS submitter_name, u.email AS submitter_email,
+              r.name AS resolved_by_name
+         FROM internal_requests ir
+         JOIN labels l ON l.id = ir.label_id
+         LEFT JOIN users u ON u.id = ir.user_id
+         LEFT JOIN users r ON r.id = ir.resolved_by
+        WHERE ${where}
+        ORDER BY (ir.status = 'open') DESC, ir.created_at DESC
+        LIMIT $${params.length}`,
+      params
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Platform requests error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// GET /platform/requests/count — open count for the nav badge (scoped).
+router.get('/requests/count', async (req, res) => {
+  try {
+    const params = [];
+    let where = "ir.status = 'open'";
+    where += scopeClause(await accessibleLabelIds(req), 'ir.label_id', params);
+    const { rows } = await pool.query(`SELECT COUNT(*)::int AS open FROM internal_requests ir WHERE ${where}`, params);
+    res.json({ success: true, data: { open: rows[0].open } });
+  } catch { res.json({ success: true, data: { open: 0 } }); }
+});
+
+// POST /platform/requests/:id(\d+)/status — { status: 'open' | 'resolved' }.
+// Scoped: an operator can only act on requests in a workspace they may enter.
+// Records who resolved it and when (cleared on reopen).
+router.post('/requests/:id(\\d+)/status', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const status = req.body.status === 'resolved' ? 'resolved' : req.body.status === 'open' ? 'open' : null;
+    if (!status) return res.status(400).json({ success: false, error: 'status must be open or resolved' });
+    const params = [id];
+    let scope = scopeClause(await accessibleLabelIds(req), 'label_id', params);
+    // Confirm the request is in an accessible workspace before touching it.
+    const found = await pool.query(`SELECT id FROM internal_requests WHERE id = $1${scope}`, params);
+    if (!found.rows.length) return res.status(404).json({ success: false, error: 'Request not found' });
+    const resolved = status === 'resolved';
+    await pool.query(
+      `UPDATE internal_requests
+          SET status = $2, resolved_at = ${resolved ? 'NOW()' : 'NULL'}, resolved_by = ${resolved ? '$3' : 'NULL'}
+        WHERE id = $1`,
+      resolved ? [id, status, req.user.id] : [id, status]
+    );
+    res.json({ success: true, data: { id, status } });
+  } catch (error) {
+    console.error('Request status error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });

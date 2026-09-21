@@ -22,6 +22,7 @@ const META = {
   '/activity': { title: 'Activity', sub: 'Cross-tenant audit feed' },
   '/analytics': { title: 'Analytics', sub: 'Platform growth and tenant rankings' },
   '/announcements': { title: 'Announcements', sub: 'Broadcast banners to workspaces' },
+  '/requests': { title: 'Requests', sub: 'Bug reports and feature requests from your workspaces' },
   '/settings': { title: 'Settings', sub: 'Your account, and platform administration' },
 }
 
@@ -61,6 +62,10 @@ export default function PlatformLayout() {
   const [chatUnread, setChatUnread] = useState(0)
   const refreshChatUnread = () => api.get('/chat/unread').then(r => setChatUnread(r.data?.data?.total || 0)).catch(() => {})
   useEffect(() => { refreshChatUnread() }, [location.pathname])
+
+  // Open support-request count for the Requests nav badge.
+  const [openRequests, setOpenRequests] = useState(0)
+  useEffect(() => { api.get('/platform/requests/count').then(r => setOpenRequests(r.data?.data?.open || 0)).catch(() => {}) }, [location.pathname])
   useEffect(() => onSocket('message:new', () => refreshChatUnread()), [onSocket])
 
   useEffect(() => {
@@ -106,6 +111,9 @@ export default function PlatformLayout() {
                 <span>{label}</span>
                 {path === '/messages' && chatUnread > 0 && (
                   <span className="ml-auto bg-brand-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">{chatUnread}</span>
+                )}
+                {path === '/requests' && openRequests > 0 && (
+                  <span className="ml-auto bg-brand-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">{openRequests}</span>
                 )}
               </Link>
             )

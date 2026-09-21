@@ -1640,6 +1640,11 @@ const runMigrations = async () => {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_internal_requests_label ON internal_requests (label_id, created_at DESC)`);
+  // Resolution accountability for the console support inbox — who closed a
+  // tenant request and when. Cheap columns, real audit value.
+  await pool.query(`ALTER TABLE internal_requests ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP`);
+  await pool.query(`ALTER TABLE internal_requests ADD COLUMN IF NOT EXISTS resolved_by INT`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_internal_requests_status ON internal_requests (status, created_at DESC)`);
 
   // Persisted @mentions — one row per (mentioned user, comment). Surfaced in
   // the notification bell and marked read per-item.

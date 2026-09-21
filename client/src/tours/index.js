@@ -282,6 +282,10 @@ export const CONSOLE_TOURS = [
   { id: 'console-announcements', title: 'Announcements', path: '/announcements', version: '2026-09-20', steps: [
     { target: chdr, title: 'Broadcast a banner', body: 'A message shown inside workspaces, at three severities. Each person can dismiss it for themselves.' },
   ]},
+  { id: 'console-requests', title: 'Requests', path: '/requests', version: '2026-09-21', steps: [
+    { target: chdr, title: 'Your tenants can reach you here', body: 'Bug reports and feature requests submitted from inside a workspace land in this inbox — the receiving end of the tenant "report a bug / request a feature" box. You only see requests from workspaces you can enter.' },
+    { target: chdr, title: 'Triage and help', body: 'Filter by open/resolved, type or workspace. Open one to read it, jump straight into that workspace to help, reply by email, and mark it resolved — the badge on the nav counts what is still open.' },
+  ]},
   { id: 'console-settings', title: 'Settings', path: '/settings', version: '2026-09-21', steps: [
     { target: chdr, title: 'Your account and the platform', body: 'Two halves: your own profile, password and theme, and — if you are the owner — who the platform\'s operators are.' },
     { target: chdr, title: 'Operators, at a glance', body: 'Each admin-tier operator\'s row shows what they can actually reach — how many workspaces and at what tier — so you can audit access without opening anything. Owners are never restricted: the guaranteed way back into any tenant.' },

@@ -14,6 +14,7 @@ import PlatformAnalytics from './pages/PlatformAnalytics'
 import PlatformAnnouncements from './pages/PlatformAnnouncements'
 import PlatformOperators from './pages/PlatformOperators'
 import PlatformSettings from './pages/PlatformSettings'
+import PlatformRequests from './pages/PlatformRequests'
 import Login from './pages/Login'
 import ResetPassword from './pages/ResetPassword'
 import Dashboard from './pages/Dashboard'
@@ -174,6 +175,7 @@ function AppContent() {
           <Route path="/activity"   element={<PlatformActivity />} />
           <Route path="/analytics"  element={<PlatformAnalytics />} />
           <Route path="/announcements" element={<PlatformAnnouncements />} />
+          <Route path="/requests"   element={<PlatformRequests />} />
           <Route path="/settings"   element={<PlatformSettings />} />
           {/* Folded into Settings; old links redirect so bookmarks survive. */}
           <Route path="/operators"  element={<Navigate to="/settings?tab=operators" replace />} />
