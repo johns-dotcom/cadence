@@ -758,6 +758,10 @@ async function createEntry(req, res) {
       return res.status(400).json({ success: false, error: `payment_status must be one of ${PAYMENT_STATUSES.join(', ')}` });
     }
     const togglePaid = canApprove && (wantStatus === 'Paid' || wantStatus === 'Partial');
+    // Who fronted the money (only meaningful when the row is born Paid). Same
+    // in-tenant validation the pay flows use; ignored on a pending/unpaid create.
+    const fsRes = await resolveFundingSource(req.labelId, b.paid_source_id);
+    if (!fsRes.ok) return res.status(400).json({ success: false, error: 'Funding source not found' });
     const paid = proofPaid || togglePaid;
     const paymentStatus = proofPaid ? 'Paid' : (togglePaid ? wantStatus : 'Unpaid');
     const paymentDate = paid ? (b.payment_date || new Date().toISOString().slice(0, 10)) : null;
@@ -822,6 +826,7 @@ async function createEntry(req, res) {
         is_bulk_deal, bulk_deal_quantity, bulk_deal_unit, social_handles,
         invoice_filename, invoice_r2_key, w9_filename, w9_r2_key, receipt_filename, receipt_r2_key,
         proof_filename, proof_r2_key,
+        paid_source_id,
         created_by, entry_source, created_at
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10,'USD'),$11,$12,
@@ -829,7 +834,8 @@ async function createEntry(req, res) {
         $19,$20,$21,$22,$23,$24,$25,$26,$27,
         $28,$29,$30,$31,$32,$33,$34,$35,$36,
         $37,$38,$39,$40::jsonb,
-        $41,$42,$43,$44,$45,$46,$47,$48,$49,$50,NOW()
+        $41,$42,$43,$44,$45,$46,$47,$48,$49,
+        $50,$51,NOW()
       ) RETURNING *`,
       [
         req.labelId, b.invoice_date || null, b.payee, b.description || null, b.category || null,
@@ -849,6 +855,7 @@ async function createEntry(req, res) {
         files.w9?.filename || null, files.w9?.key || null,
         files.receipt?.filename || null, files.receipt?.key || null,
         files.proof?.filename || null, files.proof?.key || null,
+        paid ? fsRes.id : null,
         req.user.name,
         ['expense', 'invoice', 'reimbursement', 'artist_campaigns'].includes(b.entry_source) ? b.entry_source : null,
       ]

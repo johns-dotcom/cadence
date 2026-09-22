@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, Sparkles, Loader2, Plus, X, Trash2, AtSign, Receipt, FileText, AlertTriangle, CheckCircle2, Zap, Pause, Package } from 'lucide-react'
 import api from '../api'
+import FundingSourcePicker from '../components/FundingSourcePicker'
 import PageHeader from '../components/PageHeader'
 import Dropzone from '../components/Dropzone'
 import Modal from '../components/ui/Modal'
@@ -64,7 +65,7 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
     invoice_number: '', amount: '', currency: 'USD', payment_method: '',
     rep: user?.name || '',
     vendor_email: '', vendor_address: '', vendor_bank: '', description: '', notes: '',
-    payment_status: '', payment_date: '', payment_ref: '',
+    payment_status: '', payment_date: '', payment_ref: '', paid_source_id: '',
     urgency: 'none', urgency_reason: '',
   })
   const [form, setForm] = useState(initialForm)
@@ -697,6 +698,10 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
                 <>
                   <span className="inline-flex items-center gap-2 text-sm text-ink-muted">Paid on <input type="date" className="input !w-auto !py-1" value={form.payment_date} onChange={set('payment_date')} /></span>
                   <span className="inline-flex items-center gap-2 text-sm text-ink-muted">Ref # <input className="input !w-40 !py-1" value={form.payment_ref} onChange={set('payment_ref')} placeholder="Check #, wire ref…" /></span>
+                  <div className="basis-full sm:max-w-xs">
+                    <FundingSourcePicker value={form.paid_source_id} onChange={v => setForm(f => ({ ...f, paid_source_id: v }))}
+                      help={form.paid_source_id ? 'Shows as owed on Reimbursements until paid back.' : 'Who fronted the money? Leave as the label account if the label paid.'} />
+                  </div>
                 </>
               )}
             </div>
