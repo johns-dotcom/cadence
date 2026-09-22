@@ -43,7 +43,8 @@ function normInv(num) {
 // approval-checklist review; everyone else's land pending in Approvals.
 export default function AddLedgerEntry({ mode = 'invoice' }) {
   const { toast } = useToast()
-  const { user } = useAuth()
+  const { user, label } = useAuth()
+  const trackFunding = !!label?.settings?.track_funding_source
   const navigate = useNavigate()
   const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
   // Roster names (canonical keys) for a gentle, NON-blocking off-roster hint —
@@ -498,6 +499,9 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
     amount: form.amount,
     category: checks.cobrand === true ? 'Marketing' : form.category,
   }
+  // The document shown beside the checklist in the review — invoice first, else
+  // the first receipt (reimbursements).
+  const reviewDoc = files.invoice_file || receipts[0] || null
   // Edits write through to the form and clear the field's confirmation — the
   // tick must always refer to the value that will be saved.
   const reviewFieldChange = (field, value) => {
@@ -713,10 +717,6 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
                 <>
                   <span className="inline-flex items-center gap-2 text-sm text-ink-muted">Paid on <input type="date" className="input !w-auto !py-1" value={form.payment_date} onChange={set('payment_date')} /></span>
                   <span className="inline-flex items-center gap-2 text-sm text-ink-muted">Ref # <input className="input !w-40 !py-1" value={form.payment_ref} onChange={set('payment_ref')} placeholder="Check #, wire ref…" /></span>
-                  <div className="basis-full sm:max-w-xs">
-                    <FundingSourcePicker value={form.paid_source_id} onChange={v => setForm(f => ({ ...f, paid_source_id: v }))}
-                      help={form.paid_source_id ? 'Shows as owed on Reimbursements until paid back.' : 'Who fronted the money? Leave as the label account if the label paid.'} />
-                  </div>
                 </>
               )}
             </div>
@@ -895,7 +895,7 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
         open={review}
         onClose={() => setReview(false)}
         title="Review before saving"
-        size="lg"
+        size={reviewDoc ? 'full' : 'lg'}
         footer={<>
           <button type="button" className="btn-secondary" onClick={() => setReview(false)} disabled={saving}>Cancel</button>
           <button
@@ -909,23 +909,43 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
           </button>
         </>}
       >
-        <p className="text-xs text-ink-muted mb-3">
-          This saves straight to the ledger as <b>approved</b>, so the checklist the Approvals queue asks is answered here.
-        </p>
-        <DocPreview file={files.invoice_file || receipts[0]} />
-        <ApprovalChecklistFields
-          values={reviewValues}
-          checks={checks}
-          onCheck={(key, val) => setChecks(p => ({ ...p, [key]: val }))}
-          onCobrand={(val) => setChecks(p => answerCobrand(p, val))}
-          onFieldChange={reviewFieldChange}
-          context={{}}
-          disabled={saving}
-          fieldKey="add-invoice"
-        />
-        {!checklistComplete(checks) && (
-          <p className="text-[11px] text-ink-faint mt-3">{checklistOutstanding(checks).join(' · ')} still to answer</p>
-        )}
+        {/* Document to the RIGHT, checklist to the LEFT, always both visible when
+            there's a document to compare against. Stacks on small screens. */}
+        <div className={reviewDoc ? 'grid gap-5 lg:grid-cols-2' : ''}>
+          <div className="min-w-0 order-2 lg:order-1">
+            <p className="text-xs text-ink-muted mb-3">
+              This saves straight to the ledger as <b>approved</b>, so the checklist the Approvals queue asks is answered here.
+            </p>
+            <ApprovalChecklistFields
+              values={reviewValues}
+              checks={checks}
+              onCheck={(key, val) => setChecks(p => ({ ...p, [key]: val }))}
+              onCobrand={(val) => setChecks(p => answerCobrand(p, val))}
+              onFieldChange={reviewFieldChange}
+              context={{}}
+              disabled={saving}
+              fieldKey="add-invoice"
+            />
+            {trackFunding && (
+              <div className="mt-4 pt-3 border-t border-divider">
+                <FundingSourcePicker
+                  label="Who paid?"
+                  value={form.paid_source_id}
+                  onChange={v => setForm(f => ({ ...f, paid_source_id: v, ...(v ? { payment_status: 'Paid', payment_date: f.payment_date || today() } : {}) }))}
+                  help={form.paid_source_id ? 'Marks this invoice paid from that source — owed on Reimbursements until paid back.' : 'Pick who fronted the money if it was paid out of pocket. Leave blank if not paid yet.'}
+                />
+              </div>
+            )}
+            {!checklistComplete(checks) && (
+              <p className="text-[11px] text-ink-faint mt-3">{checklistOutstanding(checks).join(' · ')} still to answer</p>
+            )}
+          </div>
+          {reviewDoc && (
+            <div className="order-1 lg:order-2">
+              <DocPanel file={reviewDoc} />
+            </div>
+          )}
+        </div>
       </Modal>
     </div>
   )
@@ -933,26 +953,23 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
 
 // Inline blob-URL preview of the not-yet-uploaded document, so the review is a
 // comparison against the invoice rather than a memory test.
-function DocPreview({ file }) {
-  const [show, setShow] = useState(false)
+// The document, always shown beside the checklist so the review is a comparison,
+// not a memory test. Sticky on desktop so it stays put as the checklist scrolls.
+function DocPanel({ file }) {
   const [url, setUrl] = useState(null)
   useEffect(() => {
-    if (!file || !show) { setUrl(null); return }
+    if (!file) { setUrl(null); return }
     const u = URL.createObjectURL(file)
     setUrl(u)
     return () => URL.revokeObjectURL(u)
-  }, [file, show])
-  if (!file) return null
+  }, [file])
+  if (!file || !url) return null
   return (
-    <div className="mb-3">
-      <button type="button" onClick={() => setShow(v => !v)} className="btn-secondary !py-1.5 text-xs">
-        <FileText size={13} /> {show ? 'Hide document' : 'Show document'}
-      </button>
-      {show && url && (
-        file.type === 'application/pdf'
-          ? <iframe title="Document preview" src={url} className="w-full h-72 mt-2 rounded-lg border border-rule bg-card" />
-          : <img src={url} alt="Document preview" className="max-h-72 mt-2 rounded-lg border border-rule" />
-      )}
+    <div className="lg:sticky lg:top-0">
+      <p className="text-[11px] font-semibold text-ink-faint uppercase tracking-wide mb-1.5 inline-flex items-center gap-1"><FileText size={12} /> Document</p>
+      {file.type === 'application/pdf'
+        ? <iframe title="Document preview" src={url} className="w-full h-[68vh] rounded-lg border border-rule bg-card" />
+        : <img src={url} alt="Document preview" className="w-full max-h-[68vh] object-contain rounded-lg border border-rule bg-card" />}
     </div>
   )
 }

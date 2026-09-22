@@ -10,6 +10,7 @@ import BankEvidenceDot from '../components/BankEvidenceDot'
 import CategoryOptions from '../components/CategoryOptions'
 import BottomSheet from '../components/ui/BottomSheet'
 import { useToast } from '../context/ToastContext'
+import { useAuth } from '../context/AuthContext'
 import { PAYMENT_TERMS, PAYMENT_METHODS, CURRENCIES } from '../constants'
 import { BarChart, Bar, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import { formatDate, isPastLocal, daysUntilLocal } from '../utils/dates'
@@ -1103,8 +1104,11 @@ function Modal({ title, onClose, children, wide }) {
 // there's nothing owed, so a workspace with a bank account never sees it.
 function OwedBanner() {
   const navigate = useNavigate()
+  const { label } = useAuth()
+  const trackFunding = !!label?.settings?.track_funding_source
   const [owed, setOwed] = useState(null)
   useEffect(() => {
+    if (!trackFunding) return
     api.get('/ledger/reimbursements', { params: { status: 'owed' } })
       .then(r => {
         const s = r.data.data?.sources || []
@@ -1126,6 +1130,8 @@ function OwedBanner() {
 }
 
 function PayModal({ count, onClose, onConfirm }) {
+  const { label } = useAuth()
+  const trackFunding = !!label?.settings?.track_funding_source
   const [date, setDate] = useState(today())
   const [method, setMethod] = useState('')
   const [ref, setRef] = useState('')
@@ -1137,7 +1143,7 @@ function PayModal({ count, onClose, onConfirm }) {
         <div><label className="label">Payment date</label><input type="date" className="input" value={date} onChange={e => setDate(e.target.value)} /></div>
         <div><label className="label">Method</label><select className="input" value={method} onChange={e => setMethod(e.target.value)}><option value="">— Same as invoice —</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
         <div><label className="label">Reference</label><input className="input" value={ref} onChange={e => setRef(e.target.value)} placeholder="confirmation / wire ref" /></div>
-        <FundingSourcePicker value={source} onChange={setSource} help={source ? 'This will show as owed until you mark it reimbursed.' : 'Who fronted the money? Only needed when someone paid out of pocket.'} />
+        {trackFunding && <FundingSourcePicker value={source} onChange={setSource} help={source ? 'This will show as owed until you mark it reimbursed.' : 'Who fronted the money? Only needed when someone paid out of pocket.'} />}
         <div>
           <label className="label">Proof of payment (optional{count > 1 ? ' — applied to every entry' : ' — AI reads date & ref'})</label>
           <input type="file" className="input py-1.5" onChange={e => setProof(e.target.files?.[0] || null)} />

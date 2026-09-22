@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Check, Copy, Eye, EyeOff, Gauge, LayoutDashboard, Link2, Mail, Moon, PanelLeft, Plus, RefreshCw, Send, ShieldCheck, Sun, Trash2, Upload, Users, X } from 'lucide-react'
+import { Check, Copy, Eye, EyeOff, Gauge, LayoutDashboard, Link2, Mail, Moon, PanelLeft, Plus, RefreshCw, Send, ShieldCheck, Sun, Trash2, Upload, Users, X, Coins } from 'lucide-react'
 import api from '../api'
 import PageHeader from '../components/PageHeader'
 import { useToast } from '../context/ToastContext'
@@ -89,6 +89,7 @@ export default function Settings() {
   const [savingTz, setSavingTz] = useState(false)
   const [savingEmail, setSavingEmail] = useState(false)
   const [taskCapacity, setTaskCapacity] = useState('10')
+  const [trackFunding, setTrackFunding] = useState(false)
   const [savingCapacity, setSavingCapacity] = useState(false)
   const [testing, setTesting] = useState(false)
 
@@ -112,6 +113,7 @@ export default function Settings() {
       // The address the stamp was earned BY — not merely that a stamp exists.
       setVerifiedFor(s.email_from_verified_at ? (s.email_from_verified_for || '') : '')
       setTaskCapacity(String(s.task_capacity || 10))
+      setTrackFunding(!!s.track_funding_source)
     }).catch(() => {})
   }, [isAdmin])
 
@@ -186,6 +188,19 @@ export default function Settings() {
       toast('Business timezone saved')
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
     finally { setSavingTz(false) }
+  }
+
+  // Per-workspace switch for the who-paid / out-of-pocket funding-source feature.
+  // OFF by default: only workspaces without a business bank account (paying via
+  // individuals) need it. Flipping it writes optimistically and reflects in the
+  // nav + pay flows immediately via updateLabel.
+  const saveTrackFunding = async (next) => {
+    setTrackFunding(next)
+    try {
+      const { data } = await api.patch('/label', { settings: { track_funding_source: next } })
+      updateLabel({ settings: data.data.settings })
+      toast(next ? 'Who-paid tracking on' : 'Who-paid tracking off')
+    } catch (err) { setTrackFunding(!next); toast(err.response?.data?.error || 'Failed', 'error') }
   }
 
   const sendTestEmail = async () => {
@@ -595,6 +610,28 @@ export default function Settings() {
             </div>
             <button type="submit" disabled={savingTz} className="btn-primary mt-4">{savingTz ? 'Saving…' : 'Save timezone'}</button>
           </form>
+
+          <div className="card p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><Coins size={15} /> Track who paid each invoice</h2>
+                <p className="text-xs text-ink-muted">
+                  For workspaces with no business bank account, where people pay vendors out of pocket. Adds a
+                  "who paid" picker when marking an invoice paid and an owed → reimbursed tracker (Reimbursements).
+                  Leave off if the label pays from its own account.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={trackFunding}
+                onClick={() => saveTrackFunding(!trackFunding)}
+                className={`mt-0.5 w-10 h-6 rounded-full flex-shrink-0 relative transition ${trackFunding ? 'bg-brand-600' : 'bg-elev border border-rule'}`}
+              >
+                <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-card shadow-sm transition-all ${trackFunding ? 'left-[18px]' : 'left-0.5'}`} />
+              </button>
+            </div>
+          </div>
 
           <div className="card p-5">
             <h2 className="text-sm font-bold text-ink mb-1 inline-flex items-center gap-1.5"><Link2 size={15} /> Vendor form link</h2>

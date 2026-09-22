@@ -317,7 +317,11 @@ export default function Layout() {
   // family row survives while ANY child is left (the row is a way in, not a
   // page), and dies when none is — which also keeps `children[0]` from being
   // read off an empty array.
-  const visible = (p) => canView(p) && !hiddenPages.includes(p)
+  const trackFunding = !!label?.settings?.track_funding_source
+  // The who-paid / reimbursements feature is a per-workspace opt-in (Settings →
+  // Finance). Its nav item is hidden unless enabled; navConfig keeps it static
+  // so the nav/tours fixtures still validate it.
+  const visible = (p) => canView(p) && !hiddenPages.includes(p) && (p !== '/reimbursements' || trackFunding)
   const navGroups = buildNavGroups({ isAdmin, isApprover, chatUnread, pendingApprovals })
     .map(g => ({
       ...g,
