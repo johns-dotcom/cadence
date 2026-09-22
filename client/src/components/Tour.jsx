@@ -70,7 +70,6 @@ export function TourProvider({ children }) {
   const [done, setDone] = useState(null)       // null until loaded
   const [active, setActive] = useState(null)   // { tour, index }
   const [consoleAccess, setConsoleAccess] = useState(null) // null = unrestricted
-  const started = useRef(new Set())
 
   // WHICH SHELL. App.jsx routes a platform operator to the console unless they
   // have entered a workspace, and the two shells share four paths that are
@@ -135,13 +134,7 @@ export function TourProvider({ children }) {
     const t = active?.tour
     setActive(null)
     if (!t || completed === null) return
-    // Finishing the walk holds back the page it ended on for this session, so a
-    // second tour does not pounce the moment the walk closes.
-    if (t.id === 'welcome' || t.id === 'console-welcome') {
-      const here = tourForPath(tours, location.pathname)
-      if (here) started.current.add(here.id)
-    }
-    // Overwrites the offer record with what actually happened.
+    // Record what happened, so a manual replay can be reset from Settings.
     const body = { id: t.id, version: t.version, skipped: !completed }
     try {
       const r = await api.put('/settings/me/tours', body)
@@ -151,50 +144,15 @@ export function TourProvider({ children }) {
     }
   }, [active, tours, location.pathname])
 
-  // Recorded the moment a tour is AUTO-STARTED, not only when it is finished.
-  //
-  // "Automatically the first time a user opens a page" has to survive a reload,
-  // a closed tab and a second device — and the completion write only happened in
-  // finish(), so anyone who walked away mid-tour was shown it again next time.
-  // The in-session ref was never enough on its own; this is the durable half.
-  //
-  // Local state is updated FIRST so the effect cannot re-fire while the request
-  // is in flight, and a failed write still holds for the session.
-  const markOffered = useCallback((tour) => {
-    setDone(d => ({ ...(d || {}), [tour.id]: { version: tour.version, auto: true } }))
-    api.put('/settings/me/tours', { id: tour.id, version: tour.version, auto: true })
-      .then(r => { if (r.data?.data) setDone(r.data.data) })
-      .catch(() => { /* held locally for this session */ })
-  }, [])
-
   const replayAll = useCallback(async () => {
     try { const r = await api.delete('/settings/me/tours'); setDone(r.data?.data || {}) }
     catch { setDone({}) }
-    started.current.clear()
   }, [])
 
-  // Auto-start. The welcome walk runs for somebody seeing a shell for the first
-  // time — but NOT for an operator who has entered a workspace: they are a
-  // visitor, usually there to fix one thing, and a 78-step walk through a tenant
-  // they do not belong to is an ambush. Their page tours still offer themselves,
-  // and the whole walk stays one click away on the Walkthrough button.
-  const welcomeId = shell === 'console' ? 'console-welcome' : 'welcome'
-  const wantsWelcome = shell === 'console' || !user?.is_platform_admin
-  useEffect(() => {
-    if (!user || done === null || active) return undefined
-    const welcome = wantsWelcome ? tourById(tours, welcomeId) : null
-    if (welcome?.steps.length && !isDone(welcome) && !started.current.has(welcomeId)) {
-      const t = setTimeout(() => { started.current.add(welcomeId); markOffered(welcome); setActive({ tour: welcome, index: 0 }) }, 700)
-      return () => clearTimeout(t)
-    }
-    if (welcome?.steps.length && !isDone(welcome)) return undefined
-    const pt = tourForPath(tours, location.pathname)
-    if (pt && !isDone(pt) && !started.current.has(pt.id)) {
-      const t = setTimeout(() => { started.current.add(pt.id); markOffered(pt); setActive({ tour: pt, index: 0 }) }, 900)
-      return () => clearTimeout(t)
-    }
-    return undefined
-  }, [user?.id, done, location.pathname, active, isDone, tours, welcomeId, wantsWelcome, markOffered])
+  // The walkthrough is OPT-IN: it never auto-starts. Both shells put a
+  // Walkthrough button in the top bar (startTour) — that is the only way in, so a
+  // new user is never ambushed. `tours_done` is still recorded on finish so the
+  // replay-all reset stays meaningful, but nothing here reads it to launch a tour.
 
   const value = useMemo(() => ({
     startTour, tours, done: done || {}, active, isDone, replayAll,
