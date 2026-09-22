@@ -19,6 +19,30 @@ But do not read it top to bottom to get oriented. Read this section, then jump:
 | **Bugs that have already shipped once** | `## Known landmines` — read this before writing SQL or a migration |
 | What a specific surface does and why | the dated entry named after it |
 | What is still open | `_audit/97-remaining.md` (the register; this file is the record) |
+| **Updates made to Market Street that this app should also get** | `## Porting from Market Street` below — the checklist lives in that repo |
+
+## Porting from Market Street
+
+The Market Street dashboard (`/Users/johnskead/Desktop/DevProjects/marketst-dashboard`,
+app in its `boom-dashboard/`) is the single-tenant sibling where most new work
+lands first. John (2026-09-22): "most of the updates I make to this app, I want
+to also make to the cadence app." The checklist is
+`/Users/johnskead/Desktop/DevProjects/marketst-dashboard/CADENCE-PORT-LOG.md`:
+
+```bash
+node /Users/johnskead/Desktop/DevProjects/marketst-dashboard/tools/port-log.mjs          # what is still todo, oldest first
+git -C /Users/johnskead/Desktop/DevProjects/marketst-dashboard show <commit>              # the change itself
+# BOOM-DIFFERENCES.md §N in that repo = the why, the file list, the harness
+node /Users/johnskead/Desktop/DevProjects/marketst-dashboard/tools/port-log.mjs done <ms-commit> <cadence-commit>
+```
+
+Port in row order unless a row says otherwise — later rows build on earlier
+ones. Files port by path (`client/`, `server/` here = `boom-dashboard/client`,
+`boom-dashboard/server` there). Every ported table read or write needs this
+app's tenant scoping; every label-specific string becomes tenant config
+(rows tagged PORT (config)). Rows tagged LABEL are Market Street decisions —
+ask before porting. When a change is in, mark its row `done` with the Cadence
+commit so the list stays true; the row is the record, not this file.
 
 Reference app (the single-tenant original this was ported from) lives at
 `/Users/johnskead/Desktop/DevProjects/Dashboard/boom-dashboard` — read it when a
