@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 // One app-wide hover-tooltip layer, mounted once. It upgrades the app's existing
 // icon buttons for free: 100+ of them carry a native `title=`, which shows the
@@ -16,6 +16,7 @@ const SHOW_DELAY = 350
 
 export default function TooltipLayer() {
   const [tip, setTip] = useState(null) // { text, left, top, below }
+  const ref = useRef(null)
 
   useEffect(() => {
     let timer = null
@@ -66,8 +67,15 @@ export default function TooltipLayer() {
       schedule(el)
     }
     const onOut = (e) => {
+      if (!current) return
+      // pointerout also fires when the cursor crosses INTO the trigger's own
+      // children (an icon <svg>, a text span) — which is most icon buttons. If
+      // the pointer is still inside `current`, that's not a leave: hiding here
+      // would flicker the tooltip off and restart the delay as you move over the
+      // icon. Only hide when relatedTarget is genuinely outside the trigger.
+      if (e.relatedTarget && current.contains(e.relatedTarget)) return
       const el = e.target.closest?.(TRIGGER)
-      if (el && el === current) hide()
+      if (el === current) hide()
     }
     // Keyboard users get the tooltip on focus.
     const onFocus = (e) => { const el = e.target.closest?.(TRIGGER); if (el) schedule(el) }
@@ -94,12 +102,27 @@ export default function TooltipLayer() {
     }
   }, [])
 
+  // The tip is centered on the button (translateX(-50%)); near a viewport edge
+  // that would clip it. Measure the real box and nudge left so it stays on
+  // screen with an 8px margin — before paint, so there's no visible jump.
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || !tip) return
+    const r = el.getBoundingClientRect()
+    const pad = 8
+    let shift = 0
+    if (r.left < pad) shift = pad - r.left
+    else if (r.right > window.innerWidth - pad) shift = (window.innerWidth - pad) - r.right
+    el.style.left = `${tip.left + shift}px`
+  }, [tip])
+
   if (!tip) return null
   return (
     <div
+      ref={ref}
       role="tooltip"
       className="fixed z-[100] pointer-events-none px-2 py-1 rounded-md bg-ink text-card text-[11px] font-medium
-                 leading-snug shadow-modal max-w-[240px] whitespace-normal"
+                 leading-snug shadow-modal max-w-[240px] whitespace-normal break-words"
       style={{
         left: tip.left,
         top: tip.top,
