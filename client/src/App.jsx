@@ -4,6 +4,7 @@ import { SocketProvider } from './context/SocketContext'
 import Messages from './pages/Messages'
 import Layout from './components/Layout'
 import UpdateBanner from './components/UpdateBanner'
+import TooltipLayer from './components/TooltipLayer'
 import { TourProvider } from './components/Tour'
 import PlatformLayout from './components/PlatformLayout'
 import PlatformOverview from './pages/PlatformOverview'
@@ -148,6 +149,7 @@ function AppContent() {
   return (
     <TourProvider>
     <UpdateBanner />
+    <TooltipLayer />
     {/* `key` = the acting identity. Entering or leaving a workspace only ever
         swapped the token in state, so React reconciled the mounted pages and
         kept them alive: the new tenant's Dashboard was the previous tenant's
