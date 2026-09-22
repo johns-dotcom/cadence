@@ -83,6 +83,18 @@ export default function Approvals() {
   const [sort, setSort] = useState('new')
   const cardRefs = useRef({})
 
+  // Promote an off-roster artist onto the roster from the review — one click,
+  // no leaving the queue. Off-roster marketing is legitimate; this is just for
+  // when you decide to keep the artist.
+  const addToRoster = async (name) => {
+    if (!name) return
+    try {
+      const { data } = await api.post('/ledger/promote-artist', { name })
+      toast(data.data?.created ? `Added ${name} to the roster` : `${name} is on the roster`)
+      load()
+    } catch (err) { toast(err.response?.data?.error || 'Could not add to roster', 'error') }
+  }
+
   const load = () => {
     api.get('/ledger/approvals').then(r => setList(r.data.data || [])).catch(() => {}).finally(() => setLoading(false))
   }
@@ -368,7 +380,12 @@ export default function Approvals() {
                       </button>
                       {en.rush && <span title={`${en.rush_reason ? `${en.rush_reason} — ` : ''}${en.rush_by || ''}${en.rush_at ? ` · ${fmtDate(en.rush_at)}` : ''}`} className="text-[10px] font-bold uppercase text-warning bg-amber-500/15 rounded px-1.5 py-0.5 inline-flex items-center gap-0.5"><Zap size={10} className="fill-current" /> Rush</span>}
                       {en.is_reimbursement && <span className="text-[10px] font-bold uppercase text-violet-700 bg-violet-500/15 rounded px-1.5 py-0.5">Reimb.</span>}
-                      {en.off_roster_artist && <span title="The vendor declared this artist is not on the roster" className="text-[10px] font-bold uppercase text-warning bg-amber-500/15 rounded px-1.5 py-0.5">Off-roster</span>}
+                      {en.off_roster_artist && (
+                        <span className="inline-flex items-center gap-1">
+                          <span title="This artist isn't on the roster — that's fine for one-off marketing." className="text-[10px] font-bold uppercase text-ink-muted bg-elev border border-rule rounded px-1.5 py-0.5">Off-roster</span>
+                          {en.artist && <button onClick={() => addToRoster(en.artist)} className="text-[10px] font-semibold text-brand-ink hover:underline">Add to roster</button>}
+                        </span>
+                      )}
                     </div>
                     {en.vendor_email && <p className="text-xs text-ink-faint truncate">{en.vendor_email}</p>}
                     <p className="text-sm font-semibold text-brand-ink truncate mt-0.5">{en.artist || 'No artist'}{en.song ? ` — ${en.song}` : ''}</p>

@@ -1111,4 +1111,19 @@ const PR = require('../lib/platformRollup');
   assert('reimb: sources sorted by USD owed, largest first', g[0].source_id === 1 && g[1].source_id === 2);
 }
 
+// ── off-roster detection (lib/roster) ──────────────────────────────────────
+// Marketing for a non-roster artist is legitimate and must be MARKED, not lost.
+{
+  const { isOffRoster } = require('../lib/roster');
+  const roster = new Set(['zekebleu', 'novaray']); // canonical (strip-all) keys
+
+  assert('offroster: a real name not on the roster is off-roster', isOffRoster('Fresh Face', roster) === true);
+  assert('offroster: an exact roster name is NOT off-roster', isOffRoster('Zeke Bleu', roster) === false);
+  assert('offroster: matching is canonical (spacing/case/punct)', isOffRoster('zeke  bleu', roster) === false && isOffRoster('ZEKE-BLEU', roster) === false);
+  assert('offroster: a blank name is unattributed, not off-roster', isOffRoster('', roster) === false);
+  assert('offroster: a true placeholder (n/a) is not off-roster', isOffRoster('n/a', roster) === false);
+  assert('offroster: "unknown" IS a real name (John\'s call), so off-roster when absent', isOffRoster('unknown', roster) === true);
+  assert('offroster: an off-roster name matched by canonical key', isOffRoster('Nova   Ray!', roster) === false && isOffRoster('Nova Rae', roster) === true);
+}
+
 console.log(process.exitCode ? '\nFIXTURES FAILED' : '\nAll fixtures pass.');

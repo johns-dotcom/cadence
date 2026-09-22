@@ -23,6 +23,7 @@ const { excludeBankRows, excludeCreatorRows, BANK_SOURCE, reportingThresholdFor 
 const w9NameMatch = require('../lib/w9NameMatch');
 const { usdOf, rowUsd2, round2 } = require('../lib/usd');
 const { isOwed, groupBySource } = require('../lib/reimbursements');
+const { computeOffRoster } = require('../lib/roster');
 const { namesAnArtist } = require('../lib/artistKey');
 const { ADDED_SOURCES, addedExpenseRollup, unifiedRows } = require('../lib/vendorSurfaces');
 const { pairKey, ackKey, vendorDupePairs } = require('../lib/vendorDupes');
@@ -380,7 +381,7 @@ const LEDGER_VIEW_COLS = `e.id, e.label_id, e.parent_id, e.invoice_date, e.payee
   e.rush, e.on_hold, e.flagged, e.flag_reason, e.flagged_by, e.flagged_at, e.approved_by, e.created_at,
   e.rejected_reason, e.in_quickbooks, e.qb_entry_date, e.no_auto_split, e.settlement_group_id,
   e.invoice_r2_key, e.invoice_filename, e.w9_r2_key, e.w9_filename, e.receipt_r2_key, e.receipt_filename,
-  e.proof_r2_key, e.proof_filename, e.paid_source_id, e.reimbursed, e.reimbursed_at, e.deleted`;
+  e.proof_r2_key, e.proof_filename, e.paid_source_id, e.reimbursed, e.reimbursed_at, e.off_roster_artist, e.deleted`;
 
 // GET /api/ledger/entries/:id — one full row (incl. the scan JSONB the list
 // omits). The drawer's detail fetch, and the ?focus fallback for split
@@ -813,6 +814,11 @@ async function createEntry(req, res) {
     // Collapse registered multi-artist strings ("Ezra feat. Kendrick" → "Ezra")
     // before the row lands; unmapped names stay raw.
     const artist = await normalizeArtist(req.labelId, b.artist);
+    // Off-roster: mark the entry when a real artist name isn't on the roster —
+    // consistently with the vendor form, so internal marketing for a non-roster
+    // artist is flagged too. Never blocks; reports still attribute it.
+    const splitArtistNames = (() => { try { return (JSON.parse(b.splits || '[]') || []).map(l => l && l.artist).filter(Boolean); } catch { return []; } })();
+    const offRosterArtist = await computeOffRoster(req.labelId, [artist, ...splitArtistNames]);
 
     const { rows } = await pool.query(
       `INSERT INTO expenses (
@@ -826,7 +832,7 @@ async function createEntry(req, res) {
         is_bulk_deal, bulk_deal_quantity, bulk_deal_unit, social_handles,
         invoice_filename, invoice_r2_key, w9_filename, w9_r2_key, receipt_filename, receipt_r2_key,
         proof_filename, proof_r2_key,
-        paid_source_id,
+        paid_source_id, off_roster_artist,
         created_by, entry_source, created_at
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10,'USD'),$11,$12,
@@ -834,8 +840,8 @@ async function createEntry(req, res) {
         $19,$20,$21,$22,$23,$24,$25,$26,$27,
         $28,$29,$30,$31,$32,$33,$34,$35,$36,
         $37,$38,$39,$40::jsonb,
-        $41,$42,$43,$44,$45,$46,$47,$48,$49,
-        $50,$51,NOW()
+        $41,$42,$43,$44,$45,$46,$47,$48,$49,$50,
+        $51,$52,NOW()
       ) RETURNING *`,
       [
         req.labelId, b.invoice_date || null, b.payee, b.description || null, b.category || null,
@@ -855,7 +861,7 @@ async function createEntry(req, res) {
         files.w9?.filename || null, files.w9?.key || null,
         files.receipt?.filename || null, files.receipt?.key || null,
         files.proof?.filename || null, files.proof?.key || null,
-        paid ? fsRes.id : null,
+        paid ? fsRes.id : null, offRosterArtist,
         req.user.name,
         ['expense', 'invoice', 'reimbursement', 'artist_campaigns'].includes(b.entry_source) ? b.entry_source : null,
       ]
@@ -995,6 +1001,13 @@ router.patch('/entries/:id', async (req, res) => {
     if (keys.includes('ufr')) {
       const on = req.body.ufr === true || req.body.ufr === 'true';
       setClauses.push(on ? 'ufr_marked_at = COALESCE(ufr_marked_at, NOW())' : 'ufr_marked_at = NULL');
+    }
+    // Keep off-roster true to the CURRENT roster whenever the artist is edited
+    // (createEntry sets it at birth; this keeps a later rename honest).
+    if (keys.includes('artist')) {
+      const off = await computeOffRoster(req.labelId, req.body.artist);
+      values.push(off);
+      setClauses.push(`off_roster_artist = $${values.length}`);
     }
     values.push(id, req.labelId);
     const { rows } = await pool.query(
@@ -5026,6 +5039,41 @@ router.delete('/bulk-items/:itemId', async (req, res) => {
 });
 
 // ── Payment installments ─────────────────────────────────────────────────
+
+// POST /api/ledger/promote-artist { name } — add an off-roster artist to the
+// roster and clear the off_roster flag on every entry that names them. The
+// clear matches on the SAME canonical key money is bucketed by (strip case +
+// punctuation + spacing), so "Zeke Bleu" and "zeke  bleu" are the one artist.
+router.post('/promote-artist', async (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    if (!name) return res.status(400).json({ success: false, error: 'A name is required' });
+    const key = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!key) return res.status(400).json({ success: false, error: 'That is not a usable artist name' });
+    // Find-or-create in-tenant (case-insensitive), so promoting an artist who is
+    // already on the roster under a different spelling doesn't duplicate them.
+    let artistRow = (await pool.query(
+      `SELECT id, name FROM artists WHERE label_id = $1 AND regexp_replace(lower(name), '[^a-z0-9]', '', 'g') = $2 LIMIT 1`,
+      [req.labelId, key]
+    )).rows[0];
+    let created = false;
+    if (!artistRow) {
+      artistRow = (await pool.query('INSERT INTO artists (label_id, name, created_at) VALUES ($1, $2, NOW()) RETURNING id, name', [req.labelId, name])).rows[0];
+      created = true;
+    }
+    const upd = await pool.query(
+      `UPDATE expenses SET off_roster_artist = FALSE
+        WHERE label_id = $1 AND off_roster_artist = TRUE
+          AND regexp_replace(lower(artist), '[^a-z0-9]', '', 'g') = $2`,
+      [req.labelId, key]
+    );
+    await logActivity(req, created ? 'Added artist to roster' : 'Cleared off-roster', name);
+    res.json({ success: true, data: { artist: artistRow, created, cleared: upd.rowCount } });
+  } catch (err) {
+    console.error('promote-artist:', err.message);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
 
 // ── Funding sources + out-of-pocket reimbursement ───────────────────────────
 // The label account is the implicit default (paid_source_id NULL); this table

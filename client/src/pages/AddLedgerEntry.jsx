@@ -46,6 +46,19 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
   const { user } = useAuth()
   const navigate = useNavigate()
   const isApprover = ['Superadmin', 'Admin', 'Approver'].includes(user?.role)
+  // Roster names (canonical keys) for a gentle, NON-blocking off-roster hint —
+  // marketing for a non-roster artist is legitimate, so this only informs.
+  const [rosterKeys, setRosterKeys] = useState(null)
+  useEffect(() => {
+    api.get('/artists').then(({ data }) => {
+      const nk = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+      setRosterKeys(new Set((data.data || []).map(a => nk(a.name)).filter(Boolean)))
+    }).catch(() => setRosterKeys(new Set()))
+  }, [])
+  const isOffRoster = (name) => {
+    const k = String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+    return !!k && rosterKeys && !rosterKeys.has(k)
+  }
   const [isReimb, setIsReimb] = useState(mode === 'reimbursement')
   const [saving, setSaving] = useState(false)
   const [scanning, setScanning] = useState(false)
@@ -672,7 +685,9 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
               them, but they are NOT submitted (see submit()) — otherwise the
               parent row keeps a stale artist and the split rows silently inherit
               a song nobody can see. */}
-          {!hideArtistSong && <div><label className="label">Artist</label><input className="input" value={form.artist} onChange={set('artist')} /></div>}
+          {!hideArtistSong && <div><label className="label">Artist</label><input className="input" value={form.artist} onChange={set('artist')} />
+            {isOffRoster(form.artist) && <p className="text-[11px] text-ink-muted mt-1">Not on your roster — that's fine for off-roster marketing. You can add them to the roster later from Approvals.</p>}
+          </div>}
           {!hideArtistSong && <div><label className="label">Song{!isApprover && !isReimb ? ' *' : ''}</label><input className="input" value={form.song} onChange={set('song')} /></div>}
           <div>
             <label className="label">{isReimb ? 'Invoice / ref # (optional)' : 'Invoice # *'}</label>
