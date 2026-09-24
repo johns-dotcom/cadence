@@ -4,13 +4,16 @@ const TERM_DAYS = {
   'Due on receipt': 0,
   'Net 7': 7,
   'Net 14': 14,
+  'Net 15': 15,
   'Net 30': 30,
   'Net 45': 45,
   'Net 60': 60,
   'Net 90': 90,
 };
 
-const PAYMENT_TERMS = Object.keys(TERM_DAYS);
+// 'Custom' is an accepted term whose due date is supplied explicitly
+// (computeDueDate returns null for it — it isn't in TERM_DAYS).
+const PAYMENT_TERMS = [...Object.keys(TERM_DAYS), 'Custom'];
 
 // Compute a due date (YYYY-MM-DD) from an invoice date + terms. Returns null
 // if there's no invoice date or the terms aren't recognized.

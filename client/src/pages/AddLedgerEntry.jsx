@@ -13,6 +13,7 @@ import { useAuth } from '../context/AuthContext'
 import useUnsavedWarning from '../hooks/useUnsavedWarning'
 import { PAYMENT_METHODS, CURRENCIES } from '../constants'
 import CategoryOptions from '../components/CategoryOptions'
+import { formatDate } from '../utils/dates'
 
 const SOCIAL_PLATFORMS = ['Instagram', 'TikTok', 'YouTube', 'X/Twitter', 'Facebook', 'Spotify', 'Other']
 const BLANK_SOCIAL = () => ({ platform: 'Instagram', handle: '', amount: '' })
@@ -20,6 +21,12 @@ const BLANK_SPLIT = (amount = '') => ({ artist: '', song: '', amount, socials: [
 const MP = { headers: { 'Content-Type': 'multipart/form-data' } }
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const today = () => new Date().toISOString().slice(0, 10)
+// Payment terms offered in the review. TERM_DAYS mirrors server lib/payments.js
+// (the due date is anchored to submission/today, same as the server). 'Custom'
+// takes an explicit date.
+const TERM_DAYS = { 'Due on receipt': 0, 'Net 15': 15, 'Net 30': 30, 'Net 45': 45, 'Net 60': 60, 'Net 90': 90 }
+const REVIEW_TERMS = [...Object.keys(TERM_DAYS), 'Custom']
+const dueFromToday = (terms) => { const d = TERM_DAYS[terms]; if (d == null) return null; const x = new Date(); x.setDate(x.getDate() + d); return x.toISOString().slice(0, 10) }
 
 // Client mirror of server/lib/normalizeInvoiceNum.js — "INV-123", "#123" and
 // "00123" are all the same invoice number. Used for the typed-vs-printed
@@ -80,6 +87,7 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
     rep: user?.name || '',
     vendor_email: '', vendor_address: '', vendor_bank: '', description: '', notes: '',
     payment_status: '', payment_date: '', payment_ref: '', paid_source_id: '',
+    payment_terms: 'Net 30', scheduled_payment_date: '',
     urgency: 'none', urgency_reason: '',
   })
   const [form, setForm] = useState(initialForm)
@@ -951,6 +959,19 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
                 />
               </div>
             )}
+            <div className="mt-4 pt-3 border-t border-divider">
+              <label className="label">Payment terms</label>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select className="input !w-auto" value={form.payment_terms}
+                  onChange={e => { const t = e.target.value; setForm(f => ({ ...f, payment_terms: t, scheduled_payment_date: t === 'Custom' ? f.scheduled_payment_date : '' })) }}>
+                  {REVIEW_TERMS.map(t => <option key={t}>{t}</option>)}
+                </select>
+                {form.payment_terms === 'Custom'
+                  ? <input type="date" className="input !w-auto" value={form.scheduled_payment_date} onChange={set('scheduled_payment_date')} />
+                  : <span className="text-xs text-ink-muted">{dueFromToday(form.payment_terms) ? <>Due <b className="text-ink">{formatDate(dueFromToday(form.payment_terms))}</b></> : 'No due date'}</span>}
+              </div>
+              <p className="text-[11px] text-ink-faint mt-1">{form.payment_terms === 'Custom' ? 'Pick the exact due date.' : 'Counted from today, when the invoice is logged. Default Net 30.'}</p>
+            </div>
             {!checklistComplete(checks) && (
               <p className="text-[11px] text-ink-faint mt-3">{checklistOutstanding(checks).join(' · ')} still to answer</p>
             )}

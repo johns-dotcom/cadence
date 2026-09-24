@@ -32,7 +32,7 @@ const PAID_PILL = { Paid: 'bg-emerald-100 text-emerald-700', Partial: 'bg-amber-
 
 // Payment terms to days (mirror of server lib/payments.js TERM_DAYS, so a terms
 // edit derives the due date without a round trip).
-const TERM_DAYS = { 'Due on receipt': 0, 'Net 7': 7, 'Net 14': 14, 'Net 30': 30, 'Net 45': 45, 'Net 60': 60, 'Net 90': 90 }
+const TERM_DAYS = { 'Due on receipt': 0, 'Net 7': 7, 'Net 14': 14, 'Net 15': 15, 'Net 30': 30, 'Net 45': 45, 'Net 60': 60, 'Net 90': 90 }
 const TERM_OPTIONS = [...Object.keys(TERM_DAYS), 'Custom']
 const termsDue = (invoiceDate, terms) => {
   const days = TERM_DAYS[terms]
