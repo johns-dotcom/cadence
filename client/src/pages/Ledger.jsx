@@ -11,6 +11,7 @@ import useDiscardGuard from '../hooks/useDiscardGuard'
 import SocialHandlesEditor from '../components/SocialHandlesEditor'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
+import useFundingSources from '../hooks/useFundingSources'
 import LedgerEntryDrawer from '../components/LedgerEntryDrawer'
 import SplitModal from '../components/SplitModal'
 import { formatDate } from '../utils/dates'
@@ -376,6 +377,13 @@ export default function Ledger({ bank = false }) {
   // the <input> doesn't remount + lose focus/cursor on every keystroke).
   const editProps = { editing, draft, setDraft, commitEdit, beginEdit, setEditing, artistNames, songOptionsFor }
 
+  // Who-paid tracking is a per-workspace opt-in (Settings → Finance). When on,
+  // the ledger gets a "Paid from" column resolving paid_source_id → the funding
+  // source's name (and flags out-of-pocket rows still owed).
+  const trackFunding = !!label?.settings?.track_funding_source
+  const { sources: fundingSources } = useFundingSources()
+  const fsMap = useMemo(() => new Map((fundingSources || []).map(x => [x.id, x])), [fundingSources])
+
   // -- Toggleable columns, persisted per user+workspace ------------------
   const BASE_COLS = [
     { key: 'invoice_date', label: 'Date', render: en => <EditCell en={en} field="invoice_date" kind="date" display={<span className="text-gray-500 whitespace-nowrap">{formatDate(en.invoice_date)}</span>} {...editProps} /> },
@@ -409,6 +417,14 @@ export default function Ledger({ bank = false }) {
     { key: 'payment_method', label: 'Method', render: en => <EditCell en={en} field="payment_method" kind="select" options={PAYMENT_METHODS} display={<span className="text-gray-500 whitespace-nowrap">{en.payment_method || '—'}</span>} {...editProps} /> },
     { key: 'payment_date', label: 'Paid on', render: en => <EditCell en={en} field="payment_date" kind="date" display={<span className="text-gray-500 whitespace-nowrap">{en.payment_date ? formatDate(en.payment_date) : '—'}</span>} {...editProps} /> },
     { key: 'paid_by', label: 'Paid by', render: en => <EditCell en={en} field="paid_by" display={<span className="text-emerald-600 whitespace-nowrap">{en.paid_by || '—'}</span>} {...editProps} /> },
+    ...(trackFunding ? [{ key: 'paid_source', label: 'Paid from', render: en => {
+      if (!en.paid_source_id) return <span className="text-gray-500">—</span>
+      const fs = fsMap.get(Number(en.paid_source_id))
+      const owed = fs && fs.reimbursable !== false && !en.reimbursed
+      return <span className="whitespace-nowrap text-ink" title={owed ? 'Paid out of pocket — owed until reimbursed' : (en.reimbursed ? 'Reimbursed' : '')}>
+        {fs ? fs.name : 'Unknown'}{owed && <span className="text-[10px] font-semibold text-warning ml-1 uppercase">owed</span>}
+      </span>
+    } }] : []),
     { key: 'scheduled_payment_date', label: 'Due date', render: en => {
       const past = en.scheduled_payment_date && en.payment_status !== 'Paid' && String(en.scheduled_payment_date).slice(0, 10) < new Date().toISOString().slice(0, 10)
       return <EditCell en={en} field="scheduled_payment_date" kind="date" display={<span className={`whitespace-nowrap ${past ? 'text-danger font-semibold' : 'text-gray-500'}`}>{en.scheduled_payment_date ? formatDate(en.scheduled_payment_date) : '—'}</span>} {...editProps} />
@@ -495,7 +511,7 @@ export default function Ledger({ bank = false }) {
   // Identity columns can't be hidden (boom froze them outright).
   const ALWAYS_ON = ['payee', 'amount']
   // Boom shipped ~16 toggleables ON by default on top of its always-on set (LED-23).
-  const DEFAULT_COLS = ['invoice_date', 'payee', 'artist', 'song', 'description', 'category', 'invoice_number', 'amount', 'status', 'payment', 'payment_method', 'vendor_email', 'vendor_bank', 'rep', 'paid_by', 'socials', 'source', 'files']
+  const DEFAULT_COLS = ['invoice_date', 'payee', 'artist', 'song', 'description', 'category', 'invoice_number', 'amount', 'status', 'payment', 'payment_method', 'vendor_email', 'vendor_bank', 'rep', 'paid_by', ...(trackFunding ? ['paid_source'] : []), 'socials', 'source', 'files']
   // The bank half opens with the SAME columns as the invoiced one (John's call
   // on the reference app: "more similar to the normal ledger"), plus its three.
   // What a bank row never fills is a one-click preset below, not a default —
@@ -516,10 +532,26 @@ export default function Ledger({ bank = false }) {
   useEffect(() => {
     try {
       const s = JSON.parse(localStorage.getItem(storeKey) || 'null')
-      if (Array.isArray(s) && s.length) setVisible([...new Set([...s.filter(k => ALL_KEYS.includes(k)), ...ALWAYS_ON])])
-      else setVisible(bank ? BANK_DEFAULT_COLS : DEFAULT_COLS)
-    } catch { /* default */ }
-  }, [storeKey]) // eslint-disable-line
+      let next = (Array.isArray(s) && s.length)
+        ? [...new Set([...s.filter(k => ALL_KEYS.includes(k)), ...ALWAYS_ON])]
+        : (bank ? BANK_DEFAULT_COLS : DEFAULT_COLS)
+      // When who-paid tracking is ON, surface the Paid-from column ONCE for
+      // people who already have saved columns (new users get it via
+      // DEFAULT_COLS). A later hide sticks — the marker means we don't re-add it.
+      if (trackFunding && ALL_KEYS.includes('paid_source') && Array.isArray(s) && s.length) {
+        const migKey = `${storeKey}:paidsrc`
+        if (!localStorage.getItem(migKey)) {
+          if (!next.includes('paid_source')) {
+            const i = next.indexOf('paid_by')
+            if (i >= 0) next.splice(i + 1, 0, 'paid_source'); else next.push('paid_source')
+            localStorage.setItem(storeKey, JSON.stringify(next))
+          }
+          localStorage.setItem(migKey, '1')
+        }
+      }
+      setVisible(next)
+    } catch { setVisible(bank ? BANK_DEFAULT_COLS : DEFAULT_COLS) }
+  }, [storeKey, trackFunding]) // eslint-disable-line
   // Page hotkeys. The Columns and Export buttons already advertise "(c)" and
   // "(x)" in their tooltips and neither key was wired; `z` is the undo the
   // shortcuts registry has been promising since the inline-edit pass. Declared
