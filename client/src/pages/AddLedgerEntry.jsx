@@ -935,10 +935,43 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
         {/* Document to the RIGHT, checklist to the LEFT, always both visible when
             there's a document to compare against. Stacks on small screens. */}
         <div className={reviewDoc ? 'grid gap-5 lg:grid-cols-2' : ''}>
-          <div className="min-w-0 order-2 lg:order-1">
+          <div className="min-w-0 order-2 lg:order-2">
             <p className="text-xs text-ink-muted mb-3">
               This saves straight to the ledger as <b>approved</b>, so the checklist the Approvals queue asks is answered here.
             </p>
+            {/* Quick fields — fill artist/song and set urgency before confirming below. */}
+            <div className="rounded-lg border border-rule bg-page/40 p-3 mb-4 space-y-3">
+              {!hideArtistSong && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div><label className="label">Artist</label><input className="input" value={form.artist} onChange={e => reviewFieldChange('artist', e.target.value)} placeholder="Artist name" /></div>
+                  <div><label className="label">Song</label><input className="input" value={form.song} onChange={e => reviewFieldChange('song', e.target.value)} placeholder="Song name" /></div>
+                </div>
+              )}
+              {form.payment_status !== 'Paid' && (
+                <div>
+                  <label className="label">Urgency</label>
+                  <div className="inline-flex rounded-lg border border-rule overflow-hidden">
+                    {[{ key: 'none', label: 'Normal', Icon: null }, { key: 'rush', label: 'Rush', Icon: Zap }, { key: 'hold', label: 'Hold', Icon: Pause }].map(opt => {
+                      const active = form.urgency === opt.key
+                      const activeStyle = opt.key === 'rush' ? 'bg-warning/15 text-warning' : opt.key === 'hold' ? 'bg-selected text-ink' : 'bg-page text-ink'
+                      return (
+                        <button key={opt.key} type="button" disabled={saving}
+                          onClick={() => setForm(f => ({ ...f, urgency: opt.key, urgency_reason: opt.key === 'none' ? '' : f.urgency_reason }))}
+                          className={`px-4 py-1.5 text-sm font-semibold border-r border-rule last:border-r-0 inline-flex items-center gap-1.5 transition-colors ${active ? activeStyle : 'bg-card text-ink-muted hover:bg-page/60'}`}>
+                          {opt.Icon && <opt.Icon size={13} fill={active ? 'currentColor' : 'none'} />}
+                          {opt.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  {form.urgency !== 'none' && (
+                    <textarea className="input mt-2" rows={2} value={form.urgency_reason} disabled={saving}
+                      onChange={e => setForm(f => ({ ...f, urgency_reason: e.target.value.slice(0, 500) }))}
+                      placeholder={form.urgency === 'rush' ? 'Why is this a rush? (optional)' : 'Why on hold? (optional)'} />
+                  )}
+                </div>
+              )}
+            </div>
             <ApprovalChecklistFields
               values={reviewValues}
               checks={checks}
@@ -977,7 +1010,7 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
             )}
           </div>
           {reviewDoc && (
-            <div className="order-1 lg:order-2">
+            <div className="order-1 lg:order-1">
               <DocPanel file={reviewDoc} />
             </div>
           )}
