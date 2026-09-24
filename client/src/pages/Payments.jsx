@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { CreditCard, CalendarClock, Check, X, Zap, Send, MailCheck, Pause, Download, Upload, Eye, Pencil, Trash2, ChevronRight, ChevronDown, Receipt, FileSpreadsheet, Undo2, SlidersHorizontal, CalendarDays, List, AlertTriangle } from 'lucide-react'
+import { CreditCard, CalendarClock, Check, X, Zap, Send, MailCheck, Pause, Download, Upload, Eye, Pencil, Trash2, ChevronRight, ChevronDown, Receipt, FileSpreadsheet, Undo2, SlidersHorizontal, CalendarDays, List, AlertTriangle, Coins } from 'lucide-react'
 import api from '../api'
 import FundingSourcePicker from '../components/FundingSourcePicker'
 import PageHeader from '../components/PageHeader'
