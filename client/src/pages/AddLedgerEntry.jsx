@@ -518,7 +518,7 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
   const dupBanner = dupMatch || dupSimilar.length > 0
 
   return (
-    <div className="max-w-3xl">
+    <div className="max-w-6xl">
       <button onClick={() => navigate(isApprover ? '/ledger' : '/')} className="inline-flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink mb-3"><ArrowLeft size={15} /> {isApprover ? 'Ledger' : 'Back'}</button>
       <PageHeader title={isReimb ? 'Add reimbursement' : 'Add invoice'} subtitle={isApprover ? 'Upload and parse an invoice, then review before saving' : 'Upload an invoice — it goes to your bookkeeper for approval'} />
 
@@ -577,96 +577,19 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
         </div>
       )}
 
-      <form onSubmit={create} className="space-y-5">
-        {/* Invoice upload */}
-        <div>
-          <Dropzone value={files.invoice_file} onChange={onInvoice} accept="application/pdf,image/*" label={<><span className="font-semibold text-brand-600">Choose the invoice</span> or drag it here</>} hint="PDF, JPG, or PNG" />
-
-          {/* Explicit action, matching the /contracts/draft-clause control —
-              every parse spends monthly AI quota, so it never fires as an
-              upload side effect. Open to every member (the endpoints answer
-              any workspace member, same as POST /entries). */}
-          {(files.invoice_file || (isReimb && receipts.length > 0)) && (
-            <div className="rounded-xl border border-dashed border-rule bg-page/40 p-3 mt-2">
-              <div className="flex items-center gap-1.5 mb-2">
-                <Sparkles size={14} className="text-brand-600" />
-                <span className="text-xs font-semibold text-ink">Fill fields from the {files.invoice_file ? 'invoice' : 'receipt'}</span>
-              </div>
-              <button type="button" onClick={scanInvoice} disabled={scanning} className="btn-secondary !py-1.5">
-                {scanning ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                {scanning ? 'Reading the document…' : parsed ? 'Parse again' : 'Parse document'}
-              </button>
-              <p className="text-[11px] text-ink-faint mt-1.5">
-                Parsed values refresh the fields (your later edits stand) and the document is checked + read for line items. AI features require a configured key.
-              </p>
-            </div>
-          )}
-
-          {/* Document gate result — red issues or a green pass chip. */}
-          {docCheck && !docCheck.valid && (
-            <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 mt-2 text-xs text-ink">
-              <div className="font-bold text-danger mb-0.5 flex items-center gap-1.5"><AlertTriangle size={13} /> This may not be a usable invoice</div>
-              <ul className="list-disc ml-4 space-y-0.5">{docCheck.issues.map((x, i) => <li key={i}>{x}</li>)}</ul>
-            </div>
-          )}
-          {docCheck && docCheck.valid && (
-            <p className="text-[11px] font-semibold text-success mt-2 inline-flex items-center gap-1"><CheckCircle2 size={12} /> Looks like a valid invoice{docCheck.billed_to ? ` billed to ${docCheck.billed_to}` : ''}</p>
-          )}
-        </div>
-
+      <form onSubmit={create}>
+        {/* Reimbursement mode — applies to the whole entry */}
         {/* Reimbursement toggle */}
         <label className="card px-4 py-3 flex items-center justify-between gap-3 cursor-pointer">
           <span className="inline-flex items-center gap-2 text-sm font-medium text-ink"><input type="checkbox" checked={isReimb} onChange={e => setIsReimb(e.target.checked)} /> <Receipt size={15} className="text-ink-faint" /> This is a reimbursement</span>
           <span className="text-xs text-ink-faint">Reimburses staff for an out-of-pocket expense</span>
         </label>
-
-        {/* Supporting docs */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {isReimb ? (
-            <div>
-              <label className="label">Receipts (required)</label>
-              <Dropzone value={null} multiple onChange={fs => setReceipts(prev => [...prev, ...(Array.isArray(fs) ? fs : [fs])].filter(Boolean))} accept="application/pdf,image/*" label={<><span className="font-semibold text-brand-600">Add receipts</span> — you can pick several</>} hint="PDF, JPG, or PNG" />
-              {receipts.length > 0 && (
-                <div className="mt-1.5 space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-semibold text-ink-muted">{receipts.length} receipt{receipts.length === 1 ? '' : 's'}</span>
-                    <button type="button" onClick={() => setReceipts([])} className="text-[11px] font-semibold text-danger hover:underline">Clear all</button>
-                  </div>
-                  {receipts.map((f, i) => (
-                    <div key={i} className="flex items-center gap-1.5 text-xs text-ink">
-                      <FileText size={12} className="text-brand-600 flex-shrink-0" />
-                      <span className="truncate flex-1">{f.name}</span>
-                      <button type="button" onClick={() => setReceipts(prev => prev.filter((_, j) => j !== i))} className="text-ink-faint hover:text-danger flex-shrink-0"><X size={13} /></button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div>
-              <label className="label">W9 / W8 form {w9OnFile && !files.w9_file ? <span className="text-success font-semibold normal-case">— already on file</span> : '(optional)'}</label>
-              <Dropzone value={files.w9_file} onChange={onW9} accept="application/pdf,image/*" label="Upload W9 / W8" hint={w9OnFile && !files.w9_file ? 'Only upload if updated' : 'PDF, JPG, or PNG'} />
-              {w9Check?.checking && <p className="text-[11px] text-ink-muted mt-1.5 inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Checking the form…</p>}
-              {w9Check && !w9Check.checking && !w9Check.valid && (
-                <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 mt-1.5 text-xs text-ink">
-                  <div className="font-bold text-danger mb-0.5">W9 issues found</div>
-                  <ul className="list-disc ml-4 space-y-0.5">{w9Check.issues.map((x, i) => <li key={i}>{x}</li>)}</ul>
-                </div>
-              )}
-              {w9Check && !w9Check.checking && w9Check.valid && (
-                <p className="text-[11px] font-semibold text-success mt-1.5 inline-flex items-center gap-1"><CheckCircle2 size={12} /> Looks complete{w9Check.form_type ? ` · ${w9Check.form_type}` : ''}{w9Check.legal_name ? ` · ${w9Check.legal_name}` : ''}</p>
-              )}
-            </div>
-          )}
-          <div>
-            <label className="label">Proof of payment (optional)</label>
-            <Dropzone value={files.proof_file} onChange={onProof} accept="application/pdf,image/*" label="Upload proof" hint={isApprover ? 'Auto-marks as paid' : 'Attached for your bookkeeper'} />
-            {proofScanning && <p className="text-[11px] text-ink-muted mt-1.5 inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Reading payment details…</p>}
-          </div>
-        </div>
-
+        <div className="grid gap-5 mt-5 lg:grid-cols-[minmax(0,1fr)_340px] items-start">
+          {/* LEFT — the entry fields, grouped into sections */}
+          <div className="order-2 lg:order-1 min-w-0 space-y-5">
         {/* Core fields */}
         <div className="card p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="sm:col-span-2 flex items-center gap-2.5 mt-1"><span className="text-[11px] font-bold uppercase tracking-wider text-brand-ink whitespace-nowrap">Invoice details</span><span className="h-px flex-1 bg-divider" /></div>
           <div><label className="label">{isReimb ? 'Date *' : 'Invoice date *'}</label><input type="date" className="input" value={form.invoice_date} onChange={set('invoice_date')} /></div>
           <div>
             <label className="label">{isReimb ? 'Pay to *' : 'Payee *'}</label>
@@ -706,11 +629,11 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
               <p className="text-[11px] text-warning mt-1 inline-flex items-start gap-1"><AlertTriangle size={11} className="mt-0.5 flex-shrink-0" /> Typed #{form.invoice_number} doesn't match the number on the document (#{docInvoiceNumber})</p>
             )}
           </div>
+          <div className="sm:col-span-2 flex items-center gap-2.5 mt-1"><span className="text-[11px] font-bold uppercase tracking-wider text-brand-ink whitespace-nowrap">Payment</span><span className="h-px flex-1 bg-divider" /></div>
           <div><label className="label">Amount *</label><input type="number" step="0.01" className="input" value={form.amount} onChange={set('amount')} /></div>
           <div><label className="label">Currency</label><select className="input" value={form.currency} onChange={set('currency')}>{CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
           <div><label className="label">Payment method</label><select className="input" value={form.payment_method} onChange={set('payment_method')}><option value="">Select method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
           <div><label className="label">Rep</label>{repOptions.length ? <select className="input" value={form.rep} onChange={set('rep')}><option value="">—</option>{repOptions.map(r => <option key={r}>{r}</option>)}</select> : <input className="input" value={form.rep} onChange={set('rep')} />}</div>
-          <div><label className="label">{isReimb ? 'Email *' : 'Vendor email *'}</label><input type="email" className="input" value={form.vendor_email} onChange={set('vendor_email')} placeholder={isReimb ? 'who to notify when it\'s paid' : 'vendor@example.com'} /></div>
           {isApprover && (
             <div className="sm:col-span-2 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg bg-page/60 border border-rule px-3 py-2.5">
               <label className="inline-flex items-center gap-2 text-sm text-ink cursor-pointer">
@@ -727,6 +650,12 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
             </div>
           )}
 
+          {/* Vendor contact */}
+          <div className="sm:col-span-2 flex items-center gap-2.5 mt-1"><span className="text-[11px] font-bold uppercase tracking-wider text-brand-ink whitespace-nowrap">Vendor contact</span><span className="h-px flex-1 bg-divider" /></div>
+          <div className="sm:col-span-2"><label className="label">{isReimb ? 'Email *' : 'Vendor email *'}</label><input type="email" className="input" value={form.vendor_email} onChange={set('vendor_email')} placeholder={isReimb ? 'who to notify when it\'s paid' : 'vendor@example.com'} /></div>
+          <div className="sm:col-span-2"><label className="label">Mailing address</label><input className="input" value={form.vendor_address} onChange={set('vendor_address')} placeholder="Street, City, State, ZIP" /></div>
+          <div className="sm:col-span-2"><label className="label">Bank name <span className="text-ink-faint font-normal">— for payment routing</span></label><input className="input" value={form.vendor_bank} onChange={set('vendor_bank')} placeholder="e.g. Chase, Bank of America" /></div>
+          <div className="sm:col-span-2 flex items-center gap-2.5 mt-1"><span className="text-[11px] font-bold uppercase tracking-wider text-brand-ink whitespace-nowrap">Handling</span><span className="h-px flex-1 bg-divider" /></div>
           {/* Urgency — Rush = "expedite this", Hold = "pause this". Mutually
               exclusive; meaningless on a row born Paid, so hidden there (the
               server drops the flags on paid rows anyway). */}
@@ -773,8 +702,6 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
             )}
           </div>
 
-          <div className="sm:col-span-2"><label className="label">Mailing address</label><input className="input" value={form.vendor_address} onChange={set('vendor_address')} placeholder="Street, City, State, ZIP" /></div>
-          <div className="sm:col-span-2"><label className="label">Bank name <span className="text-ink-faint font-normal">— for payment routing</span></label><input className="input" value={form.vendor_bank} onChange={set('vendor_bank')} placeholder="e.g. Chase, Bank of America" /></div>
 
           {/* Line items — parsed off the document, human-reviewed here. Two or
               more usable lines become the split (they take precedence over the
@@ -883,11 +810,94 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
           <div className="sm:col-span-2"><label className="label">Description</label><textarea className="input" rows={2} value={form.description} onChange={set('description')} placeholder={isReimb ? 'What this reimbursement covers' : 'What this invoice is for'} /></div>
           <div className="sm:col-span-2"><label className="label">Notes</label><textarea className="input" rows={2} value={form.notes} onChange={set('notes')} /></div>
         </div>
-
         <div className="flex justify-end">
           {/* Blocked mid-parse: the response would otherwise patch a form that
               has already been reset or saved. */}
           <button type="submit" disabled={saving || scanning} className="btn-primary">{saving ? 'Saving…' : isApprover ? (isReimb ? 'Review & save reimbursement' : 'Review & save invoice') : (isReimb ? 'Add reimbursement' : 'Add invoice')}</button>
+        </div>
+          </div>
+          {/* RIGHT — the document(s), pinned alongside the fields */}
+          <aside className="order-1 lg:order-2 space-y-3 lg:sticky lg:top-4">
+        {/* Invoice upload */}
+        <div>
+          <Dropzone value={files.invoice_file} onChange={onInvoice} accept="application/pdf,image/*" label={<><span className="font-semibold text-brand-600">Choose the invoice</span> or drag it here</>} hint="PDF, JPG, or PNG" />
+
+          {/* Explicit action, matching the /contracts/draft-clause control —
+              every parse spends monthly AI quota, so it never fires as an
+              upload side effect. Open to every member (the endpoints answer
+              any workspace member, same as POST /entries). */}
+          {(files.invoice_file || (isReimb && receipts.length > 0)) && (
+            <div className="rounded-xl border border-dashed border-rule bg-page/40 p-3 mt-2">
+              <div className="flex items-center gap-1.5 mb-2">
+                <Sparkles size={14} className="text-brand-600" />
+                <span className="text-xs font-semibold text-ink">Fill fields from the {files.invoice_file ? 'invoice' : 'receipt'}</span>
+              </div>
+              <button type="button" onClick={scanInvoice} disabled={scanning} className="btn-secondary !py-1.5">
+                {scanning ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                {scanning ? 'Reading the document…' : parsed ? 'Parse again' : 'Parse document'}
+              </button>
+              <p className="text-[11px] text-ink-faint mt-1.5">
+                Parsed values refresh the fields (your later edits stand) and the document is checked + read for line items. AI features require a configured key.
+              </p>
+            </div>
+          )}
+
+          {/* Document gate result — red issues or a green pass chip. */}
+          {docCheck && !docCheck.valid && (
+            <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 mt-2 text-xs text-ink">
+              <div className="font-bold text-danger mb-0.5 flex items-center gap-1.5"><AlertTriangle size={13} /> This may not be a usable invoice</div>
+              <ul className="list-disc ml-4 space-y-0.5">{docCheck.issues.map((x, i) => <li key={i}>{x}</li>)}</ul>
+            </div>
+          )}
+          {docCheck && docCheck.valid && (
+            <p className="text-[11px] font-semibold text-success mt-2 inline-flex items-center gap-1"><CheckCircle2 size={12} /> Looks like a valid invoice{docCheck.billed_to ? ` billed to ${docCheck.billed_to}` : ''}</p>
+          )}
+        </div>
+        {/* Supporting docs */}
+        <div className="space-y-3">
+          {isReimb ? (
+            <div>
+              <label className="label">Receipts (required)</label>
+              <Dropzone value={null} multiple onChange={fs => setReceipts(prev => [...prev, ...(Array.isArray(fs) ? fs : [fs])].filter(Boolean))} accept="application/pdf,image/*" label={<><span className="font-semibold text-brand-600">Add receipts</span> — you can pick several</>} hint="PDF, JPG, or PNG" />
+              {receipts.length > 0 && (
+                <div className="mt-1.5 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-semibold text-ink-muted">{receipts.length} receipt{receipts.length === 1 ? '' : 's'}</span>
+                    <button type="button" onClick={() => setReceipts([])} className="text-[11px] font-semibold text-danger hover:underline">Clear all</button>
+                  </div>
+                  {receipts.map((f, i) => (
+                    <div key={i} className="flex items-center gap-1.5 text-xs text-ink">
+                      <FileText size={12} className="text-brand-600 flex-shrink-0" />
+                      <span className="truncate flex-1">{f.name}</span>
+                      <button type="button" onClick={() => setReceipts(prev => prev.filter((_, j) => j !== i))} className="text-ink-faint hover:text-danger flex-shrink-0"><X size={13} /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div>
+              <label className="label">W9 / W8 form {w9OnFile && !files.w9_file ? <span className="text-success font-semibold normal-case">— already on file</span> : '(optional)'}</label>
+              <Dropzone value={files.w9_file} onChange={onW9} accept="application/pdf,image/*" label="Upload W9 / W8" hint={w9OnFile && !files.w9_file ? 'Only upload if updated' : 'PDF, JPG, or PNG'} />
+              {w9Check?.checking && <p className="text-[11px] text-ink-muted mt-1.5 inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Checking the form…</p>}
+              {w9Check && !w9Check.checking && !w9Check.valid && (
+                <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 mt-1.5 text-xs text-ink">
+                  <div className="font-bold text-danger mb-0.5">W9 issues found</div>
+                  <ul className="list-disc ml-4 space-y-0.5">{w9Check.issues.map((x, i) => <li key={i}>{x}</li>)}</ul>
+                </div>
+              )}
+              {w9Check && !w9Check.checking && w9Check.valid && (
+                <p className="text-[11px] font-semibold text-success mt-1.5 inline-flex items-center gap-1"><CheckCircle2 size={12} /> Looks complete{w9Check.form_type ? ` · ${w9Check.form_type}` : ''}{w9Check.legal_name ? ` · ${w9Check.legal_name}` : ''}</p>
+              )}
+            </div>
+          )}
+          <div>
+            <label className="label">Proof of payment (optional)</label>
+            <Dropzone value={files.proof_file} onChange={onProof} accept="application/pdf,image/*" label="Upload proof" hint={isApprover ? 'Auto-marks as paid' : 'Attached for your bookkeeper'} />
+            {proofScanning && <p className="text-[11px] text-ink-muted mt-1.5 inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Reading payment details…</p>}
+          </div>
+        </div>
+          </aside>
         </div>
       </form>
 
