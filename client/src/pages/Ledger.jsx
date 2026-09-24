@@ -418,12 +418,34 @@ export default function Ledger({ bank = false }) {
     { key: 'payment_date', label: 'Paid on', render: en => <EditCell en={en} field="payment_date" kind="date" display={<span className="text-gray-500 whitespace-nowrap">{en.payment_date ? formatDate(en.payment_date) : '—'}</span>} {...editProps} /> },
     { key: 'paid_by', label: 'Paid by', render: en => <EditCell en={en} field="paid_by" display={<span className="text-emerald-600 whitespace-nowrap">{en.paid_by || '—'}</span>} {...editProps} /> },
     ...(trackFunding ? [{ key: 'paid_source', label: 'Paid from', render: en => {
-      if (!en.paid_source_id) return <span className="text-gray-500">—</span>
-      const fs = fsMap.get(Number(en.paid_source_id))
+      const active = (fundingSources || []).filter(x => x.active !== false)
+      const curId = en.paid_source_id ? Number(en.paid_source_id) : null
+      if (editing?.id === en.id && editing?.key === 'paid_source') {
+        // Uncontrolled select: selecting an option commits immediately; blur/Esc
+        // closes it untouched. paid_source_id is a numeric FK (not a string like
+        // the other selects), so it can't share the generic EditCell.
+        return (
+          <select autoFocus className="input !py-1 !px-1.5 text-sm w-full min-w-[130px]"
+            defaultValue={curId ? String(curId) : ''}
+            onChange={e => { const v = e.target.value; setEditing(null); patchEntry(en, { paid_source_id: v === '' ? null : Number(v) }, `${en.payee}: paid from`) }}
+            onBlur={() => setEditing(null)}
+            onKeyDown={e => { if (e.key === 'Escape') setEditing(null) }}>
+            <option value="">Label account</option>
+            {active.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
+            {curId != null && !active.some(x => x.id === curId) && (
+              <option value={curId}>{fsMap.get(curId)?.name || 'Current source'}</option>
+            )}
+          </select>
+        )
+      }
+      const fs = curId != null ? fsMap.get(curId) : null
       const owed = fs && fs.reimbursable !== false && !en.reimbursed
-      return <span className="whitespace-nowrap text-ink" title={owed ? 'Paid out of pocket — owed until reimbursed' : (en.reimbursed ? 'Reimbursed' : '')}>
-        {fs ? fs.name : 'Unknown'}{owed && <span className="text-[10px] font-semibold text-warning ml-1 uppercase">owed</span>}
-      </span>
+      return (
+        <span onClick={() => beginEdit(en, 'paid_source')} title={owed ? 'Paid out of pocket — owed until reimbursed. Click to edit' : 'Click to edit'}
+          className="cursor-text hover:bg-brand-500/10 rounded px-1 -mx-1 block min-h-[1.25rem] whitespace-nowrap text-ink">
+          {fs ? fs.name : <span className="text-gray-500">—</span>}{owed && <span className="text-[10px] font-semibold text-warning ml-1 uppercase">owed</span>}
+        </span>
+      )
     } }] : []),
     { key: 'scheduled_payment_date', label: 'Due date', render: en => {
       const past = en.scheduled_payment_date && en.payment_status !== 'Paid' && String(en.scheduled_payment_date).slice(0, 10) < new Date().toISOString().slice(0, 10)

@@ -1009,6 +1009,12 @@ router.patch('/entries/:id', async (req, res) => {
       values.push(off);
       setClauses.push(`off_roster_artist = $${values.length}`);
     }
+    // Changing who paid changes who is owed: clear any prior reimbursement mark
+    // so a newly-named payer isn't shown as already paid back (mirrors the pay
+    // routes, which reset reimbursed on the transition into Paid).
+    if (keys.includes('paid_source_id') && (req.body.paid_source_id ?? null) !== (prev.paid_source_id ?? null)) {
+      setClauses.push('reimbursed = FALSE', 'reimbursed_at = NULL', 'reimbursed_by = NULL');
+    }
     values.push(id, req.labelId);
     const { rows } = await pool.query(
       `UPDATE expenses SET ${setClauses.join(', ')} WHERE id = $${values.length - 1} AND label_id = $${values.length} RETURNING *`,
