@@ -355,7 +355,18 @@ router.get('/entries', async (req, res) => {
                  SELECT LOWER(TRIM(va.canonical)) FROM vendor_aliases va WHERE va.label_id = e.label_id AND LOWER(TRIM(va.alias))     = LOWER(TRIM(e.payee))
                )
              )
-           ORDER BY x.id DESC LIMIT 1) AS w9_entry_id${bankCols}
+           ORDER BY x.id DESC LIMIT 1) AS w9_entry_id,
+         -- W9 that lives on the VENDOR record (uploaded via the vendor drawer/
+         -- form), not on any entry. Alias-aware, so the ledger reflects an
+         -- on-file W9 even when no invoice row carries the document.
+         (EXISTS (SELECT 1 FROM vendors vv
+            WHERE vv.label_id = e.label_id AND COALESCE(vv.w9_r2_key,'') <> ''
+              AND (LOWER(TRIM(vv.name)) = LOWER(TRIM(e.payee))
+                OR LOWER(TRIM(vv.name)) IN (
+                  SELECT LOWER(TRIM(va.alias))     FROM vendor_aliases va WHERE va.label_id = e.label_id AND LOWER(TRIM(va.canonical)) = LOWER(TRIM(e.payee))
+                  UNION
+                  SELECT LOWER(TRIM(va.canonical)) FROM vendor_aliases va WHERE va.label_id = e.label_id AND LOWER(TRIM(va.alias))     = LOWER(TRIM(e.payee))
+                )))) AS w9_on_vendor${bankCols}
        FROM expenses e WHERE ${where} ORDER BY COALESCE(invoice_date, created_at::date) DESC, id DESC${limitSql}`,
       params
     );
@@ -2742,6 +2753,38 @@ router.get('/vendors/:name', async (req, res) => {
 // event (a change is visible in the data afterwards; a read leaves no trace
 // unless one is made deliberately). Looked up by the vendor's email, which is
 // how the details were keyed on the way in.
+// GET /ledger/vendors/:name/w9 — the vendor's W9 on file, so a ledger row can
+// reflect it even when the document lives on the vendor record (or a sibling
+// entry under any alias) rather than on the row itself. Vendors table first,
+// then the most recent sibling expense that carries one.
+router.get('/vendors/:name/w9', async (req, res) => {
+  try {
+    const name = String(req.params.name || '').trim();
+    if (!name) return res.status(400).json({ success: false, error: 'Vendor name required' });
+    const names = await vendorNameSet(req.labelId, name);
+    let key = null, filename = null;
+    const v = await pool.query(
+      `SELECT w9_r2_key, w9_filename FROM vendors WHERE label_id = $1 AND LOWER(name) = ANY($2) AND COALESCE(w9_r2_key,'') <> '' LIMIT 1`,
+      [req.labelId, names]);
+    if (v.rows[0]) { key = v.rows[0].w9_r2_key; filename = v.rows[0].w9_filename; }
+    else {
+      const e = await pool.query(
+        `SELECT w9_r2_key, w9_filename FROM expenses
+          WHERE label_id = $1 AND LOWER(payee) = ANY($2) AND COALESCE(w9_r2_key,'') <> ''
+            AND (deleted = false OR deleted IS NULL) AND status <> 'rejected'
+          ORDER BY id DESC LIMIT 1`, [req.labelId, names]);
+      if (e.rows[0]) { key = e.rows[0].w9_r2_key; filename = e.rows[0].w9_filename; }
+    }
+    if (!key) return res.status(404).json({ success: false, error: 'No W9 on file' });
+    const url = await getSignedFileUrl(key, 3600).catch(() => null);
+    if (!url) return res.status(503).json({ success: false, error: 'File storage is not configured' });
+    res.json({ success: true, data: { url, filename } });
+  } catch (error) {
+    console.error('Vendor W9 fetch error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 router.get('/vendors/:name/payment-details', requireAdmin, async (req, res) => {
   try {
     const name = String(req.params.name || '').trim();

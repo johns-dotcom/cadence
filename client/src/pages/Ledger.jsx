@@ -483,7 +483,7 @@ export default function Ledger({ bank = false }) {
     { key: 'notes', label: 'Notes', render: en => <EditCell en={en} field="notes" display={<span className="text-gray-600 truncate block max-w-[220px]">{en.notes || '—'}</span>} {...editProps} /> },
     { key: 'payment_ref', label: 'Ref', render: en => <EditCell en={en} field="payment_ref" display={<span className="text-gray-500 whitespace-nowrap">{en.payment_ref || '—'}</span>} {...editProps} /> },
     { key: 'invoice_file', label: 'Invoice', render: en => <FileCell en={en} type="invoice" r2key={en.invoice_r2_key} parentFallback openFile={openFile} onChanged={() => load(true)} toast={toast} /> },
-    { key: 'w9_file', label: 'W9', render: en => <FileCell en={en} type="w9" r2key={en.w9_r2_key} sharedFromId={!en.w9_r2_key && en.w9_entry_id && en.w9_entry_id !== en.id ? en.w9_entry_id : null} openFile={openFile} onChanged={() => load(true)} toast={toast} /> },
+    { key: 'w9_file', label: 'W9', render: en => <FileCell en={en} type="w9" r2key={en.w9_r2_key} sharedFromId={!en.w9_r2_key && en.w9_entry_id && en.w9_entry_id !== en.id ? en.w9_entry_id : null} vendorW9={!en.w9_r2_key && !(en.w9_entry_id && en.w9_entry_id !== en.id) && en.w9_on_vendor ? en.payee : null} openFile={openFile} openVendorW9={openVendorW9} onChanged={() => load(true)} toast={toast} /> },
     { key: 'proof_file', label: 'Proof', render: en => <FileCell en={en} type="proof" r2key={en.proof_r2_key} openFile={openFile} onChanged={() => load(true)} toast={toast} /> },
     { key: 'receipt_file', label: 'Receipt', render: en => (en.is_reimbursement || en.receipt_r2_key || en.receipt_count > 0)
       ? <span className="inline-flex items-center gap-1.5">
@@ -491,7 +491,7 @@ export default function Ledger({ bank = false }) {
           {(en.receipt_count > 0) && <button onClick={() => setReceiptsFor(en)} className="text-[10px] font-semibold text-brand-600 hover:underline whitespace-nowrap">+{en.receipt_count} more</button>}
         </span>
       : <span className="text-gray-300 text-xs" title="Receipts apply to reimbursements">N/A</span> },
-    { key: 'files', label: 'Files', render: en => <FilesCell en={en} openFile={openFile} /> },
+    { key: 'files', label: 'Files', render: en => <FilesCell en={en} openFile={openFile} openVendorW9={openVendorW9} /> },
   ]
 
   // ── Bank-only columns ────────────────────────────────────────────────────
@@ -700,6 +700,7 @@ export default function Ledger({ bank = false }) {
     catch { toast('Failed', 'error') }
   }
   function openFile(id, type) { api.get(`/ledger/entries/${id}/file/${type}`).then(({ data }) => setPreview({ url: data.data.url, label: type })).catch(() => toast('No file', 'error')) }
+  function openVendorW9(name) { api.get(`/ledger/vendors/${encodeURIComponent(name)}/w9`).then(({ data }) => setPreview({ url: data.data.url, label: 'w9' })).catch(() => toast('No W9 on file', 'error')) }
 
   const saveFlag = async (en, flagged, reason) => {
     setFlagFor(null)
@@ -1756,14 +1757,18 @@ function PayeeCell({ en, onFlag, onToggleSplits, isOpen, onUngroup, editProps })
   )
 }
 
-function FilesCell({ en, openFile }) {
+function FilesCell({ en, openFile, openVendorW9 }) {
+  const w9Shared = !en.w9_r2_key && en.w9_entry_id && en.w9_entry_id !== en.id ? en.w9_entry_id : null
+  const w9Vendor = !en.w9_r2_key && !w9Shared && en.w9_on_vendor
   return (
     <div className="flex gap-1.5">
       {en.invoice_r2_key && <button onClick={() => openFile(en.id, 'invoice')} title="Invoice" className="text-gray-400 hover:text-brand-600"><Paperclip size={14} /></button>}
       {en.w9_r2_key && <button onClick={() => openFile(en.id, 'w9')} title="W9" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">W9</button>}
+      {w9Shared && <button onClick={() => openFile(w9Shared, 'w9')} title="W9 on file (on another entry for this vendor)" className="text-[10px] text-gray-300 hover:text-brand-600 font-bold">W9</button>}
+      {w9Vendor && <button onClick={() => openVendorW9(en.payee)} title="W9 on file (on the vendor record)" className="text-[10px] text-gray-300 hover:text-brand-600 font-bold">W9</button>}
       {en.proof_r2_key && <button onClick={() => openFile(en.id, 'proof')} title="Proof of payment" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">PRF</button>}
       {en.receipt_r2_key && <button onClick={() => openFile(en.id, 'receipt')} title="Receipt" className="text-[10px] text-gray-400 hover:text-brand-600 font-bold">RCT</button>}
-      {!en.invoice_r2_key && !en.w9_r2_key && !en.proof_r2_key && !en.receipt_r2_key && <span className="text-gray-300">{'—'}</span>}
+      {!en.invoice_r2_key && !en.w9_r2_key && !w9Shared && !w9Vendor && !en.proof_r2_key && !en.receipt_r2_key && <span className="text-gray-300">{'—'}</span>}
     </div>
   )
 }
@@ -1772,7 +1777,7 @@ function FilesCell({ en, openFile }) {
 // without their own invoice open the PARENT's (the family shares one document);
 // rows without their own W9 but with an alias-sibling that holds one offer
 // "View (shared)" plus an explicit Upload that targets THIS row (LED-11).
-function FileCell({ en, type, r2key, openFile, onChanged, toast, sharedFromId, parentFallback }) {
+function FileCell({ en, type, r2key, openFile, onChanged, toast, sharedFromId, parentFallback, vendorW9, openVendorW9 }) {
   const ref = useRef(null)
   const [busy, setBusy] = useState(false)
   const upload = async (file) => {
@@ -1794,9 +1799,10 @@ function FileCell({ en, type, r2key, openFile, onChanged, toast, sharedFromId, p
     <span className="inline-flex items-center gap-1.5" {...dropTarget(upload)}>
       {r2key && <button onClick={() => openFile(en.id, type)} className="text-brand-600 hover:underline text-xs">Open</button>}
       {!r2key && sharedFromId && <button onClick={() => openFile(sharedFromId, type)} title="This vendor's W9 lives on another entry" className="text-brand-600/80 hover:underline text-xs whitespace-nowrap">View (shared)</button>}
+      {!r2key && !sharedFromId && vendorW9 && <button onClick={() => openVendorW9(vendorW9)} title="W9 is on file on the vendor record" className="text-brand-600/80 hover:underline text-xs whitespace-nowrap">View (on file)</button>}
       {!r2key && parentFallback && en.parent_id && <button onClick={() => openFile(en.parent_id, type)} title="Split slices share the family's invoice" className="text-brand-600/80 hover:underline text-xs whitespace-nowrap">Open (family)</button>}
-      {!r2key && sharedFromId
-        ? <button onClick={() => ref.current?.click()} title="Upload a W9 onto THIS entry (not the shared one)" className="text-[10px] font-semibold text-gray-500 border border-rule rounded px-1.5 py-0.5 hover:text-brand-600 hover:border-brand-300">{busy ? '…' : 'Upload'}</button>
+      {!r2key && (sharedFromId || vendorW9)
+        ? <button onClick={() => ref.current?.click()} title="Upload a W9 onto THIS entry (the on-file one stays on the vendor)" className="text-[10px] font-semibold text-gray-500 border border-rule rounded px-1.5 py-0.5 hover:text-brand-600 hover:border-brand-300">{busy ? '…' : 'Upload'}</button>
         : <button onClick={() => ref.current?.click()} title={r2key ? 'Replace file' : 'Upload file'} className="text-gray-300 hover:text-brand-600">
             {busy ? <span className="text-[10px] text-gray-400">{'…'}</span> : <Upload size={13} />}
           </button>}
