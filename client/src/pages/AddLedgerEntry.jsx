@@ -498,6 +498,8 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
     song: splitOn ? splits.map(l => l.song).filter(Boolean).join(', ') : lineMode ? '' : form.song,
     amount: form.amount,
     category: checks.cobrand === true ? 'Marketing' : form.category,
+    // Confirm-only socials row in the review — the handles that will be saved.
+    social_handles: collectSocialHandles(),
   }
   // The document shown beside the checklist in the review — invoice first, else
   // the first receipt (reimbursements).

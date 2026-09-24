@@ -42,6 +42,16 @@ export default function ApprovalChecklistFields({
   const { expense: flatCategories } = useCategories()
   const c = checks
 
+  // Confirm-only display of the captured social handles. social_handles is a
+  // JSONB array of { handle, ... } (or the explicit "N/A" convention); the deck
+  // passes the whole entry, Add Invoice passes collectSocialHandles().
+  const fmtSocials = (v) => {
+    let arr = v
+    if (typeof v === 'string') { try { arr = JSON.parse(v) } catch { return v.trim() } }
+    if (!Array.isArray(arr)) return ''
+    return arr.map((s) => (s && (s.handle ?? s))).filter((h) => h && String(h).trim()).join(', ')
+  }
+
   const row = (label, node) => (
     <div className="flex items-start gap-2 py-1.5">
       <div className="w-[104px] flex-shrink-0 text-[11px] font-bold text-ink-faint uppercase tracking-wider pt-1.5">{label}</div>
@@ -58,7 +68,11 @@ export default function ApprovalChecklistFields({
           <div key={item.key} className="border-b border-divider last:border-b-0 py-1">
             {row(item.label, (
               <div className="flex items-center gap-2">
-                {item.field === 'category' ? (
+                {item.field === 'social_handles' ? (
+                  <div className="flex-1 min-w-0 px-2 py-1 text-[13px] border border-rule rounded-md bg-page/40 text-ink truncate">
+                    {fmtSocials(value) || <span className="text-ink-faint">(no socials)</span>}
+                  </div>
+                ) : item.field === 'category' ? (
                   <select
                     value={value || ''}
                     // Locked while cobrand is yes: the category is a consequence

@@ -1126,4 +1126,18 @@ const PR = require('../lib/platformRollup');
   assert('offroster: an off-roster name matched by canonical key', isOffRoster('Nova   Ray!', roster) === false && isOffRoster('Nova Rae', roster) === true);
 }
 
+// ── approval checklist: socials is now a required confirmation ──────────────
+{
+  const { validateApprovalChecklist } = require('../lib/approvalChecklist');
+  const base = { artist: true, song: true, amount: true, category: true, bulk_deal: false, cobrand: false, recoupable: true, campaign: false };
+  assert('checklist: rejects when socials is not confirmed', validateApprovalChecklist(base).ok === false);
+  assert('checklist: passes when socials is confirmed', validateApprovalChecklist({ ...base, socials: true }).ok === true);
+  assert('checklist: stored value carries socials:true', validateApprovalChecklist({ ...base, socials: true }).value.socials === true);
+  // The other confirmations still gate (socials didn't loosen anything).
+  assert('checklist: still rejects a missing artist', validateApprovalChecklist({ ...base, socials: true, artist: false }).ok === false);
+  // cobrand still implies campaign with socials in the mix.
+  assert('checklist: cobrand implies campaign, socials required',
+    validateApprovalChecklist({ artist: true, song: true, amount: true, category: true, socials: true, bulk_deal: false, cobrand: true, recoupable: true }).ok === true);
+}
+
 console.log(process.exitCode ? '\nFIXTURES FAILED' : '\nAll fixtures pass.');

@@ -18,7 +18,7 @@
 // Lives on the SERVER because a disabled button is not a gate. The client
 // deck's disabled state (client/src/lib/approvalChecklist.js mirrors these
 // rules) is a convenience on top of this.
-const CHECKLIST_CONFIRM = ['artist', 'song', 'amount', 'category'];
+const CHECKLIST_CONFIRM = ['artist', 'song', 'amount', 'category', 'socials'];
 const CHECKLIST_ANSWER = ['bulk_deal', 'cobrand', 'recoupable', 'campaign'];
 
 function validateApprovalChecklist(raw) {
@@ -45,7 +45,7 @@ function validateApprovalChecklist(raw) {
       error: 'Not answered: ' + unanswered.join(', ') + '. Answer yes or no — leaving it blank is what makes "no" and "nobody looked" the same thing.' };
   }
   return { ok: true, value: {
-    artist: true, song: true, amount: true, category: true,
+    artist: true, song: true, amount: true, category: true, socials: true,
     bulk_deal: raw.bulk_deal === true,
     cobrand: raw.cobrand === true,
     recoupable: raw.recoupable === true,

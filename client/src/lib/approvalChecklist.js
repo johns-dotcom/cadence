@@ -20,6 +20,10 @@ export const CONFIRMATIONS = [
   { key: 'song', label: 'Correct song?', field: 'song' },
   { key: 'amount', label: 'Correct amount?', field: 'amount' },
   { key: 'category', label: 'Correct category?', field: 'category' },
+  // Confirm-only, like song: shows the captured handles (or "(no socials)") and
+  // needs ticking. `field` is social_handles so both surfaces supply it — the
+  // deck passes the whole entry, Add Invoice adds it to reviewValues.
+  { key: 'socials', label: 'Correct socials?', field: 'social_handles' },
 ]
 
 // Four ANSWERS — "no" is a real answer here and it gets WRITTEN, which is why
@@ -74,7 +78,7 @@ export function checklistComplete(c = {}) {
 /** The shape the server's validateApprovalChecklist expects. */
 export function checklistPayload(c = {}) {
   return {
-    artist: true, song: true, amount: true, category: true,
+    artist: true, song: true, amount: true, category: true, socials: true,
     bulk_deal: c.bulk_deal,
     cobrand: c.cobrand,
     recoupable: c.recoupable,
