@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { CreditCard, CalendarClock, Check, X, Zap, Send, MailCheck, Pause, Download, Upload, Eye, Pencil, Trash2, ChevronRight, ChevronDown, Receipt, FileSpreadsheet, Undo2, SlidersHorizontal, CalendarDays, List, AlertTriangle, Coins } from 'lucide-react'
 import api from '../api'
 import FundingSourcePicker from '../components/FundingSourcePicker'
+import Dropzone from '../components/Dropzone'
 import PageHeader from '../components/PageHeader'
 import { useNavigate } from 'react-router-dom'
 import Skeleton from '../components/Skeleton'
@@ -1146,7 +1147,7 @@ function PayModal({ count, onClose, onConfirm }) {
         {trackFunding && <FundingSourcePicker value={source} onChange={setSource} help={source ? 'This will show as owed until you mark it reimbursed.' : 'Who fronted the money? Only needed when someone paid out of pocket.'} />}
         <div>
           <label className="label">Proof of payment (optional{count > 1 ? ' — applied to every entry' : ' — AI reads date & ref'})</label>
-          <input type="file" className="input py-1.5" onChange={e => setProof(e.target.files?.[0] || null)} />
+          <Dropzone value={proof} onChange={setProof} accept="application/pdf,image/*" hint="PDF or image" />
         </div>
         <button onClick={() => onConfirm({ payment_date: date, payment_method: method || undefined, payment_ref: ref || undefined, proof, paid_source_id: source })} className="btn-primary w-full">{proof ? 'Pay with proof' : 'Confirm payment'}</button>
       </div>
