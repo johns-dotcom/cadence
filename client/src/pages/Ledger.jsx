@@ -214,6 +214,7 @@ export default function Ledger({ bank = false }) {
   const [fPaid, setFPaid] = useState('')
   const [fMethod, setFMethod] = useState('')
   const [fSource, setFSource] = useState('')
+  const [fPaidSrc, setFPaidSrc] = useState('')  // '' | __label__ | __oop__ | __owed__ | <funding source id>
   const [fFlag, setFFlag] = useState('')       // '' | flagged | unflagged | ai
   // Extra filters (behind "More filters"), matching the richer column set.
   const [moreOpen, setMoreOpen] = useState(false)
@@ -804,8 +805,8 @@ export default function Ledger({ bank = false }) {
   const ynMatch = (mode, val) => mode === '' || (mode === 'yes' ? !!val : !val)
   const advancedActive = fArtist || fRep || fCurrency || fType || fRecoup || fCobrand || fBulk || fUfr || fCampaign || fQb
   const clearAdvanced = () => { setFArtist(''); setFRep(''); setFCurrency(''); setFType(''); setFRecoup(''); setFCobrand(''); setFBulk(''); setFUfr(''); setFCampaign(''); setFQb('') }
-  const anyFilter = !!(advancedActive || search || amountQ || fCategory || fPaid || fMethod || fSource || fFlag || status !== 'all')
-  const clearAll = () => { clearAdvanced(); setSearch(''); setAmountQ(''); setFCategory(''); setFPaid(''); setFMethod(''); setFSource(''); setFFlag(''); setStatus('all') }
+  const anyFilter = !!(advancedActive || search || amountQ || fCategory || fPaid || fMethod || fSource || fPaidSrc || fFlag || status !== 'all')
+  const clearAll = () => { clearAdvanced(); setSearch(''); setAmountQ(''); setFCategory(''); setFPaid(''); setFMethod(''); setFSource(''); setFPaidSrc(''); setFFlag(''); setStatus('all') }
 
   const amountPredResult = useMemo(() => parseAmountQuery(amountQ), [amountQ])
   const amountInvalid = amountPredResult === null && amountQ.trim() !== ''
@@ -823,6 +824,13 @@ export default function Ledger({ bank = false }) {
       if (fPaid && (en.payment_status || 'Unpaid') !== fPaid) return false
       if (fMethod && en.payment_method !== fMethod) return false
       if (fSource && sourceOf(en) !== fSource) return false
+      if (trackFunding && fPaidSrc) {
+        const pid = en.paid_source_id != null ? Number(en.paid_source_id) : null
+        if (fPaidSrc === '__label__') { if (pid != null) return false }
+        else if (fPaidSrc === '__oop__') { if (pid == null) return false }
+        else if (fPaidSrc === '__owed__') { if (pid == null || en.reimbursed === true || fsMap.get(pid)?.reimbursable === false) return false }
+        else if (pid !== Number(fPaidSrc)) return false
+      }
       if (fFlag === 'flagged' && !en.flagged) return false
       if (fFlag === 'unflagged' && en.flagged) return false
       if (fFlag === 'ai' && !((en.ai_flags || 0) + (en.w9_flags || 0))) return false
@@ -859,10 +867,10 @@ export default function Ledger({ bank = false }) {
       return cmp * dir || b.id - a.id
     })
     return list
-  }, [entries, status, search, amountPredResult, fCategory, fPaid, fMethod, fSource, fFlag, fArtist, fRep, fCurrency, fType, fRecoup, fCobrand, fBulk, fUfr, fQb, fCampaign, sort, stmtId])
+  }, [entries, status, search, amountPredResult, fCategory, fPaid, fMethod, fSource, fPaidSrc, fsMap, fFlag, fArtist, fRep, fCurrency, fType, fRecoup, fCobrand, fBulk, fUfr, fQb, fCampaign, sort, stmtId])
 
   // Reset the paint window when the result set changes shape.
-  useEffect(() => { setRenderCap(PAGE); setMobileCap(MOBILE_PAGE) }, [status, search, amountQ, fCategory, fPaid, fMethod, fSource, fFlag, fArtist, fRep, fCurrency, fType, fRecoup, fCobrand, fBulk, fUfr, fQb, fCampaign, sort, stmtId])
+  useEffect(() => { setRenderCap(PAGE); setMobileCap(MOBILE_PAGE) }, [status, search, amountQ, fCategory, fPaid, fMethod, fSource, fPaidSrc, fFlag, fArtist, fRep, fCurrency, fType, fRecoup, fCobrand, fBulk, fUfr, fQb, fCampaign, sort, stmtId])
   const shownRows = filtered.slice(0, renderCap)
 
   // Sentinel: grow the window as it nears the viewport.
@@ -1207,6 +1215,15 @@ export default function Ledger({ bank = false }) {
           <select className="input !w-auto" value={fPaid} onChange={e => setFPaid(e.target.value)}><option value="">Any payment</option><option>Unpaid</option><option>Partial</option><option>Paid</option></select>
           <select className="input !w-auto" value={fMethod} onChange={e => setFMethod(e.target.value)}><option value="">Any method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select>
           <select className={`input !w-auto ${fSource ? '!border-brand-300 text-brand-700' : ''}`} value={fSource} onChange={e => setFSource(e.target.value)}>{SOURCE_FILTERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+          {trackFunding && (
+            <select className={`input !w-auto ${fPaidSrc ? '!border-brand-300 text-brand-700' : ''}`} value={fPaidSrc} onChange={e => setFPaidSrc(e.target.value)}>
+              <option value="">Paid from: any</option>
+              <option value="__label__">Label account</option>
+              <option value="__oop__">Any out of pocket</option>
+              <option value="__owed__">Owed (unreimbursed)</option>
+              {(fundingSources || []).filter(x => x.active !== false).map(x => <option key={x.id} value={String(x.id)}>{x.name}</option>)}
+            </select>
+          )}
           <select className={`input !w-auto ${fFlag ? '!border-amber-400 text-amber-700' : ''}`} value={fFlag} onChange={e => setFFlag(e.target.value)}>
             <option value="">Flag: any</option><option value="flagged">Flagged</option><option value="unflagged">Unflagged</option><option value="ai">AI discrepancies</option>
           </select>
@@ -1554,6 +1571,15 @@ export default function Ledger({ bank = false }) {
           <select className="input w-full" value={fPaid} onChange={e => setFPaid(e.target.value)}><option value="">Any payment</option><option>Unpaid</option><option>Partial</option><option>Paid</option></select>
           <select className="input w-full" value={fMethod} onChange={e => setFMethod(e.target.value)}><option value="">Any method</option>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select>
           <select className="input w-full" value={fSource} onChange={e => setFSource(e.target.value)}>{SOURCE_FILTERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+          {trackFunding && (
+            <select className="input w-full" value={fPaidSrc} onChange={e => setFPaidSrc(e.target.value)}>
+              <option value="">Paid from: any</option>
+              <option value="__label__">Label account</option>
+              <option value="__oop__">Any out of pocket</option>
+              <option value="__owed__">Owed (unreimbursed)</option>
+              {(fundingSources || []).filter(x => x.active !== false).map(x => <option key={x.id} value={String(x.id)}>{x.name}</option>)}
+            </select>
+          )}
           <select className="input w-full" value={fFlag} onChange={e => setFFlag(e.target.value)}><option value="">Flag: any</option><option value="flagged">Flagged</option><option value="unflagged">Unflagged</option><option value="ai">AI discrepancies</option></select>
           <select className="input w-full" value={fArtist} onChange={e => setFArtist(e.target.value)}><option value="">Any artist</option>{artistOpts.map(a => <option key={a}>{a}</option>)}</select>
           <select className="input w-full" value={fRecoup} onChange={e => setFRecoup(e.target.value)}><option value="">Recoup: any</option><option value="yes">Recoupable</option><option value="no">Not recoupable</option></select>
