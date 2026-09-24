@@ -1,5 +1,6 @@
 import { Check } from 'lucide-react'
 import { CONFIRMATIONS, ANSWERS } from '../lib/approvalChecklist'
+import SocialHandlesEditor from './SocialHandlesEditor'
 import useCategories from '../hooks/useCategories'
 import CategoryOptions from './CategoryOptions'
 
@@ -37,6 +38,7 @@ export default function ApprovalChecklistFields({
   context = {},
   disabled = false,
   fieldKey = '',
+  onSocials,
 }) {
   // The flat vocabulary, for the render-a-stored-off-list-value rule below.
   const { expense: flatCategories } = useCategories()
@@ -50,6 +52,11 @@ export default function ApprovalChecklistFields({
     if (typeof v === 'string') { try { arr = JSON.parse(v) } catch { return v.trim() } }
     if (!Array.isArray(arr)) return ''
     return arr.map((s) => (s && (s.handle ?? s))).filter((h) => h && String(h).trim()).join(', ')
+  }
+  const parseSocials = (v) => {
+    if (Array.isArray(v)) return v
+    if (typeof v === 'string' && v.trim()) { try { const a = JSON.parse(v); return Array.isArray(a) ? a : [] } catch { return [] } }
+    return []
   }
 
   const row = (label, node) => (
@@ -67,11 +74,23 @@ export default function ApprovalChecklistFields({
         return (
           <div key={item.key} className="border-b border-divider last:border-b-0 py-1">
             {row(item.label, (
-              <div className="flex items-center gap-2">
+              <div className={`flex gap-2 ${item.field === 'social_handles' && onSocials ? 'items-start' : 'items-center'}`}>
                 {item.field === 'social_handles' ? (
-                  <div className="flex-1 min-w-0 px-2 py-1 text-[13px] border border-rule rounded-md bg-page/40 text-ink truncate">
-                    {fmtSocials(value) || <span className="text-ink-faint">(no socials)</span>}
-                  </div>
+                  onSocials ? (
+                    <div className="flex-1 min-w-0">
+                      <SocialHandlesEditor
+                        value={parseSocials(value)}
+                        disabled={disabled}
+                        // Editing socials re-arms its confirmation — you tick to
+                        // confirm what you just changed, like the artist row.
+                        onChange={(arr) => { onSocials(arr); onCheck?.('socials', undefined) }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex-1 min-w-0 px-2 py-1 text-[13px] border border-rule rounded-md bg-page/40 text-ink truncate">
+                      {fmtSocials(value) || <span className="text-ink-faint">(no socials)</span>}
+                    </div>
+                  )
                 ) : item.field === 'category' ? (
                   <select
                     value={value || ''}
