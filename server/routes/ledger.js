@@ -8,6 +8,7 @@ const { uploadFile, getSignedFileUrl, deleteFile, loadFileBuffer, loadFileBase64
 const { computeDueDate, PAYMENT_TERMS } = require('../lib/payments');
 const { labelTz } = require('../lib/labelTz');
 const { upsertVendor } = require('../lib/vendors');
+const { resolveFundingSource: resolveFundingSourceLib } = require('../lib/fundingSources');
 const claude = require('../lib/claude');
 const { sendEmail, vendorDecisionEmail, paymentConfirmationEmail } = require('../lib/email');
 const { dispatchSend, loadLabelIdentity } = require('../lib/emailDispatch');
@@ -122,11 +123,7 @@ router.use(requireApprover);
 // (the label account — nothing owed). Used by every pay flow so the picker's
 // choice is trusted only after it's confirmed to belong to this workspace.
 async function resolveFundingSource(labelId, raw) {
-  if (raw == null || raw === '') return { ok: true, id: null };
-  const sid = parseInt(raw, 10);
-  if (!Number.isFinite(sid)) return { ok: false };
-  const fs = await pool.query('SELECT id FROM funding_sources WHERE id = $1 AND label_id = $2', [sid, labelId]);
-  return fs.rows.length ? { ok: true, id: sid } : { ok: false };
+  return resolveFundingSourceLib(pool, labelId, raw);
 }
 
 // Map a multipart file → R2 and return { filename, r2_key }. Tenant-namespaced.

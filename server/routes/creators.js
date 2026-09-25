@@ -17,6 +17,7 @@ const { isCreatorRow, CREATOR_SOURCE, reportingThresholdFor,
   restoreMatchPlan, CREATOR_MATCH_DETAIL: MATCH_DETAIL_PREFIX } = require('../lib/ledgerSource');
 const { rowUsd2, round2 } = require('../lib/usd');
 const { stampFxRateAsync } = require('../lib/fxStamp');
+const { resolveFundingSource } = require('../lib/fundingSources');
 const bankEvidence = require('../lib/bankEvidence');
 const { accountsFor } = require('../lib/bankReconcile');
 const activityBot = require('../lib/activityBot');
@@ -81,8 +82,10 @@ router.get('/', async (req, res) => {
               e.amount, COALESCE(e.currency, 'USD') AS currency, e.fx_rate_to_usd, e.category,
               e.payment_status, e.payment_date, e.invoice_date, e.payment_method, e.notes, e.rep,
               e.recoupable, e.ufr, e.is_bulk_deal, e.created_at, e.created_by, e.w9_r2_key,
+              e.paid_source_id, e.reimbursed, fs.name AS paid_source_name, fs.reimbursable AS paid_source_reimbursable,
               ${bankEvidence.bankEvidenceCols('e', accounts)}
          FROM expenses e
+         LEFT JOIN funding_sources fs ON fs.id = e.paid_source_id AND fs.label_id = e.label_id
         WHERE ${where}
         ORDER BY e.payment_date DESC NULLS LAST, e.id DESC
         LIMIT 1000`,
@@ -188,18 +191,20 @@ router.get('/directory', async (req, res) => {
 
 async function insertCreator(client, labelId, b, userName) {
   const st = paidState(b);
+  // Who fronted it — only meaningful once the row is Paid (owed until reimbursed).
+  const fsId = st.payment_status === 'Paid' && Number.isFinite(parseInt(b.paid_source_id, 10)) ? parseInt(b.paid_source_id, 10) : null;
   const { rows } = await client.query(
     `INSERT INTO expenses (label_id, payee, vendor_email, paypal_handle, social_handles, artist, song,
         amount, currency, category, description, notes, invoice_date, payment_method, payment_status,
-        payment_date, paid_by, paid_marked_at, status, entry_source, rep, is_bulk_deal, created_by, created_at)
+        payment_date, paid_by, paid_marked_at, status, entry_source, rep, is_bulk_deal, created_by, paid_source_id, created_at)
      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, CURRENT_DATE, 'PayPal', $13,
-             $14, $15, ${st.payment_status === 'Paid' ? 'NOW()' : 'NULL'}, 'approved', '${CREATOR_SOURCE}', $16, $17, $18, NOW())
+             $14, $15, ${st.payment_status === 'Paid' ? 'NOW()' : 'NULL'}, 'approved', '${CREATOR_SOURCE}', $16, $17, $18, $19, NOW())
      RETURNING id`,
     [labelId, String(b.payee).replace(/\s+/g, ' ').trim(), String(b.vendor_email).toLowerCase().trim(),
      String(b.paypal_handle).trim(), JSON.stringify(b.social_handles), String(b.artist).trim(), String(b.song).trim(),
      Number(b.amount), b.currency || 'USD', b.category || 'Marketing', b.description || null, b.notes || null,
      st.payment_status, st.payment_date, st.payment_status === 'Paid' ? userName : null,
-     b.rep || userName, b.is_bulk_deal === true, userName]
+     b.rep || userName, b.is_bulk_deal === true, userName, fsId]
   );
   if (st.payment_status === 'Paid') stampFxRateAsync(rows[0].id);
   return rows[0].id;
@@ -210,6 +215,11 @@ router.post('/', async (req, res) => {
   try {
     const missing = missingRequired(req.body || {});
     if (missing.length) return res.status(400).json({ success: false, error: `Creator payment needs: ${missing.join(', ')}` });
+    if (req.body.paid_source_id != null && req.body.paid_source_id !== '') {
+      const fs = await resolveFundingSource(pool, req.labelId, req.body.paid_source_id);
+      if (!fs.ok) return res.status(400).json({ success: false, error: 'Invalid funding source' });
+      req.body.paid_source_id = fs.id;
+    }
     const id = await insertCreator(pool, req.labelId, req.body, req.user.name);
     await logActivity(req, 'Added creator payment', `#${id} · ${req.body.payee} · ${req.body.amount}`);
     res.json({ success: true, data: { id } });
@@ -228,6 +238,7 @@ router.post('/batch', async (req, res) => {
       artist: req.body.artist, song: req.body.song, currency: req.body.currency,
       payment_status: req.body.payment_status, paid: req.body.paid, payment_date: req.body.payment_date,
       is_bulk_deal: req.body.is_bulk_deal === true, notes: req.body.notes, rep: req.body.rep,
+      paid_source_id: req.body.paid_source_id,
     };
     // Validate EVERY row before writing ANY.
     const errors = [];
@@ -237,6 +248,14 @@ router.post('/batch', async (req, res) => {
       if (missing.length) errors.push(`Creator ${i + 1}${p.payee ? ` (${p.payee})` : ''} needs: ${missing.join(', ')}`);
       return row;
     });
+    // Funding sources must belong to this workspace — validate before writing any.
+    for (const row of merged) {
+      if (row.paid_source_id != null && row.paid_source_id !== '') {
+        const fs = await resolveFundingSource(client, req.labelId, row.paid_source_id);
+        if (!fs.ok) { errors.push('A payment names a funding source that is not in this workspace'); break; }
+        row.paid_source_id = fs.id;
+      } else { row.paid_source_id = null; }
+    }
     if (errors.length) return res.status(400).json({ success: false, error: errors.join(' · ') });
     await client.query('BEGIN');
     const ids = [];
@@ -272,6 +291,12 @@ router.put('/:id(\\d+)', async (req, res) => {
     const sets = [];
     const params = [req.labelId, parseInt(req.params.id, 10)];
     const statusMoving = req.body.payment_status === 'Paid' || req.body.payment_status === 'Unpaid';
+    let fsResolved; // undefined = caller didn't touch who-paid
+    if (req.body.paid_source_id !== undefined) {
+      const fs = await resolveFundingSource(pool, req.labelId, req.body.paid_source_id);
+      if (!fs.ok) return res.status(400).json({ success: false, error: 'Invalid funding source' });
+      fsResolved = fs.id;
+    }
     for (const key of WHITELIST) {
       if (req.body[key] === undefined) continue;
       params.push(req.body[key]);
@@ -291,12 +316,21 @@ router.put('/:id(\\d+)', async (req, res) => {
       if (req.body.payment_status === 'Paid') {
         params.push(String(req.body.payment_date || '').slice(0, 10) || new Date().toISOString().slice(0, 10));
         sets.push(`payment_status = 'Paid'`, `payment_date = $${params.length}`, `paid_by = '${req.user.name.replace(/'/g, "''")}'`, `paid_marked_at = NOW()`);
+        // Who paid + reset any prior reimbursement (this is the edge into Paid).
+        params.push(fsResolved !== undefined ? fsResolved : null);
+        sets.push(`paid_source_id = $${params.length}`, `reimbursed = FALSE`, `reimbursed_at = NULL`, `reimbursed_by = NULL`);
       } else {
-        sets.push(`payment_status = 'Unpaid'`, `payment_date = NULL`, `paid_by = NULL`, `paid_marked_at = NULL`, `fx_rate_to_usd = NULL`);
+        sets.push(`payment_status = 'Unpaid'`, `payment_date = NULL`, `paid_by = NULL`, `paid_marked_at = NULL`, `fx_rate_to_usd = NULL`, `paid_source_id = NULL`, `reimbursed = FALSE`, `reimbursed_at = NULL`, `reimbursed_by = NULL`);
       }
     } else if (req.body.payment_date !== undefined) {
       params.push(String(req.body.payment_date || '').slice(0, 10) || null);
       sets.push(`payment_date = $${params.length}`);
+    }
+    // Editing who-paid on an already-paid row: who is owed changed, so clear any
+    // prior reimbursement mark (mirrors the ledger's editable "Paid from").
+    if (!statusMoving && fsResolved !== undefined) {
+      params.push(fsResolved);
+      sets.push(`paid_source_id = $${params.length}`, `reimbursed = FALSE`, `reimbursed_at = NULL`, `reimbursed_by = NULL`);
     }
     if (!sets.length) return res.status(400).json({ success: false, error: 'Nothing to update' });
     const { rows } = await pool.query(

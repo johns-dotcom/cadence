@@ -13,6 +13,9 @@ import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { ConfirmDialog } from '../components/ui'
 import { useToast } from '../context/ToastContext'
+import { useAuth } from '../context/AuthContext'
+import FundingSourcePicker from '../components/FundingSourcePicker'
+import useFundingSources from '../hooks/useFundingSources'
 import { formatDate } from '../utils/dates'
 import { money, moneyOrig } from '../utils/money'
 import { recoupState, STATE_LABEL } from '../utils/recoupState'
@@ -49,6 +52,9 @@ export default function Creators() {
   const [error, setError] = useState(null)
   const [payingId, setPayingId] = useState(null)
   const [confirmDel, setConfirmDel] = useState(null)
+  const { label } = useAuth()
+  const trackFunding = !!label?.settings?.track_funding_source
+  const { sources: fundingSources } = useFundingSources()
 
   // The search runs SERVER-side (the list is capped at 1000 rows, so filtering
   // the fetched page would quietly search a subset) and the header total is the
@@ -85,11 +91,21 @@ export default function Creators() {
       setData((d) => ({
         ...d,
         rows: d.rows.map((x) => (x.id === row.id
-          ? { ...x, payment_status: r.data.payment_status, payment_date: paid ? new Date().toISOString().slice(0, 10) : null }
+          ? { ...x, payment_status: r.data.payment_status, payment_date: paid ? new Date().toISOString().slice(0, 10) : null, ...(paid ? {} : { paid_source_id: null, paid_source_name: null, reimbursed: false }) }
           : x)),
       }))
     } catch (err) { toast(err.response?.data?.error || 'Failed', 'error') }
     finally { setPayingId(null) }
+  }
+  // Who paid a creator payment — editable inline once it's paid, and it flows to
+  // the Reimbursements rollup (owed until marked reimbursed). Optimistic patch.
+  const setSource = async (row, value) => {
+    const src = (fundingSources || []).find((f) => String(f.id) === String(value))
+    setData((d) => ({ ...d, rows: d.rows.map((x) => (x.id === row.id
+      ? { ...x, paid_source_id: value ? Number(value) : null, paid_source_name: src?.name || null, paid_source_reimbursable: src?.reimbursable, reimbursed: false }
+      : x)) }))
+    try { await api.put(`/creators/${row.id}`, { paid_source_id: value || null }) }
+    catch (err) { toast(err.response?.data?.error || 'Failed', 'error'); load() }
   }
   const del = async () => {
     const row = confirmDel
@@ -162,10 +178,10 @@ export default function Creators() {
         <div className="card overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="bg-page/50 border-b border-divider text-left text-[10px] font-semibold text-ink-faint uppercase tracking-wider">
-              {['Date', 'Creator', 'PayPal', 'Artist · Song', 'Amount', 'Bank', ''].map((h) => <th key={h} className="px-3 py-2.5 whitespace-nowrap">{h}</th>)}
+              {['Date', 'Creator', 'PayPal', 'Artist · Song', 'Amount', ...(trackFunding ? ['Paid from'] : []), 'Bank', ''].map((h) => <th key={h} className="px-3 py-2.5 whitespace-nowrap">{h}</th>)}
             </tr></thead>
             <tbody className="divide-y divide-divider">
-              {rows.length === 0 && <tr><td colSpan={7} className="px-3 py-10 text-center text-sm text-ink-muted">No creator payments{term || creatorFilter ? ' match' : ' yet — log the first with the button above'}.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={trackFunding ? 8 : 7} className="px-3 py-10 text-center text-sm text-ink-muted">No creator payments{term || creatorFilter ? ' match' : ' yet — log the first with the button above'}.</td></tr>}
               {rows.map((r) => {
                 const state = recoupState(r)
                 return (
@@ -181,6 +197,20 @@ export default function Creators() {
                       {money(r.amount_usd_calc)}
                       {r.currency !== 'USD' && <span className="block text-[10px] text-ink-faint font-normal">{moneyOrig(r.amount, r.currency)}</span>}
                     </td>
+                    {trackFunding && (
+                      <td className="px-3 py-2.5 whitespace-nowrap">
+                        {r.payment_status === 'Paid' ? (
+                          <div className="flex items-center gap-1.5">
+                            <select className="input !py-1 !px-1.5 text-xs !w-auto min-w-[110px]" value={r.paid_source_id || ''} onChange={(e) => setSource(r, e.target.value)}>
+                              <option value="">Label account</option>
+                              {(fundingSources || []).filter((f) => f.active !== false).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                              {r.paid_source_id && !(fundingSources || []).some((f) => f.id === Number(r.paid_source_id)) && <option value={r.paid_source_id}>{r.paid_source_name || 'Current source'}</option>}
+                            </select>
+                            {r.paid_source_id && r.paid_source_reimbursable !== false && !r.reimbursed && <span className="text-[9px] font-bold uppercase text-warning">owed</span>}
+                          </div>
+                        ) : <span className="text-ink-faint text-xs">—</span>}
+                      </td>
+                    )}
                     <td className="px-3 py-2.5"><span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${STATE_TONE[state].chip}`}>{STATE_LABEL[state]}</span></td>
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-1.5 justify-end text-ink-faint whitespace-nowrap">
@@ -238,7 +268,7 @@ export default function Creators() {
 
       {tab === 'movein' && conv && <MoveInTab rows={conv.rows} summary={conv.summary} toast={toast} onDone={load} />}
 
-      {batchOpen && <BatchModal onClose={() => setBatchOpen(false)} onDone={() => { setBatchOpen(false); load() }} toast={toast} />}
+      {batchOpen && <BatchModal onClose={() => setBatchOpen(false)} onDone={() => { setBatchOpen(false); load() }} toast={toast} trackFunding={trackFunding} />}
 
       <ConfirmDialog
         open={!!confirmDel}
@@ -349,8 +379,8 @@ function MoveInTab({ rows, summary, toast, onDone }) {
   )
 }
 
-function BatchModal({ onClose, onDone, toast }) {
-  const [header, setHeader] = useState({ paid: true, payment_date: new Date().toISOString().slice(0, 10), is_bulk_deal: false, artist: '', song: '' })
+function BatchModal({ onClose, onDone, toast, trackFunding }) {
+  const [header, setHeader] = useState({ paid: true, payment_date: new Date().toISOString().slice(0, 10), is_bulk_deal: false, artist: '', song: '', paid_source_id: '' })
   const blank = () => ({ payee: '', vendor_email: '', paypal_handle: '', socials: '', amount: '', artist: '', song: '', currency: 'USD' })
   const [rowsState, setRows] = useState([blank()])
   const [busy, setBusy] = useState(false)
@@ -375,6 +405,7 @@ function BatchModal({ onClose, onDone, toast }) {
         payment_status: header.paid ? 'Paid' : 'Unpaid',
         payment_date: header.payment_date,
         is_bulk_deal: header.is_bulk_deal,
+        paid_source_id: header.paid ? (header.paid_source_id || null) : null,
       })
       toast(`${rowsState.length} payment${rowsState.length === 1 ? '' : 's'} logged`)
       onDone()
@@ -389,6 +420,7 @@ function BatchModal({ onClose, onDone, toast }) {
         <div className="flex flex-wrap items-end gap-3 mb-4">
           <label className="inline-flex items-center gap-2 text-sm text-ink-muted"><input type="checkbox" checked={header.paid} onChange={(e) => setHeader((h) => ({ ...h, paid: e.target.checked }))} /> Already paid</label>
           {header.paid && <div><label className="label">Paid on</label><input type="date" className="input !py-1.5" value={header.payment_date} onChange={(e) => setHeader((h) => ({ ...h, payment_date: e.target.value }))} /></div>}
+          {header.paid && trackFunding && <div className="min-w-[220px]"><FundingSourcePicker value={header.paid_source_id} onChange={(v) => setHeader((h) => ({ ...h, paid_source_id: v }))} help={header.paid_source_id ? 'Owed on Reimbursements until paid back.' : 'Who fronted these — leave blank if paid from the label account.'} /></div>}
           <label className="inline-flex items-center gap-2 text-sm text-ink-muted"><input type="checkbox" checked={header.is_bulk_deal} onChange={(e) => setHeader((h) => ({ ...h, is_bulk_deal: e.target.checked }))} /> Bulk deal</label>
           <div><label className="label">Artist (default)</label><input className="input !py-1.5" value={header.artist} onChange={(e) => setHeader((h) => ({ ...h, artist: e.target.value }))} /></div>
           <div><label className="label">Song (default)</label><input className="input !py-1.5" value={header.song} onChange={(e) => setHeader((h) => ({ ...h, song: e.target.value }))} /></div>
