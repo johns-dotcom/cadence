@@ -88,7 +88,10 @@ const loadCcDefault = () => { try { const v = JSON.parse(localStorage.getItem(CC
 
 export default function Payments() {
   const { toast } = useToast()
+  const { label } = useAuth()
+  const trackFunding = !!label?.settings?.track_funding_source
   const isMobile = useIsMobile()
+  const [proofFor, setProofFor] = useState(null) // { id, file } — who-paid review before a proof marks it paid
   const [filter, setFilter] = useState('all')
   const [view, setView] = useState('list') // list | calendar
   const [preview, setPreview] = useState(null) // { url, label } file pop-up
@@ -242,10 +245,18 @@ export default function Payments() {
   // Dropping a proof marks the whole split family paid — that's the point of the
   // control. Deliberately sends NO payment_date, so the server's AI extraction
   // supplies the date off the document.
-  const uploadProof = async (id, file) => {
+  const uploadProof = (id, file) => {
+    if (!file) return
+    // Attaching a proof marks the item paid — so when who-paid tracking is on,
+    // review who fronted it first (the same question the Mark-paid modal asks).
+    if (trackFunding) { setProofFor({ id, file }); return }
+    submitProof(id, file)
+  }
+  const submitProof = async (id, file, paidSourceId) => {
     if (!file) return
     try {
       const fd = new FormData(); fd.append('proof', file)
+      if (paidSourceId) fd.append('paid_source_id', paidSourceId)
       const { data } = await api.post(`/ledger/entries/${id}/pay-with-proof`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
       const d = data.data || {}
       toast(`Marked paid${d.payment_date ? ` · ${formatDate(d.payment_date)}` : ''}${d.reference ? ` · ref ${d.reference}` : ''}`)
@@ -677,6 +688,7 @@ export default function Payments() {
       )}
 
       {payModal && <PayModal count={payModal.ids.length} onClose={() => setPayModal(null)} onConfirm={doPay} />}
+      {proofFor && <ProofWhoPaidModal file={proofFor.file} onClose={() => setProofFor(null)} onConfirm={(source) => { const { id, file } = proofFor; setProofFor(null); submitProof(id, file, source) }} />}
       {schedModal && <ScheduleModal initialTerms={schedModal.terms} onClose={() => setSchedModal(null)} onConfirm={doSchedule} />}
       {instModal && <InstallmentsModal row={instModal} onClose={() => { setInstModal(null); load() }} toast={toast} />}
       {flagModal && <RushHoldModal kind={flagModal.kind} rows={flagModal.rows} onClose={() => setFlagModal(null)} onConfirm={doFlag} />}
@@ -1127,6 +1139,21 @@ function OwedBanner() {
       </span>
       <span className="ml-auto text-xs font-semibold text-brand-ink whitespace-nowrap">Reimbursements →</span>
     </button>
+  )
+}
+
+// Who-paid review shown when a dropped proof is about to mark an item paid and
+// who-paid tracking is on. Reuses the pay-with-proof endpoint's paid_source_id.
+function ProofWhoPaidModal({ file, onClose, onConfirm }) {
+  const [source, setSource] = useState('')
+  return (
+    <Modal title="Who paid this?" onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-xs text-ink-muted">Attaching <b className="text-ink">{file?.name || 'this proof'}</b> marks the invoice paid. Record who fronted the money — leave it on the label account if it wasn't out of pocket.</p>
+        <FundingSourcePicker value={source} onChange={setSource} help={source ? 'This will show as owed on Reimbursements until you mark it reimbursed.' : 'Who fronted the money? Only needed when someone paid out of pocket.'} />
+        <button onClick={() => onConfirm(source)} className="btn-primary w-full">Mark paid with proof</button>
+      </div>
+    </Modal>
   )
 }
 
