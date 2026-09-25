@@ -592,9 +592,9 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
           <span className="inline-flex items-center gap-2 text-sm font-medium text-ink"><input type="checkbox" checked={isReimb} onChange={e => setIsReimb(e.target.checked)} /> <Receipt size={15} className="text-ink-faint" /> This is a reimbursement</span>
           <span className="text-xs text-ink-faint">Reimburses staff for an out-of-pocket expense</span>
         </label>
-        <div className="grid gap-5 mt-5 lg:grid-cols-[minmax(0,1fr)_340px] items-start">
-          {/* LEFT — the entry fields, grouped into sections */}
-          <div className="order-2 lg:order-1 min-w-0 space-y-5">
+        <div className="grid gap-5 mt-5 lg:grid-cols-[340px_minmax(0,1fr)] items-start">
+          {/* RIGHT — the entry fields, grouped into sections */}
+          <div className="order-2 lg:order-2 min-w-0 space-y-5">
         {/* Core fields */}
         <div className="card p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="sm:col-span-2 flex items-center gap-2.5 mt-1"><span className="text-[11px] font-bold uppercase tracking-wider text-brand-ink whitespace-nowrap">Invoice details</span><span className="h-px flex-1 bg-divider" /></div>
@@ -824,8 +824,8 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
           <button type="submit" disabled={saving || scanning} className="btn-primary">{saving ? 'Saving…' : isApprover ? (isReimb ? 'Review & save reimbursement' : 'Review & save invoice') : (isReimb ? 'Add reimbursement' : 'Add invoice')}</button>
         </div>
           </div>
-          {/* RIGHT — the document(s), pinned alongside the fields */}
-          <aside className="order-1 lg:order-2 space-y-3 lg:sticky lg:top-4">
+          {/* LEFT — the document(s), pinned alongside the fields */}
+          <aside className="order-1 lg:order-1 space-y-3 lg:sticky lg:top-4">
         {/* Invoice upload */}
         <div>
           <Dropzone value={files.invoice_file} onChange={onInvoice} accept="application/pdf,image/*" label={<><span className="font-semibold text-brand-600">Choose the invoice</span> or drag it here</>} hint="PDF, JPG, or PNG" />
