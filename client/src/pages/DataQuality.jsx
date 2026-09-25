@@ -104,6 +104,7 @@ export default function DataQuality() {
   const [error, setError] = useState(false)
   const [showLow, setShowLow] = useState(false)
   const [showDismissed, setShowDismissed] = useState(false)
+  const [showAllChecks, setShowAllChecks] = useState(false)  // rail hides clean (0-count) checks by default
   const [busyId, setBusyId] = useState(null)
   const [confirmState, setConfirmState] = useState(null) // { title, message, onConfirm }
   const [splitEntry, setSplitEntry] = useState(null)
@@ -144,11 +145,16 @@ export default function DataQuality() {
   // still resolves with the toggle off.
   const activeCategory = useMemo(() => categories.find(c => c.kind === activeTab) || null, [categories, activeTab])
 
+  // Clean (0-count) checks are hidden from the rail by default — with ~20 of them
+  // always green, they were most of the page's visual noise. A toggle brings them
+  // back; the active check always stays so a deep link to a clean one still shows.
+  const cleanCount = useMemo(() => visible.filter(c => !c.count).length, [visible])
   const navGroups = useMemo(() => GROUP_ORDER.map(name => ({
     name,
     cats: visible.filter(c => classify(c).group === name)
+      .filter(c => showAllChecks || (c.count || 0) > 0 || c.kind === activeTab)
       .sort((a, b) => (isProblem(b) - isProblem(a)) || ((b.count || 0) - (a.count || 0))),
-  })).filter(g => g.cats.length), [visible])
+  })).filter(g => g.cats.length), [visible, showAllChecks, activeTab])
 
   // ── Section filter ────────────────────────────────────────────────────────
   const [q, setQ] = useState('')
@@ -321,7 +327,7 @@ export default function DataQuality() {
       </div>
 
       <div className="lg:flex lg:items-start lg:gap-6">
-        <FlagsNav groups={navGroups} activeTab={activeTab} onPick={setTab} totalFlags={totalFlags} />
+        <FlagsNav groups={navGroups} activeTab={activeTab} onPick={setTab} totalFlags={totalFlags} cleanCount={cleanCount} showAllChecks={showAllChecks} onToggleAll={() => setShowAllChecks(v => !v)} />
 
         <div className="flex-1 min-w-0 space-y-4">
           <div className="flex items-center gap-4">
@@ -405,7 +411,7 @@ export default function DataQuality() {
 }
 
 // ── Rail ────────────────────────────────────────────────────────────────────
-function FlagsNav({ groups, activeTab, onPick, totalFlags }) {
+function FlagsNav({ groups, activeTab, onPick, totalFlags, cleanCount, showAllChecks, onToggleAll }) {
   return (
     <nav className="hidden lg:block w-56 shrink-0 sticky top-4 self-start">
       <button onClick={() => onPick('overview')}
@@ -433,6 +439,12 @@ function FlagsNav({ groups, activeTab, onPick, totalFlags }) {
           })}
         </div>
       ))}
+      {cleanCount > 0 && (
+        <button onClick={onToggleAll}
+          className="mt-4 w-full px-3 py-1.5 text-left text-[11px] font-semibold text-ink-faint hover:text-ink transition-colors">
+          {showAllChecks ? 'Hide clean checks' : `Show all checks · ${cleanCount} clean`}
+        </button>
+      )}
     </nav>
   )
 }
