@@ -663,7 +663,6 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
           {/* Vendor contact */}
           <div className="sm:col-span-2 flex items-center gap-2.5 mt-1"><span className="text-[11px] font-bold uppercase tracking-wider text-brand-ink whitespace-nowrap">Vendor contact</span><span className="h-px flex-1 bg-divider" /></div>
           <div className="sm:col-span-2"><label className="label">{isReimb ? 'Email *' : 'Vendor email *'}</label><input type="email" className="input" value={form.vendor_email} onChange={set('vendor_email')} placeholder={isReimb ? 'who to notify when it\'s paid' : 'vendor@example.com'} /></div>
-          <div className="sm:col-span-2"><label className="label">Mailing address</label><input className="input" value={form.vendor_address} onChange={set('vendor_address')} placeholder="Street, City, State, ZIP" /></div>
           <div className="sm:col-span-2"><label className="label">Bank name <span className="text-ink-faint font-normal">— for payment routing</span></label><input className="input" value={form.vendor_bank} onChange={set('vendor_bank')} placeholder="e.g. Chase, Bank of America" /></div>
           <div className="sm:col-span-2 flex items-center gap-2.5 mt-1"><span className="text-[11px] font-bold uppercase tracking-wider text-brand-ink whitespace-nowrap">Handling</span><span className="h-px flex-1 bg-divider" /></div>
           {/* Urgency — Rush = "expedite this", Hold = "pause this". Mutually
