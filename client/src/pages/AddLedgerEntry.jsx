@@ -103,6 +103,7 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
   const [docCheck, setDocCheck] = useState(null)                 // is-this-an-invoice gate
   const [lines, setLines] = useState(null)                       // editable line items
   const [lineMeta, setLineMeta] = useState(null)
+  const [useLines, setUseLines] = useState(false)  // opt-in: adopt parsed line items as a per-line split
   // Vendor intelligence.
   const [w9Check, setW9Check] = useState(null)                   // attach-time W9 validation
   const [w9OnFile, setW9OnFile] = useState(null)                 // vendor already has a W9
@@ -185,7 +186,7 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
   const onInvoice = (file) => {
     setFiles(f => ({ ...f, invoice_file: file }))
     setParsed(false); setDocCheck(null); setDocInvoiceNumber(null)
-    if (!file) { setLines(null); setLineMeta(null) }
+    if (!file) { setLines(null); setLineMeta(null); setUseLines(false) }
   }
 
   const scanInvoice = async () => {
@@ -275,7 +276,8 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
             recoupable: !!l.recoupable,
           })))
           setLineMeta(L)
-        } else { setLines(null); setLineMeta(null) }
+          setUseLines(false)  // offer the split; artist/song stay until the user adopts it
+        } else { setLines(null); setLineMeta(null); setUseLines(false) }
       }
     } finally { setScanning(false) }
   }
@@ -341,7 +343,7 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
   // more usable lines TAKE PRECEDENCE over the artist splitter (boom rule) —
   // the invoice is really N small expenses stapled together.
   const usableLines = (lines || []).filter(l => (parseFloat(l.amount) || 0) > 0 || l.description.trim())
-  const lineMode = usableLines.length > 1
+  const lineMode = useLines && usableLines.length > 1
   const linesSum = Math.round(usableLines.reduce((a, l) => a + (parseFloat(l.amount) || 0), 0) * 100) / 100
   const linesDiff = Math.round((linesSum - total) * 100) / 100
   const hideArtistSong = splitOn || lineMode
@@ -417,7 +419,7 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
     setSplitOn(false); setSplits([BLANK_SPLIT(), BLANK_SPLIT()])
     setBulk({ on: false, quantity: '', unit: '' })
     setParsed(false); setDocCheck(null); setDocInvoiceNumber(null)
-    setLines(null); setLineMeta(null)
+    setLines(null); setLineMeta(null); setUseLines(false)
     setW9Check(null); setW9OnFile(null); setVendorSugs([])
     setDupMatch(null); setDupSimilar([])
     setChecks({})
@@ -711,10 +713,20 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
           </div>
 
 
-          {/* Line items — parsed off the document, human-reviewed here. Two or
-              more usable lines become the split (they take precedence over the
-              artist splitter). */}
-          {lines && (
+          {/* Line items — parsed off the document. Adopting them splits the
+              invoice into one entry per line and hands artist/song to the rows;
+              until then it's just an offer, so artist/song above stay editable. */}
+          {lines && !useLines && usableLines.length > 1 && (
+            <div className="sm:col-span-2 rounded-xl border border-rule bg-page/40 px-3 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-2">
+              <Sparkles size={14} className="text-brand-600 flex-shrink-0" />
+              <span className="text-[12.5px] text-ink">This invoice has <b>{usableLines.length} line items</b>. Split it into a separate entry per line? Artist &amp; song then move to the rows.</span>
+              <div className="ml-auto flex items-center gap-2">
+                <button type="button" onClick={() => setUseLines(true)} className="btn-secondary !py-1 text-xs whitespace-nowrap">Split into {usableLines.length} entries</button>
+                <button type="button" onClick={() => { setLines(null); setLineMeta(null) }} className="text-[11px] font-semibold text-ink-faint hover:text-danger">Dismiss</button>
+              </div>
+            </div>
+          )}
+          {lines && useLines && (
             <div className="sm:col-span-2 rounded-xl border border-rule overflow-hidden">
               <div className="px-3 py-2 bg-page/60 border-b border-rule flex flex-wrap items-center gap-x-3 gap-y-1">
                 <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">{lines.length} line items</span>
@@ -723,7 +735,10 @@ export default function AddLedgerEntry({ mode = 'invoice' }) {
                     ? (lineMeta?.reconciles ? ` and checked against the printed total of ${Number(lineMeta.printed_total).toFixed(2)}` : ` — NOT verified: ${lineMeta?.reason || 'totals differ'}`)
                     : ' — no printed total found to verify against'} · correct anything wrong here
                 </span>
-                <button type="button" onClick={() => { setLines(null); setLineMeta(null) }} className="ml-auto text-[11px] font-semibold text-danger hover:underline">Discard line items</button>
+                <div className="ml-auto flex items-center gap-3">
+                  <button type="button" onClick={() => setUseLines(false)} className="text-[11px] font-semibold text-ink-muted hover:text-brand-ink">Use single amount instead</button>
+                  <button type="button" onClick={() => { setLines(null); setLineMeta(null); setUseLines(false) }} className="text-[11px] font-semibold text-danger hover:underline">Discard line items</button>
+                </div>
               </div>
               <div className="max-h-80 overflow-y-auto overflow-x-auto">
                 <table className="w-full text-[12.5px]">
