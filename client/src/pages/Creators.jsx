@@ -217,6 +217,7 @@ export default function Creators() {
                         {r.payment_status !== 'Paid'
                           ? <button className="btn-secondary !py-1 text-xs" disabled={payingId === r.id} onClick={() => setPaid(r, true)}>{payingId === r.id ? '…' : 'Mark paid'}</button>
                           : <button className="hover:text-danger p-1 text-[11px] disabled:opacity-40" disabled={payingId === r.id} title="Back to unpaid" onClick={() => setPaid(r, false)}>{payingId === r.id ? '…' : 'undo'}</button>}
+                        <ProofCell row={r} toast={toast} onChanged={(upd) => setData((d) => ({ ...d, rows: d.rows.map((x) => (x.id === r.id ? { ...x, has_proof: true, proof_filename: upd.proof_filename, payment_status: upd.payment_status, payment_date: upd.payment_date || x.payment_date } : x)) }))} />
                         <Link to={`/ledger?focus=${r.id}`} className="hover:text-brand-ink p-1 text-[10px] font-bold" title="Open in ledger">L</Link>
                         <button className="hover:text-danger p-1" title="Delete" onClick={() => setConfirmDel(r)}><X size={13} /></button>
                       </div>
@@ -376,6 +377,29 @@ function MoveInTab({ rows, summary, toast, onDone }) {
         </table>
       </div>
     </div>
+  )
+}
+
+// Per-row proof of payment — drop or click to attach a PayPal receipt. Like the
+// rest of the app, attaching a proof marks the payment Paid if it wasn't.
+function ProofCell({ row, onChanged, toast }) {
+  const [busy, setBusy] = useState(false)
+  const upload = async (file) => {
+    if (!file || busy) return
+    setBusy(true)
+    try { const fd = new FormData(); fd.append('file', file); const { data } = await api.post(`/creators/${row.id}/proof`, fd); onChanged(data.data) }
+    catch (err) { toast(err.response?.data?.error || 'Upload failed', 'error') }
+    finally { setBusy(false) }
+  }
+  const view = () => api.get(`/creators/${row.id}/proof`).then(({ data }) => window.open(data.data.url, '_blank', 'noopener')).catch(() => toast('No proof', 'error'))
+  if (row.has_proof) return <button onClick={view} className="text-[11px] font-bold text-success hover:underline p-1" title={row.proof_filename || 'View proof'}>proof</button>
+  return (
+    <label onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); upload(e.dataTransfer.files?.[0]) }}
+      className="text-[10px] font-semibold text-ink-faint border border-dashed border-rule rounded px-1.5 py-0.5 cursor-pointer hover:border-brand-300 hover:text-brand-ink whitespace-nowrap"
+      title="Attach proof of payment (drop or click) - marks paid">
+      {busy ? '\u2026' : '+ proof'}
+      <input type="file" accept="application/pdf,image/*" hidden onChange={(e) => { upload(e.target.files?.[0]); e.target.value = '' }} />
+    </label>
   )
 }
 

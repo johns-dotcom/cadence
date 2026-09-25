@@ -18,6 +18,9 @@ const { isCreatorRow, CREATOR_SOURCE, reportingThresholdFor,
 const { rowUsd2, round2 } = require('../lib/usd');
 const { stampFxRateAsync } = require('../lib/fxStamp');
 const { resolveFundingSource } = require('../lib/fundingSources');
+const multer = require('multer');
+const { uploadFile, getSignedFileUrl, deleteFile } = require('../lib/r2');
+const proofUpload = (req, res, next) => multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }).single('file')(req, res, (err) => { if (err) return res.status(400).json({ success: false, error: err.message }); next(); });
 const bankEvidence = require('../lib/bankEvidence');
 const { accountsFor } = require('../lib/bankReconcile');
 const activityBot = require('../lib/activityBot');
@@ -83,6 +86,7 @@ router.get('/', async (req, res) => {
               e.payment_status, e.payment_date, e.invoice_date, e.payment_method, e.notes, e.rep,
               e.recoupable, e.ufr, e.is_bulk_deal, e.created_at, e.created_by, e.w9_r2_key,
               e.paid_source_id, e.reimbursed, fs.name AS paid_source_name, fs.reimbursable AS paid_source_reimbursable,
+              (e.proof_r2_key IS NOT NULL) AS has_proof, e.proof_filename,
               ${bankEvidence.bankEvidenceCols('e', accounts)}
          FROM expenses e
          LEFT JOIN funding_sources fs ON fs.id = e.paid_source_id AND fs.label_id = e.label_id
@@ -353,6 +357,64 @@ router.delete('/:id(\\d+)', async (req, res) => {
     if (!rows.length) return res.status(404).json({ success: false, error: 'No such creator payment' });
     res.json({ success: true });
   } catch { res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+// POST /api/creators/:id/proof — attach a payment proof (PayPal receipt). Like
+// the rest of the app, dropping a proof marks the row Paid if it wasn't (edge-
+// only: an already-paid row keeps its date/payer). Stores on expenses.proof_*.
+router.post('/:id(\\d+)/proof', proofUpload, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded' });
+    const id = parseInt(req.params.id, 10);
+    const { rows: ex } = await pool.query(
+      `SELECT id, payment_status FROM expenses e WHERE e.id = $1 AND e.label_id = $2 AND ${isCreatorRow('e')} AND (e.deleted IS NOT TRUE)`,
+      [id, req.labelId]);
+    if (!ex.length) return res.status(404).json({ success: false, error: 'No such creator payment' });
+    const safe = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const key = `label-${req.labelId}/ledger/proof-${Date.now()}-${safe}`;
+    await uploadFile(key, req.file.buffer, req.file.mimetype);
+    const markPaid = ex[0].payment_status !== 'Paid';
+    const sets = ['proof_r2_key = $3', 'proof_filename = $4'];
+    const params = [id, req.labelId, key, req.file.originalname];
+    if (markPaid) {
+      params.push(req.user.name);
+      sets.push(`payment_status = 'Paid'`, 'payment_date = COALESCE(payment_date, CURRENT_DATE)',
+        `paid_by = COALESCE(paid_by, $${params.length})`, 'paid_marked_at = COALESCE(paid_marked_at, NOW())');
+    }
+    const { rows } = await pool.query(
+      `UPDATE expenses e SET ${sets.join(', ')} WHERE e.id = $1 AND e.label_id = $2 RETURNING e.id, e.payment_status, e.payment_date, e.proof_filename`,
+      params);
+    if (markPaid) stampFxRateAsync(id);
+    await logActivity(req, 'Attached creator payment proof', `#${id}`);
+    res.json({ success: true, data: { ...rows[0], has_proof: true } });
+  } catch (e) { console.error('creator proof upload error:', e); res.status(500).json({ success: false, error: 'Upload failed' }); }
+});
+
+// GET /api/creators/:id/proof — signed URL to view the attached proof.
+router.get('/:id(\\d+)/proof', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT proof_r2_key, proof_filename FROM expenses e WHERE e.id = $1 AND e.label_id = $2 AND ${isCreatorRow('e')}`,
+      [parseInt(req.params.id, 10), req.labelId]);
+    if (!rows.length || !rows[0].proof_r2_key) return res.status(404).json({ success: false, error: 'No proof on file' });
+    const url = await getSignedFileUrl(rows[0].proof_r2_key, 3600).catch(() => null);
+    if (!url) return res.status(503).json({ success: false, error: 'File storage is not configured' });
+    res.json({ success: true, data: { url, filename: rows[0].proof_filename } });
+  } catch (e) { console.error('creator proof view error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
+});
+
+// DELETE /api/creators/:id/proof — detach the proof (does not change paid state).
+router.delete('/:id(\\d+)/proof', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { rows } = await pool.query(
+      `SELECT proof_r2_key FROM expenses e WHERE e.id = $1 AND e.label_id = $2 AND ${isCreatorRow('e')}`,
+      [id, req.labelId]);
+    if (!rows.length) return res.status(404).json({ success: false, error: 'No such creator payment' });
+    if (rows[0].proof_r2_key) await deleteFile(rows[0].proof_r2_key).catch(() => {});
+    await pool.query('UPDATE expenses SET proof_r2_key = NULL, proof_filename = NULL WHERE id = $1 AND label_id = $2', [id, req.labelId]);
+    res.json({ success: true });
+  } catch (e) { console.error('creator proof delete error:', e); res.status(500).json({ success: false, error: 'Failed' }); }
 });
 
 // ── Move-in: rows added on Artist Campaigns / Recoupments that are really
